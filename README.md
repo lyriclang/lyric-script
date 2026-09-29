@@ -1,3 +1,8 @@
+> **Lyric-Script.** This repository continues the Lyric 4.x line (last release under the name
+> `lyric`: **v4.5.0**; this tree is the 4.6 cut without the Lyric 5 migration warnings). It becomes
+> `lyric-script 1.0.0` on its own roadmap. Lyric 5, the native successor, lives in
+> [lyriclang/lyric](https://github.com/lyriclang/lyric).
+
 # Lyric
 
 A statically typed, GC-managed application language with an embeddable bytecode VM.

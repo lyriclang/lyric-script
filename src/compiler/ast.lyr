@@ -255,8 +255,16 @@ struct ExtendDecl :: [Debug] {
     span: Span,
 }
 
+/// A type parameter, `T :: [C]`: its name and the interfaces an argument must satisfy.
+struct TypeParam :: [Debug] {
+    name: string,
+    constraints: Conformance[],
+    span: Span,
+}
+
 struct FnDecl :: [Debug] {
     name: string,
+    typeParams: TypeParam[],
     params: Param[],
     returns: ?TypeExpr,
     body: FnBody,

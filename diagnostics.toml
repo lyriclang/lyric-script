@@ -547,6 +547,12 @@ severity = "error"
 area = "03-types"
 summary = "`List` takes one, `Map` two, the other types none (generics come with S3). Lyric 5's LYR-SEM0026."
 
+[LYS-SEM0028]
+title = "a type argument that does not satisfy its parameter's constraints"
+severity = "error"
+area = "03-types"
+summary = "An argument, written or inferred, conforms to every interface its type parameter's constraints name. Lyric 5's LYR-SEM0028."
+
 [LYS-SEM0029]
 title = "a pattern that cannot match the value's type"
 severity = "error"
@@ -606,6 +612,12 @@ title = "an equality the type does not support"
 severity = "error"
 area = "08-expressions"
 summary = "`==` and `!=` compare two values of one type; `== null` asks an optional, never a value that cannot be null. Lyric 5's LYR-SEM0059."
+
+[LYS-SEM0060]
+title = "a type argument nothing gives"
+severity = "error"
+area = "03-types"
+summary = "A type parameter that occurs in no argument and not in the expected type is not inferred: write it. Lyric 5's LYR-SEM0060."
 
 [LYS-SEM0064]
 title = "a type alias that expands to itself"
@@ -738,6 +750,12 @@ title = "a name bound twice in one scope"
 severity = "error"
 area = "07-statements"
 summary = "A scope binds a name once; an inner scope may bind it again. Lyric 5's LYR-SEM0176."
+
+[LYS-SEM0197]
+title = "more copies of generics than there may be"
+severity = "error"
+area = "03-types"
+summary = "A program asks for more than 20 000 copies of generics, or a chain of copies each asking for the next. Lyric 5's LYR-SEM0197."
 
 [LYS-SEM0226]
 title = "a 'return' without the value the function returns"

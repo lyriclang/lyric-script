@@ -34,6 +34,7 @@ import lyric_script.compiler.ast {
     Span,
     Stmt,
     TypeDecl,
+    TypeParam,
     TypeExpr,
     UnaryOp,
     Variant,
@@ -339,6 +340,10 @@ class Parser {
     mut fn parseFn(isPub: bool, isStatic: bool, first: Token): FnDecl throws SyntaxError {
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "a function's name");
+        var typeParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            typeParams = try this.parseTypeParams();
+        }
         let params = try this.parseParams();
         var returns: ?TypeExpr = null;
         if (this.at(.Colon)) {
@@ -356,6 +361,7 @@ class Parser {
         };
         return FnDecl {
             name = this.text(name),
+            typeParams = typeParams,
             params = params,
             returns = returns,
             body = body,
@@ -549,6 +555,30 @@ class Parser {
     }
 
     /// `type Name = T`.
+    /// `<T, U :: [Show]>`: a declaration's type parameters and their constraints.
+    mut fn parseTypeParams(): TypeParam[] throws SyntaxError {
+        this.advance();
+        let out = List<TypeParam>.new();
+        while (!this.at(.Gt)) {
+            let first = this.current();
+            let name = try this.expect(.Ident, "LYS-PAR0026", "a type parameter's name");
+            let constraints = try this.parseConformances(false);
+            out.push(
+                TypeParam {
+                    name = this.text(name),
+                    constraints = constraints,
+                    span = this.since(first),
+                }
+            );
+            if (!this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        try this.expect(.Gt, "LYS-PAR0004", "'>' after the type parameters");
+        return out.toArray();
+    }
+
     /// `:: I`, `:: [I, J by field]`: the interfaces a type conforms to — one may stand bare,
     /// several stand in brackets; `by` only where `delegates` (a struct or a class).
     mut fn parseConformances(delegates: bool): Conformance[] throws SyntaxError {

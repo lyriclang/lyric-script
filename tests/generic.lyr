@@ -1,0 +1,84 @@
+// Generic functions (S3g, Lyric 5 03 §9 and 11 Gen): type parameters checked once, inference at
+// the call — a lambda's after the other arguments —, constraints, and the copies: one shared by
+// the types whose values are objects, one each for the others.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let named = "interface Named {\n    fn name(): string\n}\nstruct P :: [Named] {\n    n: string\n    fn name(): string = this.n\n}\nstruct Q :: [Named] {\n    fn name(): string = \"q\"\n}\nextend int :: [Named] {\n    fn name(): string = \"int\"\n}\n";
+
+@Test
+fn genericFunctionsInferAndRun(): void {
+    let fns = "fn ident<T>(x: T): T = x\nfn twice<T>(x: T, f: fn(T) -> T): T = f(f(x))\nfn pick<T>(c: bool, a: T, b: T): T = if (c) a else b\nfn label<T :: [Named]>(x: T): string = x.name() + \"!\"\nfn mapOpt<T, U>(x: ?T, f: fn(T) -> U): ?U = if (x != null) f(x) else null\n";
+    let g = "fn g(): int {\n    let a = ident(41) + 1\n    let s = ident(\"x\")\n    let b = twice(3) { it * 2 }\n    let c = pick(false, P { n = \"p\" }, P { n = \"q\" }).n\n    let d = label(P { n = \"z\" })\n    let e = label(7)\n    let f = mapOpt(5) { it + 1 } ?? 0\n    return a + b + (if (s == \"x\") 100 else 0) + (if (c == \"q\") 1000 else 0) + (if (d == \"z!\") 10000 else 0) + (if (e == \"int!\") 100000 else 0) + f * 1000000\n}";
+    assertEq(value(named + fns + g, "g"), 6111154);
+}
+
+@Test
+fn objectTypesShareOneCopy(): void {
+    let src = named
+        + "fn label<T :: [Named]>(x: T): string = x.name()\nfn h(): int = if (label(P { n = \"q\" }) == label(Q { })) 1 else 0\nfn k(): string = label(3)\n";
+    assertEq(value(src, "h"), 1);
+    var shared = 0;
+    var own = 0;
+    for (f in checkModule(parse(src).module).program.functions) {
+        if (f.name == "label<ref>") {
+            shared += 1;
+        }
+        if (f.name == "label<int>") {
+            own += 1;
+        }
+    }
+    assertEq(shared, 1);
+    assertEq(own, 1);
+}
+
+@Test
+fn whatGenericsRefuse(): void {
+    assertEq(
+        errs(named + "fn label<T :: [Named]>(x: T): string = x.name()\nlet s = label(3.5)"),
+        ["LYS-SEM0028"]
+    );
+    assertEq(errs("fn none<T>(): ?T = null\nlet z = none()"), ["LYS-SEM0060"]);
+    // a type parameter has its constraints' members and no others
+    assertEq(errs("fn f<T>(x: T): string = x.name()"), ["LYS-SEM0012"]);
+}

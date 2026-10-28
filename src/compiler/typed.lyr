@@ -27,6 +27,14 @@ enum Ty :: [Equatable, Debug] {
     Fn(FnTy),
     /// A captured `var`'s box, holding a value of the type: a reference.
     Cell(Box<Ty>),
+    /// Type parameter `k` of the generic being checked (S3g): opaque, its constraints' members.
+    Param(int),
+}
+
+/// A type parameter: its name and the interfaces its argument satisfies.
+struct TypeParamInfo :: [Debug] {
+    name: string,
+    constraints: int[],
 }
 
 /// A function type's parameters and result.
@@ -166,6 +174,11 @@ class FnInfo {
     var captures: CaptureInfo[] = [],
     // an interface's member without a body
     var abstract: bool = false,
+    // a generic's type parameters; its body, checked once, kept for the copies
+    var typeParams: TypeParamInfo[] = [],
+    var template: TStmt[] = [],
+    // a lambda made in a generic's body: the generic whose type parameters it uses
+    var templateOf: int = -1,
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).
@@ -234,6 +247,8 @@ fn typeOf(e: TExpr): Ty {
         .BoxOf(_, _, t) => t,
         .Unbox(_, t) => t,
         .IsType(_, _, _) | .IsIface(_, _, _) => Ty.Bool,
+        .CallGeneric(_, _, _, t) => t,
+        .CallConstraint(_, _, _, _, _, t) => t,
         .CallIface(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
@@ -329,6 +344,12 @@ enum TExpr :: [Debug] {
     IsType(Box<TExpr>, int, Ty),
     /// Whether it holds a value of a type that conforms to interface `k`.
     IsIface(Box<TExpr>, int, Ty),
+    /// A call of a generic function with the type arguments it bound; an instance's call once
+    /// the copies are made.
+    CallGeneric(int, Ty[], TExpr[], Ty),
+    /// A member of a constraint of type parameter `k` called on a value of it: the interface, the
+    /// member, its slot, the receiver first among the arguments.
+    CallConstraint(int, int, string, int, TExpr[], Ty),
     Unknown,
 }
 

@@ -68,6 +68,7 @@ fn shifted(ds: Diagnostic[], start: int, line: int, column: int): Diagnostic[] {
                 end = d.end + start,
                 line = d.line + line - 1,
                 column = if (d.line == 1) d.column + column - 1 else d.column,
+                help = d.help,
             }
         );
     }
@@ -83,6 +84,7 @@ class Scanner {
     errors: List<Diagnostic>,
     var i: int = 0,
     var line: int = 1,
+    // the character index where the line starts: columns count characters, as an editor does
     var lineStart: int = 0,
     // where the token being read starts: a token over lines has the line it starts on
     var tokenLine: int = 1,
@@ -132,7 +134,7 @@ class Scanner {
                 start = start,
                 end = this.offset(this.i),
                 line = this.tokenLine,
-                column = start - this.tokenLineStart + 1,
+                column = from - this.tokenLineStart + 1,
             }
         );
     }
@@ -146,7 +148,8 @@ class Scanner {
                 start = start,
                 end = this.offset(this.i),
                 line = this.tokenLine,
-                column = start - this.tokenLineStart + 1,
+                column = from - this.tokenLineStart + 1,
+                help = null,
             }
         );
     }
@@ -155,14 +158,14 @@ class Scanner {
     mut fn nextLine(): void {
         this.i += 1;
         this.line += 1;
-        this.lineStart = this.offset(this.i);
+        this.lineStart = this.i;
     }
 
     mut fn scan(): void {
         // a byte order mark is no part of the source
         if (this.peek(0) == '\u{feff}') {
             this.i += 1;
-            this.lineStart = this.offset(this.i);
+            this.lineStart = this.i;
         }
         this.shebangAndFrontmatter();
         while (!this.atEnd()) {
@@ -656,11 +659,12 @@ fn applyLineRules(raw: Token[], source: string, warnings: List<Diagnostic>): Tok
                     warnings.push(
                         Diagnostic {
                             code = "LYS-LEX0101",
-                            message = "this line starts a new statement with a sign; to go on with the line before, put the operator at its end",
+                            message = "this line starts a new statement with a sign",
                             start = next.start,
                             end = next.end,
                             line = next.line,
                             column = next.column,
+                            help = "to go on with the line before, put the operator at the end of that line",
                         }
                     );
                 }

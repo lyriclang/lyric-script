@@ -1,0 +1,167 @@
+//! Diagnostics as people and tools read them (S2f; Lyric 5's forms, its spec chapter 16). The text
+//! is drawn as rustc draws it — the code, the place, the line with its span marked, `help:`. The
+//! JSON form is Lyric 5's: one object a line, each with its `type` and the schema's `version`, a
+//! `diagnostic` for each finding and a `summary` that closes the command.
+import std.collections { List };
+import std.core { StringBuilder };
+import lyric_script.compiler.diagnostic { Diagnostic };
+
+/// The version of the JSON schema: Lyric 5's, whose objects these are.
+let jsonVersion: int = 1;
+
+/// A source's lines: where each starts, to show a line and to name an offset's place.
+class SourceLines {
+    text: string,
+    // the byte offset where each line starts
+    starts: int[],
+
+    static fn of(text: string): SourceLines {
+        let starts = List<int>.new();
+        starts.push(0);
+        for ((at, c) in text.charIndices()) {
+            if (c == '\n') {
+                starts.push(at + 1);
+            }
+        }
+        return SourceLines { text = text, starts = starts.toArray() };
+    }
+
+    /// The line, from 1, that holds byte `offset`.
+    mut fn lineOf(offset: int): int {
+        var low = 0;
+        var high = this.starts.length() - 1;
+        while (low < high) {
+            let mid = (low + high + 1) / 2;
+            if (this.starts[mid] <= offset) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return low + 1;
+    }
+
+    /// Line `n`'s text, without its line end.
+    mut fn lineText(n: int): string {
+        if (n < 1 || n > this.starts.length()) {
+            return "";
+        }
+        let from = this.starts[n - 1];
+        var to = if (n < this.starts.length()) this.starts[n] - 1 else this.text.length();
+        if (to > from && this.text[to - 1..to].toString() == "\r") {
+            to -= 1;
+        }
+        return this.text[from..to].toString();
+    }
+
+    /// The column, from 1 and in characters, of byte `offset` on its line.
+    mut fn columnOf(offset: int): int {
+        let n = this.lineOf(offset);
+        let from = this.starts[n - 1];
+        var column = 1;
+        for ((at, _) in this.text[from..this.text.length()].charIndices()) {
+            if (from + at >= offset) {
+                return column;
+            }
+            column += 1;
+        }
+        return column;
+    }
+}
+
+/// A finding as text: `error[CODE]: message`, its place, its line with the span marked under it.
+fn renderText(d: Diagnostic, severity: string, path: string, lines: SourceLines): string {
+    let out = StringBuilder.new();
+    out.appendStr(f"{severity}[{d.code}]: {d.message}\n");
+    let gutter = f"{d.line}".length();
+    let pad = repeat(' ', gutter);
+    out.appendStr(f"{pad}--> {path}:{d.line}:{d.column}\n");
+    let text = lines.lineText(d.line);
+    if (d.line >= 1 && d.line <= lines.starts.length()) {
+        // the span on its first line, at least one character; a tab is drawn as four spaces
+        let endLine = lines.lineOf(if (d.end > d.start) d.end - 1 else d.start);
+        let endColumn = if (endLine == d.line && d.end > d.start) lines.columnOf(d.end - 1) + 1 else text.charCount() + 1;
+        let shown = StringBuilder.new();
+        let marks = StringBuilder.new();
+        var column = 1;
+        for (c in text.chars()) {
+            let width = if (c == '\t') 4 else 1;
+            for (_ in 0..width) {
+                shown.appendChar(if (c == '\t') ' ' else c);
+                marks.appendChar(if (column >= d.column && column < endColumn) '^' else ' ');
+            }
+            column += 1;
+        }
+        if (d.column > text.charCount()) {
+            // a span at the end of the line: one mark after its last character
+            marks.appendChar('^');
+        }
+        out.appendStr(f"{pad} |\n");
+        out.appendStr(f"{d.line} | {shown.toString()}\n");
+        out.appendStr(f"{pad} | {marks.toString().trimEnd()}\n");
+    }
+    let help = d.help;
+    if (help != null) {
+        out.appendStr(f"{pad} = help: {help}\n");
+    }
+    return out.toString();
+}
+
+/// A finding as one line of JSON, Lyric 5's `diagnostic` event.
+fn renderJson(d: Diagnostic, severity: string, path: string, lines: SourceLines): string {
+    let rendered = renderText(d, severity, path, lines);
+    let endOffset = if (d.end > d.start) d.end else d.start;
+    let end = f"\"line\":{lines.lineOf(endOffset)},\"column\":{lines.columnOf(endOffset)},\"offset\":{endOffset}";
+    let start = f"\"line\":{d.line},\"column\":{d.column},\"offset\":{d.start}";
+    let span = f"{{\"file\":{jsonString(path)},\"start\":{{{start}}},\"end\":{{{end}}}}}";
+    let help = d.help;
+    let notes = if (help != null) f"[{{\"kind\":\"help\",\"message\":{jsonString(help)},\"span\":null}}]" else "[]";
+    return f"{{\"type\":\"diagnostic\",\"version\":{jsonVersion},\"code\":{jsonString(d.code)},\"severity\":\"{severity}\",\"message\":{jsonString(d.message)},\"span\":{span},\"labels\":[],\"notes\":{notes},\"rendered\":{jsonString(rendered)}}}";
+}
+
+/// The line that closes a command in the JSON form: how many errors and warnings it said.
+fn renderSummary(errors: int, warnings: int): string {
+    return f"{{\"type\":\"summary\",\"version\":{jsonVersion},\"errors\":{errors},\"warnings\":{warnings}}}";
+}
+
+/// A string as JSON writes it: in quotes, its quotes, backslashes and control characters escaped.
+fn jsonString(s: string): string {
+    let out = StringBuilder.new();
+    out.appendChar('"');
+    for (c in s.chars()) {
+        let code = (c as uint32) as int;
+        if (c == '"') {
+            out.appendStr("\\\"");
+        } else if (c == '\\') {
+            out.appendStr("\\\\");
+        } else if (c == '\n') {
+            out.appendStr("\\n");
+        } else if (c == '\r') {
+            out.appendStr("\\r");
+        } else if (c == '\t') {
+            out.appendStr("\\t");
+        } else if (code < 0x20) {
+            out.appendStr("\\u00");
+            out.appendChar(hexDigit(code / 16));
+            out.appendChar(hexDigit(code % 16));
+        } else {
+            out.appendChar(c);
+        }
+    }
+    out.appendChar('"');
+    return out.toString();
+}
+
+fn hexDigit(n: int): char {
+    return ((if (n < 10) 48 + n else 87 + n) as uint32) as char;
+}
+
+fn repeat(c: char, n: int): string {
+    let out = StringBuilder.new();
+    var k = 0;
+    while (k < n) {
+        out.appendChar(c);
+        k += 1;
+    }
+    return out.toString();
+}

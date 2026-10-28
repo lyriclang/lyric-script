@@ -22,6 +22,7 @@ fn report(errors: List<Diagnostic>, code: string, message: string, t: Token): vo
             end = t.end,
             line = t.line,
             column = t.column,
+            help = null,
         }
     );
 }
@@ -263,15 +264,19 @@ class TextReader {
         let text = StringBuilder.new();
         let indentChars = indent.charCount();
         var k = from;
-        var lineStartByte = this.token.start - (this.token.column - 1);
+        // a hole's column counts characters: on the token's first line from the token's column, on
+        // a later line from that line's start
+        var lineStartChar = 0;
+        var columnBase = this.token.column;
         var line = this.token.line;
         var atLineStart = indentChars > 0;
-        // the byte offsets of the line ends before `from` count for the holes' lines
+        // the line ends before `from` count for the holes' lines
         var b = 0;
         while (b < from) {
             if (this.at(b) == '\n') {
                 line += 1;
-                lineStartByte = this.token.start + this.offset(b) + 1;
+                lineStartChar = b + 1;
+                columnBase = 1;
             }
             b += 1;
         }
@@ -298,7 +303,8 @@ class TextReader {
             if (c == '\n') {
                 text.appendChar('\n');
                 line += 1;
-                lineStartByte = this.token.start + this.offset(k) + 1;
+                lineStartChar = k + 1;
+                columnBase = 1;
                 k += 1;
                 atLineStart = indentChars > 0;
             } else if (c == '\r' && this.at(k + 1) == '\n') {
@@ -321,7 +327,7 @@ class TextReader {
                     out.push(Piece.Text(text.toString()));
                     text.clear();
                 }
-                k = this.hole(k + 1, to, line, lineStartByte, out);
+                k = this.hole(k + 1, to, line, k + 1 - lineStartChar + columnBase, out);
             } else {
                 text.appendChar(c);
                 k += 1;
@@ -356,7 +362,7 @@ class TextReader {
 
     /// A hole from the character after its `{`: its expression up to a `:` or the `}` that close
     /// it at its own depth, strings in it skipped whole. Returns the index after the `}`.
-    mut fn hole(from: int, to: int, line: int, lineStartByte: int, out: List<Piece>): int {
+    mut fn hole(from: int, to: int, line: int, column: int, out: List<Piece>): int {
         var depth = 0;
         var k = from;
         var colon = -1;
@@ -405,7 +411,7 @@ class TextReader {
                 start,
                 this.token.start + this.offset(exprEnd),
                 line,
-                start - lineStartByte + 1,
+                column,
                 spec
             )
         );

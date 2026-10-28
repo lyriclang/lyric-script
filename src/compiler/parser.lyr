@@ -175,6 +175,7 @@ class Parser {
                 end = t.end,
                 line = t.line,
                 column = t.column,
+                help = null,
             }
         );
     }

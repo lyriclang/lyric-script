@@ -166,6 +166,7 @@ class Checker {
                 end = at.end,
                 line = at.line,
                 column = at.column,
+                help = null,
             }
         );
     }

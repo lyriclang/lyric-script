@@ -10,4 +10,6 @@ struct Diagnostic :: [Debug] {
     end: int,
     line: int,
     column: int,
+    /// What to do about it, where there is a short answer: drawn as `= help: …`.
+    help: ?string,
 }

@@ -204,6 +204,10 @@ fn tokensKnowTheirLineAndColumn(): void {
     assertEq(s[2].line, 2);
     assertEq(s[3].line, 3);
     assertEq(s[3].column, 6);
+    // a column counts characters, as an editor does; the offsets stay bytes
+    let u = lex("\"ä\" x").tokens;
+    assertEq(u[1].column, 5);
+    assertEq(u[1].start, 5);
 }
 
 @Test

@@ -184,3 +184,457 @@ Write the operator at the end of the line instead:
     let total = price -
         discount
 '''
+
+# The rest of the lexer's codes (S2c: the literals are read by the parser).
+
+[LYS-LEX0007]
+title = "a malformed escape sequence"
+severity = "error"
+area = "01-lexical"
+summary = "A backslash in a string or a character starts no escape there: the escapes are `\\n`, `\\r`, `\\t`, `\\\\`, `\\'`, `\\\"`, `\\0` and `\\u{…}` with one to eight hex digits naming a scalar value. Lyric 5's LYR-LEX0007."
+
+[LYS-LEX0008]
+title = "a character literal that holds no character or several"
+severity = "error"
+area = "01-lexical"
+summary = "A character literal holds exactly one Unicode scalar value, written or escaped. Lyric 5's LYR-LEX0008."
+
+[LYS-LEX0012]
+title = "a byte string holding no byte"
+severity = "error"
+area = "01-lexical"
+summary = "A byte string holds ASCII text and escapes; a character beyond ASCII and `\\u{…}` name no byte. Lyric 5's LYR-LEX0012."
+
+[LYS-LEX0013]
+title = "a byte escape in a string or character"
+severity = "error"
+area = "01-lexical"
+summary = "`\\xNN` is a byte's escape and stands in a byte string alone; a character is `\\u{…}`. Lyric 5's LYR-LEX0013."
+
+[LYS-LEX0014]
+title = "a multi-line string whose quotes do not stand on lines of their own"
+severity = "error"
+area = "01-lexical"
+summary = "The text of a `\"\"\"` string begins on the line after the opening quotes and ends with the line before the closing ones, which stand on a line of their own. Lyric 5's LYR-LEX0014."
+
+[LYS-LEX0015]
+title = "a line of a multi-line string indented less than its closing quotes"
+severity = "error"
+area = "01-lexical"
+summary = "The closing line's indentation is taken off every line; a line with less of it is refused (a blank one need not have it). Lyric 5's LYR-LEX0015."
+
+# The parser (S2c). Below 0100 a code means what Lyric 5's LYR-PAR code of the same number
+# means; from 0100 on the codes are Lyric-Script's own.
+
+[LYS-PAR0001]
+title = "a token after one whole statement"
+severity = "error"
+area = "02-grammar"
+summary = "A statement ends at a line end, at `;`, or before the `}` that closes it; something else follows it here. Lyric 5's LYR-PAR0001."
+
+[LYS-PAR0002]
+title = "an expression is missing"
+severity = "error"
+area = "02-grammar"
+summary = "An expression is expected where the parser found something else. Lyric 5's LYR-PAR0002."
+
+[LYS-PAR0003]
+title = "a member name is missing"
+severity = "error"
+area = "02-grammar"
+summary = "A `.` or `?.` is followed by no name. Lyric 5's LYR-PAR0003."
+
+[LYS-PAR0004]
+title = "a ']' is missing"
+severity = "error"
+area = "02-grammar"
+summary = "An index or a collection literal is not closed by `]`. Lyric 5's LYR-PAR0004."
+
+[LYS-PAR0005]
+title = "range operators chained"
+severity = "error"
+area = "02-grammar"
+summary = "`a..b..c`: a range has two ends. Lyric 5's LYR-PAR0005."
+
+[LYS-PAR0007]
+title = "a numeric literal too large"
+severity = "error"
+area = "02-grammar"
+summary = "An integer literal beyond `int`'s range (64 bits, signed). Lyric 5's LYR-PAR0007."
+
+[LYS-PAR0008]
+title = "a parenthesis is missing"
+severity = "error"
+area = "02-grammar"
+summary = "A `(` or `)` is expected: around a condition, the parameters or the arguments. Lyric 5's LYR-PAR0008."
+
+[LYS-PAR0009]
+title = "an angle bracket of a type list is missing"
+severity = "error"
+area = "02-grammar"
+summary = "A list of type arguments, `List<int>`, is not closed by `>`. Lyric 5's LYR-PAR0009."
+
+[LYS-PAR0011]
+title = "a type is missing"
+severity = "error"
+area = "02-grammar"
+summary = "A type is expected where the parser found something else. Lyric 5's LYR-PAR0011."
+
+[LYS-PAR0014]
+title = "an interpolation not closed by '}'"
+severity = "error"
+area = "02-grammar"
+summary = "A hole of an f-string holds one expression, closed by `}`. Lyric 5's LYR-PAR0014."
+
+[LYS-PAR0015]
+title = "a function type without '->'"
+severity = "error"
+area = "02-grammar"
+summary = "`fn(A, B) -> C`: a function type names its result after `->`. Lyric 5's LYR-PAR0015."
+
+[LYS-PAR0017]
+title = "a '{' is missing, or a body without braces"
+severity = "error"
+area = "02-grammar"
+summary = "A body is a block in braces. Lyric 5's LYR-PAR0017."
+
+[LYS-PAR0018]
+title = "a '}' is missing"
+severity = "error"
+area = "02-grammar"
+summary = "A block or a body is not closed. Lyric 5's LYR-PAR0018."
+
+[LYS-PAR0019]
+title = "a '(' is missing after a keyword"
+severity = "error"
+area = "02-grammar"
+summary = "`if`, `while` and `for` take their head in parentheses. Lyric 5's LYR-PAR0019."
+
+[LYS-PAR0020]
+title = "a binding without its name"
+severity = "error"
+area = "02-grammar"
+summary = "`let` and `var` are followed by the name they bind. Lyric 5's LYR-PAR0020."
+
+[LYS-PAR0021]
+title = "a for loop without 'in'"
+severity = "error"
+area = "02-grammar"
+summary = "`for (x in xs)`: the loop variable, `in`, then what it runs over. Lyric 5's LYR-PAR0021."
+
+[LYS-PAR0026]
+title = "a name is missing"
+severity = "error"
+area = "02-grammar"
+summary = "A declaration, a parameter or a field needs its name here. Lyric 5's LYR-PAR0026."
+
+[LYS-PAR0028]
+title = "a type alias without '='"
+severity = "error"
+area = "02-grammar"
+summary = "`type Name = T`. Lyric 5's LYR-PAR0028."
+
+[LYS-PAR0029]
+title = "fields without ',' or a line end between them"
+severity = "error"
+area = "02-grammar"
+summary = "The fields of a struct, a class or an initializer end at `,` or at a line end. Lyric 5's LYR-PAR0029."
+
+[LYS-PAR0031]
+title = "a parameter or field without ':' before its type"
+severity = "error"
+area = "02-grammar"
+summary = "`name: Type`. Lyric 5's LYR-PAR0031."
+
+[LYS-PAR0036]
+title = "an if expression without 'else'"
+severity = "error"
+area = "02-grammar"
+summary = "Where an `if` gives a value, both branches give one: the `else` is required. Lyric 5's LYR-PAR0036."
+
+[LYS-PAR0037]
+title = "a field in an initializer without '='"
+severity = "error"
+area = "02-grammar"
+summary = "`Point { x = 1 }`, or `Point { x }` for `x = x`. Lyric 5's LYR-PAR0037."
+
+[LYS-PAR0045]
+title = "nesting deeper than the parser carries"
+severity = "error"
+area = "02-grammar"
+summary = "Expressions, blocks and prefix operators nest at most 64 levels: the parser recurses on its caller's stack. Lyric 5's LYR-PAR0045."
+
+[LYS-PAR0053]
+title = "a visibility word where none belongs"
+severity = "error"
+area = "02-grammar"
+summary = "`pub`, `internal` and `private` stand before a declaration only. Lyric 5's LYR-PAR0053."
+
+[LYS-PAR0059]
+title = "comparisons or equalities chained"
+severity = "error"
+area = "02-grammar"
+summary = "`a < b < c` is refused rather than read left to right: write each comparison on its own and join them with `&&`. Lyric 5's LYR-PAR0059."
+
+[LYS-PAR0100]
+title = "a digit beyond its literal's base"
+severity = "error"
+area = "02-grammar"
+summary = "A digit the literal's base does not have: `0b12`, `0o9`."
+
+[LYS-PAR0101]
+title = "a field in an enum"
+severity = "error"
+area = "02-grammar"
+summary = "An enum holds variants and methods (spec 2 D3)."
+
+[LYS-PAR0102]
+title = "an entry of a map literal without ':'"
+severity = "error"
+area = "02-grammar"
+summary = "`[\"a\": 1, \"b\": 2]`: every entry is `key: value` (spec 2 D5)."
+
+# The checker (S2d). Below 0100 a code means what Lyric 5's LYR-SEM code of the same number
+# means; from 0100 on the codes are Lyric-Script's own.
+
+[LYS-SEM0001]
+title = "a value of another type than the place takes"
+severity = "error"
+area = "03-types"
+summary = "An `int` widens where a `float` is taken; nothing else changes its type on its own. Lyric 5's LYR-SEM0001."
+
+[LYS-SEM0002]
+title = "a name that nothing in scope declares"
+severity = "error"
+area = "04-modules"
+summary = "The name is not bound where it is read. Lyric 5's LYR-SEM0002."
+
+[LYS-SEM0003]
+title = "an operator its operands do not provide"
+severity = "error"
+area = "08-expressions"
+summary = "The operator does not take operands of these types; `+` joins two strings and nothing else to a string. Lyric 5's LYR-SEM0003."
+
+[LYS-SEM0004]
+title = "a condition that is not a bool"
+severity = "error"
+area = "07-statements"
+summary = "A condition is a `bool`. Lyric 5's LYR-SEM0004."
+
+[LYS-SEM0006]
+title = "a conversion that does not exist"
+severity = "error"
+area = "08-expressions"
+summary = "`as` converts between `int`, `float` and `char` alone. Lyric 5's LYR-SEM0006."
+
+[LYS-SEM0008]
+title = "this outside a method"
+severity = "error"
+area = "05-interfaces"
+summary = "`this` is a method's receiver. Lyric 5's LYR-SEM0008."
+
+[LYS-SEM0010]
+title = "a binding whose type nothing fixes"
+severity = "error"
+area = "03-types"
+summary = "A binding's value gives no value, or a function's type depends on itself: write the type. Lyric 5's LYR-SEM0010."
+
+[LYS-SEM0011]
+title = "a name in type position that is no type"
+severity = "error"
+area = "03-types"
+summary = "The name names no type. Lyric 5's LYR-SEM0011."
+
+[LYS-SEM0012]
+title = "a member the type does not have"
+severity = "error"
+area = "05-interfaces"
+summary = "The type has no field, method or variant of the name; `Point(1, 2)` is `Point.new(1, 2)` and needs a `static fn new`. Lyric 5's LYR-SEM0012."
+
+[LYS-SEM0014]
+title = "a call with the wrong number of arguments"
+severity = "error"
+area = "08-expressions"
+summary = "The function takes another number of arguments, or one without a default is missing. Lyric 5's LYR-SEM0014."
+
+[LYS-SEM0015]
+title = "a field the type does not declare"
+severity = "error"
+area = "03-types"
+summary = "An initializer names a field the type does not have. Lyric 5's LYR-SEM0015."
+
+[LYS-SEM0016]
+title = "branches whose types do not unify"
+severity = "error"
+area = "08-expressions"
+summary = "The branches of an `if` give values of different types (an `int` beside a `float` widens). Lyric 5's LYR-SEM0016."
+
+[LYS-SEM0017]
+title = "a path of a function that returns no value"
+severity = "error"
+area = "07-statements"
+summary = "A function with a result type can reach its end without a `return`. Lyric 5's LYR-SEM0017."
+
+[LYS-SEM0019]
+title = "a write to something that cannot be written"
+severity = "error"
+area = "07-statements"
+summary = "A `let`, a struct's field, or a class's field that is no `var`. Lyric 5's LYR-SEM0019."
+
+[LYS-SEM0022]
+title = "an expression statement without an effect"
+severity = "error"
+area = "07-statements"
+summary = "Only calls, assignments and loops stand alone; anything else is computed and thrown away. Lyric 5's LYR-SEM0022."
+
+[LYS-SEM0026]
+title = "the wrong number of type arguments"
+severity = "error"
+area = "03-types"
+summary = "`List` takes one, `Map` two, the other types none (generics come with S3). Lyric 5's LYR-SEM0026."
+
+[LYS-SEM0031]
+title = "an enum variant used against its shape"
+severity = "error"
+area = "03-types"
+summary = "An enum's values are its variants, `Color.Red`; it has no initializer. Lyric 5's LYR-SEM0031."
+
+[LYS-SEM0052]
+title = "a type used as a value"
+severity = "error"
+area = "03-types"
+summary = "A type's name stands where a value is expected. Lyric 5's LYR-SEM0052."
+
+[LYS-SEM0055]
+title = "a member that needs a receiver named without one"
+severity = "error"
+area = "05-interfaces"
+summary = "A method is called through its type; it needs a value to be called on. Lyric 5's LYR-SEM0055."
+
+[LYS-SEM0059]
+title = "an equality the type does not support"
+severity = "error"
+area = "08-expressions"
+summary = "`==` and `!=` compare two values of one type. Lyric 5's LYR-SEM0059."
+
+[LYS-SEM0064]
+title = "a type alias that expands to itself"
+severity = "error"
+area = "03-types"
+summary = "An alias names itself through its own expansion. Lyric 5's LYR-SEM0064."
+
+[LYS-SEM0070]
+title = "a field written twice in one initializer"
+severity = "error"
+area = "03-types"
+summary = "An initializer gives a field twice. Lyric 5's LYR-SEM0070."
+
+[LYS-SEM0074]
+title = "a static member called on a value"
+severity = "error"
+area = "05-interfaces"
+summary = "A static function is called through its type. Lyric 5's LYR-SEM0074."
+
+[LYS-SEM0085]
+title = "two functions of one name taking the same number of arguments"
+severity = "error"
+area = "08-expressions"
+summary = "Functions may share a name when they take different numbers of arguments, never otherwise. Lyric 5's LYR-SEM0085."
+
+[LYS-SEM0087]
+title = "a call that no function of the name takes"
+severity = "error"
+area = "08-expressions"
+summary = "No function of the name takes as many arguments as the call gives. Lyric 5's LYR-SEM0087."
+
+[LYS-SEM0106]
+title = "an initializer that omits a field without a default"
+severity = "error"
+area = "03-types"
+summary = "Every field without a default is given; the message names them all. Lyric 5's LYR-SEM0106."
+
+[LYS-SEM0119]
+title = "a named argument that does not fit the parameters"
+severity = "error"
+area = "08-expressions"
+summary = "A name no parameter has, a name given twice, or a positional argument after a named one. Lyric 5's LYR-SEM0119."
+
+[LYS-SEM0121]
+title = "a second member of one name on a type"
+severity = "error"
+area = "03-types"
+summary = "A type has one field, method or variant of each name. Lyric 5's LYR-SEM0121."
+
+[LYS-SEM0147]
+title = "'break' or 'continue' outside a loop"
+severity = "error"
+area = "07-statements"
+summary = "A jump stands in a loop. Lyric 5's LYR-SEM0147."
+
+[LYS-SEM0148]
+title = "a 'break' with a value out of a 'while' or 'for'"
+severity = "error"
+area = "07-statements"
+summary = "Only a `loop` gives a value. Lyric 5's LYR-SEM0148."
+
+[LYS-SEM0149]
+title = "a 'loop' whose breaks give a value only in part"
+severity = "error"
+area = "07-statements"
+summary = "A `loop` gives a value at every break, or at none. Lyric 5's LYR-SEM0149."
+
+[LYS-SEM0176]
+title = "a name bound twice in one scope"
+severity = "error"
+area = "07-statements"
+summary = "A scope binds a name once; an inner scope may bind it again. Lyric 5's LYR-SEM0176."
+
+[LYS-SEM0226]
+title = "a 'return' without the value the function returns"
+severity = "error"
+area = "07-statements"
+summary = "The function has a result type; its `return` gives a value. Lyric 5's LYR-SEM0226."
+
+[LYS-SEM0100]
+title = "a width type of Lyric 5"
+severity = "error"
+area = "03-types"
+summary = "Lyric-Script has one integer type, `int`, and one float type, `float` (spec 3 rule 1)."
+
+[LYS-SEM0101]
+title = "'var' on a struct's field"
+severity = "error"
+area = "03-types"
+summary = "A struct's fields are never written; a class has `var` fields (spec 3 rule 3)."
+
+[LYS-SEM0102]
+title = "'return' outside a function"
+severity = "error"
+area = "07-statements"
+summary = "A script ends at its end, or with `exit(n)` (spec 7 rule 1)."
+
+# What the plan builds later, and the toolchain's own faults.
+
+[LYS-NYI0001]
+title = "a form a later milestone builds"
+severity = "error"
+area = "16-diagnostics"
+summary = "The form is part of Lyric-Script 1.0, and the toolchain does not build it yet; the message names the milestone of the plan. The code leaves the toolchain before 1.0."
+
+[LYS-ICE0002]
+title = "the compiler made faulty bytecode"
+severity = "error"
+area = "17-host"
+summary = "The bytecode the compiler made fails the VM's check of its structure: a fault of the toolchain, not of the script. Worth a report."
+
+[LYS-RT0009]
+title = "a conversion to char of no Unicode scalar value"
+severity = "panic"
+area = "08-expressions"
+summary = "An `int` converted with `as char` is negative, beyond 0x10FFFF, or a surrogate. The code and its meaning are Lyric 5's LYR-RT0009."
+
+[LYS-CLI0004]
+title = "an unknown option"
+severity = "error"
+area = "14-cli"
+summary = "A command is given an option it does not know. The exit code is 2."

@@ -1,0 +1,74 @@
+// Diagnostics as text and as JSON: the place in characters, the line with its span marked, a tab
+// drawn as four spaces, help, and Lyric 5's JSON objects with their escapes.
+import std.test { assertEq };
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.render { SourceLines, jsonString, renderJson, renderSummary, renderText };
+
+fn at(code: string, message: string, start: int, end: int, line: int, column: int, help: ?string): Diagnostic {
+    return Diagnostic {
+        code = code,
+        message = message,
+        start = start,
+        end = end,
+        line = line,
+        column = column,
+        help = help,
+    };
+}
+
+@Test
+fn theTextMarksTheSpanUnderItsLine(): void {
+    let source = "let ratio = 1.5\nlet whole: int = ratio\n";
+    let d = at("LYS-SEM0001", "expected int, found float", 33, 38, 2, 18, null);
+    assertEq(
+        renderText(d, "error", "s.lyrs", SourceLines.of(source)),
+        "error[LYS-SEM0001]: expected int, found float\n --> s.lyrs:2:18\n  |\n2 | let whole: int = ratio\n  |                  ^^^^^\n"
+    );
+}
+
+@Test
+fn aTabIsFourSpacesAndHelpFollows(): void {
+    let source = "\tx = 1\n";
+    let d = at("LYS-SEM0019", "'x' is a let", 1, 2, 1, 2, "declare it with var");
+    assertEq(
+        renderText(d, "error", "s.lyrs", SourceLines.of(source)),
+        "error[LYS-SEM0019]: 'x' is a let\n --> s.lyrs:1:2\n  |\n1 |     x = 1\n  |     ^\n  = help: declare it with var\n"
+    );
+}
+
+@Test
+fn aWideLineNumberWidensTheGutter(): void {
+    let source = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nbad\n";
+    let d = at("LYS-SEM0002", "nothing in scope is named 'bad'", 20, 23, 11, 1, null);
+    assertEq(
+        renderText(d, "error", "s.lyrs", SourceLines.of(source)),
+        "error[LYS-SEM0002]: nothing in scope is named 'bad'\n  --> s.lyrs:11:1\n   |\n11 | bad\n   | ^^^\n"
+    );
+}
+
+@Test
+fn placesCountCharacters(): void {
+    let lines = SourceLines.of("\"ä\" x\ny");
+    assertEq(lines.lineOf(5), 1);
+    assertEq(lines.columnOf(5), 5);
+    assertEq(lines.lineOf(7), 2);
+    assertEq(lines.columnOf(7), 1);
+}
+
+@Test
+fn theJsonFormIsLyric5s(): void {
+    let source = "let x = y\n";
+    let d = at("LYS-SEM0002", "nothing in scope is named 'y'", 8, 9, 1, 9, "declare it first");
+    let json = renderJson(d, "error", "s.lyrs", SourceLines.of(source));
+    assertEq(
+        json,
+        "{\"type\":\"diagnostic\",\"version\":1,\"code\":\"LYS-SEM0002\",\"severity\":\"error\",\"message\":\"nothing in scope is named 'y'\",\"span\":{\"file\":\"s.lyrs\",\"start\":{\"line\":1,\"column\":9,\"offset\":8},\"end\":{\"line\":1,\"column\":10,\"offset\":9}},\"labels\":[],\"notes\":[{\"kind\":\"help\",\"message\":\"declare it first\",\"span\":null}],\"rendered\":\"error[LYS-SEM0002]: nothing in scope is named 'y'\\n --> s.lyrs:1:9\\n  |\\n1 | let x = y\\n  |         ^\\n  = help: declare it first\\n\"}"
+    );
+    assertEq(renderSummary(1, 2), "{\"type\":\"summary\",\"version\":1,\"errors\":1,\"warnings\":2}");
+}
+
+@Test
+fn jsonEscapesWhatItMust(): void {
+    assertEq(jsonString("a\"b\\c\nd\te\u{1}"), "\"a\\\"b\\\\c\\nd\\te\\u0001\"");
+    assertEq(jsonString("größe"), "\"größe\"");
+}

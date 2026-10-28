@@ -26,6 +26,8 @@ pub class TypeDesc :: [Identity] {
     var methods: int[] = [],
     /// The type of the program this descriptor is one of, for `is`; -1 for none.
     var family: int = -1,
+    /// The interfaces the type conforms to, parents included, for `is` against an interface.
+    var ifaces: int[] = [],
 }
 
 /// A compiled function. Its first `paramsS` scalar registers and first `paramsR` reference

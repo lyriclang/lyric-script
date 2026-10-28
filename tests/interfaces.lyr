@@ -100,3 +100,37 @@ fn builtInValuesAndPlainEnumsConformThroughABox(): void {
     let num = "interface Num {\n    fn twice(): int\n}\nextend int :: [Num] {\n    fn twice(): int = this * 2\n}\nfn h(): int {\n    let a: Num = 21\n    let b: Num = 100\n    let c = 7 + 8\n    return a.twice() + b.twice() + c\n}";
     assertEq(value(num, "h"), 257);
 }
+
+let shapes2 = "interface Shape {\n    fn area(): int\n}\nstruct Sq :: [Shape] {\n    side: int\n    fn area(): int = this.side * this.side\n}\nstruct Rect :: [Shape] {\n    w: int\n    h: int\n    fn area(): int = this.w * this.h\n}\n";
+
+@Test
+fn isNarrowsAndTypePatternsBind(): void {
+    // where `s is Sq` holds, `s` is the struct
+    let sides = "fn sides(s: Shape): int {\n    if (s is Sq) {\n        return s.side\n    }\n    return -1\n}\nfn i(): int = sides(Sq { side = 7 }) * 10 + sides(Rect { w = 1, h = 2 })";
+    assertEq(value(shapes2 + sides, "i"), 69);
+    // type patterns over an open interface, with `_` for the rest
+    let kind = "fn kind(s: Shape): int = match (s) {\n    q: Sq => q.side,\n    r: Rect => r.w + r.h,\n    _ => 0,\n}\nfn k(): int = kind(Sq { side = 4 }) * 100 + kind(Rect { w = 2, h = 3 })";
+    assertEq(value(shapes2 + kind, "k"), 405);
+    // `Any` holds everything; `is` takes a box's value out again
+    let any = "fn a(): int {\n    let xs: Any = 41\n    let ys: Any = \"s\"\n    var n = 0\n    if (xs is int) {\n        n = xs + 1\n    }\n    if (ys is string) {\n        n += 100\n    }\n    if (xs is string) {\n        n += 1000\n    }\n    return n\n}";
+    assertEq(value(any, "a"), 142);
+}
+
+@Test
+fn aSealedInterfaceIsCoveredByItsConformers(): void {
+    let sealed = "sealed interface Shape {\n    fn area(): int\n}\nstruct Sq :: [Shape] {\n    side: int\n    fn area(): int = this.side\n}\nstruct Rect :: [Shape] {\n    w: int\n    fn area(): int = this.w\n}\n";
+    assertEq(
+        value(
+            sealed
+                + "fn k(s: Shape): int = match (s) {\n    _: Sq => 1,\n    _: Rect => 2,\n}\nfn kk(): int = k(Sq { side = 1 }) * 10 + k(Rect { w = 1 })",
+            "kk"
+        ),
+        12
+    );
+    assertEq(
+        errs(sealed + "fn k(s: Shape): int = match (s) {\n    _: Sq => 1,\n}"),
+        ["LYS-SEM0050"]
+    );
+    // `is` asks an interface value only
+    assertEq(errs("let n = 3\nprintln(n is int)"), ["LYS-SEM0131"]);
+}

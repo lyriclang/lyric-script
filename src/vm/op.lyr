@@ -83,8 +83,10 @@ pub enum Op :: [Variants, Equatable] {
     IsNil,
     // S3e: a call through a function value.
     CallV,
-    // S3f: a call through an interface value.
+    // S3f: a call through an interface value, and what an interface value holds.
     CallI,
+    IsT,
+    IsI,
 }
 
 /// What an operand of an operation names.
@@ -202,6 +204,8 @@ pub fn info(op: Op): OpInfo {
         .IsNil => OpInfo { mnemonic = "is.nil", operands = [.Scalar, .Ref] },
         .CallV => OpInfo { mnemonic = "call.v", operands = [.ScalarBase, .RefBase] },
         .CallI => OpInfo { mnemonic = "call.i", operands = [.Imm, .ScalarBase, .RefBase] },
+        .IsT => OpInfo { mnemonic = "is.t", operands = [.Scalar, .Ref, .Imm] },
+        .IsI => OpInfo { mnemonic = "is.i", operands = [.Scalar, .Ref, .Imm] },
     };
 }
 

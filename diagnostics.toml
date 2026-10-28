@@ -703,6 +703,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "`extend T { … }` adds to a struct, a class, an enum or a built-in type; an interface is not extended directly. Lyric 5's LYR-SEM0124."
 
+[LYS-SEM0131]
+title = "a type test of what is no interface value"
+severity = "error"
+area = "05-interfaces"
+summary = "`x is T` and a type pattern ask an interface value what it holds; on a value of a known type, and against a type no interface value holds, they are refused. Lyric 5's LYR-SEM0131."
+
 [LYS-SEM0147]
 title = "'break' or 'continue' outside a loop"
 severity = "error"

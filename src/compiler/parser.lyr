@@ -1003,7 +1003,7 @@ class Parser {
             .CaretAssign | .ShlAssign | .ShrAssign | .AndAndAssign | .OrOrAssign => (1, 0),
             .QuestionQuestionAssign => (1, 0),
             .Keyword => if (this.isWord(t, "as")) (27, 28)
-                else if (this.isWord(t, "in")) (11, 12) else (-1, -1),
+                else if (this.isWord(t, "in") || this.isWord(t, "is")) (11, 12) else (-1, -1),
             _ => (-1, -1),
         };
     }
@@ -1021,6 +1021,19 @@ class Parser {
             if (this.isWord(t, "as")) {
                 let ty = try this.parseType();
                 left = Expr.Cast(boxed(left), ty, this.since(first));
+                continue;
+            }
+            // `x is T` stands at the comparisons' level and does not chain
+            if (this.isWord(t, "is")) {
+                let ty = try this.parseType();
+                left = Expr.Is(boxed(left), ty, this.since(first));
+                if (this.power(this.current()).0 == 11) {
+                    throw this.failure(
+                        "LYS-PAR0059",
+                        "comparisons chained: write each on its own and join them with '&&'",
+                        this.current()
+                    );
+                }
                 continue;
             }
             let right = try this.parseBinary(r);
@@ -1728,6 +1741,13 @@ class Parser {
         }
         if (this.at(.Ident)) {
             let name = this.text(first);
+            // `c: Circle`, `_: Circle`: a type pattern
+            if (this.peek(1).kind == .Colon) {
+                this.advance();
+                this.advance();
+                let ty = try this.parseType();
+                return Pattern.Typed(if (name == "_") null else name, ty, this.since(first));
+            }
             if (name == "_") {
                 this.advance();
                 return Pattern.Ignore(this.since(first));

@@ -43,6 +43,10 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
             w.word(m + 1);
         }
         w.word(t.family + 1);
+        w.word(t.ifaces.length());
+        for (i in t.ifaces) {
+            w.word(i);
+        }
     }
     w.word(module.functions.length());
     for (f in module.functions) {
@@ -114,9 +118,16 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
             m -= 1;
         }
         let family = try r.word() - 1;
+        let ifaces = List<int>.new();
+        var k = try r.word();
+        while (k > 0) {
+            ifaces.push(try r.word());
+            k -= 1;
+        }
         let t = TypeDesc { name = tname, scalarFields = scalarFields, refFields = refFields };
         t.methods = methods.toArray();
         t.family = family;
+        t.ifaces = ifaces.toArray();
         types.push(t);
         n -= 1;
     }

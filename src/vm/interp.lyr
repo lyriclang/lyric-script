@@ -608,6 +608,24 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 s[bs + a] = truth(r[br + b] is Nil);
                 pc += 1;
             }
+            // whether an interface value holds a value of the program's type `c`
+            .IsT => {
+                let o = r[br + b];
+                s[bs + a] = truth(o is ScriptObject && o.typeDesc.family == c);
+                pc += 1;
+            }
+            // whether it holds a value of a type that conforms to interface `c`
+            .IsI => {
+                let o = r[br + b];
+                var found = false;
+                if (o is ScriptObject) {
+                    for (x in o.typeDesc.ifaces) {
+                        found = found || x == c;
+                    }
+                }
+                s[bs + a] = truth(found);
+                pc += 1;
+            }
             .CallN => {
                 let x = bs + b;
                 let y = br + c;

@@ -195,6 +195,8 @@ class Checker {
     var mainIndex: int = -1,
     // the interface methods' slots given so far
     var slotCount: int = 0,
+    // `Any`'s entry
+    var anyIndex: int = -1,
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -289,6 +291,13 @@ class Checker {
     // --- declarations ----------------------------------------------------------------------------
 
     mut fn declare(module: Module): void {
+        // `Any`, the empty interface every struct, class, enum and built-in value is (05 §9)
+        this.anyIndex = this.types.length();
+        this.declareTypeName(
+            "Any",
+            TypeKind.Interface,
+            Span { start = 0, end = 0, line = 1, column = 1 }
+        );
         // the names of the types first: fields and signatures may name any of them
         for (item in module.items) {
             match (item) {
@@ -759,6 +768,13 @@ class Checker {
     /// Whether a value of type `t` is a value of interface `ii`: its type conforms, or it is an
     /// interface value of a child.
     mut fn conformsTo(t: Ty, ii: int): bool {
+        // every struct, class, enum and built-in value is an `Any`, an interface value too
+        if (ii == this.anyIndex) {
+            return match (t) {
+                .Int | .Float | .Bool | .Char | .Str | .Named(_) => true,
+                _ => false,
+            };
+        }
         return match (t) {
             .Int | .Float | .Bool | .Char | .Str => {
                 let i = this.builtinOf(t);
@@ -1411,6 +1427,17 @@ class Checker {
                     this.collectFacts(b.value, when, out);
                 }
             }
+            // `x is T`: where it holds, `x` is a `T` (05 §9 rule 4)
+            .IsType(x, _, t) => {
+                if (when) {
+                    typeFact(x.value, t, out);
+                }
+            }
+            .IsIface(x, _, t) => {
+                if (when) {
+                    typeFact(x.value, t, out);
+                }
+            }
             _ => { }
         }
     }
@@ -1827,7 +1854,7 @@ class Checker {
                 }
             }
             .Ignore(_) => { }
-            .Literal(_, at) | .Range(_, _, _, at) | .Variant(_, _, _, at) | .VariantFields(_, _, _, at) | .Fields(_, _, at) | .Or(_, at) => {
+            .Literal(_, at) | .Range(_, _, _, at) | .Variant(_, _, _, at) | .VariantFields(_, _, _, at) | .Fields(_, _, at) | .Or(_, at) | .Typed(_, _, at) => {
                 this.error(
                     "LYS-SEM0098",
                     "a pattern that can fail needs a way out: 'let P = e else { … }', or a 'match'",
@@ -2104,6 +2131,26 @@ class Checker {
                 }
                 Space.Ctor(0, this.fieldSpaces(this.types[i].fields, fields))
             }
+            // a sealed interface's conformer, or a type of an open set none enumerates
+            .Typed(_, written, at) => {
+                let target = this.resolveType(written);
+                match (t) {
+                    .Named(ii) => {
+                        if (this.types[ii].sealed) {
+                            let k = this.entryOf(target);
+                            var c = 0;
+                            for (x in this.conformers(ii)) {
+                                if (x == k) {
+                                    return Space.Ctor(c, []);
+                                }
+                                c += 1;
+                            }
+                        }
+                    }
+                    _ => { }
+                }
+                Space.Lit(f"type@{at.start}")
+            }
             _ => Space.Any,
         };
     }
@@ -2128,7 +2175,9 @@ class Checker {
     mut fn ctorCount(t: Ty): int {
         return match (t) {
             .Named(i) => if (this.types[i].kind == .Enum) this.types[i].variants.length()
-                else if (this.types[i].kind == .Interface) -1 else 1,
+                else if (this.types[i].kind
+                    == .Interface) (if (this.types[i].sealed) this.conformers(i).length() else -1)
+                    else 1,
             .Bool => 2,
             .Optional(_) => 2,
             .Tuple(_) => 1,
@@ -2255,6 +2304,10 @@ class Checker {
                     }
                     .Named(i) => {
                         let info = this.types[i];
+                        if (info.kind == .Interface) {
+                            let all = this.conformers(i);
+                            return if (c < all.length()) "_: " + this.types[all[c]].name else "_";
+                        }
                         if (info.kind != .Enum) {
                             return f"{info.name} {{ … }}";
                         }
@@ -2328,7 +2381,48 @@ class Checker {
             ),
             .Fields(typeName, fields, at) => this.fieldsTest(typeName, fields, src, out, seen, at),
             .Or(alternatives, at) => this.orTest(alternatives, src, out, seen, at),
+            .Typed(name, written, at) => this.typedTest(name, written, src, out, seen, at),
         };
+    }
+
+    /// `c: Circle`: the interface value holds a `Circle`, and `c` is it as one (05 §9 rule 5).
+    mut fn typedTest(
+        name: ?string,
+        written: TypeExpr,
+        src: TExpr,
+        out: List<Bound>,
+        seen: Map<string, bool>,
+        at: Span
+    ): ?TExpr {
+        let inner = this.presentOf(src);
+        if (inner != null) {
+            return presentAnd(src, this.typedTest(name, written, inner, out, seen, at));
+        }
+        let t = typeOf(src);
+        let target = this.resolveType(written);
+        var test: ?TExpr = null;
+        var value = TExpr.Unknown;
+        if (t != .Unknown && !this.isIfaceTy(t)) {
+            this.error(
+                "LYS-SEM0131",
+                f"a type pattern asks an interface value; {this.tyName(t)} is known already",
+                at
+            );
+        } else if (t != .Unknown) {
+            test = this.typeTest(src, target, at);
+            if (test != null) {
+                value = this.heldAs(src, target);
+            }
+        }
+        if (name != null) {
+            if (seen.containsKey(name)) {
+                this.error("LYS-SEM0097", f"'{name}' is bound twice in this pattern", at);
+            } else {
+                seen.insert(name, true);
+                out.push(Bound { name = name, value = value, at = at });
+            }
+        }
+        return test;
     }
 
     /// The names of the patterns bound to values of no known type: after a fault.
@@ -2336,6 +2430,59 @@ class Checker {
         for (p in patterns) {
             this.patternTest(p, TExpr.Unknown, out, seen);
         }
+    }
+
+    /// Whether `t` is an interface's type.
+    mut fn isIfaceTy(t: Ty): bool {
+        return match (t) {
+            .Named(i) => this.types[i].kind == .Interface,
+            _ => false,
+        };
+    }
+
+    /// The test whether interface value `x` holds a `target` (05 §9 rule 2): its type's family,
+    /// or a conformance to an interface; `null` where no interface value holds one.
+    mut fn typeTest(x: TExpr, target: Ty, at: Span): ?TExpr {
+        return match (target) {
+            // every value an interface value holds is an `Any`
+            .Named(i) => if (i == this.anyIndex) TExpr.Bool(true)
+                else if (this.types[i].kind == .Interface) TExpr.IsIface(boxE(x), i, target)
+                    else TExpr.IsType(boxE(x), i, target),
+            .Int | .Float | .Bool | .Char | .Str => TExpr.IsType(
+                boxE(x),
+                this.builtinOf(target),
+                target
+            ),
+            .Unknown => null,
+            _ => {
+                this.error("LYS-SEM0131", f"no interface value holds a {this.tyName(target)}", at);
+                null
+            }
+        };
+    }
+
+    /// The value an interface value holds as a `target`: the reference, or the box's value.
+    mut fn heldAs(x: TExpr, target: Ty): TExpr {
+        return if (this.boxed(target)) TExpr.Unbox(boxE(x), target)
+            else TExpr.Narrow(boxE(x), target);
+    }
+
+    /// The types that conform to interface `ii`, in the order of the program: a sealed
+    /// interface's are all there are (05 §10).
+    mut fn conformers(ii: int): int[] {
+        let out = List<int>.new();
+        var k = 0;
+        for (t in this.types) {
+            var found = false;
+            for (x in t.ifaces) {
+                found = found || x == ii;
+            }
+            if (found && t.kind != .Interface) {
+                out.push(k);
+            }
+            k += 1;
+        }
+        return out.toArray();
     }
 
     /// The value of the optional `src`, where it is one: a pattern of its inner type tests
@@ -3121,6 +3268,22 @@ class Checker {
                 at
             ),
             .Match(x, arms, at) => this.matchOf(x.value, arms, expected, false, at),
+            .Is(x, written, at) => {
+                let v = this.expr(x.value, null);
+                let t = typeOf(v);
+                if (t == .Unknown) {
+                    TExpr.Unknown
+                } else if (!this.isIfaceTy(t)) {
+                    this.error(
+                        "LYS-SEM0131",
+                        f"'is' asks an interface value what it holds; {this.tyName(t)} is known already",
+                        at
+                    );
+                    TExpr.Unknown
+                } else {
+                    this.typeTest(v, this.resolveType(written), at) ?? TExpr.Unknown
+                }
+            }
             .Index(_, _, at) => this.notYet("indexing", "S7 (the core collections)", at),
             .Member(x, name, optional, at) => this.member(x.value, name, optional, at),
             .List(_, at) => this.notYet("a list literal", "S7 (the core collections)", at),
@@ -3221,6 +3384,10 @@ class Checker {
             let declared = this.ctx.locals[local];
             let narrowed = this.narrowedLocal(local);
             if (narrowed != null) {
+                // an interface value narrowed by a type test: the value it holds
+                if (this.isIfaceTy(declared)) {
+                    return this.heldAs(TExpr.Local(local, declared), narrowed);
+                }
                 return TExpr.Narrow(boxE(TExpr.Local(local, declared)), narrowed);
             }
             return TExpr.Local(local, declared);
@@ -3238,6 +3405,9 @@ class Checker {
             let declared = this.globals[global].ty;
             let narrowed = this.narrowedGlobal(global);
             if (narrowed != null) {
+                if (this.isIfaceTy(declared)) {
+                    return this.heldAs(TExpr.Global(global, declared), narrowed);
+                }
                 return TExpr.Narrow(boxE(TExpr.Global(global, declared)), narrowed);
             }
             return TExpr.Global(global, declared);
@@ -5361,6 +5531,15 @@ fn litKey(e: Expr): string {
     };
 }
 
+/// That `x`, a binding, holds a `t` where a type test holds.
+fn typeFact(x: TExpr, t: Ty, out: List<Fact>): void {
+    match (x) {
+        .Local(id, _) => out.push(Fact { isGlobal = false, id = id, ty = t }),
+        .Global(g, _) => out.push(Fact { isGlobal = true, id = g, ty = t }),
+        _ => { }
+    }
+}
+
 /// The built-in type `name` names.
 fn builtinTy(name: string): Ty {
     return match (name) {
@@ -5619,6 +5798,7 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
             found
         }
         .Lambda(_, _, body, _, _) => exprAny(body.value, onStmt, onExpr),
+        .Is(x, _, _) => exprAny(x.value, onStmt, onExpr),
         .VariantInit(_, _, fields, _) => {
             var found = false;
             for (f in fields) {
@@ -5672,6 +5852,7 @@ fn spanOf(e: Expr): Span {
         .Implicit(_, at) => at,
         .VariantInit(_, _, _, at) => at,
         .Match(_, _, at) => at,
+        .Is(_, _, at) => at,
         .Lambda(_, _, _, _, at) => at,
     };
 }

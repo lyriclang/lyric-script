@@ -145,6 +145,7 @@ struct Placement {
                 };
                 d.methods = rows[bi];
                 d.family = bi;
+                d.ifaces = t.ifaces;
                 boxType.push(descs.length());
                 descs.push(d);
             } else {
@@ -182,6 +183,7 @@ struct Placement {
                         };
                         d.methods = rows[ti];
                         d.family = ti;
+                        d.ifaces = t.ifaces;
                         descs.push(d);
                         k += 1;
                     }
@@ -218,6 +220,7 @@ struct Placement {
             };
             d.methods = rows[ti];
             d.family = ti;
+            d.ifaces = t.ifaces;
             descs.push(d);
         }
         // the function values of lambdas, and the boxes of the `var`s they capture
@@ -1048,6 +1051,18 @@ class FnGen {
                 this.to(x.value, v);
                 this.emit(Op.New, dst.r, this.layout.boxType[ti], 0);
                 this.setField(dst.r, Loc { s = 0, r = 0 }, v, t);
+            }
+            .IsType(x, k, _) => {
+                let ref = this.any(x.value).r;
+                if (dst.s >= 0) {
+                    this.emit(Op.IsT, dst.s, ref, k);
+                }
+            }
+            .IsIface(x, k, _) => {
+                let ref = this.any(x.value).r;
+                if (dst.s >= 0) {
+                    this.emit(Op.IsI, dst.s, ref, k);
+                }
             }
             .Unbox(x, t) => {
                 let ref = this.any(x.value).r;

@@ -233,6 +233,7 @@ fn typeOf(e: TExpr): Ty {
         .Upcast(_, t) => t,
         .BoxOf(_, _, t) => t,
         .Unbox(_, t) => t,
+        .IsType(_, _, _) | .IsIface(_, _, _) => Ty.Bool,
         .CallIface(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
@@ -324,6 +325,10 @@ enum TExpr :: [Debug] {
     BoxOf(Box<TExpr>, int, Ty),
     /// The value a box holds.
     Unbox(Box<TExpr>, Ty),
+    /// Whether an interface value holds a value of the program's type `k`; the type tested.
+    IsType(Box<TExpr>, int, Ty),
+    /// Whether it holds a value of a type that conforms to interface `k`.
+    IsIface(Box<TExpr>, int, Ty),
     Unknown,
 }
 

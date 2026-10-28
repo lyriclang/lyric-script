@@ -172,6 +172,7 @@ fn showPattern(p: Pattern): string {
             + showFieldPatterns(fields)
             + "}",
         .Fields(name, fields, _) => name + " {" + showFieldPatterns(fields) + "}",
+        .Typed(name, t, _) => (name ?? "_") + ": " + showType(t),
         .Or(items, _) => {
             let parts = List<string>.new();
             for (x in items) {
@@ -353,6 +354,7 @@ fn showExpr(e: Expr): string {
             "(tuple " + parts.toArray().join(" ") + ")"
         }
         .Implicit(name, _) => "." + name,
+        .Is(x, t, _) => "(is " + showExpr(x.value) + " " + showType(t) + ")",
         .Lambda(params, result, body, implicit, _) => {
             let parts = List<string>.new();
             for (p in params) {

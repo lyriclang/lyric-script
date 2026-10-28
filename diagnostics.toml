@@ -613,6 +613,12 @@ severity = "error"
 area = "09-patterns"
 summary = "A `let` takes apart only what cannot fail; a pattern that tests goes in a `match`. Lyric 5's LYR-SEM0098."
 
+[LYS-SEM0104]
+title = "an if let whose pattern matches every value"
+severity = "warning"
+area = "09-patterns"
+summary = "`if (let P = e)` with a pattern that cannot fail always takes its block: write `let`. Lyric 5's LYR-SEM0104."
+
 [LYS-SEM0106]
 title = "an initializer that omits a field without a default"
 severity = "error"

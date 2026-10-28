@@ -175,11 +175,12 @@ fn showStmt(s: Stmt): string {
             let given = if (value != null) " " + showExpr(value) else "";
             "(" + word + " " + name + typed + given + ")"
         }
-        .Destructure(isVar, pattern, value, _) => "("
+        .Destructure(isVar, pattern, value, otherwise, _) => "("
             + (if (isVar) "var " else "let ")
             + showPattern(pattern)
             + " "
             + showExpr(value)
+            + (if (otherwise != null) " else " + showBlock(otherwise) else "")
             + ")",
         .If(cond, then, otherwise, _) => {
             let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";
@@ -197,12 +198,19 @@ fn showStmt(s: Stmt): string {
         .Continue(_, _) => "(continue)",
         .Return(value, _) => if (value != null) "(return " + showExpr(value) + ")" else "(return)",
         .Block(b, _) => showBlock(b),
-        .IfLet(name, value, then, otherwise, _) => {
+        .IfLet(pattern, value, then, otherwise, _) => {
             let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";
-            "(if-let " + name + " " + showExpr(value) + " " + showBlock(then) + rest + ")"
+            "(if-let "
+                + showPattern(pattern)
+                + " "
+                + showExpr(value)
+                + " "
+                + showBlock(then)
+                + rest
+                + ")"
         }
-        .WhileLet(name, value, body, _, _) => "(while-let "
-            + name
+        .WhileLet(pattern, value, body, _, _) => "(while-let "
+            + showPattern(pattern)
             + " "
             + showExpr(value)
             + " "

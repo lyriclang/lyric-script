@@ -104,6 +104,44 @@ fn tuplesFieldsAndOptionals(): void {
 }
 
 @Test
+fn patternsInIfLetWhileLetAndLetElse(): void {
+    let il = "fn il(s: Shape): int {\n    if (let .Circle(r) = s) {\n        return r\n    } else {\n        return -1\n    }\n}\n";
+    assertEq(
+        value(shape + il + "fn ils(): int = il(Shape.Circle(7)) * 10 + il(Shape.Empty)", "ils"),
+        69
+    );
+    let tree = "enum Tree {\n    Leaf(int)\n    Node(Tree, Tree)\n}\nfn depth(t: Tree): int {\n    var cur = t\n    var n = 0\n    while (let .Node(l, _) = cur) {\n        n += 1\n        cur = l\n    }\n    return n\n}\n";
+    assertEq(
+        value(
+            tree
+                + "fn d(): int = depth(Tree.Node(Tree.Node(Tree.Leaf(1), Tree.Leaf(2)), Tree.Leaf(3)))",
+            "d"
+        ),
+        2
+    );
+    let le = "fn le(s: Shape): int {\n    let .Rect { w, h } = s else {\n        return 0\n    }\n    return w * h\n}\n";
+    assertEq(
+        value(
+            shape + le + "fn les(): int = le(Shape.Rect { w = 2, h = 3 }) + le(Shape.Empty)",
+            "les"
+        ),
+        6
+    );
+    // the `else` leaves on every path; without one the pattern cannot fail
+    assertEq(
+        errs(
+            shape
+                + "fn f(s: Shape): int {\n    let .Circle(r) = s else {\n        println(1)\n    }\n    return r\n}"
+        ),
+        ["LYS-SEM0098"]
+    );
+    assertEq(
+        errs(shape + "fn f(s: Shape): int {\n    let .Circle(r) = s\n    return r\n}"),
+        ["LYS-SEM0098"]
+    );
+}
+
+@Test
 fn aMatchStandsAsAStatement(): void {
     let st = "fn st(s: Shape): int {\n    var n = 0\n    match (s) {\n        .Circle(r) => n = r,\n        .Rect { w, h } => {\n            n = w + h\n        }\n        .Empty => n = -1,\n    }\n    return n\n}\n";
     assertEq(

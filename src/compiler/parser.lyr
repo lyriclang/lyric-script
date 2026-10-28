@@ -626,10 +626,10 @@ class Parser {
         if (this.atWord("while")) {
             this.advance();
             if (this.peek(1).kind == .Keyword && this.isWord(this.peek(1), "let")) {
-                let (name, value) = try this.parseLetCondition("while");
+                let (pattern, value) = try this.parseLetCondition("while");
                 this.skipNewlines();
                 let body = try this.parseBlock();
-                return Stmt.WhileLet(name, value, body, null, this.since(first));
+                return Stmt.WhileLet(pattern, value, body, null, this.since(first));
             }
             let cond = try this.parseCondition("while");
             this.skipNewlines();
@@ -671,12 +671,24 @@ class Parser {
     mut fn parseLet(): Stmt throws SyntaxError {
         let first = this.advance();
         let isVar = this.isWord(first, "var");
-        // `let (a, b) = t`: the tuple taken apart
-        if (this.at(.LParen)) {
-            let pattern = try this.parsePattern();
+        // `let (a, b) = t`, `let .Num(n) = s else { … }`: the value taken apart by a pattern
+        let head = this.current();
+        let pattern = this.at(.LParen)
+            || this.at(.Dot)
+            || (head.kind == .Ident
+                && isTypeName(this.text(head))
+                && (this.peek(1).kind == .Dot || this.peek(1).kind == .LBrace));
+        if (pattern) {
+            let p = try this.parsePattern();
             try this.expect(.Assign, "LYS-PAR0020", "'=' and the value to take apart");
             let value = try this.parseExpr();
-            return Stmt.Destructure(isVar, pattern, value, this.since(first));
+            var otherwise: ?Block = null;
+            if (this.atWord("else")) {
+                this.advance();
+                this.skipNewlines();
+                otherwise = try this.parseBlock();
+            }
+            return Stmt.Destructure(isVar, p, value, otherwise, this.since(first));
         }
         let name = this.current();
         if (name.kind != .Ident) {
@@ -710,31 +722,24 @@ class Parser {
 
     /// `if` as a statement: its bodies are blocks, its `else` a block or another `if`.
     /// `(let name = value)` after `if` or `while`.
-    mut fn parseLetCondition(word: string): (string, Expr) throws SyntaxError {
+    /// `(let P = e)`: a pattern, or a name that takes an optional's value.
+    mut fn parseLetCondition(word: string): (Pattern, Expr) throws SyntaxError {
         try this.expect(.LParen, "LYS-PAR0019", f"'(' after '{word}'");
         this.advance();
-        let name = this.current();
-        if (name.kind != .Ident) {
-            throw this.failure(
-                "LYS-PAR0020",
-                f"a binding without its name: found {this.shown(name)}",
-                name
-            );
-        }
-        this.advance();
-        try this.expect(.Assign, "LYS-PAR0020", "'=' and the optional the binding takes");
+        let pattern = try this.parseOrPattern();
+        try this.expect(.Assign, "LYS-PAR0020", "'=' and the value the pattern takes");
         let value = try this.parseExpr();
         try this.expect(.RParen, "LYS-PAR0008", "')' after the condition");
-        return (this.text(name), value);
+        return (pattern, value);
     }
 
     mut fn parseIf(): Stmt throws SyntaxError {
         let first = this.advance();
-        var letName: ?string = null;
+        var letPattern: ?Pattern = null;
         var cond = Expr.Bool(true, this.spanOf(first));
         if (this.peek(1).kind == .Keyword && this.isWord(this.peek(1), "let")) {
-            let (name, value) = try this.parseLetCondition("if");
-            letName = name;
+            let (pattern, value) = try this.parseLetCondition("if");
+            letPattern = pattern;
             cond = value;
         } else {
             cond = try this.parseCondition("if");
@@ -752,8 +757,8 @@ class Parser {
                 otherwise = boxedStmt(Stmt.Block(b, b.span));
             }
         }
-        if (letName != null) {
-            return Stmt.IfLet(letName, cond, then, otherwise, this.since(first));
+        if (letPattern != null) {
+            return Stmt.IfLet(letPattern, cond, then, otherwise, this.since(first));
         }
         return Stmt.If(cond, then, otherwise, this.since(first));
     }

@@ -1116,7 +1116,13 @@ class Checker {
         return match (s) {
             .Expr(e, at) => this.exprStmt(e, at),
             .Let(isVar, name, written, value, at) => this.letStmt(isVar, name, written, value, at),
-            .Destructure(isVar, pattern, value, at) => this.destructure(isVar, pattern, value, at),
+            .Destructure(isVar, pattern, value, otherwise, at) => this.destructure(
+                isVar,
+                pattern,
+                value,
+                otherwise,
+                at
+            ),
             .If(cond, then, otherwise, at) => {
                 let c = this.condition(cond);
                 let yes = this.factsOf(c, true);
@@ -1152,16 +1158,18 @@ class Checker {
                 this.ctx.unassigned = before;
                 TStmt.While(c, b, at.line)
             }
-            .IfLet(name, value, then, otherwise, at) => this.ifLet(
-                name,
-                value,
-                then,
-                otherwise,
-                at
-            ),
-            .WhileLet(name, value, body, _, at) => {
+            .IfLet(pattern, value, then, otherwise, at) => {
+                match (pattern) {
+                    .Name(name, _) => this.ifLet(name, value, then, otherwise, at),
+                    _ => this.ifLetPattern(pattern, value, then, otherwise, at),
+                }
+            }
+            .WhileLet(pattern, value, body, _, at) => {
                 this.unnarrowWritten([s]);
-                this.whileLet(name, value, body, at)
+                match (pattern) {
+                    .Name(name, _) => this.whileLet(name, value, body, at),
+                    _ => this.whileLetPattern(pattern, value, body, at),
+                }
             }
             .For(name, iterable, body, _, at) => {
                 this.unnarrowWritten([s]);
@@ -1324,7 +1332,16 @@ class Checker {
 
     /// `let (a, b) = v`: `v` held once, each name bound to its element (Lyric 5 §6 rule 4); at
     /// the top of the script's code the names are globals.
-    mut fn destructure(isVar: bool, pattern: Pattern, value: Expr, at: Span): TStmt {
+    mut fn destructure(
+        isVar: bool,
+        pattern: Pattern,
+        value: Expr,
+        otherwise: ?Block,
+        at: Span
+    ): TStmt {
+        if (otherwise != null) {
+            return this.letElse(isVar, pattern, value, otherwise, at);
+        }
         let v = this.expr(value, null);
         let t = typeOf(v);
         let tmp = this.hidden(t, at);
@@ -1367,9 +1384,22 @@ class Checker {
             .Literal(_, at) | .Range(_, _, _, at) | .Variant(_, _, _, at) | .VariantFields(_, _, _, at) | .Fields(_, _, at) | .Or(_, at) => {
                 this.error(
                     "LYS-SEM0098",
-                    "a 'let' takes apart only what cannot fail: test the value with 'match'",
+                    "a pattern that can fail needs a way out: 'let P = e else { … }', or a 'match'",
                     at
                 );
+                // its names are bound all the same, of no known type
+                let bound = List<Bound>.new();
+                this.patternTest(p, TExpr.Unknown, bound, seen);
+                for (b in bound) {
+                    this.bindPattern(
+                        isVar,
+                        Pattern.Name(b.name, b.at),
+                        TExpr.Unknown,
+                        Map<string, bool>.new(),
+                        out,
+                        line
+                    );
+                }
             }
             .Tuple(items, at) => {
                 let t = typeOf(source);
@@ -2215,6 +2245,133 @@ class Checker {
             out.push(Bound { name = b.name, value = value, at = b.at });
         }
         return test;
+    }
+
+    /// `let P = v else { … }`: the names of `P` bound where it matches; else the block runs, and
+    /// it leaves on every path, since after the statement the names are bound (Lyric 5 §9 §1
+    /// rule 5).
+    mut fn letElse(isVar: bool, pattern: Pattern, value: Expr, otherwise: Block, at: Span): TStmt {
+        let v = this.expr(value, null);
+        let t = typeOf(v);
+        let tmp = this.hidden(t, at);
+        let src = TExpr.Local(tmp, t);
+        let bound = List<Bound>.new();
+        let test = this.patternTest(pattern, src, bound, Map<string, bool>.new());
+        let before = this.ctx.unassigned;
+        let miss = this.block(otherwise);
+        if (!leavesAll(miss)) {
+            this.error(
+                "LYS-SEM0098",
+                "the 'else' of a 'let' leaves on every path — return, break, continue or panic — since after it the names are bound",
+                otherwise.span
+            );
+        }
+        this.ctx.unassigned = before;
+        let out = List<TStmt>.new();
+        out.push(TStmt.SetLocal(tmp, v, at.line));
+        if (test != null) {
+            out.push(TStmt.If(TExpr.Unary(UnaryOp.Not, boxE(test), Ty.Bool), miss, [], at.line));
+        }
+        for (b in bound) {
+            let bt = typeOf(b.value);
+            if (this.atTop()) {
+                out.push(
+                    TStmt.SetGlobal(this.declareGlobal(b.name, bt, isVar, b.at), b.value, at.line)
+                );
+            } else {
+                out.push(
+                    TStmt.SetLocal(this.declareLocal(b.name, bt, isVar, b.at), b.value, at.line)
+                );
+            }
+        }
+        return TStmt.Block(out.toArray(), at.line);
+    }
+
+    /// `if (let P = v) { … } else { … }` with a pattern: the block where it matches, its names
+    /// bound there.
+    mut fn ifLetPattern(
+        pattern: Pattern,
+        value: Expr,
+        then: Block,
+        otherwise: ?Box<Stmt>,
+        at: Span
+    ): TStmt {
+        let v = this.expr(value, null);
+        let t = typeOf(v);
+        let tmp = this.hidden(t, at);
+        let src = TExpr.Local(tmp, t);
+        let before = this.ctx.unassigned;
+        this.pushScope();
+        let bound = List<Bound>.new();
+        let test = this.patternTest(pattern, src, bound, Map<string, bool>.new());
+        if (test == null) {
+            this.warn(
+                "LYS-SEM0104",
+                "this pattern matches every value: the 'if' always takes its block",
+                at
+            );
+        }
+        let body = List<TStmt>.new();
+        for (b in bound) {
+            let id = this.declareLocal(b.name, typeOf(b.value), false, b.at);
+            body.push(TStmt.SetLocal(id, b.value, at.line));
+        }
+        for (s in this.block(then)) {
+            body.push(s);
+        }
+        this.popScope();
+        let afterThen = this.ctx.unassigned;
+        this.ctx.unassigned = before;
+        var o: TStmt[] = [];
+        if (otherwise != null) {
+            this.pushScope();
+            o = [this.stmt(otherwise.value)];
+            this.popScope();
+        }
+        this.ctx.unassigned = afterThen.union(this.ctx.unassigned);
+        return TStmt.Block(
+            [
+                TStmt.SetLocal(tmp, v, at.line),
+                TStmt.If(test ?? TExpr.Bool(true), body.toArray(), o, at.line),
+            ],
+            at.line
+        );
+    }
+
+    /// `while (let P = v) { … }` with a pattern: a turn while it matches, `v` again before each.
+    mut fn whileLetPattern(pattern: Pattern, value: Expr, body: Block, at: Span): TStmt {
+        this.pushScope();
+        let v = this.expr(value, null);
+        let t = typeOf(v);
+        let tmp = this.hidden(t, at);
+        let src = TExpr.Local(tmp, t);
+        let bound = List<Bound>.new();
+        let test = this.patternTest(pattern, src, bound, Map<string, bool>.new());
+        let turn = List<TStmt>.new();
+        turn.push(TStmt.SetLocal(tmp, v, at.line));
+        if (test != null) {
+            turn.push(
+                TStmt.If(
+                    TExpr.Unary(UnaryOp.Not, boxE(test), Ty.Bool),
+                    [TStmt.Break(null, at.line)],
+                    [],
+                    at.line
+                )
+            );
+        }
+        for (b in bound) {
+            let id = this.declareLocal(b.name, typeOf(b.value), false, b.at);
+            turn.push(TStmt.SetLocal(id, b.value, at.line));
+        }
+        let before = this.ctx.unassigned;
+        this.ctx.loops.push(LoopCtx { isLoop = false });
+        for (s in this.block(body)) {
+            turn.push(s);
+        }
+        this.ctx.loops.pop();
+        this.popScope();
+        this.ctx.unassigned = before;
+        return TStmt.While(TExpr.Bool(true), turn.toArray(), at.line);
     }
 
     /// Whether a binding here is a global of the script: the outermost scope of its code.
@@ -3949,7 +4106,7 @@ fn stmtSpan(s: Stmt): Span {
     return match (s) {
         .Expr(_, at) => at,
         .Let(_, _, _, _, at) => at,
-        .Destructure(_, _, _, at) => at,
+        .Destructure(_, _, _, _, at) => at,
         .If(_, _, _, at) => at,
         .While(_, _, _, at) => at,
         .For(_, _, _, _, at) => at,
@@ -4269,7 +4426,8 @@ fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
     return match (s) {
         .Expr(e, _) => exprAny(e, onStmt, onExpr),
         .Let(_, _, _, v, _) => v != null && exprAny(v, onStmt, onExpr),
-        .Destructure(_, _, v, _) => exprAny(v, onStmt, onExpr),
+        .Destructure(_, _, v, e, _) => exprAny(v, onStmt, onExpr)
+            || (e != null && blockAny(e, onStmt, onExpr)),
         .If(c, then, o, _) => exprAny(c, onStmt, onExpr)
             || blockAny(then, onStmt, onExpr)
             || (o != null && stmtAny(o.value, onStmt, onExpr)),

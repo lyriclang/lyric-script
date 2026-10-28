@@ -174,8 +174,8 @@ enum Stmt :: [Debug] {
     Expr(Expr, Span),
     /// `let` or, with the flag, `var`: the name, its type if written, its value if given.
     Let(bool, string, ?TypeExpr, ?Expr, Span),
-    /// `let (a, b) = value`, or `var`: the tuple taken apart.
-    Destructure(bool, Pattern, Expr, Span),
+    /// `let P = value`, or `var`, and `let P = value else { … }`: the value taken apart.
+    Destructure(bool, Pattern, Expr, ?Block, Span),
     /// `if` as a statement: the `else` is a block's statement or another `if`, or none.
     If(Expr, Block, ?Box<Stmt>, Span),
     While(Expr, Block, ?string, Span),
@@ -186,9 +186,9 @@ enum Stmt :: [Debug] {
     Return(?Expr, Span),
     Block(Block, Span),
     /// `if (let name = optional) { … }`: the block sees the value where it is there.
-    IfLet(string, Expr, Block, ?Box<Stmt>, Span),
+    IfLet(Pattern, Expr, Block, ?Box<Stmt>, Span),
     /// `while (let name = optional) { … }`: a turn for each value that is there.
-    WhileLet(string, Expr, Block, ?string, Span),
+    WhileLet(Pattern, Expr, Block, ?string, Span),
 }
 
 /// A block: its statements, in order. Where a block gives a value, its last statement does,

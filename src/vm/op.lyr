@@ -62,7 +62,7 @@ pub enum Op :: [Variants, Equatable] {
 }
 
 /// What an operand of an operation names.
-pub enum Operand {
+pub enum Operand :: [Equatable] {
     /// A scalar register of the frame.
     Scalar,
     /// A reference register of the frame.

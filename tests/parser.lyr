@@ -1,0 +1,184 @@
+// The parser: Lyric 5's precedence table with its non-associative comparisons, the core's
+// statements and declarations, line ends as statement ends, initializers by a capital name, and a
+// fault that gives up one statement and not the file.
+import std.collections { List };
+import std.core { StringBuilder, repeatText };
+import std.test { assertEq };
+import lyric_script.compiler.parser { parse };
+import lyric_script.compiler.sexpr { showModule };
+
+fn show(source: string): string {
+    return showModule(parse(source).module);
+}
+
+fn errs(source: string): string[] {
+    let out = List<string>.new();
+    for (e in parse(source).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+@Test
+fn operatorsBindByLyric5sTable(): void {
+    assertEq(show("1 + 2 * 3"), "(+ 1 (* 2 3))");
+    assertEq(show("a - b - c"), "(- (- a b) c)");
+    assertEq(show("a = b = c"), "(= a (= b c))");
+    assertEq(show("a ?? b ?? c"), "(?? a (?? b c))");
+    assertEq(show("a || b && c"), "(|| a (&& b c))");
+    assertEq(show("x as float * 2"), "(* (as x float) 2)");
+    assertEq(show("1..n + 1"), "(.. 1 (+ n 1))");
+    assertEq(show("a in xs && b !in ys"), "(&& (in a xs) (!in b ys))");
+    assertEq(show("x += 1"), "(+= x 1)");
+    assertEq(show("x ??= y"), "(??= x y)");
+    assertEq(show("a < b == c"), "(== (< a b) c)");
+}
+
+@Test
+fn aMinusRightBeforeANumberBelongsToIt(): void {
+    assertEq(show("-1.abs()"), "(call (. -1 abs))");
+    assertEq(show("-x.y"), "(- (. x y))");
+    assertEq(show("a - 1"), "(- a 1)");
+    assertEq(show("let least = -9223372036854775808"), "(let least -9223372036854775808)");
+}
+
+@Test
+fn comparisonsAndRangesDoNotChain(): void {
+    assertEq(errs("let ok = a < b < c"), ["LYS-PAR0059"]);
+    assertEq(errs("let ok = a == b == c"), ["LYS-PAR0059"]);
+    assertEq(errs("let r = 1..2..3"), ["LYS-PAR0005"]);
+    assertEq(errs("let ok = a < b == c"), []);
+}
+
+@Test
+fn callsIndicesAndMembers(): void {
+    assertEq(show("f(1, x: 2)"), "(call f 1 x: 2)");
+    assertEq(show("xs[0].name"), "(. (index xs 0) name)");
+    assertEq(show("a?.b"), "(?. a b)");
+    assertEq(show("p.0"), "(. p 0)");
+    assertEq(show("xs\n    .map(f)"), "(call (. xs map) f)");
+}
+
+@Test
+fn literals(): void {
+    assertEq(show("[1, 2,]"), "[1 2]");
+    assertEq(show("[]"), "[]");
+    assertEq(show("[\"a\": 1, \"b\": 2]"), "[\"a\": 1, \"b\": 2]");
+    assertEq(show("[:]"), "[:]");
+    assertEq(show("\"a\\\"b\""), "\"a\\\"b\"");
+    assertEq(show("'c'"), "'c'");
+    assertEq(show("b\"AB\""), "b[65 66]");
+    assertEq(show("f\"x = {x + 1}!\""), "(f \"x = \" (+ x 1) \"!\")");
+    assertEq(show("f\"{n:>5}\""), "(f n:>5)");
+    assertEq(show("true"), "true");
+    assertEq(show("null"), "null");
+}
+
+@Test
+fn aCapitalNameBeforeABraceIsAnInitializer(): void {
+    assertEq(show("Point { x = 1, y = 2 }"), "(init Point x=1 y=2)");
+    assertEq(show("Point {\n    x = 1\n    y\n}"), "(init Point x=1 y=y)");
+    assertEq(show("Point { }"), "(init Point)");
+    // after any other name the brace is a block's, and trailing blocks come with lambdas (S3)
+    assertEq(errs("run { 7 }"), ["LYS-PAR0001"]);
+}
+
+@Test
+fn ifWhereAValueStands(): void {
+    assertEq(show("let x = if (a) 1 else 2"), "(let x (if a 1 2))");
+    assertEq(
+        show("let y = if (a) {\n    f()\n    1\n} else if (b) 2 else 3"),
+        "(let y (if a {(call f); 1} (if b 2 3)))"
+    );
+    assertEq(errs("let z = if (a) 1"), ["LYS-PAR0036"]);
+}
+
+@Test
+fn statements(): void {
+    assertEq(
+        show("if (a) {\n    f()\n} else if (b) {\n    g()\n} else {\n    h()\n}"),
+        "(if a {(call f)} else (if b {(call g)} else {(call h)}))"
+    );
+    assertEq(show("if (a)\n{\n    f()\n}"), "(if a {(call f)})");
+    assertEq(show("while (i < 10) {\n    i += 1\n}"), "(while (< i 10) {(+= i 1)})");
+    assertEq(show("for (x in 0..10) {\n    println(x)\n}"), "(for x (.. 0 10) {(call println x)})");
+    assertEq(show("loop {\n    break 42\n}"), "(loop {(break 42)})");
+    assertEq(show("var n: int = 0; n = 1"), "(var n: int 0)\n(= n 1)");
+}
+
+@Test
+fn aLineEndEndsAStatementAndASignStartsOne(): void {
+    let source = "let total = price\n    - discount";
+    assertEq(show(source), "(let total price)\n(- discount)");
+    assertEq(parse(source).warnings.length(), 1);
+    assertEq(show("let total = price -\n    discount"), "(let total (- price discount))");
+    assertEq(errs("let a = 1 2"), ["LYS-PAR0001"]);
+}
+
+@Test
+fn declarations(): void {
+    assertEq(
+        show("fn add(a: int, b: int = 1): int {\n    return a + b\n}"),
+        "(fn add (a: int b: int = 1) : int {(return (+ a b))})"
+    );
+    assertEq(show("fn sq(x: int) = x * x"), "(fn sq (x: int) = (* x x))");
+    assertEq(show("struct Point {\n    x: int\n    y: int\n}"), "(struct Point (x: int) (y: int))");
+    assertEq(
+        show(
+            "class Counter {\n    var n: int = 0,\n    pub fn inc() {\n        this.n += 1\n    }\n}"
+        ),
+        "(class Counter (var n: int = 0) (fn inc () {(+= (. this n) 1)}))"
+    );
+    assertEq(show("enum Color { Red, Green, Blue }"), "(enum Color Red Green Blue)");
+    assertEq(
+        show("enum Color {\n    Red\n    Green\n    fn name(): string = \"c\"\n}"),
+        "(enum Color Red Green (fn name () : string = \"c\"))"
+    );
+    assertEq(show("type Ints = List<int>"), "(type Ints List<int>)");
+    assertEq(errs("pub let x = 1"), ["LYS-PAR0053"]);
+}
+
+@Test
+fn types(): void {
+    assertEq(show("let m: Map<string, List<int>> = [:]"), "(let m: Map<string, List<int>> [:])");
+    assertEq(show("let f: fn(int) -> ?string[] = g"), "(let f: fn(int) -> ?string[] g)");
+    assertEq(show("let t: (int, string) = p"), "(let t: (int, string) p)");
+}
+
+@Test
+fn theFrontmatterIsTheModulesHead(): void {
+    let source = "---\n[dependencies]\ncsv = \"1\"\n---\nprintln(1)\n";
+    assertEq(show(source), r#"(frontmatter "[dependencies]\ncsv = \"1\"")"# + "\n(call println 1)");
+}
+
+@Test
+fn aFaultGivesUpOneStatement(): void {
+    let source = "let = 1\nlet b = 2\nfn f(a int) {\n}\nlet c = 3";
+    assertEq(errs(source), ["LYS-PAR0020", "LYS-PAR0031"]);
+    assertEq(show(source), "(let b 2)\n(let c 3)");
+    assertEq(errs("let s = f\"{}\""), ["LYS-PAR0002"]);
+    assertEq(errs("let s = f\"{a b}\""), ["LYS-PAR0014"]);
+}
+
+fn nested(n: int): string {
+    let deep = StringBuilder.new();
+    var k = 0;
+    while (k < n) {
+        deep.appendChar('(');
+        k += 1;
+    }
+    deep.appendChar('1');
+    k = 0;
+    while (k < n) {
+        deep.appendChar(')');
+        k += 1;
+    }
+    return deep.toString();
+}
+
+@Test
+fn nestingHasABound(): void {
+    assertEq(errs(nested(60)), []);
+    assertEq(errs(nested(300)), ["LYS-PAR0045"]);
+    assertEq(errs("let x = " + repeatText("!", 300) + "true"), ["LYS-PAR0045"]);
+}

@@ -34,6 +34,46 @@ pub fn lex(source: string): Lexed {
     return Lexed { tokens = tokens, errors = s.errors.toArray(), warnings = warnings.toArray() };
 }
 
+/// Reads the tokens of `source[start..end]`, one line — an f-string's hole — where they stand in
+/// `source`: its first character at `line` and `column`.
+pub fn lexRange(source: string, start: int, end: int, line: int, column: int): Lexed {
+    let inner = lex(source[start..end].toString());
+    let tokens = List<Token>.new();
+    for (t in inner.tokens) {
+        tokens.push(
+            Token {
+                kind = t.kind,
+                start = t.start + start,
+                end = t.end + start,
+                line = t.line + line - 1,
+                column = if (t.line == 1) t.column + column - 1 else t.column,
+            }
+        );
+    }
+    return Lexed {
+        tokens = tokens.toArray(),
+        errors = shifted(inner.errors, start, line, column),
+        warnings = shifted(inner.warnings, start, line, column),
+    };
+}
+
+fn shifted(ds: Diagnostic[], start: int, line: int, column: int): Diagnostic[] {
+    let out = List<Diagnostic>.new();
+    for (d in ds) {
+        out.push(
+            Diagnostic {
+                code = d.code,
+                message = d.message,
+                start = d.start + start,
+                end = d.end + start,
+                line = d.line + line - 1,
+                column = if (d.line == 1) d.column + column - 1 else d.column,
+            }
+        );
+    }
+    return out.toArray();
+}
+
 /// The first pass: characters to tokens, every line end among them.
 class Scanner {
     source: string,

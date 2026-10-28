@@ -1,12 +1,12 @@
 //! The `lyric-script` command line (design/v1, 12). It knows `--version`, `help`, `check`, which
-//! grows with the compiler (S2: the lexer first), and, until `run` comes, `asm`, which runs
+//! grows with the compiler (S2: lexer and parser so far), and, until `run` comes, `asm`, which runs
 //! bytecode in its text form.
 import std.fs { readText };
 import std.io { println, eprintln };
 import std.os { args };
 import lyric_script { version };
 import lyric_script.compiler.diagnostic { Diagnostic };
-import lyric_script.compiler.lexer { lex };
+import lyric_script.compiler.parser { parse };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
 import lyric_script.vm.heap { ScriptString };
@@ -65,14 +65,14 @@ fn checkScript(path: string): int {
         eprintln(f"error[LYS-CLI0003]: cannot read '{path}': {e.message()}");
         return 2;
     };
-    let lexed = lex(text);
-    for (d in lexed.errors) {
+    let parsed = parse(text);
+    for (d in parsed.errors) {
         report("error", d, path);
     }
-    for (d in lexed.warnings) {
+    for (d in parsed.warnings) {
         report("warning", d, path);
     }
-    return if (lexed.errors.length() > 0) 1 else 0;
+    return if (parsed.errors.length() > 0) 1 else 0;
 }
 
 fn report(severity: string, d: Diagnostic, path: string): void {

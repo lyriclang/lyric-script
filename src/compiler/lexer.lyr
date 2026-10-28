@@ -86,25 +86,29 @@ class Scanner {
 
     mut fn add(kind: TokenKind, from: int): void {
         let start = this.offset(from);
-        this.tokens.push(Token {
-            kind = kind,
-            start = start,
-            end = this.offset(this.i),
-            line = this.tokenLine,
-            column = start - this.tokenLineStart + 1,
-        });
+        this.tokens.push(
+            Token {
+                kind = kind,
+                start = start,
+                end = this.offset(this.i),
+                line = this.tokenLine,
+                column = start - this.tokenLineStart + 1,
+            }
+        );
     }
 
     mut fn fail(code: string, message: string, from: int): void {
         let start = this.offset(from);
-        this.errors.push(Diagnostic {
-            code = code,
-            message = message,
-            start = start,
-            end = this.offset(this.i),
-            line = this.tokenLine,
-            column = start - this.tokenLineStart + 1,
-        });
+        this.errors.push(
+            Diagnostic {
+                code = code,
+                message = message,
+                start = start,
+                end = this.offset(this.i),
+                line = this.tokenLine,
+                column = start - this.tokenLineStart + 1,
+            }
+        );
     }
 
     /// Steps over a line end inside a token or a comment.
@@ -201,8 +205,7 @@ class Scanner {
     mut fn lineComment(): void {
         let from = this.i;
         let kind: ?TokenKind = if (this.peek(2) == '/' && this.peek(3) != '/') TokenKind.DocComment
-            else if (this.peek(2) == '!') TokenKind.ModuleDoc
-            else null;
+            else if (this.peek(2) == '!') TokenKind.ModuleDoc else null;
         while (!this.atEnd() && this.peek(0) != '\n') {
             this.i += 1;
         }
@@ -289,7 +292,8 @@ class Scanner {
     /// to the number; one followed by no digit, name or second point is refused and read as `1.0`.
     mut fn number(): void {
         let from = this.i;
-        if (this.peek(0) == '0' && (this.peek(1) == 'x' || this.peek(1) == 'b' || this.peek(1) == 'o')) {
+        if (this.peek(0) == '0'
+            && (this.peek(1) == 'x' || this.peek(1) == 'b' || this.peek(1) == 'o')) {
             this.i += 2;
             if (this.peek(0) == '_') {
                 this.fail("LYS-LEX0005", "a digit separator right after a base prefix", from);
@@ -310,12 +314,16 @@ class Scanner {
         var isFloat = false;
         this.digits();
         // `t.0.1` is two fields of a tuple, not `t . 0.1`
-        let afterDot = this.tokens.length() > 0 && this.tokens[this.tokens.length() - 1].kind == .Dot;
+        let afterDot = this.tokens.length() > 0
+            && this.tokens[this.tokens.length() - 1].kind == .Dot;
         if (!afterDot && this.peek(0) == '.' && isDigit(this.peek(1))) {
             isFloat = true;
             this.i += 1;
             this.digits();
-        } else if (!afterDot && this.peek(0) == '.' && this.peek(1) != '.' && !isIdentStart(this.peek(1))) {
+        } else if (!afterDot
+            && this.peek(0) == '.'
+            && this.peek(1) != '.'
+            && !isIdentStart(this.peek(1))) {
             isFloat = true;
             this.i += 1;
             this.fail("LYS-LEX0016", "a float with no digit after its point", from);
@@ -377,7 +385,11 @@ class Scanner {
         while (!this.atEnd() && isIdentPart(this.peek(0))) {
             this.i += 1;
         }
-        this.fail("LYS-LEX0003", "a number with a suffix: Lyric-Script has one integer type and one float type", from);
+        this.fail(
+            "LYS-LEX0003",
+            "a number with a suffix: Lyric-Script has one integer type and one float type",
+            from
+        );
     }
 
     mut fn digits(): void {
@@ -400,7 +412,10 @@ class Scanner {
     /// interpolations whole, strings in them included. Escapes and indentation are the parser's
     /// to read.
     mut fn string(kind: TokenKind, from: int, raw: bool, hashes: int): void {
-        let triple = hashes == 0 && this.peek(0) == '"' && this.peek(1) == '"' && this.peek(2) == '"';
+        let triple = hashes == 0
+            && this.peek(0) == '"'
+            && this.peek(1) == '"'
+            && this.peek(2) == '"';
         this.i += if (triple) 3 else 1;
         if (!this.stringBody(raw, hashes, triple, kind == .FormatStr)) {
             if (kind == .FormatStr) {
@@ -518,50 +533,37 @@ class Scanner {
             ':' => if (n == ':') (.ColonColon, 2) else (.Colon, 1),
             '.' => if (n == '.' && n2 == '=') (.DotDotEq, 3)
                 else if (n == '.' && n2 == '.') (.DotDotDot, 3)
-                else if (n == '.') (.DotDot, 2)
-                else (.Dot, 1),
+                    else if (n == '.') (.DotDot, 2) else (.Dot, 1),
             '?' => if (n == '?' && n2 == '=') (.QuestionQuestionAssign, 3)
                 else if (n == '?') (.QuestionQuestion, 2)
-                else if (n == '.') (.QuestionDot, 2)
-                else (.Question, 1),
+                    else if (n == '.') (.QuestionDot, 2) else (.Question, 1),
             '+' => if (n == '%' && n2 == '=') (.PlusWrapAssign, 3)
                 else if (n == '%') (.PlusWrap, 2)
-                else if (n == '+') (.PlusPlus, 2)
-                else if (n == '=') (.PlusAssign, 2)
-                else (.Plus, 1),
+                    else if (n == '+') (.PlusPlus, 2)
+                        else if (n == '=') (.PlusAssign, 2) else (.Plus, 1),
             '-' => if (n == '%' && n2 == '=') (.MinusWrapAssign, 3)
                 else if (n == '%') (.MinusWrap, 2)
-                else if (n == '-') (.MinusMinus, 2)
-                else if (n == '=') (.MinusAssign, 2)
-                else if (n == '>') (.Arrow, 2)
-                else (.Minus, 1),
+                    else if (n == '-') (.MinusMinus, 2)
+                        else if (n == '=') (.MinusAssign, 2)
+                            else if (n == '>') (.Arrow, 2) else (.Minus, 1),
             '*' => if (n == '%' && n2 == '=') (.StarWrapAssign, 3)
                 else if (n == '%') (.StarWrap, 2)
-                else if (n == '=') (.StarAssign, 2)
-                else (.Star, 1),
+                    else if (n == '=') (.StarAssign, 2) else (.Star, 1),
             '/' => if (n == '=') (.SlashAssign, 2) else (.Slash, 1),
             '%' => if (n == '=') (.PercentAssign, 2) else (.Percent, 1),
             '^' => if (n == '=') (.CaretAssign, 2) else (.Caret, 1),
             '&' => if (n == '&' && n2 == '=') (.AndAndAssign, 3)
-                else if (n == '&') (.AndAnd, 2)
-                else if (n == '=') (.AmpAssign, 2)
-                else (.Amp, 1),
+                else if (n == '&') (.AndAnd, 2) else if (n == '=') (.AmpAssign, 2) else (.Amp, 1),
             '|' => if (n == '|' && n2 == '=') (.OrOrAssign, 3)
-                else if (n == '|') (.OrOr, 2)
-                else if (n == '=') (.PipeAssign, 2)
-                else (.Pipe, 1),
+                else if (n == '|') (.OrOr, 2) else if (n == '=') (.PipeAssign, 2) else (.Pipe, 1),
             '!' => if (n == '=') (.NotEq, 2)
                 else if (n == 'i' && n2 == 'n' && !isIdentPart(this.peek(3))) (.NotIn, 3)
-                else (.Bang, 1),
+                    else (.Bang, 1),
             '=' => if (n == '=') (.EqEq, 2) else if (n == '>') (.FatArrow, 2) else (.Assign, 1),
             '<' => if (n == '<' && n2 == '=') (.ShlAssign, 3)
-                else if (n == '<') (.Shl, 2)
-                else if (n == '=') (.Le, 2)
-                else (.Lt, 1),
+                else if (n == '<') (.Shl, 2) else if (n == '=') (.Le, 2) else (.Lt, 1),
             '>' => if (n == '>' && n2 == '=') (.ShrAssign, 3)
-                else if (n == '>') (.Shr, 2)
-                else if (n == '=') (.Ge, 2)
-                else (.Gt, 1),
+                else if (n == '>') (.Shr, 2) else if (n == '=') (.Ge, 2) else (.Gt, 1),
             _ => (null, 1),
         };
         this.i += width;
@@ -599,7 +601,8 @@ fn applyLineRules(raw: Token[], source: string, warnings: List<Diagnostic>): Tok
         let t = raw[k];
         if (t.kind == .Newline) {
             let depth = brackets.length();
-            let inside = depth > 0 && (brackets[depth - 1] == .LParen || brackets[depth - 1] == .LBracket);
+            let inside = depth > 0
+                && (brackets[depth - 1] == .LParen || brackets[depth - 1] == .LBracket);
             let next = nextAfterLineEnds(raw, k);
             let keep = !inside
                 && out.length() > 0
@@ -610,14 +613,16 @@ fn applyLineRules(raw: Token[], source: string, warnings: List<Diagnostic>): Tok
             if (keep) {
                 out.push(t);
                 if (next.kind == .Plus || next.kind == .Minus) {
-                    warnings.push(Diagnostic {
-                        code = "LYS-LEX0101",
-                        message = "this line starts a new statement with a sign; to go on with the line before, put the operator at its end",
-                        start = next.start,
-                        end = next.end,
-                        line = next.line,
-                        column = next.column,
-                    });
+                    warnings.push(
+                        Diagnostic {
+                            code = "LYS-LEX0101",
+                            message = "this line starts a new statement with a sign; to go on with the line before, put the operator at its end",
+                            start = next.start,
+                            end = next.end,
+                            line = next.line,
+                            column = next.column,
+                        }
+                    );
                 }
             }
         } else if (t.kind != .DocComment && t.kind != .ModuleDoc) {
@@ -628,7 +633,7 @@ fn applyLineRules(raw: Token[], source: string, warnings: List<Diagnostic>): Tok
                         brackets.pop();
                     }
                 }
-                _ => {}
+                _ => { }
             }
             out.push(t);
         }
@@ -640,7 +645,8 @@ fn applyLineRules(raw: Token[], source: string, warnings: List<Diagnostic>): Tok
 /// The first token after the line ends at `k`, comments of documentation skipped.
 fn nextAfterLineEnds(raw: Token[], k: int): Token {
     var j = k;
-    while (j < raw.length() - 1 && (raw[j].kind == .Newline || raw[j].kind == .DocComment || raw[j].kind == .ModuleDoc)) {
+    while (j < raw.length() - 1
+        && (raw[j].kind == .Newline || raw[j].kind == .DocComment || raw[j].kind == .ModuleDoc)) {
         j += 1;
     }
     return raw[j];

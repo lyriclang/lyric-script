@@ -19,13 +19,37 @@ extend Span {
     }
 }
 
-pub enum UnaryOp :: [Equatable, Debug] { Neg, Not, BitNot }
+pub enum UnaryOp :: [Equatable, Debug] {
+    Neg,
+    Not,
+    BitNot,
+}
 
 pub enum BinaryOp :: [Equatable, Debug] {
-    Add, Sub, Mul, Div, Rem, AddWrap, SubWrap, MulWrap,
-    Shl, Shr, BitAnd, BitXor, BitOr,
-    Lt, Le, Gt, Ge, Eq, Ne, In, NotIn,
-    And, Or, Coalesce,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    AddWrap,
+    SubWrap,
+    MulWrap,
+    Shl,
+    Shr,
+    BitAnd,
+    BitXor,
+    BitOr,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+    In,
+    NotIn,
+    And,
+    Or,
+    Coalesce,
 }
 
 /// A written type: a name with its arguments (`int`, `Point`, `Map<string, int>`), `?T`, `T[]`,

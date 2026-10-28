@@ -14,14 +14,16 @@ pub enum Piece :: [Debug] {
 }
 
 fn report(errors: List<Diagnostic>, code: string, message: string, t: Token): void {
-    errors.push(Diagnostic {
-        code = code,
-        message = message,
-        start = t.start,
-        end = t.end,
-        line = t.line,
-        column = t.column,
-    });
+    errors.push(
+        Diagnostic {
+            code = code,
+            message = message,
+            start = t.start,
+            end = t.end,
+            line = t.line,
+            column = t.column,
+        }
+    );
 }
 
 /// An integer literal's value; `negative` where a `-` stands right before it (Lyric 5 §4.1 rule 2).
@@ -88,7 +90,7 @@ pub fn stringValue(text: string, t: Token, errors: List<Diagnostic>): string {
     for (piece in stringPieces(text, t, errors)) {
         match (piece) {
             .Text(s) => out.appendStr(s),
-            .Hole(_, _, _, _, _) => {}
+            .Hole(_, _, _, _, _) => { }
         }
     }
     return out.toString();
@@ -168,7 +170,10 @@ class TextReader {
             hashes += 1;
             this.i += 1;
         }
-        let triple = hashes == 0 && this.at(this.i) == '"' && this.at(this.i + 1) == '"' && this.at(this.i + 2) == '"';
+        let triple = hashes == 0
+            && this.at(this.i) == '"'
+            && this.at(this.i + 1) == '"'
+            && this.at(this.i + 2) == '"';
         let open = if (triple) 3 else 1;
         let from = this.i + open;
         // the closing quotes, where the lexer found them (an unclosed literal is reported there)
@@ -209,7 +214,10 @@ class TextReader {
         var start = from;
         while (start < to && this.at(start) != '\n') {
             if (!isBlank(this.at(start))) {
-                this.fail("LYS-LEX0014", "the text of a multi-line string starts on the line after its opening quotes");
+                this.fail(
+                    "LYS-LEX0014",
+                    "the text of a multi-line string starts on the line after its opening quotes"
+                );
                 return out.toArray();
             }
             start += 1;
@@ -218,7 +226,10 @@ class TextReader {
         var lastBreak = to - 1;
         while (lastBreak >= start && this.at(lastBreak) != '\n') {
             if (!isBlank(this.at(lastBreak))) {
-                this.fail("LYS-LEX0014", "the closing quotes of a multi-line string stand on a line of their own");
+                this.fail(
+                    "LYS-LEX0014",
+                    "the closing quotes of a multi-line string stand on a line of their own"
+                );
                 return out.toArray();
             }
             lastBreak -= 1;
@@ -240,7 +251,14 @@ class TextReader {
 
     /// Reads the characters `from..to` into pieces: escapes unless `raw`, holes when `format`,
     /// `indent` taken off every line.
-    mut fn run(from: int, to: int, raw: bool, format: bool, indent: string, out: List<Piece>): void {
+    mut fn run(
+        from: int,
+        to: int,
+        raw: bool,
+        format: bool,
+        indent: string,
+        out: List<Piece>
+    ): void {
         let text = StringBuilder.new();
         let indentChars = indent.charCount();
         var k = from;
@@ -268,7 +286,10 @@ class TextReader {
                     }
                 } else if (!underIndented) {
                     underIndented = true;
-                    this.fail("LYS-LEX0015", "a line of a multi-line string is indented less than its closing quotes");
+                    this.fail(
+                        "LYS-LEX0015",
+                        "a line of a multi-line string is indented less than its closing quotes"
+                    );
                 }
                 continue;
             }
@@ -353,7 +374,11 @@ class TextReader {
                     break;
                 }
                 depth -= 1;
-            } else if (c == ':' && depth == 0 && colon < 0 && this.at(k + 1) != ':' && this.at(k - 1) != ':') {
+            } else if (c == ':'
+                && depth == 0
+                && colon < 0
+                && this.at(k + 1) != ':'
+                && this.at(k - 1) != ':') {
                 colon = k;
             }
             k += 1;
@@ -374,7 +399,15 @@ class TextReader {
             spec = s.toString();
         }
         let start = this.token.start + this.offset(from);
-        out.push(Piece.Hole(start, this.token.start + this.offset(exprEnd), line, start - lineStartByte + 1, spec));
+        out.push(
+            Piece.Hole(
+                start,
+                this.token.start + this.offset(exprEnd),
+                line,
+                start - lineStartByte + 1,
+                spec
+            )
+        );
         return k + 1;
     }
 
@@ -448,7 +481,10 @@ class TextReader {
     /// `\xNN`: a byte by two hex digits, in a byte string alone.
     mut fn byteEscape(bytes: bool): ?char {
         if (!bytes) {
-            this.fail("LYS-LEX0013", "'\\x' is a byte's escape and stands in a byte string alone; a character is '\\u{…}'");
+            this.fail(
+                "LYS-LEX0013",
+                "'\\x' is a byte's escape and stands in a byte string alone; a character is '\\u{…}'"
+            );
         }
         let hi = this.at(this.i).toDigit(16);
         let lo = this.at(this.i + 1).toDigit(16);
@@ -464,7 +500,9 @@ class TextReader {
     mut fn bytes(): uint8[] {
         let out = List<uint8>.new();
         var k = 2;
-        let to = if (this.cs.length() > 2 && this.at(this.cs.length() - 1) == '"') this.cs.length() - 1 else this.cs.length();
+        let to = if (this.cs.length() > 2 && this.at(this.cs.length() - 1) == '"') this.cs.length()
+            - 1
+            else this.cs.length();
         while (k < to) {
             let c = this.at(k);
             if (c == '\\') {
@@ -476,7 +514,10 @@ class TextReader {
                 k = this.i;
             } else {
                 if ((c as uint32) > 127) {
-                    this.fail("LYS-LEX0012", f"a byte string holds ASCII text: '{c}' is written by its number, '\\xNN'");
+                    this.fail(
+                        "LYS-LEX0012",
+                        f"a byte string holds ASCII text: '{c}' is written by its number, '\\xNN'"
+                    );
                 } else {
                     out.push((c as uint32) as uint8);
                 }
@@ -488,7 +529,9 @@ class TextReader {
 
     /// The one character of `'…'`.
     mut fn character(): char {
-        let to = if (this.cs.length() > 1 && this.at(this.cs.length() - 1) == '\'') this.cs.length() - 1 else this.cs.length();
+        let to = if (this.cs.length() > 1 && this.at(this.cs.length() - 1) == '\'') this.cs.length()
+            - 1
+            else this.cs.length();
         let found = List<char>.new();
         var k = 1;
         while (k < to) {

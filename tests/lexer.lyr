@@ -10,7 +10,7 @@ fn render(source: string): string {
     let out = List<string>.new();
     for (t in lex(source).tokens) {
         match (t.kind) {
-            .Eof => {}
+            .Eof => { }
             .Newline => out.push("NL"),
             .Frontmatter => out.push("FM"),
             _ => out.push(source[t.start..t.end].toString()),
@@ -66,7 +66,10 @@ fn aLineEndAfterATokenThatAsksForMoreIsNone(): void {
 fn aLineEndAfterAClosingAngleIsKept(): void {
     // `>` also closes type arguments
     assertEq(render("let xs: List<int>\nf()"), "let xs : List < int > NL f ( )");
-    assertEq(render("let m: Map<string, List<int>>\nf()"), "let m : Map < string , List < int >> NL f ( )");
+    assertEq(
+        render("let m: Map<string, List<int>>\nf()"),
+        "let m : Map < string , List < int >> NL f ( )"
+    );
 }
 
 @Test
@@ -111,28 +114,31 @@ fn commentsAreNoTokens(): void {
 
 @Test
 fn numbers(): void {
-    assertEq(kinds("1_000 0xff 0b1010 0o17 1.5 2e10 1.5e-3"), [
-        TokenKind.Int,
-        TokenKind.Int,
-        TokenKind.Int,
-        TokenKind.Int,
-        TokenKind.Float,
-        TokenKind.Float,
-        TokenKind.Float,
-    ]);
+    assertEq(
+        kinds("1_000 0xff 0b1010 0o17 1.5 2e10 1.5e-3"),
+        [
+            TokenKind.Int,
+            TokenKind.Int,
+            TokenKind.Int,
+            TokenKind.Int,
+            TokenKind.Float,
+            TokenKind.Float,
+            TokenKind.Float,
+        ]
+    );
     // a point belongs to a number before a digit; after an operand `.5` is a tuple's element
-    assertEq(render("1..5 1..=5 x.0 t.0.1 3.show() x.5"), "1 .. 5 1 ..= 5 x . 0 t . 0 . 1 3 . show ( ) x . 5");
+    assertEq(
+        render("1..5 1..=5 x.0 t.0.1 3.show() x.5"),
+        "1 .. 5 1 ..= 5 x . 0 t . 0 . 1 3 . show ( ) x . 5"
+    );
     assertEq(errorCodes("1..5 1..=5 x.0 t.0.1 3.show() x.5"), []);
     // `1.` and `.5` are refused once and read as floats
     assertEq(render("let a = 1.\nlet b = .5"), "let a = 1. NL let b = .5");
     assertEq(errorCodes("let a = 1.\nlet b = .5"), ["LYS-LEX0016", "LYS-LEX0016"]);
-    assertEq(kinds("1.5e3 f(.5)"), [
-        TokenKind.Float,
-        TokenKind.Ident,
-        TokenKind.LParen,
-        TokenKind.Float,
-        TokenKind.RParen,
-    ]);
+    assertEq(
+        kinds("1.5e3 f(.5)"),
+        [TokenKind.Float, TokenKind.Ident, TokenKind.LParen, TokenKind.Float, TokenKind.RParen]
+    );
 }
 
 @Test
@@ -140,31 +146,35 @@ fn stringsAndCharacters(): void {
     assertEq(render(r#""a\"b" 'c' '\'' x"#), r#""a\"b" 'c' '\'' x"#);
     assertEq(render(r##"r"c\d" r#"say "hi""# x"##), r##"r"c\d" r#"say "hi""# x"##);
     assertEq(render("\"\"\"over\nlines\"\"\" x"), "\"\"\"over\nlines\"\"\" x");
-    assertEq(kinds(r#"f"a {m["k"]} {{" b"\x00" fr"\{x}""#), [
-        TokenKind.FormatStr,
-        TokenKind.ByteStr,
-        TokenKind.FormatStr,
-    ]);
+    assertEq(
+        kinds(r#"f"a {m["k"]} {{" b"\x00" fr"\{x}""#),
+        [TokenKind.FormatStr, TokenKind.ByteStr, TokenKind.FormatStr]
+    );
 }
 
 @Test
 fn keywordsAreLyric5sAndTheContextualWordsAreNames(): void {
-    assertEq(kinds("let fn macro params loop using type throws"), [
-        TokenKind.Keyword,
-        TokenKind.Keyword,
-        TokenKind.Keyword,
-        TokenKind.Ident,
-        TokenKind.Ident,
-        TokenKind.Ident,
-        TokenKind.Ident,
-        TokenKind.Ident,
-    ]);
+    assertEq(
+        kinds("let fn macro params loop using type throws"),
+        [
+            TokenKind.Keyword,
+            TokenKind.Keyword,
+            TokenKind.Keyword,
+            TokenKind.Ident,
+            TokenKind.Ident,
+            TokenKind.Ident,
+            TokenKind.Ident,
+            TokenKind.Ident,
+        ]
+    );
 }
 
 @Test
 fn operatorsTakeTheLongestMatch(): void {
-    assertEq(render("a !in b; !inner; f(xs...); x <<= 1; y ??= z; n +%= 1; a::b"),
-        "a !in b ; ! inner ; f ( xs ... ) ; x <<= 1 ; y ??= z ; n +%= 1 ; a :: b");
+    assertEq(
+        render("a !in b; !inner; f(xs...); x <<= 1; y ??= z; n +%= 1; a::b"),
+        "a !in b ; ! inner ; f ( xs ... ) ; x <<= 1 ; y ??= z ; n +%= 1 ; a :: b"
+    );
     assertEq(kinds("->=>"), [TokenKind.Arrow, TokenKind.FatArrow]);
 }
 

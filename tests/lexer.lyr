@@ -16,7 +16,7 @@ fn render(source: string): string {
             _ => out.push(source[t.start..t.end].toString()),
         }
     }
-    return out.join(" ");
+    return out.toArray().join(" ");
 }
 
 fn kinds(source: string): TokenKind[] {

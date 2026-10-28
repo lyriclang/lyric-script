@@ -5,7 +5,8 @@ import std.fs { readText };
 import std.io { println, eprintln };
 import std.os { args };
 import lyric_script { version };
-import lyric_script.compiler.lexer { LexDiagnostic, lex };
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.lexer { lex };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
 import lyric_script.vm.heap { ScriptString };
@@ -74,7 +75,7 @@ fn checkScript(path: string): int {
     return if (lexed.errors.length() > 0) 1 else 0;
 }
 
-fn report(severity: string, d: LexDiagnostic, path: string): void {
+fn report(severity: string, d: Diagnostic, path: string): void {
     eprintln(f"{severity}[{d.code}]: {d.message}");
     eprintln(f"  --> {path}:{d.line}:{d.column}");
 }

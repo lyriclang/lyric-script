@@ -15,30 +15,21 @@
 //! from 0100 on they are Lyric-Script's own. Escapes, character literals and the lines of a
 //! multi-line string are the parser's to read (0007, 0008, 0013–0015).
 import std.collections { List };
+import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.token { Token, TokenKind, keywords };
-
-/// A fault in the source the lexer found: its code, its message and where it stands.
-pub struct LexDiagnostic {
-    pub code: string,
-    pub message: string,
-    pub start: int,
-    pub end: int,
-    pub line: int,
-    pub column: int,
-}
 
 /// What the lexer made of a source: its tokens, ending in `Eof`, and its errors and warnings.
 pub struct Lexed {
     pub tokens: Token[],
-    pub errors: LexDiagnostic[],
-    pub warnings: LexDiagnostic[],
+    pub errors: Diagnostic[],
+    pub warnings: Diagnostic[],
 }
 
 /// Reads `source` into tokens.
 pub fn lex(source: string): Lexed {
     let s = Scanner.new(source);
     s.scan();
-    let warnings = List<LexDiagnostic>.new();
+    let warnings = List<Diagnostic>.new();
     let tokens = applyLineRules(s.tokens.toArray(), source, warnings);
     return Lexed { tokens = tokens, errors = s.errors.toArray(), warnings = warnings.toArray() };
 }
@@ -49,7 +40,7 @@ class Scanner {
     chars: char[],
     offsets: int[],
     tokens: List<Token>,
-    errors: List<LexDiagnostic>,
+    errors: List<Diagnostic>,
     var i: int = 0,
     var line: int = 1,
     var lineStart: int = 0,
@@ -70,30 +61,30 @@ class Scanner {
             chars = cs.toArray(),
             offsets = os.toArray(),
             tokens = List<Token>.new(),
-            errors = List<LexDiagnostic>.new(),
+            errors = List<Diagnostic>.new(),
         };
     }
 
     /// The byte offset of character `k`; the source's length past its end.
-    fn offset(k: int): int {
+    mut fn offset(k: int): int {
         return if (k < this.offsets.length()) this.offsets[k] else this.source.length();
     }
 
-    fn peek(ahead: int): char {
+    mut fn peek(ahead: int): char {
         let k = this.i + ahead;
         return if (k < this.chars.length()) this.chars[k] else '\0';
     }
 
-    fn atEnd(): bool {
+    mut fn atEnd(): bool {
         return this.i >= this.chars.length();
     }
 
-    fn begin(): void {
+    mut fn begin(): void {
         this.tokenLine = this.line;
         this.tokenLineStart = this.lineStart;
     }
 
-    fn add(kind: TokenKind, from: int): void {
+    mut fn add(kind: TokenKind, from: int): void {
         let start = this.offset(from);
         this.tokens.push(Token {
             kind = kind,
@@ -104,9 +95,9 @@ class Scanner {
         });
     }
 
-    fn fail(code: string, message: string, from: int): void {
+    mut fn fail(code: string, message: string, from: int): void {
         let start = this.offset(from);
-        this.errors.push(LexDiagnostic {
+        this.errors.push(Diagnostic {
             code = code,
             message = message,
             start = start,
@@ -117,13 +108,13 @@ class Scanner {
     }
 
     /// Steps over a line end inside a token or a comment.
-    fn nextLine(): void {
+    mut fn nextLine(): void {
         this.i += 1;
         this.line += 1;
         this.lineStart = this.offset(this.i);
     }
 
-    fn scan(): void {
+    mut fn scan(): void {
         // a byte order mark is no part of the source
         if (this.peek(0) == '\u{feff}') {
             this.i += 1;
@@ -162,7 +153,7 @@ class Scanner {
     }
 
     /// `#!` on the first line, then an optional frontmatter block between two `---` lines.
-    fn shebangAndFrontmatter(): void {
+    mut fn shebangAndFrontmatter(): void {
         if (this.peek(0) == '#' && this.peek(1) == '!') {
             this.skipLine();
         }
@@ -184,7 +175,7 @@ class Scanner {
     }
 
     /// Whether the line at the current position is exactly `text`, trailing blanks aside.
-    fn lineIs(text: string): bool {
+    mut fn lineIs(text: string): bool {
         var k = 0;
         for (c in text.chars()) {
             if (this.peek(k) != c) {
@@ -198,7 +189,7 @@ class Scanner {
         return this.peek(k) == '\n' || this.i + k >= this.chars.length();
     }
 
-    fn skipLine(): void {
+    mut fn skipLine(): void {
         while (!this.atEnd() && this.peek(0) != '\n') {
             this.i += 1;
         }
@@ -207,7 +198,7 @@ class Scanner {
         }
     }
 
-    fn lineComment(): void {
+    mut fn lineComment(): void {
         let from = this.i;
         let kind: ?TokenKind = if (this.peek(2) == '/' && this.peek(3) != '/') TokenKind.DocComment
             else if (this.peek(2) == '!') TokenKind.ModuleDoc
@@ -221,7 +212,7 @@ class Scanner {
     }
 
     /// `/* … */`, nested.
-    fn blockComment(): void {
+    mut fn blockComment(): void {
         let from = this.i;
         var depth = 0;
         while (!this.atEnd()) {
@@ -243,7 +234,7 @@ class Scanner {
         this.fail("LYS-LEX0002", "the block comment is not closed", from);
     }
 
-    fn word(): void {
+    mut fn word(): void {
         let from = this.i;
         // a prefix glued to a string: `f"…"`, `fr"…"`, `r"…"`, `r#"…"#`, `b"…"`
         let c = this.peek(0);
@@ -296,7 +287,7 @@ class Scanner {
     /// Decimal, `0x`, `0b`, `0o` integers with `_`; floats with a fraction or an exponent.
     /// `1..5` is an integer and a range, `3.show()` a call: a point followed by a digit belongs
     /// to the number; one followed by no digit, name or second point is refused and read as `1.0`.
-    fn number(): void {
+    mut fn number(): void {
         let from = this.i;
         if (this.peek(0) == '0' && (this.peek(1) == 'x' || this.peek(1) == 'b' || this.peek(1) == 'o')) {
             this.i += 2;
@@ -335,7 +326,7 @@ class Scanner {
     }
 
     /// `.5` where an operand begins: refused and read as `0.5`.
-    fn pointFloat(): void {
+    mut fn pointFloat(): void {
         let from = this.i;
         this.i += 1;
         this.digits();
@@ -346,7 +337,7 @@ class Scanner {
     }
 
     /// Whether the last token ends an operand: then `.5` names a tuple's element.
-    fn afterOperand(): bool {
+    mut fn afterOperand(): bool {
         let n = this.tokens.length();
         if (n == 0) {
             return false;
@@ -364,7 +355,7 @@ class Scanner {
     }
 
     /// An exponent, if one follows: `e` or `E`, a sign, digits.
-    fn exponent(from: int): void {
+    mut fn exponent(from: int): void {
         this.wasExponent = false;
         if (this.peek(0) == 'e' || this.peek(0) == 'E') {
             let sign = if (this.peek(1) == '+' || this.peek(1) == '-') 1 else 0;
@@ -379,7 +370,7 @@ class Scanner {
     }
 
     /// A word glued to a number: Lyric 5's width suffix (`1u8`), which Lyric-Script has not.
-    fn suffix(from: int): void {
+    mut fn suffix(from: int): void {
         if (!isIdentStart(this.peek(0))) {
             return;
         }
@@ -389,14 +380,14 @@ class Scanner {
         this.fail("LYS-LEX0003", "a number with a suffix: Lyric-Script has one integer type and one float type", from);
     }
 
-    fn digits(): void {
+    mut fn digits(): void {
         while (!this.atEnd() && (isDigit(this.peek(0)) || this.peek(0) == '_')) {
             this.i += 1;
         }
     }
 
     /// After `r`: `#`s, then a quote.
-    fn hashesThenQuote(): bool {
+    mut fn hashesThenQuote(): bool {
         var k = 1;
         while (this.peek(k) == '#') {
             k += 1;
@@ -408,7 +399,7 @@ class Scanner {
     /// followed by `hashes` times `#`; `"""…"""` spans lines; a format string skips its
     /// interpolations whole, strings in them included. Escapes and indentation are the parser's
     /// to read.
-    fn string(kind: TokenKind, from: int, raw: bool, hashes: int): void {
+    mut fn string(kind: TokenKind, from: int, raw: bool, hashes: int): void {
         let triple = hashes == 0 && this.peek(0) == '"' && this.peek(1) == '"' && this.peek(2) == '"';
         this.i += if (triple) 3 else 1;
         if (!this.stringBody(raw, hashes, triple, kind == .FormatStr)) {
@@ -422,7 +413,7 @@ class Scanner {
     }
 
     /// Reads past the closing quote; false where the line (or, for `"""`, the source) ends first.
-    fn stringBody(raw: bool, hashes: int, triple: bool, format: bool): bool {
+    mut fn stringBody(raw: bool, hashes: int, triple: bool, format: bool): bool {
         while (!this.atEnd()) {
             let c = this.peek(0);
             if (triple && c == '"' && this.peek(1) == '"' && this.peek(2) == '"') {
@@ -458,7 +449,7 @@ class Scanner {
         return false;
     }
 
-    fn closesWithHashes(hashes: int): bool {
+    mut fn closesWithHashes(hashes: int): bool {
         var k = 1;
         while (k <= hashes) {
             if (this.peek(k) != '#') {
@@ -470,7 +461,7 @@ class Scanner {
     }
 
     /// An interpolation past its `{`, to its `}`, on one line; the strings in it are skipped whole.
-    fn interpolation(): bool {
+    mut fn interpolation(): bool {
         var depth = 1;
         while (!this.atEnd() && this.peek(0) != '\n') {
             let c = this.peek(0);
@@ -491,7 +482,7 @@ class Scanner {
         return false;
     }
 
-    fn charLiteral(): void {
+    mut fn charLiteral(): void {
         let from = this.i;
         this.i += 1;
         while (!this.atEnd() && this.peek(0) != '\'' && this.peek(0) != '\n') {
@@ -508,7 +499,7 @@ class Scanner {
         this.add(.Char, from);
     }
 
-    fn operator(): void {
+    mut fn operator(): void {
         let from = this.i;
         let c = this.peek(0);
         let n = this.peek(1);
@@ -600,7 +591,7 @@ fn isIdentPart(c: char): bool {
 
 /// The second pass: the line ends that end statements, and the warnings of rule 4. Comments of
 /// documentation leave the stream here; the parser reads no comment.
-fn applyLineRules(raw: Token[], source: string, warnings: List<LexDiagnostic>): Token[] {
+fn applyLineRules(raw: Token[], source: string, warnings: List<Diagnostic>): Token[] {
     let out = List<Token>.new();
     let brackets = List<TokenKind>.new();
     var k = 0;
@@ -619,7 +610,7 @@ fn applyLineRules(raw: Token[], source: string, warnings: List<LexDiagnostic>): 
             if (keep) {
                 out.push(t);
                 if (next.kind == .Plus || next.kind == .Minus) {
-                    warnings.push(LexDiagnostic {
+                    warnings.push(Diagnostic {
                         code = "LYS-LEX0101",
                         message = "this line starts a new statement with a sign; to go on with the line before, put the operator at its end",
                         start = next.start,

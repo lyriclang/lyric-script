@@ -384,3 +384,11 @@ Member und gehen mit dem Deskriptor nach **S3i**; S3h nimmt:
   alles außer den Skalaren und Strings (Display mit den Prelude-Interfaces, S7).
 - *h3 `with`* (Lyric 5 03 §2.5): Kopie eines Structs mit ersetzten Feldern, alte Werte rechts,
   Pfade `with { to.x = 9 }`; auf Klassen und Tupeln `LYS-SEM0116`.
+
+**S3h, Ergebnis.** h1–h3 wie präzisiert. Ein Struct ist in Script geteilt und unveränderlich,
+`with` baut deshalb jeden Struct neu, den ein Pfad berührt (ein Objekt je Struct, nicht je
+Feld); ein Pfad nach dem Ersetzen seines ganzen Feldes ändert den neuen Wert, wie Lyric 5s
+Speicherungen in die Kopie. Ziel zuerst, dann die Werte in Schreibreihenfolge. Die Druckform
+eines Interface-Werts (`<I>`) und eines Funktionswerts (`<fn>`) ist ein Platzhalter bis zum
+Deskriptor (**S3i**). Der Bytecode-Cache verdeckte eine Kontrolle (gleiche Version, anderer
+Compiler) — offener Punkt P11. 158 Tests, 92 Konformanzfälle.

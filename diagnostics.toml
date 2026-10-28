@@ -344,7 +344,7 @@ summary = "`type Name = T`. Lyric 5's LYR-PAR0028."
 title = "fields without ',' or a line end between them"
 severity = "error"
 area = "02-grammar"
-summary = "The fields of a struct, a class or an initializer end at `,` or at a line end. Lyric 5's LYR-PAR0029."
+summary = "The fields of a struct, a class, an initializer or a `with` end at `,` or at a line end. Lyric 5's LYR-PAR0029."
 
 [LYS-PAR0031]
 title = "a parameter or field without ':' before its type"
@@ -374,7 +374,7 @@ summary = "Where an `if` gives a value, both branches give one: the `else` is re
 title = "a field in an initializer without '='"
 severity = "error"
 area = "02-grammar"
-summary = "`Point { x = 1 }`, or `Point { x }` for `x = x`. Lyric 5's LYR-PAR0037."
+summary = "`Point { x = 1 }`, or `Point { x }` for `x = x`; a field of `with` always has its `=`. Lyric 5's LYR-PAR0037."
 
 [LYS-PAR0045]
 title = "nesting deeper than the parser carries"
@@ -503,7 +503,7 @@ summary = "The function takes another number of arguments, or one without a defa
 title = "a field the type does not declare"
 severity = "error"
 area = "03-types"
-summary = "An initializer names a field the type does not have. Lyric 5's LYR-SEM0015."
+summary = "An initializer, a field pattern or a `with` names a field the type does not have. Lyric 5's LYR-SEM0015."
 
 [LYS-SEM0016]
 title = "branches whose types do not unify"
@@ -626,10 +626,10 @@ area = "03-types"
 summary = "An alias names itself through its own expansion. Lyric 5's LYR-SEM0064."
 
 [LYS-SEM0070]
-title = "a field written twice in one initializer"
+title = "a field written twice in one initializer or 'with'"
 severity = "error"
 area = "03-types"
-summary = "An initializer gives a field twice. Lyric 5's LYR-SEM0070."
+summary = "An initializer or a `with` gives a field twice. Lyric 5's LYR-SEM0070."
 
 [LYS-SEM0074]
 title = "a static member called on a value"
@@ -696,6 +696,12 @@ title = "`.Name` where no enum is expected"
 severity = "error"
 area = "03-types"
 summary = "`.Red`, `.Num(1)` and `.Rect { … }` name a member of the enum the position expects; where it expects none, name the enum: `Color.Red`. Lyric 5's LYR-SEM0113."
+
+[LYS-SEM0116]
+title = "'with' on something other than a struct"
+severity = "error"
+area = "03-types"
+summary = "The target of `with` is a class, a tuple, an enum or another type that is no struct, or a path among its fields reaches through a field that is no struct. Lyric 5's LYR-SEM0116."
 
 [LYS-SEM0119]
 title = "a named argument that does not fit the parameters"

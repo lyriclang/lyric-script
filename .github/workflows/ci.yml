@@ -117,6 +117,27 @@ jobs:
           [ "$code" -eq 101 ]
           grep -q 'LYS-RT0001' oops.txt
 
+      # The specification's suite at the commit spec.pin names (the `script` branch of
+      # lyric-spec): every case whose `since:` the toolchain has reached.
+      - name: Read the spec pin
+        id: spec
+        shell: bash
+        run: echo "sha=$(tr -d '[:space:]' < spec.pin)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the specification at the pin
+        uses: actions/checkout@v7
+        with:
+          repository: lyriclang/lyric-spec
+          ref: ${{ steps.spec.outputs.sha }}
+          path: lyric-spec
+
+      - name: Conformance
+        shell: bash
+        run: |
+          bin=$(find out -maxdepth 3 -type f \( -name 'lyric-script' -o -name 'lyric-script.exe' \) | head -1)
+          py=python3; command -v python3 > /dev/null || py=python
+          "$py" lyric-spec/tools/run_conformance.py --lyric-script "$bin" --toolchain-version 1.0.0
+
       - name: Build the C ABI library
         shell: bash
         run: |

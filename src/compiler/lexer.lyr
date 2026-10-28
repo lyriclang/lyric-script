@@ -10,6 +10,10 @@
 //!    `]`, an operator that is only binary — is no token;
 //! 4. `+` or `-` at the start of a line starts a new statement, with a warning;
 //! 5. several line ends are one, a line end after `;` is none, and none stands first.
+//!
+//! The codes below `LYS-LEX0100` mean what Lyric 5's `LYR-LEX` code of the same number means;
+//! from 0100 on they are Lyric-Script's own. Escapes, character literals and the lines of a
+//! multi-line string are the parser's to read (0007, 0008, 0013–0015).
 import std.collections { List };
 import lyric_script.compiler.token { Token, TokenKind, keywords };
 
@@ -52,6 +56,7 @@ class Scanner {
     // where the token being read starts: a token over lines has the line it starts on
     var tokenLine: int = 1,
     var tokenLineStart: int = 0,
+    var wasExponent: bool = false,
 
     static fn new(source: string): Scanner {
         let cs = List<char>.new();
@@ -119,6 +124,11 @@ class Scanner {
     }
 
     fn scan(): void {
+        // a byte order mark is no part of the source
+        if (this.peek(0) == '\u{feff}') {
+            this.i += 1;
+            this.lineStart = this.offset(this.i);
+        }
         this.shebangAndFrontmatter();
         while (!this.atEnd()) {
             let c = this.peek(0);
@@ -133,10 +143,12 @@ class Scanner {
                 this.lineComment();
             } else if (c == '/' && this.peek(1) == '*') {
                 this.blockComment();
-            } else if (isIdentStart(c)) {
+            } else if (isIdentStart(c) || c > '\u{7f}') {
                 this.word();
             } else if (isDigit(c)) {
                 this.number();
+            } else if (c == '.' && isDigit(this.peek(1)) && !this.afterOperand()) {
+                this.pointFloat();
             } else if (c == '"') {
                 this.string(.Str, from, false, 0);
             } else if (c == '\'') {
@@ -168,7 +180,7 @@ class Scanner {
             }
             this.skipLine();
         }
-        this.fail("LYS-LEX0006", "the frontmatter has no closing '---' line", from);
+        this.fail("LYS-LEX0100", "the frontmatter has no closing '---' line", from);
     }
 
     /// Whether the line at the current position is exactly `text`, trailing blanks aside.
@@ -228,7 +240,7 @@ class Scanner {
                 this.i += 1;
             }
         }
-        this.fail("LYS-LEX0004", "the block comment has no end", from);
+        this.fail("LYS-LEX0002", "the block comment is not closed", from);
     }
 
     fn word(): void {
@@ -260,10 +272,18 @@ class Scanner {
             this.string(.ByteStr, from, false, 0);
             return;
         }
-        while (!this.atEnd() && isIdentPart(this.peek(0))) {
+        // a word with characters beyond ASCII is refused once, as the name it would be
+        var foreign = false;
+        while (!this.atEnd() && (isIdentPart(this.peek(0)) || this.peek(0) > '\u{7f}')) {
+            foreign = foreign || this.peek(0) > '\u{7f}';
             this.i += 1;
         }
         let text = this.source[this.offset(from)..this.offset(this.i)].toString();
+        if (foreign) {
+            this.fail("LYS-LEX0001", f"a name beyond ASCII: '{text}'", from);
+            this.add(.Ident, from);
+            return;
+        }
         var isKeyword = false;
         for (k in keywords) {
             if (text == k) {
@@ -274,13 +294,23 @@ class Scanner {
     }
 
     /// Decimal, `0x`, `0b`, `0o` integers with `_`; floats with a fraction or an exponent.
-    /// `1..5` is an integer and a range: a dot only belongs to a number before a digit.
+    /// `1..5` is an integer and a range, `3.show()` a call: a point followed by a digit belongs
+    /// to the number; one followed by no digit, name or second point is refused and read as `1.0`.
     fn number(): void {
         let from = this.i;
         if (this.peek(0) == '0' && (this.peek(1) == 'x' || this.peek(1) == 'b' || this.peek(1) == 'o')) {
             this.i += 2;
+            if (this.peek(0) == '_') {
+                this.fail("LYS-LEX0005", "a digit separator right after a base prefix", from);
+            }
+            // digits beyond the base are the parser's to name
+            var any = false;
             while (!this.atEnd() && (isHexDigit(this.peek(0)) || this.peek(0) == '_')) {
+                any = any || this.peek(0) != '_';
                 this.i += 1;
+            }
+            if (!any) {
+                this.fail("LYS-LEX0004", "a base prefix with no digits after it", from);
             }
             this.suffix(from);
             this.add(.Int, from);
@@ -294,17 +324,58 @@ class Scanner {
             isFloat = true;
             this.i += 1;
             this.digits();
+        } else if (!afterDot && this.peek(0) == '.' && this.peek(1) != '.' && !isIdentStart(this.peek(1))) {
+            isFloat = true;
+            this.i += 1;
+            this.fail("LYS-LEX0016", "a float with no digit after its point", from);
         }
+        this.exponent(from);
+        this.suffix(from);
+        this.add(if (isFloat || this.wasExponent) .Float else .Int, from);
+    }
+
+    /// `.5` where an operand begins: refused and read as `0.5`.
+    fn pointFloat(): void {
+        let from = this.i;
+        this.i += 1;
+        this.digits();
+        this.fail("LYS-LEX0016", "a float with no digit before its point", from);
+        this.exponent(from);
+        this.suffix(from);
+        this.add(.Float, from);
+    }
+
+    /// Whether the last token ends an operand: then `.5` names a tuple's element.
+    fn afterOperand(): bool {
+        let n = this.tokens.length();
+        if (n == 0) {
+            return false;
+        }
+        let t = this.tokens[n - 1];
+        return match (t.kind) {
+            .Ident | .Int | .Float | .Char | .Str | .FormatStr | .ByteStr => true,
+            .RParen | .RBracket | .RBrace => true,
+            .Keyword => {
+                let w = this.source[t.start..t.end].toString();
+                w == "this" || w == "true" || w == "false" || w == "null"
+            }
+            _ => false,
+        };
+    }
+
+    /// An exponent, if one follows: `e` or `E`, a sign, digits.
+    fn exponent(from: int): void {
+        this.wasExponent = false;
         if (this.peek(0) == 'e' || this.peek(0) == 'E') {
             let sign = if (this.peek(1) == '+' || this.peek(1) == '-') 1 else 0;
-            if (isDigit(this.peek(1 + sign))) {
-                isFloat = true;
-                this.i += 1 + sign;
+            this.wasExponent = true;
+            this.i += 1 + sign;
+            if (isDigit(this.peek(0))) {
                 this.digits();
+            } else {
+                this.fail("LYS-LEX0006", "an exponent with no digits", from);
             }
         }
-        this.suffix(from);
-        this.add(if (isFloat) .Float else .Int, from);
     }
 
     /// A word glued to a number: Lyric 5's width suffix (`1u8`), which Lyric-Script has not.
@@ -315,7 +386,7 @@ class Scanner {
         while (!this.atEnd() && isIdentPart(this.peek(0))) {
             this.i += 1;
         }
-        this.fail("LYS-LEX0005", "a number with a suffix: Lyric-Script has one integer type and one float type", from);
+        this.fail("LYS-LEX0003", "a number with a suffix: Lyric-Script has one integer type and one float type", from);
     }
 
     fn digits(): void {
@@ -341,7 +412,11 @@ class Scanner {
         let triple = hashes == 0 && this.peek(0) == '"' && this.peek(1) == '"' && this.peek(2) == '"';
         this.i += if (triple) 3 else 1;
         if (!this.stringBody(raw, hashes, triple, kind == .FormatStr)) {
-            this.fail("LYS-LEX0002", "the string has no closing quote", from);
+            if (kind == .FormatStr) {
+                this.fail("LYS-LEX0011", "the f-string is not closed", from);
+            } else {
+                this.fail("LYS-LEX0009", "the string is not closed", from);
+            }
         }
         this.add(kind, from);
     }
@@ -428,7 +503,7 @@ class Scanner {
         if (this.peek(0) == '\'') {
             this.i += 1;
         } else {
-            this.fail("LYS-LEX0003", "the character literal has no closing quote", from);
+            this.fail("LYS-LEX0010", "the character literal is not closed", from);
         }
         this.add(.Char, from);
     }

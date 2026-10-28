@@ -103,12 +103,13 @@ pub struct Token {
     pub column: int,
 }
 
-/// The reserved words: Lyric 5's 41, including those Lyric-Script does not use, so that a name
-/// means the same in both languages (09 Y1). `loop`, `using`, `type`, `throws` and the like are
-/// contextual, as in Lyric 5: names everywhere else.
+/// The reserved words: Lyric 5's 39 (its §1.3), including those Lyric-Script does not use, so
+/// that a name means the same in both languages (09 Y1). `loop`, `using`, `type`, `throws` and the
+/// other contextual words are names everywhere but at their place, `module` and `params` names
+/// everywhere.
 pub let keywords: string[] = [
-    "module", "import", "as", "pub", "private", "internal", "struct", "class", "enum",
-    "interface", "extend", "fn", "mut", "static", "let", "var", "params", "if", "else", "while",
-    "do", "for", "in", "is", "match", "break", "continue", "return", "yield", "defer", "try",
-    "catch", "throw", "true", "false", "null", "this", "comptime", "inline", "quote", "macro",
+    "import", "as", "pub", "internal", "private", "static", "struct", "class", "enum", "interface",
+    "extend", "fn", "mut", "let", "var", "if", "else", "while", "do", "for", "in", "is", "match",
+    "break", "continue", "return", "yield", "defer", "try", "catch", "throw", "true", "false",
+    "null", "this", "comptime", "inline", "quote", "macro",
 ];

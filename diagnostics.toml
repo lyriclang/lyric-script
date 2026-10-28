@@ -78,3 +78,109 @@ title = "a file that cannot be read"
 severity = "error"
 area = "14-cli"
 summary = "Reported when a command cannot read the file it is given. The exit code is 2."
+
+# The lexer (S2b). Below 0100 a code means what Lyric 5's LYR-LEX code of the same number means;
+# from 0100 on the codes are Lyric-Script's own.
+
+[LYS-LEX0001]
+title = "a character that starts no token, or a name beyond ASCII"
+severity = "error"
+area = "01-lexical"
+summary = "The source holds a character that begins no token (`$`, a backtick, a control character), or a word holding characters beyond ASCII. A word beyond ASCII is refused once and read as the name it would be. Lyric 5's LYR-LEX0001."
+explanation = '''
+A name is written in ASCII: letters, digits and `_`, not starting with a digit. Characters beyond
+ASCII may stand in strings, characters and comments, never in a name. Spell the name in ASCII, or
+put the character into a string or a comment.
+'''
+example = '''
+$ lyric-script check sizes.lyrs
+error[LYS-LEX0001]: a name beyond ASCII: 'größe'
+  --> sizes.lyrs:1:5
+'''
+
+[LYS-LEX0002]
+title = "a block comment that is not closed"
+severity = "error"
+area = "01-lexical"
+summary = "A `/*` has no matching `*/` before the end of the file; block comments nest, so each `/*` needs its own. Lyric 5's LYR-LEX0002."
+
+[LYS-LEX0003]
+title = "a number with a suffix"
+severity = "error"
+area = "01-lexical"
+summary = "Letters follow a number: `1u8`, `2.0f32`. Lyric 5 gives a literal its width by a suffix; Lyric-Script has one integer type and one float type and no suffix (design/v1 03 K3). The meaning is Lyric 5's LYR-LEX0003, with every suffix refused."
+
+[LYS-LEX0004]
+title = "a base prefix with no digits after it"
+severity = "error"
+area = "01-lexical"
+summary = "`0x`, `0o` or `0b` stands without a digit after it. Lyric 5's LYR-LEX0004."
+
+[LYS-LEX0005]
+title = "a digit separator right after a base prefix"
+severity = "error"
+area = "01-lexical"
+summary = "`_` follows `0x`, `0o` or `0b` directly: `0x_ff`. A separator stands among and after the digits, not before the first. Lyric 5's LYR-LEX0005."
+
+[LYS-LEX0006]
+title = "an exponent with no digits"
+severity = "error"
+area = "01-lexical"
+summary = "An `e` or `E` after a number, with an optional sign, has no digits after it: `1e`, `2e+`. Lyric 5's LYR-LEX0006."
+
+[LYS-LEX0009]
+title = "a string literal that is not closed"
+severity = "error"
+area = "01-lexical"
+summary = "A string has no closing quote on its line, or a `\"\"\"` string none before the end of the file. Lyric 5's LYR-LEX0009."
+
+[LYS-LEX0010]
+title = "a character literal that is not closed"
+severity = "error"
+area = "01-lexical"
+summary = "A `'` opens a character literal that has no closing `'` on its line. Lyric 5's LYR-LEX0010."
+
+[LYS-LEX0011]
+title = "an f-string that is not closed"
+severity = "error"
+area = "01-lexical"
+summary = "An `f\"…\"` has no closing quote on its line, or one of its holes no closing `}`. A hole stays on one line. Lyric 5's LYR-LEX0011."
+
+[LYS-LEX0016]
+title = "a float literal without digits on one side of its point"
+severity = "error"
+area = "01-lexical"
+summary = "`1.` or `.5`: a digit stands on both sides of a float's point. The literal is refused once and read as the float it means. `3.show()` is a call and `1..3` a range; after an operand `.5` names a tuple's element. Lyric 5's LYR-LEX0016."
+
+[LYS-LEX0100]
+title = "a frontmatter block that is not closed"
+severity = "error"
+area = "01-lexical"
+summary = "A script opens with a `---` line (after an optional `#!` line) and no second `---` line closes the block. The frontmatter holds the script's dependencies in TOML (design/v1 09 Hd)."
+example = '''
+#!/usr/bin/env lyric-script
+---
+[dependencies]
+csv = "1"
+---
+println("hello")
+'''
+
+[LYS-LEX0101]
+title = "a line that starts with a sign"
+severity = "warning"
+area = "01-lexical"
+summary = "A line starts with `+` or `-` after a line that ended a statement. The line end ends the statement, so the sign starts a new one — rarely what was meant. To go on with the line before, put the operator at its end (design/v1 09 NL rule 4)."
+explanation = '''
+A line end ends a statement unless the line asks for more (it ends in an operator, `=`, `,`, `.`,
+an opening bracket …) or the next line cannot start one (it begins with `.`, `else`, `)` …).
+`+` and `-` can start a statement, as signs, so a line beginning with them is read as a new one:
+
+    let total = price
+        - discount        // a statement of its own: -discount, thrown away
+
+Write the operator at the end of the line instead:
+
+    let total = price -
+        discount
+'''

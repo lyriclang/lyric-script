@@ -161,3 +161,28 @@ Diagnosekatalog.
 | **S1g Kommandozeile** | `lyric-script asm <datei.lyrsasm>` — führt Bytecode-Text aus; in `help` als vorläufig markiert, entfällt mit `run` in S2 | Ende-zu-Ende in der CI |
 | **S1h Messpunkt 1** | Mikro-Bench (fib, Schleifen, Felder in Objekten) in `bench/`, dieselben Programme für 4.6 (aus `v4.6-final`), dieselbe Maschine, Netzbetrieb; Ratchet ≥ 5×; **Entscheidung V3** (A4 = lyric#610 behoben? sonst Referenz-Moves messen, ggf. `Obj`) | Bericht `bench/README.md` mit Erwartung vorab und Kontrolle |
 | **Abschluss** | STATUS, PR, CI grün, Merge, Tag `s1-complete` | handgeschriebener Bytecode läuft in der CI auf allen Tier-1-Zielen |
+
+## S2 — Slices (Plan, Entwurf 2026-10-28)
+
+Ziel aus der Meilensteintabelle: `lyric-script run hello.lyrs` — der Compiler für den Kern der
+Sprache, vom Text bis zum Bytecode der VM aus S1, und **Messpunkt 2** (Start warm/kalt).
+Spec-first: S2 schreibt die Delta-Kapitel 01 (lexikalisch) und 02 (Grammatik) für den Kern und
+bringt den Läufer der Konformanzsuite.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S2a Spec und Suite** | Delta 01/02 für den Kern (Zeilenende-Regel 09 NL, Frontmatter, angenommene Lyric-5-Formen 09 Cmp); Kopfformat der Konformanzfälle (`since`, erwartete Ausgabe, Exit-Code oder Diagnose-Code) und ein Läufer, den die CI gegen `spec.pin` fährt | Läufer mit einem roten und einem grünen Fall |
+| **S2b Lexer** | Token von Lyric 5 (39 reservierte Wörter, kontextuelle, Literale: Ganzzahlen mit `_`/Hex/Bin/Okt, Floats, `char`, Strings, `r"…"`, `"""…"""`, `f"…"`, `b"…"`), Kommentare (`//`, verschachteltes `/* */`, `///`, `//!`), Frontmatter, `#!`; **Zeilenende als Token mit den Fortsetzungsregeln** (09 NL), `+`/`-` am Zeilenanfang mit Warnung | Token-Goldtests; jede Fortsetzungsregel rot und grün |
+| **S2c Parser** | AST des Kerns: Module mit Top-Level-Anweisungen, `fn` (Kotlin-Rückgaberegel), `struct`/`class`/`enum` ohne Payload, `let`/`var`, Zuweisung, `if`/`else` (auch als Ausdruck), `while`, `loop`/`break value`, `for` über Ranges, `return`, Ausdrücke mit der Präzedenztabelle von Lyric 5 (nicht-assoziative Vergleiche), Aufrufe mit benannten Argumenten, Feldzugriff, Struct-Initializer, `Point(1, 2)`; angenommene Lyric-5-Formen; Fehlerbehandlung je Anweisung | Parser-Goldtests; Fehler mit Position |
+| **S2d Namen und Typen (Kern)** | Resolver (Scopes, eine Datei); Typprüfung für `int`, `float`, `bool`, `char`, `string`, Structs (unveränderlich), Klassen (`var`-Felder), Funktionen mit Parametertypen, `int`→`float` an `float`-Stellen und in gemischter Arithmetik (03 Mix), Prelude `print`/`println` | Typfehler mit Codes `LYS-SEM…`; Konformanzfälle |
+| **S2e Codegen** | direkt vom getypten AST zu Bytecode, Register in einem Durchlauf (Lua): Locals fest, Temporäre stapelartig je Datei, Argumente oben auf den lebenden Registern (11, S1d-Aufrufkonvention); Top-Level-Anweisungen als `main` des Einstiegsmoduls (07 Top); `println` über einen **nativen Aufruf** (neuer Opcode `callnative`, Natives-Tabelle der VM) | die Zielprogramme ohne `std`-Breite; Bytecode-Goldtests über den Disassembler |
+| **S2f Diagnosen** | Darstellung wie rustc (Lyric 5 W6): Code, Position, Ausschnitt, `help:`; NDJSON mit `--json`; Katalogeinträge `LYS-LEX…`, `LYS-PAR…`, `LYS-SEM…` | Text- und JSON-Goldtests |
+| **S2g `run`** | `lyric-script run datei.lyrs` und `lyric-script datei.lyrs`; Bytecode-Cache (11 Fmt: Schlüssel Hash(Quelle + Compiler-Version)); Exit-Codes nach 12 | Ende-zu-Ende in der CI |
+| **S2h Messpunkt 2** | Start `hello.lyrs` warm (Cache) und kalt, Ratchets ≤ 10 ms / ≤ 50 ms (11 Perf) | Bericht mit Erwartung vorab |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s2-complete` | `lyric-script run hello.lyrs` in der CI auf allen Tier-1-Zielen |
+
+Offen für S3 und später: Generics, Interfaces, Optionals, Patterns, Fehler, Module.
+
+*Nachtrag S2b (2026-10-28):* `check` wächst mit dem Compiler — erst der Lexer, dann Parser und
+Typen —, damit die Konformanzsuite ab S2b läuft; die lexikalischen Codes spiegeln Lyric 5
+(unter `LYS-LEX0100` dieselbe Bedeutung wie die gleiche Nummer von `LYR-LEX`, ab 0100 Script-eigen).

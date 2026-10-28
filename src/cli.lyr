@@ -1,9 +1,11 @@
-//! The `lyric-script` command line (design/v1, 12). It knows `--version`, `help`, and, until
-//! `run` comes with the compiler (S2), `asm`, which runs bytecode in its text form.
+//! The `lyric-script` command line (design/v1, 12). It knows `--version`, `help`, `check`, which
+//! grows with the compiler (S2: the lexer first), and, until `run` comes, `asm`, which runs
+//! bytecode in its text form.
 import std.fs { readText };
 import std.io { println, eprintln };
 import std.os { args };
 import lyric_script { version };
+import lyric_script.compiler.lexer { LexDiagnostic, lex };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
 import lyric_script.vm.heap { ScriptString };
@@ -16,6 +18,7 @@ fn usage(): void {
     println("commands:");
     println("  version    print the version (also --version)");
     println("  help       print this text (also --help)");
+    println("  check FILE check a script without running it");
     println("  asm FILE   run a .lyrsasm file's 'main' (provisional, until 'run' in S2)");
 }
 
@@ -34,6 +37,14 @@ fn main(): int {
         usage();
         return 0;
     }
+    if (command == "check") {
+        if (given.length() != 3) {
+            eprintln("error[LYS-CLI0002]: 'check' takes one file");
+            eprintln("  = help: lyric-script check script.lyrs");
+            return 2;
+        }
+        return checkScript(given[2]);
+    }
     if (command == "asm") {
         if (given.length() != 3) {
             eprintln("error[LYS-CLI0002]: 'asm' takes one file");
@@ -45,6 +56,27 @@ fn main(): int {
     eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
     eprintln("  = help: lyric-script help lists the commands");
     return 2;
+}
+
+/// Checks a script: 1 where it has errors, 0 where it has none; warnings are printed either way.
+fn checkScript(path: string): int {
+    let text = try readText(path) catch (e) {
+        eprintln(f"error[LYS-CLI0003]: cannot read '{path}': {e.message()}");
+        return 2;
+    };
+    let lexed = lex(text);
+    for (d in lexed.errors) {
+        report("error", d, path);
+    }
+    for (d in lexed.warnings) {
+        report("warning", d, path);
+    }
+    return if (lexed.errors.length() > 0) 1 else 0;
+}
+
+fn report(severity: string, d: LexDiagnostic, path: string): void {
+    eprintln(f"{severity}[{d.code}]: {d.message}");
+    eprintln(f"  --> {path}:{d.line}:{d.column}");
 }
 
 /// Runs the file's `main`: its result is printed; a panic is reported with its frames and

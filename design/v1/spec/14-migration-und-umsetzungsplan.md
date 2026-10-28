@@ -254,3 +254,9 @@ einer Seite wird zu `?T`).
 **S3b, Ergebnis.** Wie präzisiert; die Definite-Assignment-Menge wird nie an Ort verändert
 (jeder gespeicherte Stand bleibt gültig), ein Lauf über die Kinder einer Anweisung (`stmtAny`)
 ersetzt den Schreib-Lauf von S3a. 115 Tests, 55 Konformanzfälle.
+
+**S3c, Ergebnis.** Tupel nach Lyric 5 §6 Regeln 1–5. In der VM ist ein Tupel die Slots seiner
+Elemente hintereinander, inline wie ein Optional (11 V2) — kein Objekt, `t.k` liest an seinem
+Platz. Etiketten fahren im Typ mit, zählen aber nicht zu seiner Gleichheit (Lyric 5 §6 Regel 3).
+Gleichheit, Hash und Druckform (Regel 6) kommen mit der Synthese in S3h, `for ((a, b) in …)` mit
+den Sammlungen in S7. 119 Tests, 61 Konformanzfälle.

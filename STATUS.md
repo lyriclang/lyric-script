@@ -83,7 +83,7 @@ Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; meas
 |---|---|
 | S3a optionals | done — Lyric 5 §3.1–3.3 with its codes; every value has a slot shape (11 V2: `?int` two scalar slots, `??int` three, a `?T` of a reference the reference with `nil`); results of several slots; narrowing ends at a write; ten cases in the delta's 03 |
 | S3b definite assignment, empty literals | done — Lyric 5's definite assignment (`SEM0018`), a global takes its value where declared (`SEM0903`); `var x = null` takes the type of the first use that fixes one (two passes, the first quiet); `[]` and `[:]` take the same way with S7. Follow-ups of S3a: narrowing behind `break`/`continue` and in a value `if`, `==` on optionals. Own codes moved to 0900 (P9) |
-| S3c tuples | — |
+| S3c tuples | done — Lyric 5 §6 rules 1–5: labels outside the type, `t.0`/`t.x`, `let (a, b) = t` nested and with `_`; in the VM a tuple is its elements' slots in order, inline. Equality and display with S3h, `for ((a, b) in …)` with S7 |
 | S3d enums with values, `match`, patterns | — |
 | S3e function values | — |
 | S3f interfaces | — |

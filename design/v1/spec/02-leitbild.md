@@ -95,8 +95,8 @@ println(status?.stdout ?? "kein git")
 | K2 | Fehler | **Keine `throws`-Klausel, keine `try`-Pflicht** (Kotlin/Python): jeder Aufruf darf werfen; ein unbehandelter Fehler beendet das Skript mit Meldung und Exit 1. `try?` und `try … catch` bleiben als Werkzeuge. Der Compiler **erschließt** die Fehlermengen und zeigt sie (Editor, `api`). Native Module und Host-API werfen weiter typisiert. |
 | T1 | Zahlen | **Nur `int` (64 Bit, Panik bei Überlauf) und `float` (64 Bit).** Binärdaten als Bibliothekstyp `Bytes` (Index liefert `int` 0–255), große Zahlen als `BigInt` in der Standardbibliothek. Feste Breiten nur an der Grenze zu Host und nativen Modulen, mit Bereichsprüfung (`uint16`-Parameter, 70000 → wirft); `float32` wird dort gerundet. |
 | T2 | Parametertypen | **Pflicht** an benannten Funktionen; Locals, Lambdas (aus dem Kontext) und Rückgaben (K1d) werden erschlossen. Jede Funktion wird einmal geprüft, auch ungerufen. Optionale Parametertypen (implizit generisch) sind Tür. |
-| T4 | Unionen | **Ad-hoc-Unionen `A \| B`** mit Eingrenzung über `is` und `match`; benannt über `type X = …`. **Inferenz erzeugt nie still eine Union** (`if (c) 1 else "a"` bleibt ohne Annotation ein Fehler). |
-| K4 | Dynamische Daten | **`Json` ist eine Union** (`null \| bool \| int \| float \| string \| Json[] \| Map<string, Json>`), die `std.json` um Zugriffe **erweitert**: `[]` liefert wieder `Json` (`null`, wenn es fehlt), `.string`/`.int`/… liefern `?T`. Hauptweg bleibt `json.decode<T>` über `Codable`. Kein `dynamic` (Tür). Folge: **Erweiterungen auf Unionstypen** sind erlaubt; die Methoden einer Union sind die, die ausdrücklich für sie erweitert wurden. |
+| T4 | Unionen | **Keine Unionen `A \| B`** — wie Lyric 5 (03 T9): Enums mit Enum-Ergonomie (`.Variante` bei bekanntem Zieltyp), die Union bleibt eine additive Tür. *Geändert 2026-10-28 (Maintainer, in der Runde 03/04): zuerst als Ad-hoc-Unionen entschieden, zurückgenommen — Script-Code mit Unionen wäre nicht nach Lyric 5 übertragbar, und Lyric 5 hat sie mit Gründen verworfen.* Folge: `?T` bleibt ein eigener Konstruktor (`??T` möglich), das Iterator-Protokoll bleibt `next(): ?Item`. |
+| K4 | Dynamische Daten | **JSON aus vier Bausteinen, ohne neue Typwelt**: (1) typisiert über `Codable` (`json.decode<T>`, `json.encode`) als Hauptweg; (2) unbekannte Form als **gewöhnliches Enum** `Json { Null, Bool, Int, Float, String, Array, Object }` in `std.json` mit Zugriffen — `[]` liefert wieder `Json` (`Null`, wenn es fehlt), `.string`/`.int`/… liefern `?T`, Muster über `.Variante`; (3) rohe Strings `r"""…"""` für JSON-Text im Code (Lyric 5); (4) **Literale, die einen Typ bauen** (Bereich 03/04): `let body: Json = ["name": "Anna", "age": 31, "boss": null]` — nur Literale, keine Variablen (`Json(user.name)`). Kein `dynamic` (Tür). *Geändert 2026-10-28 mit T4.* |
 | T7 | Werte und Objekte | **`struct` ist immer unveränderlich** (ein Record, Änderung über `p with { x = 5.0 }`), **`class` ist die veränderliche Referenz** mit Identität. Werte ändern sich nie, Objekte schon. |
 | T8 | Interfaces | **Nominal mit `::`** wie Lyric 5; die Konformanzliste löst die Synthese aus. |
 | T9 | Vererbung | **Keine** — Interfaces mit Defaults und Delegation `by` wie Lyric 5; Host-Hierarchien über Interfaces. |
@@ -115,7 +115,7 @@ println(status?.stdout ?? "kein git")
 | Map-Literal | keins; `[("a", 1)]` (10 K4) | `["a": 1]`, `[:]` | L |
 | Fehler | `throws`-Klausel + `try`-Pflicht (05) | keine Klausel, keine Pflicht; Mengen erschlossen | K2 |
 | Zahlentypen | `int8…uint64`, `float32/64` (03) | `int`, `float`; `Bytes`, `BigInt` in std | T1 |
-| Unionen | keine, Tür „additiv" (03) | `A \| B` mit `is`-Eingrenzung, Erweiterungen auf Unionen | T4, K4 |
+| Literale | `FromArrayLiteral` (10 K4) | dazu `FromMapLiteral`, `FromStringLiteral`, `FromIntLiteral`, `FromFloatLiteral`, `FromBoolLiteral`, `FromNullLiteral` (Swift `ExpressibleBy…Literal`) | L, K4 |
 | Structs | `var`-Felder mit Bindungsregel (02) | immer unveränderlich, `with` | T7 |
 | Referenzparameter | `&T` / `&x` (08) | entfällt | W |
 | Metaprogrammierung | `comptime`, Makros (09) | entfällt | W |
@@ -125,7 +125,7 @@ println(status?.stdout ?? "kein git")
 | Sichtbarkeit | `private` / `internal` (Vorgabe) / `pub` (07) | öffentlich (Vorgabe) / `private` | V |
 | Map/Set-Reihenfolge | unspezifiziert (10 I8) | Einfügereihenfolge | 01 S8 |
 
-**Ausdrücklich übernommen**: statische Typen, Parametertypen, `f"…"` und die Formatsprache,
+**Ausdrücklich übernommen**: statische Typen, keine Unionen (Enums), Parametertypen, `f"…"` und die Formatsprache,
 `[]`-Literale mit Koerzion, Optionals `?T`/`??`/`!`, Lambdas mit `it` und nachgestellte Blöcke,
 benannte und Default-Argumente, Ranges und `^n`, Pattern-Matching, Enums mit Payload, Tupel,
 nominale Interfaces mit Synthese über `::`, keine Vererbung, Delegation `by`, Generics,
@@ -151,10 +151,13 @@ GDScript). Feste Breiten gehören an die Grenze, wo ohnehin umgewandelt wird; Bi
 einen eigenen Typ statt eines eigenen Zahlentyps. 64-Bit mit Panik (statt Python-Bigints) hält
 die Werte der VM einfach und findet Überläufe, statt sie zu verschlucken.
 
-**Unionen statt `dynamic` (T4, K4).** Unionen sind das Merkmal, das statische Skriptsprachen
-(TypeScript, Python mit Typen) am meisten nutzen; sie lösen JSON typsicher und fast so bequem
-wie ein dynamischer Typ, ohne eine zweite Typwelt. Lyric 5 hat Unionen als additive Tür offen
-gelassen — Script erprobt sie zuerst.
+**Enums statt Unionen, Bibliothek statt `dynamic` (T4, K4).** Unionen wären das bequemste
+Merkmal statischer Skriptsprachen gewesen, aber Script-Code mit Unionen übersetzt nicht nach
+Lyric 5, und Lyric 5 hat sie mit Gründen verworfen (zweiter Summenmechanismus, `??T`,
+Abflachung in Generics, kein Vorbild ohne Subtyping darunter). JSON wird ohne neue Typwelt
+angenehm: typisiertes Decoding als Hauptweg, ein gewöhnliches `Json`-Enum mit Zugriffen für
+unbekannte Formen, rohe Strings, und Literale, die einen Typ bauen — die Verallgemeinerung von
+Lyric 5s `FromArrayLiteral`, die Script für das Map-Literal ohnehin braucht.
 
 **Werte ändern sich nie (T7).** Ein unveränderlicher Struct ist unsichtbar geteilt oder kopiert;
 damit entfallen die Kopier-Überraschung (Lyric 5, C#) und die Alias-Falle (Python) zugleich, und
@@ -182,8 +185,8 @@ Compile-Zeit-Synthese und dient Debug-Ausgaben und Inspektoren.
 | Volle Zahlenfamilie (T1 A), eigener `byte`-Typ (T1 B) | Zehn Typen bzw. ein Typ mehr ohne Gewinn gegenüber `Bytes`. |
 | Beliebig große `int` (K3 B) | Jeder `int`-Slot müsste eine Referenz halten können; Umwandlung an der Grenze. |
 | Optionale Parametertypen (T2 B/C) | Ungeprüfte Rümpfe bzw. überraschende Vorgabetypen; Tür. |
-| Keine Unionen (T4 A), nur benannte (T4 C) | Zeremoniell bzw. halbe Bequemlichkeit. |
-| `dynamic` (K4 D), eigener Json-Enum (K4 C) | Zweite Typwelt bzw. zweiter Weg neben Unionen. |
+| Ad-hoc-Unionen (T4 B, zuerst gewählt, zurückgenommen), nur benannte Unionen (T4 C) | Nicht nach Lyric 5 übertragbar; zweiter Summenmechanismus neben `enum`; `?T`/`??T`-Konflikt. |
+| `dynamic` (K4 D) | Zweite Typwelt. |
 | Structs wie Lyric 5 (T7 A), nur Referenzen (T7 B) | Kopien in der VM und Kopier-Überraschung bzw. Alias-Falle und stille Bedeutungsänderung. |
 | Strukturelle Interfaces (T8 B/C) | Zweiter Auslöser für die Synthese. |
 | Vererbung (T9 B/C) | VTables, Reload über Hierarchien, Abstand zu Lyric 5; Host-Fall über Interfaces lösbar. |
@@ -196,22 +199,20 @@ Compile-Zeit-Synthese und dient Debug-Ausgaben und Inspektoren.
 
 - **Zahlen**: zwei Skalartypen (`int`, `float`) plus `bool`; der Satz an Zahlen-Opcodes
   schrumpft gegenüber 4.6 (Operationen je Breite) erheblich.
-- **Unionen und Typtests**: ein Wert vom Unionstyp trägt zur Laufzeit eine Typmarke; Skalare
-  in einer Union werden geboxt oder getaggt. Typbeschreibungen mit Namen braucht die VM ohnehin
-  (Reload 01 S7a, Reflexion D).
+- **Typtests**: `is` und Typ-Patterns auf Interface-Werten und `Any` brauchen
+  Laufzeit-Typbeschreibungen; mit Namen braucht die VM sie ohnehin (Reload 01 S7a, Reflexion D).
 - **Structs** sind unveränderliche, teilbare Heap-Objekte — kein `StructCopy` wie in 4.6.
 - **Fehler**: jeder Aufruf darf werfen; die VM wickelt ihre eigenen Frames ab (wie 4.6 `Throw`).
 - **Keine Threads**: eine Instanz ist einfädig (passt zu 01 S9).
 - **Kein `comptime`**: die Synthese entsteht im Compiler oder über Reflexion (Bereich 05/10).
-- **Generics**: Monomorphisierung oder Typlöschung ist weiter offen (04/11); Unionen und
-  Reflexion setzen Laufzeit-Typbeschreibungen in beiden Fällen voraus.
+- **Generics**: Monomorphisierung oder Typlöschung ist weiter offen (11); die Sprache bleibt so
+  gebaut, dass beides geht (ein bloßes `T` ist opak, Lyric 5 03 O2).
 
 ## Offene Folgefragen für die Detailbereiche
 
 - **03**: Ist `[1, 2, 3]` eine wachsende `List` (Python) oder ein Array `int[]` (Lyric 5), und
   braucht Script beide? Stringmodell (Lyric 5: Bytes, `s[i]` = Zeichen an Byte `i`).
-- **04**: `?T` als `T | null`? Umwandlungsregeln in Unionen; Erweiterungen auf Unionen;
-  Monomorphisierung oder Typlöschung; Inferenzgrenzen.
+- **04**: Literale, die einen Typ bauen (Interfaces, Regeln); Inferenzgrenzen.
 - **05**: Synthese ohne `comptime` (Compiler-Fähigkeit oder Reflexion); `by`.
 - **06**: Fehlertypen, Anzeige der erschlossenen Mengen, Grenze zu nativen Modulen und Host.
 - **08**: genaue Prelude-Liste; `args` als Wert; Top-Level-Code.

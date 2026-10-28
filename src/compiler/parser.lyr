@@ -623,7 +623,11 @@ class Parser {
         this.advance();
         let name = this.current();
         if (name.kind != .Ident) {
-            throw this.failure("LYS-PAR0020", f"a binding without its name: found {this.shown(name)}", name);
+            throw this.failure(
+                "LYS-PAR0020",
+                f"a binding without its name: found {this.shown(name)}",
+                name
+            );
         }
         this.advance();
         try this.expect(.Assign, "LYS-PAR0020", "'=' and the optional the binding takes");

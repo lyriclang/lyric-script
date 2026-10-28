@@ -53,7 +53,10 @@ fn errs(source: string): string[] {
 fn aValueIsWrappedAndUnwrapped(): void {
     assertEq(value("fn f(): int {\n    let x: ?int = 41\n    return x! + 1\n}", "f"), 42);
     assertEq(value("fn g(): int {\n    let x: ?int = null\n    return x ?? 7\n}", "g"), 7);
-    assertEq(panicCode("fn p(): int {\n    let x: ?int = null\n    return x!\n}", "p"), "LYS-RT0004");
+    assertEq(
+        panicCode("fn p(): int {\n    let x: ?int = null\n    return x!\n}", "p"),
+        "LYS-RT0004"
+    );
 }
 
 @Test
@@ -66,33 +69,118 @@ fn aTestNarrowsTheBinding(): void {
     assertEq(value(e + "fn e1(): int = e(4)", "e1"), 5);
     assertEq(value(e + "fn e0(): int = e(null)", "e0"), 0);
     // `&&` lets its right side know
-    assertEq(value("fn a(): int {\n    let x: ?int = 3\n    return if (x != null && x > 2) x else 0\n}", "a"), 3);
-    // a `var` the block does not write is narrowed; one it writes is not
-    assertEq(value("fn v(): int {\n    var x: ?int = 3\n    if (x != null) {\n        return x\n    }\n    return 0\n}", "v"), 3);
-    assertEq(errs("fn w(): int {\n    var x: ?int = 3\n    if (x != null) {\n        x = null\n        return x + 1\n    }\n    return 0\n}"), ["LYS-SEM0003"]);
+    assertEq(
+        value(
+            "fn a(): int {\n    let x: ?int = 3\n    return if (x != null && x > 2) x else 0\n}",
+            "a"
+        ),
+        3
+    );
+    // a `var` is narrowed until an assignment
+    assertEq(
+        value(
+            "fn v(): int {\n    var x: ?int = 3\n    if (x != null) {\n        return x\n    }\n    return 0\n}",
+            "v"
+        ),
+        3
+    );
+    assertEq(
+        errs(
+            "fn w(): int {\n    var x: ?int = 3\n    if (x != null) {\n        x = null\n        return x + 1\n    }\n    return 0\n}"
+        ),
+        ["LYS-SEM0003"]
+    );
+}
+
+@Test
+fn aWriteEndsTheNarrowing(): void {
+    // a loop that writes the binding has it narrowed in none of its turns (Lyric 5 §3.2)
+    let loop = "fn l(): int {\n    var x: ?int = 3\n    var y = 0\n    if (x != null) {\n        while (y < 2) {\n            y = x + 1\n            x = null\n        }\n    }\n    return y\n}";
+    assertEq(errs(loop), ["LYS-SEM0003"]);
+    // after the write a new test narrows again
+    assertEq(
+        value(
+            "fn r(): int {\n    var x: ?int = 3\n    if (x != null) {\n        x = 4\n        if (x != null) {\n            return x\n        }\n    }\n    return 0\n}",
+            "r"
+        ),
+        4
+    );
+    // a second test narrows again: `??int` → `?int` → `int`
+    assertEq(
+        value(
+            "fn t(): int {\n    let c: ??int = 5\n    if (c != null) {\n        if (c != null) {\n            return c + 1\n        }\n    }\n    return 0\n}",
+            "t"
+        ),
+        6
+    );
 }
 
 @Test
 fn coalesceAssignAndChain(): void {
-    assertEq(value("fn c(): int {\n    var x: ?int = null\n    x ??= 5\n    x ??= 9\n    return x!\n}", "c"), 5);
+    assertEq(
+        value(
+            "fn c(): int {\n    var x: ?int = null\n    x ??= 5\n    x ??= 9\n    return x!\n}",
+            "c"
+        ),
+        5
+    );
     let p = "struct P {\n    x: int\n}\n";
-    assertEq(value(p + "fn o(): int {\n    let p: ?P = P { x = 4 }\n    let q: ?P = null\n    return (p?.x ?? 0) + (q?.x ?? 100)\n}", "o"), 104);
+    assertEq(
+        value(
+            p
+                + "fn o(): int {\n    let p: ?P = P { x = 4 }\n    let q: ?P = null\n    return (p?.x ?? 0) + (q?.x ?? 100)\n}",
+            "o"
+        ),
+        104
+    );
 }
 
 @Test
 fn ifLetAndWhileLet(): void {
-    assertEq(value("fn il(): int {\n    let x: ?int = 6\n    if (let y = x) {\n        return y * 7\n    }\n    return 0\n}", "il"), 42);
+    assertEq(
+        value(
+            "fn il(): int {\n    let x: ?int = 6\n    if (let y = x) {\n        return y * 7\n    }\n    return 0\n}",
+            "il"
+        ),
+        42
+    );
     let counter = "class Counter {\n    var n: int = 0\n    fn next(): ?int {\n        if (this.n >= 3) {\n            return null\n        }\n        this.n += 1\n        return this.n\n    }\n}\n";
-    assertEq(value(counter + "fn wl(): int {\n    let c = Counter { }\n    var sum = 0\n    while (let v = c.next()) {\n        sum += v\n    }\n    return sum\n}", "wl"), 6);
+    assertEq(
+        value(
+            counter
+                + "fn wl(): int {\n    let c = Counter { }\n    var sum = 0\n    while (let v = c.next()) {\n        sum += v\n    }\n    return sum\n}",
+            "wl"
+        ),
+        6
+    );
 }
 
 @Test
 fn optionalsOfReferencesAndOfOptionals(): void {
-    assertEq(value("fn s(): int {\n    let a: ?string = \"x\"\n    let b: ?string = null\n    return (if (a != null) 1 else 0) + (if (b == null) 2 else 0)\n}", "s"), 3);
-    assertEq(value("fn nn(): int {\n    let inner: ?int = null\n    let c: ??int = inner\n    let d: ??int = null\n    return (if (c != null) 1 else 0) + (if (d == null) 2 else 0) + (if (c! == null) 4 else 0)\n}", "nn"), 7);
+    assertEq(
+        value(
+            "fn s(): int {\n    let a: ?string = \"x\"\n    let b: ?string = null\n    return (if (a != null) 1 else 0) + (if (b == null) 2 else 0)\n}",
+            "s"
+        ),
+        3
+    );
+    assertEq(
+        value(
+            "fn nn(): int {\n    let inner: ?int = null\n    let c: ??int = inner\n    let d: ??int = null\n    return (if (c != null) 1 else 0) + (if (d == null) 2 else 0) + (if (c! == null) 4 else 0)\n}",
+            "nn"
+        ),
+        7
+    );
     // a `?T` field starts as null; a struct holds itself without a box (03)
     let n = "struct N {\n    v: int\n    next: ?N\n}\n";
-    assertEq(value(n + "fn len(): int {\n    let a = N { v = 1 }\n    let b = N { v = 2, next = a }\n    var count = 0\n    var cur: ?N = b\n    while (let c = cur) {\n        count += 1\n        cur = c.next\n    }\n    return count\n}", "len"), 2);
+    assertEq(
+        value(
+            n
+                + "fn len(): int {\n    let a = N { v = 1 }\n    let b = N { v = 2, next = a }\n    var count = 0\n    var cur: ?N = b\n    while (let c = cur) {\n        count += 1\n        cur = c.next\n    }\n    return count\n}",
+            "len"
+        ),
+        2
+    );
 }
 
 @Test
@@ -102,5 +190,8 @@ fn whatOptionalsRefuse(): void {
     assertEq(errs("let a = 3\nprintln(a!)"), ["LYS-SEM0005"]);
     assertEq(errs("let a = 3\nprintln(a ?? 4)"), ["LYS-SEM0005"]);
     assertEq(errs("let a: ?int = 3\nprintln(a + 1)"), ["LYS-SEM0003"]);
-    assertEq(errs("let a = 3\nprintln(a == null)"), ["LYS-SEM0005"]);
+    assertEq(errs("let a = 3\nprintln(a == null)"), ["LYS-SEM0059"]);
+    // nothing is assigned through `?.`
+    let c = "class C {\n    var x: int = 0\n}\n";
+    assertEq(errs(c + "fn f(c: ?C): void {\n    c?.x = 1\n}"), ["LYS-SEM0019"]);
 }

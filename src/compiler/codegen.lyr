@@ -199,15 +199,13 @@ class FnGen {
         let (retS, retR) = this.slots(info.returns);
         let returns = if (retS == 0 && retR == 0) ReturnKind.Void
             else if (retS == 1 && retR == 0) ReturnKind.Scalar
-            else if (retS == 0 && retR == 1) ReturnKind.Ref
-            else ReturnKind.Slots;
+                else if (retS == 0 && retR == 1) ReturnKind.Ref else ReturnKind.Slots;
         // the end of the body: a `void` function returns there; for one with a value the checker
         // has seen to a `return` on every path, and this one is never reached
         this.need(retS, retR);
         this.emit(this.retOp(returns), 0, 0, 0);
         let name = if (this.index == this.p.main) scriptEntry
-            else if (info.owner >= 0) f"{this.p.types[info.owner].name}.{info.name}"
-            else info.name;
+            else if (info.owner >= 0) f"{this.p.types[info.owner].name}.{info.name}" else info.name;
         return Function {
             name = name,
             paramsS = paramsS,
@@ -487,7 +485,12 @@ class FnGen {
                     } else if (ns == 0 && nr == 0) {
                         this.emit(Op.Ret, 0, 0, 0);
                     } else {
-                        this.emit(Op.RetN, if (at.s >= 0) at.s else 0, if (at.r >= 0) at.r else 0, 0);
+                        this.emit(
+                            Op.RetN,
+                            if (at.s >= 0) at.s else 0,
+                            if (at.r >= 0) at.r else 0,
+                            0
+                        );
                     }
                 } else {
                     this.emit(Op.Ret, 0, 0, 0);
@@ -499,7 +502,11 @@ class FnGen {
     }
 
     mut fn openLoop(result: Loc): LoopGen {
-        let loop = LoopGen { result = result, breaks = List<int>.new(), continues = List<int>.new() };
+        let loop = LoopGen {
+            result = result,
+            breaks = List<int>.new(),
+            continues = List<int>.new(),
+        };
         this.loops.push(loop);
         return loop;
     }
@@ -542,10 +549,10 @@ class FnGen {
                     .Local(id, _) => {
                         return this.localLoc[id];
                     }
-                    _ => {}
+                    _ => { }
                 }
             }
-            _ => {}
+            _ => { }
         }
         let at = this.temp(typeOf(e));
         this.to(e, at);
@@ -715,7 +722,7 @@ class FnGen {
                 this.to(b.value, dst);
                 this.patch(toEnd, this.here());
             }
-            .Unit | .Unknown => {}
+            .Unit | .Unknown => { }
         }
         this.release(m);
     }

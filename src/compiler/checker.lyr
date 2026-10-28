@@ -804,15 +804,36 @@ class Checker {
 
     mut fn factOf(x: TExpr, out: List<Fact>): void {
         match (x) {
+            // a second test narrows again: a `??int` proven present once is a `?int` (§3.2)
+            .Narrow(inner, t) => {
+                match (t) {
+                    .Optional(i) => {
+                        match (inner.value) {
+                            .Local(id, _) => out.push(
+                                Fact { isGlobal = false, id = id, ty = i.value }
+                            ),
+                            .Global(g, _) => out.push(
+                                Fact { isGlobal = true, id = g, ty = i.value }
+                            ),
+                            _ => { }
+                        }
+                    }
+                    _ => { }
+                }
+            }
             .Local(id, t) => {
                 match (t) {
-                    .Optional(inner) => out.push(Fact { isGlobal = false, id = id, ty = inner.value }),
+                    .Optional(inner) => out.push(
+                        Fact { isGlobal = false, id = id, ty = inner.value }
+                    ),
                     _ => { }
                 }
             }
             .Global(g, t) => {
                 match (t) {
-                    .Optional(inner) => out.push(Fact { isGlobal = true, id = g, ty = inner.value }),
+                    .Optional(inner) => out.push(
+                        Fact { isGlobal = true, id = g, ty = inner.value }
+                    ),
                     _ => { }
                 }
             }
@@ -820,19 +841,41 @@ class Checker {
         }
     }
 
-    /// Narrows the bindings of `facts` in the innermost scope: a `let` and a parameter always, a
-    /// `var` only where `region` (from `from` on) never writes it; a global `let` too, never a
-    /// global `var`, which any call may write.
-    mut fn narrow(facts: List<Fact>, region: Stmt[], from: int): void {
+    /// Narrows the bindings of `facts` in the innermost scope (Lyric 5 §3.2): a local, until an
+    /// assignment ends it; a global `let`, never a global `var`, which any call may write.
+    mut fn narrow(facts: List<Fact>): void {
         let scope = this.ctx.scopes[this.ctx.scopes.length() - 1];
         for (f in facts) {
             if (f.isGlobal) {
                 if (!this.globals[f.id].isVar) {
                     scope.narrowedGlobals.insert(f.id, f.ty);
                 }
-            } else if (!this.ctx.localIsVar[f.id] || !writesIn(region, from, this.ctx.localNames[f.id])) {
+            } else {
                 scope.narrowed.insert(f.id, f.ty);
             }
+        }
+    }
+
+    /// Ends the narrowing of local `id` in every scope: it has been written.
+    mut fn unnarrow(id: int): void {
+        for (scope in this.ctx.scopes) {
+            scope.narrowed.remove(id);
+        }
+    }
+
+    /// Before a loop: a narrowed local the loop writes is narrowed in none of its turns — the
+    /// second turn would read it after the write.
+    mut fn unnarrowWritten(region: Stmt[]): void {
+        let written = List<int>.new();
+        for (scope in this.ctx.scopes) {
+            for (id in scope.narrowed.keys()) {
+                if (writesIn(region, 0, this.ctx.localNames[id])) {
+                    written.push(id);
+                }
+            }
+        }
+        for (id in written) {
+            this.unnarrow(id);
         }
     }
 
@@ -847,7 +890,7 @@ class Checker {
             if (this.postFacts.length() > 0) {
                 let facts = this.postFacts;
                 this.postFacts = List<Fact>.new();
-                this.narrow(facts, stmts, k + 1);
+                this.narrow(facts);
             }
             k += 1;
         }
@@ -884,7 +927,7 @@ class Checker {
     /// A block where `facts` hold.
     mut fn blockWith(b: Block, facts: List<Fact>): TStmt[] {
         this.pushScope();
-        this.narrow(facts, b.stmts, 0);
+        this.narrow(facts);
         let out = this.block(b);
         this.popScope();
         return out;
@@ -904,7 +947,7 @@ class Checker {
                 var o: TStmt[] = [];
                 if (otherwise != null) {
                     this.pushScope();
-                    this.narrow(no, [otherwise.value], 0);
+                    this.narrow(no);
                     o = [this.stmt(otherwise.value)];
                     this.popScope();
                 }
@@ -917,15 +960,28 @@ class Checker {
                 TStmt.If(c, t, o, at.line)
             }
             .While(cond, body, _, at) => {
+                this.unnarrowWritten([s]);
                 let c = this.condition(cond);
                 this.ctx.loops.push(LoopCtx { isLoop = false });
                 let b = this.blockWith(body, this.factsOf(c, true));
                 this.ctx.loops.pop();
                 TStmt.While(c, b, at.line)
             }
-            .IfLet(name, value, then, otherwise, at) => this.ifLet(name, value, then, otherwise, at),
-            .WhileLet(name, value, body, _, at) => this.whileLet(name, value, body, at),
-            .For(name, iterable, body, _, at) => this.forStmt(name, iterable, body, at),
+            .IfLet(name, value, then, otherwise, at) => this.ifLet(
+                name,
+                value,
+                then,
+                otherwise,
+                at
+            ),
+            .WhileLet(name, value, body, _, at) => {
+                this.unnarrowWritten([s]);
+                this.whileLet(name, value, body, at)
+            }
+            .For(name, iterable, body, _, at) => {
+                this.unnarrowWritten([s]);
+                this.forStmt(name, iterable, body, at)
+            }
             .Break(_, value, at) => this.breakStmt(value, at),
             .Continue(_, at) => {
                 if (this.ctx.loops.length() == 0) {
@@ -944,7 +1000,11 @@ class Checker {
             .Optional(inner) => inner.value,
             .Unknown => Ty.Unknown,
             _ => {
-                this.error("LYS-SEM0005", f"'{word}' takes an optional: this value is never null", at);
+                this.error(
+                    "LYS-SEM0005",
+                    f"'{word}' takes an optional: this value is never null",
+                    at
+                );
                 Ty.Unknown
             }
         };
@@ -971,8 +1031,15 @@ class Checker {
             o = [this.stmt(otherwise.value)];
             this.popScope();
         }
-        let present = TExpr.Unary(UnaryOp.Not, boxE(TExpr.IsNull(boxE(TExpr.Local(tmp, ot)))), Ty.Bool);
-        return TStmt.Block([TStmt.SetLocal(tmp, v, at.line), TStmt.If(present, body.toArray(), o, at.line)], at.line);
+        let present = TExpr.Unary(
+            UnaryOp.Not,
+            boxE(TExpr.IsNull(boxE(TExpr.Local(tmp, ot)))),
+            Ty.Bool
+        );
+        return TStmt.Block(
+            [TStmt.SetLocal(tmp, v, at.line), TStmt.If(present, body.toArray(), o, at.line)],
+            at.line
+        );
     }
 
     /// `while (let x = e) { … }`: `e` again before each turn, the loop's end where it is null.
@@ -986,7 +1053,14 @@ class Checker {
         this.ctx.loops.push(LoopCtx { isLoop = false });
         let turn = List<TStmt>.new();
         turn.push(TStmt.SetLocal(tmp, v, at.line));
-        turn.push(TStmt.If(TExpr.IsNull(boxE(TExpr.Local(tmp, ot))), [TStmt.Break(null, at.line)], [], at.line));
+        turn.push(
+            TStmt.If(
+                TExpr.IsNull(boxE(TExpr.Local(tmp, ot))),
+                [TStmt.Break(null, at.line)],
+                [],
+                at.line
+            )
+        );
         turn.push(TStmt.SetLocal(x, TExpr.Narrow(boxE(TExpr.Local(tmp, ot)), inner), at.line));
         for (s in this.block(body)) {
             turn.push(s);
@@ -1229,7 +1303,8 @@ class Checker {
                 at
             ),
             .Block(b, _) => this.valueBlock(b, expected),
-            .Loop(body, _, _) => {
+            .Loop(body, _, at) => {
+                this.unnarrowWritten([Stmt.Expr(e, at)]);
                 let ctx = LoopCtx { isLoop = true };
                 this.ctx.loops.push(ctx);
                 let stmts = this.block(body);
@@ -1306,7 +1381,7 @@ class Checker {
         var b = TExpr.Unknown;
         if (op == .And || op == .Or) {
             this.pushScope();
-            this.narrow(this.factsOf(a, op == .And), [Stmt.Expr(r, spanOf(r))], 0);
+            this.narrow(this.factsOf(a, op == .And));
             b = this.expr(r, null);
             this.popScope();
         } else {
@@ -1327,7 +1402,11 @@ class Checker {
                     return if (op == .Eq) test else TExpr.Unary(UnaryOp.Not, boxE(test), Ty.Bool);
                 }
                 _ => {
-                    this.error("LYS-SEM0005", f"'{binaryText(op)} null' on a value that is never null", at);
+                    this.error(
+                        "LYS-SEM0059",
+                        f"'{binaryText(op)} null' on a value that is never null",
+                        at
+                    );
                     return TExpr.Unknown;
                 }
             }
@@ -1456,6 +1535,21 @@ class Checker {
     }
 
     mut fn assign(target: Expr, op: ?BinaryOp, value: Expr, at: Span): TExpr {
+        let result = this.assignTo(target, op, value, at);
+        // an assignment ends a narrowing of the binding (Lyric 5 §3.2 rule 4)
+        match (target) {
+            .Name(name, _) => {
+                let local = this.lookupLocal(name);
+                if (local != null) {
+                    this.unnarrow(local);
+                }
+            }
+            _ => { }
+        }
+        return result;
+    }
+
+    mut fn assignTo(target: Expr, op: ?BinaryOp, value: Expr, at: Span): TExpr {
         var place = Place.Local(0);
         var t = Ty.Unknown;
         var current = TExpr.Unknown;
@@ -1492,7 +1586,12 @@ class Checker {
             }
             .Member(object, field, optional, memberAt) => {
                 if (optional) {
-                    return this.notYet("'?.' as a target", "S3 (optionals)", memberAt);
+                    this.error(
+                        "LYS-SEM0019",
+                        "nothing is assigned through '?.': narrow first",
+                        memberAt
+                    );
+                    return TExpr.Unknown;
                 }
                 let o = this.expr(object.value, null);
                 let found = this.fieldOf(o, field, memberAt);
@@ -1669,14 +1768,29 @@ class Checker {
         let absent = TExpr.IsNull(boxE(TExpr.Local(tmp, ot)));
         let store = [TStmt.SetLocal(tmp, value, at.line)];
         return match (mt) {
-            .Void => TExpr.Block(store, boxE(TExpr.If(boxE(absent), boxE(TExpr.Unit), boxE(access), Ty.Void)), Ty.Void),
+            .Void => TExpr.Block(
+                store,
+                boxE(TExpr.If(boxE(absent), boxE(TExpr.Unit), boxE(access), Ty.Void)),
+                Ty.Void
+            ),
             .Unknown => TExpr.Unknown,
-            .Optional(_) => TExpr.Block(store, boxE(TExpr.If(boxE(absent), boxE(TExpr.Null(mt)), boxE(access), mt)), mt),
+            .Optional(_) => TExpr.Block(
+                store,
+                boxE(TExpr.If(boxE(absent), boxE(TExpr.Null(mt)), boxE(access), mt)),
+                mt
+            ),
             _ => {
                 let rt = Ty.Optional(boxTy(mt));
                 TExpr.Block(
                     store,
-                    boxE(TExpr.If(boxE(absent), boxE(TExpr.Null(rt)), boxE(TExpr.Wrap(boxE(access), rt)), rt)),
+                    boxE(
+                        TExpr.If(
+                            boxE(absent),
+                            boxE(TExpr.Null(rt)),
+                            boxE(TExpr.Wrap(boxE(access), rt)),
+                            rt
+                        )
+                    ),
                     rt
                 )
             }
@@ -1797,11 +1911,11 @@ class Checker {
     mut fn ifExpr(cond: Expr, then: Expr, otherwise: Expr, expected: ?Ty, at: Span): TExpr {
         let c = this.condition(cond);
         this.pushScope();
-        this.narrow(this.factsOf(c, true), [Stmt.Expr(then, spanOf(then))], 0);
+        this.narrow(this.factsOf(c, true));
         let a = this.expr(then, expected);
         this.popScope();
         this.pushScope();
-        this.narrow(this.factsOf(c, false), [Stmt.Expr(otherwise, spanOf(otherwise))], 0);
+        this.narrow(this.factsOf(c, false));
         let b = this.expr(otherwise, expected);
         this.popScope();
         let t = this.unify(typeOf(a), typeOf(b), at);
@@ -1999,40 +2113,46 @@ class Checker {
     }
 
     /// A method called on a value: one of its type's, not static.
-    mut fn methodCall(receiver: TExpr, method: string, args: Arg[], at: Span, memberAt: Span): TExpr {
+    mut fn methodCall(
+        receiver: TExpr,
+        method: string,
+        args: Arg[],
+        at: Span,
+        memberAt: Span
+    ): TExpr {
         let t = typeOf(receiver);
         match (t) {
-                    .Unknown => {
-                        return TExpr.Unknown;
-                    }
-                    .Named(i) => {
-                        let m = this.types[i].methods.get(method);
-                        if (m == null) {
-                            this.error(
-                                "LYS-SEM0012",
-                                f"'{this.types[i].name}' has no method '{method}'",
-                                memberAt
-                            );
-                            return TExpr.Unknown;
-                        }
-                        if (this.functions[m].isStatic) {
-                            this.error(
-                                "LYS-SEM0074",
-                                f"'{method}' is static: call it as {this.types[i].name}.{method}(…)",
-                                memberAt
-                            );
-                            return TExpr.Unknown;
-                        }
-                        return this.callAmong(method, [m], receiver, args, at);
-                    }
-                    _ => {
-                        return this.notYet(
-                            f"the methods of {this.tyName(t)}",
-                            "S7 (the core library)",
-                            memberAt
-                        );
-                    }
+            .Unknown => {
+                return TExpr.Unknown;
+            }
+            .Named(i) => {
+                let m = this.types[i].methods.get(method);
+                if (m == null) {
+                    this.error(
+                        "LYS-SEM0012",
+                        f"'{this.types[i].name}' has no method '{method}'",
+                        memberAt
+                    );
+                    return TExpr.Unknown;
                 }
+                if (this.functions[m].isStatic) {
+                    this.error(
+                        "LYS-SEM0074",
+                        f"'{method}' is static: call it as {this.types[i].name}.{method}(…)",
+                        memberAt
+                    );
+                    return TExpr.Unknown;
+                }
+                return this.callAmong(method, [m], receiver, args, at);
+            }
+            _ => {
+                return this.notYet(
+                    f"the methods of {this.tyName(t)}",
+                    "S7 (the core library)",
+                    memberAt
+                );
+            }
+        }
     }
 
     mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
@@ -2331,7 +2451,9 @@ fn writesExpr(e: Expr, name: string): bool {
             }
             found
         }
-        .If(c, a, b, _) => writesExpr(c.value, name) || writesExpr(a.value, name) || writesExpr(b.value, name),
+        .If(c, a, b, _) => writesExpr(c.value, name)
+            || writesExpr(a.value, name)
+            || writesExpr(b.value, name),
         .Block(b, _) => writesIn(b.stmts, 0, name),
         .Loop(b, _, _) => writesIn(b.stmts, 0, name),
         .Unwrap(x, _) => writesExpr(x.value, name),

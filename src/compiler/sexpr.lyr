@@ -135,7 +135,13 @@ fn showStmt(s: Stmt): string {
             let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";
             "(if-let " + name + " " + showExpr(value) + " " + showBlock(then) + rest + ")"
         }
-        .WhileLet(name, value, body, _, _) => "(while-let " + name + " " + showExpr(value) + " " + showBlock(body) + ")",
+        .WhileLet(name, value, body, _, _) => "(while-let "
+            + name
+            + " "
+            + showExpr(value)
+            + " "
+            + showBlock(body)
+            + ")",
     };
 }
 

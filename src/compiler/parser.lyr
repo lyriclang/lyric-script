@@ -11,6 +11,7 @@ import lyric_script.compiler.ast {
     AliasDecl,
     Arg,
     AssocDecl,
+    FixedAnswer,
     BinaryOp,
     Block,
     Conformance,
@@ -638,7 +639,40 @@ class Parser {
                 }
                 by = this.text(try this.expect(.Ident, "LYS-PAR0026", "the field it delegates to"));
             }
-            out.push(Conformance { name = this.text(name), by = by, span = this.since(first) });
+            // `Iterator<Item = int>`: associated types fixed (05 §8 rule 5)
+            let fixed = List<FixedAnswer>.new();
+            if (this.at(.Lt)) {
+                this.advance();
+                loop {
+                    let fname = try this.expect(
+                        .Ident,
+                        "LYS-PAR0026",
+                        "the associated type it fixes"
+                    );
+                    try this.expect(.Assign, "LYS-PAR0037", "'=' and the type it is");
+                    let fty = try this.parseType();
+                    fixed.push(
+                        FixedAnswer {
+                            name = this.text(fname),
+                            type = fty,
+                            span = this.since(fname),
+                        }
+                    );
+                    if (!this.at(.Comma)) {
+                        break;
+                    }
+                    this.advance();
+                }
+                try this.closeAngle();
+            }
+            out.push(
+                Conformance {
+                    name = this.text(name),
+                    by = by,
+                    span = this.since(first),
+                    fixed = fixed.toArray(),
+                }
+            );
             if (!bracketed || !this.at(.Comma)) {
                 break;
             }

@@ -38,6 +38,15 @@ enum Ty :: [Equatable, Debug] {
 struct TypeParamInfo :: [Debug] {
     name: string,
     constraints: int[],
+    // the associated types its constraints fix: `T :: [Iterator<Item = int>]` (S3i)
+    fixed: FixedTy[] = [],
+}
+
+/// An associated type a constraint fixes: the interface that declares it, its name, its type.
+struct FixedTy :: [Debug] {
+    iface: int,
+    name: string,
+    ty: Ty,
 }
 
 /// A function type's parameters and result.

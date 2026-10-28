@@ -111,3 +111,22 @@ fn whatBoundsRefuse(): void {
     // a path through a name no bound declares
     assertEq(errs(iterating + "fn g<A :: [Iterable]>(a: A): A.Iter.Size = 1"), ["LYS-SEM0128"]);
 }
+
+let summing = "class Words :: [Iterator] {\n    var done: bool = false\n    type Item = string\n\n    fn next(): ?string {\n        if (this.done) {\n            return null\n        }\n        this.done = true\n        return \"w\"\n    }\n}\nfn sum<I :: [Iterator<Item = int>]>(it: I): int {\n    var total = 0\n    var x = it.next()\n    while (x != null) {\n        total += x\n        x = it.next()\n    }\n    return total\n}\n";
+
+@Test
+fn aConstraintFixesAnAssociatedType(): void {
+    // inside, `I.Item` is an `int`: `next()` gives one to add
+    assertEq(value(iterating + summing + "fn e(): int = sum(Counter { })", "e"), 6);
+}
+
+@Test
+fn whatFixationsRefuse(): void {
+    // an argument whose answer is another type
+    assertEq(errs(iterating + summing + "let s = sum(Words { })"), ["LYS-SEM0028"]);
+    // a name the interface does not declare
+    assertEq(
+        errs(iterating + "fn f<I :: [Iterator<Size = int>]>(it: I): int = 0"),
+        ["LYS-SEM0128"]
+    );
+}

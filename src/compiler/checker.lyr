@@ -45,6 +45,7 @@ import lyric_script.compiler.ast {
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.typed {
     FieldInfo,
+    FixedTy,
     FnInfo,
     GlobalInfo,
     Native,
@@ -675,6 +676,12 @@ class Checker {
                 let infos = if (this.genericFn >= 0) this.functions[this.genericFn].typeParams
                     else this.declaringParams;
                 if (k < infos.length()) {
+                    // fixed by a constraint: the type itself, wherever it stands (rule 5)
+                    for (f in infos[k].fixed) {
+                        if (f.name == item) {
+                            return f.ty;
+                        }
+                    }
                     for (c in infos[k].constraints) {
                         for (x in this.ancestry(c)) {
                             for (n in this.types[x].assocNames) {
@@ -725,6 +732,38 @@ class Checker {
             return Ty.Unknown;
         }
         return answer;
+    }
+
+    /// The type a constraint of type parameter `k` fixes associated type `item` to, where one does
+    /// (05 §8 rule 5): in the body being checked, or the declaration being read.
+    mut fn fixedOf(k: int, item: string): ?Ty {
+        let infos = if (this.genericFn >= 0) this.functions[this.genericFn].typeParams
+            else this.declaringParams;
+        if (k < infos.length()) {
+            for (f in infos[k].fixed) {
+                if (f.name == item) {
+                    return f.ty;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// The associated type `item` of `t` where a call checks a fixation: a type's answer, or
+    /// what a type parameter's constraints say of it; unknown where nothing does.
+    mut fn answerThrough(t: Ty, item: string, at: Span): Ty {
+        return match (t) {
+            .Param(_) | .Assoc(_, _, _) => {
+                let saved = this.errors.length();
+                let r = this.assocOf(t, item, at);
+                // a missing one is reported where it is declared, not here
+                while (this.errors.length() > saved) {
+                    this.errors.pop();
+                }
+                r
+            }
+            _ => this.answerOf(t, item) ?? Ty.Unknown,
+        };
     }
 
     /// A type's answer to the associated type `item`; an instance's is its template's at its
@@ -1440,8 +1479,8 @@ class Checker {
                 tps.push(TypeParamInfo { name = tp.name, constraints = cs.toArray() });
                 k += 1;
             }
-            info.typeParams = tps.toArray();
             this.typeParams = scope;
+            info.typeParams = this.withFixations(f.typeParams, tps.toArray());
             this.declaringParams = info.typeParams;
         }
         let params = List<ParamInfo>.new();
@@ -2554,8 +2593,10 @@ class Checker {
             .Assoc(b, ii, n) => {
                 let nb = this.subst(b.value, a);
                 match (nb) {
-                    // still open: through a type parameter, or an associated type of one
-                    .Param(_) | .Unknown | .Assoc(_, _, _) => Ty.Assoc(boxTy(nb), ii, n),
+                    // through a type parameter: what a constraint fixes, else still open
+                    .Param(k) => this.fixedOf(k, n) ?? Ty.Assoc(boxTy(nb), ii, n),
+                    // still open: an associated type of one
+                    .Unknown | .Assoc(_, _, _) => Ty.Assoc(boxTy(nb), ii, n),
                     _ => this.answerOf(nb, n) ?? Ty.Unknown,
                 }
             }
@@ -2797,11 +2838,73 @@ class Checker {
         return out.toArray();
     }
 
+    /// `infos` with the associated types their constraints fix (05 §8 rule 5), read once the
+    /// parameters are in scope: each one a constraint declares (`LYS-SEM0128` otherwise).
+    mut fn withFixations(params: TypeParam[], infos: TypeParamInfo[]): TypeParamInfo[] {
+        let out = List<TypeParamInfo>.new();
+        var k = 0;
+        for (tp in params) {
+            let fixed = List<FixedTy>.new();
+            for (c in tp.constraints) {
+                let ii = this.typeIndex.get(c.name);
+                if (ii == null) {
+                    continue;
+                }
+                for (fx in c.fixed) {
+                    var declaring = -1;
+                    for (x in this.ancestry(ii)) {
+                        for (n in this.types[x].assocNames) {
+                            if (n == fx.name && declaring < 0) {
+                                declaring = x;
+                            }
+                        }
+                    }
+                    if (declaring < 0) {
+                        this.error(
+                            "LYS-SEM0128",
+                            f"'{c.name}' declares no associated type '{fx.name}' to fix",
+                            fx.span
+                        );
+                        continue;
+                    }
+                    fixed.push(
+                        FixedTy {
+                            iface = declaring,
+                            name = fx.name,
+                            ty = this.resolveType(fx.type),
+                        }
+                    );
+                }
+            }
+            let info = infos[k];
+            out.push(
+                TypeParamInfo {
+                    name = info.name,
+                    constraints = info.constraints,
+                    fixed = fixed.toArray(),
+                }
+            );
+            k += 1;
+        }
+        return out.toArray();
+    }
+
     /// Makes a generic type a template: its parameters in scope for what follows.
     mut fn enterGenericType(index: int, params: TypeParam[]): void {
         let info = this.types[index];
         info.typeParams = this.typeParamsOf(params);
         this.declaringParams = info.typeParams;
+        let fixScope = Map<string, int>.new();
+        var j = 0;
+        for (tp in params) {
+            fixScope.insert(tp.name, j);
+            j += 1;
+        }
+        let outerScope = this.typeParams;
+        this.typeParams = fixScope;
+        info.typeParams = this.withFixations(params, info.typeParams);
+        this.declaringParams = info.typeParams;
+        this.typeParams = outerScope;
         info.template = index;
         let own = List<Ty>.new();
         let scope = Map<string, int>.new();
@@ -7717,6 +7820,20 @@ class Checker {
                             this.error(
                                 "LYS-SEM0028",
                                 f"{this.tyName(b)} is no {this.types[ii].name}, which '{tp.name}' of '{name}' asks",
+                                at
+                            );
+                        }
+                    }
+                    // what the constraints fix, the argument answers (05 §8 rule 5)
+                    for (f in tp.fixed) {
+                        if (b == .Unknown) {
+                            continue;
+                        }
+                        let got = this.answerThrough(b, f.name, at);
+                        if (got != .Unknown && f.ty != .Unknown && got != f.ty) {
+                            this.error(
+                                "LYS-SEM0028",
+                                f"{this.tyName(b)} answers '{f.name}' with {this.tyName(got)}, where '{tp.name}' of '{name}' asks for {this.tyName(f.ty)}",
                                 at
                             );
                         }

@@ -246,6 +246,15 @@ struct Conformance :: [Debug] {
     name: string,
     by: ?string,
     span: Span,
+    // `Iterator<Item = int>`: the associated types the constraint fixes (05 §8 rule 5)
+    fixed: FixedAnswer[] = [],
+}
+
+/// `Item = int` in a constraint: an associated type fixed.
+struct FixedAnswer :: [Debug] {
+    name: string,
+    type: TypeExpr,
+    span: Span,
 }
 
 /// `interface I :: [Parents] { fn m(): T  fn d(): U { … } }`, `sealed` before it or not.

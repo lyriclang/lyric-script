@@ -101,7 +101,9 @@ jobs:
       - name: Run lyric-script
         shell: bash
         run: |
-          bin=$(find out -type f \( -name 'lyric-script' -o -name 'lyric-script.exe' \) | head -1)
+          # Depth 3: out/<profile>/<triple>/lyric-script — a macOS .dSYM keeps another
+          # 'lyric-script' (its DWARF) deeper down.
+          bin=$(find out -maxdepth 3 -type f \( -name 'lyric-script' -o -name 'lyric-script.exe' \) | head -1)
           echo "binary: $bin"
           "$bin" --version | tee version.txt
           grep -q '^lyric-script 1\.0\.0-dev ' version.txt
@@ -113,6 +115,6 @@ jobs:
         run: |
           lyric5=lyric5/lyric5; [ "${{ runner.os }}" = "Windows" ] && lyric5=lyric5/lyric5.exe
           "$lyric5" build --lib
-          header=$(find out -type f -name 'lyric_script.h' | head -1)
+          header=$(find out -maxdepth 3 -type f -name 'lyric_script.h' | head -1)
           echo "header: $header"
           grep -q 'lyrs_abi_version' "$header"

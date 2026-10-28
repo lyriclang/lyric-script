@@ -6,11 +6,14 @@ import std.collections { List };
 import lyric_script.vm.native { nativeCount, nativeInfo, nativeOf };
 import lyric_script.vm.op { Instr, Op, Operand, info };
 
-/// What a function returns, and in which register file the caller receives it.
+/// What a function returns, and in which register file the caller receives it: one scalar,
+/// one reference, or `Slots` — `retS` scalars and `retR` references, as a value of several
+/// slots (`?int`) is held (11 V2).
 pub enum ReturnKind :: [Equatable] {
     Void,
     Scalar,
     Ref,
+    Slots,
 }
 
 /// An object type: its name and its fields, the scalar ones and the reference ones apart
@@ -37,6 +40,9 @@ pub class Function :: [Identity] {
     strings: string[],
     /// The source line of each instruction; 0 where there is none.
     lines: int[],
+    /// For `Slots`: how many scalar and reference slots the result has.
+    retS: int = 0,
+    retR: int = 0,
 }
 
 /// A compiled module: its functions, the object types they create, and how many scalar and
@@ -104,6 +110,16 @@ fn checkFunction(module: Module, f: Function, errors: List<CheckError>): void {
         if (ret != null) {
             errors.push(CheckError { function = f.name, pc = pc, message = ret });
         }
+        if (ins.op == .RetN
+            && ((ins.a as int) + f.retS > f.scalars || (ins.b as int) + f.retR > f.refs)) {
+            errors.push(
+                CheckError {
+                    function = f.name,
+                    pc = pc,
+                    message = "'ret.n' reads past the registers",
+                }
+            );
+        }
         pc += 1;
     }
 }
@@ -167,11 +183,17 @@ fn checkCall(module: Module, f: Function, ins: Instr): ?string {
     if (baseR + callee.paramsR > f.refs || (callee.returns == .Ref && baseR >= f.refs)) {
         return f"call of '{callee.name}' reaches past the reference registers";
     }
+    if (callee.returns == .Slots
+        && (baseS + callee.retS > f.scalars || baseR + callee.retR > f.refs)) {
+        return f"the result of '{callee.name}' reaches past the registers";
+    }
     return null;
 }
 
 fn checkReturn(f: Function, op: Op): ?string {
     return match (op) {
+        .RetN => if (f.returns == .Slots) null
+            else "'ret.n' in a function that does not return slots",
         .Ret => if (f.returns == .Void) null else "'ret' in a function that returns a value",
         .RetS => if (f.returns == .Scalar) null
             else "'ret.s' in a function that does not return a scalar",

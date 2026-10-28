@@ -50,8 +50,11 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
                 .Void => 0,
                 .Scalar => 1,
                 .Ref => 2,
+                .Slots => 3,
             }
         );
+        w.word(f.retS);
+        w.word(f.retR);
         w.word(f.code.length());
         for (ins in f.code) {
             w.byte(opNumber(ins.op));
@@ -114,8 +117,11 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
             0 => ReturnKind.Void,
             1 => ReturnKind.Scalar,
             2 => ReturnKind.Ref,
+            3 => ReturnKind.Slots,
             _ => throw NotOurs { reason = "a function's result kind" },
         };
+        let retS = try r.word();
+        let retR = try r.word();
         let code = List<Instr>.new();
         var k = try r.word();
         while (k > 0) {
@@ -154,6 +160,8 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
                 constants = constants.toArray(),
                 strings = strings,
                 lines = lines.toArray(),
+                retS = retS,
+                retR = retR,
             }
         );
         n -= 1;

@@ -213,3 +213,59 @@ fn aStringIsReturnedAsAReference(): void {
     };
     assertTrue(ok);
 }
+
+let optional: string = """
+    fn some(s) -> slots 2 0 regs 2 0
+        load.i s1, 1
+        ret.n s0, r0
+    end
+
+    fn none(s) -> slots 2 0 regs 2 0
+        load.i s1, 0
+        ret.n s0, r0
+    end
+
+    fn present() -> s regs 3 0
+        load.i s0, 41
+        call some, s0, r0
+        check.s s1
+        add.imm s0, s0, 1
+        ret.s s0
+    end
+
+    fn absent() -> s regs 3 0
+        load.i s0, 41
+        call none, s0, r0
+        check.s s1
+        ret.s s0
+    end
+
+    fn nilTest() -> s regs 1 1
+        load.null r0
+        is.nil s0, r0
+        check.r r0
+        ret.s s0
+    end
+    """;
+
+@Test
+fn aValueOfSeveralSlotsComesBackWhole(): void {
+    // `?int` is two scalar slots, the value and its presence (11 V2)
+    assertEq(scalar(runText(optional, "present", [], -1)), 42);
+    let o = runText(optional, "some", [7 as uint64], -1);
+    match (o) {
+        .Slots(s, r) => {
+            assertEq(s.length(), 2);
+            assertEq(s[0] as int, 7);
+            assertEq(s[1] as int, 1);
+            assertEq(r.length(), 0);
+        }
+        _ => assertTrue(false, "the slots of the result"),
+    }
+}
+
+@Test
+fn anAbsentValueUnwrappedIsTheScriptsPanic(): void {
+    assertEq(panicOf(runText(optional, "absent", [], -1)).code, "LYS-RT0004");
+    assertEq(panicOf(runText(optional, "nilTest", [], -1)).code, "LYS-RT0004");
+}

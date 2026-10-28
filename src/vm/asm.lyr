@@ -50,6 +50,8 @@ class Draft {
     scalars: int,
     refs: int,
     returns: ReturnKind,
+    retS: int,
+    retR: int,
     body: List<Pending>,
     labels: Map<string, int>,
 }
@@ -194,8 +196,16 @@ fn header(line: string, lineNo: int): Draft throws AsmError {
         it.toString()
     }.toArray();
     var returns: ReturnKind = .Void;
+    var retS = 0;
+    var retR = 0;
     var i = 0;
-    if (i < rest.length() && rest[i] == "->") {
+    if (i + 3 < rest.length() && rest[i] == "->" && rest[i + 1] == "slots") {
+        // `-> slots S R`: a result of several slots
+        returns = .Slots;
+        retS = try number(rest[i + 2], lineNo);
+        retR = try number(rest[i + 3], lineNo);
+        i += 4;
+    } else if (i < rest.length() && rest[i] == "->") {
         if (i + 1 >= rest.length()) {
             throw AsmError { line = lineNo, text = "'->' needs 's' or 'r'" };
         }
@@ -222,6 +232,8 @@ fn header(line: string, lineNo: int): Draft throws AsmError {
         scalars = scalars,
         refs = refs,
         returns = returns,
+        retS = retS,
+        retR = retR,
         body = List<Pending>.new(),
         labels = Map<string, int>.new(),
     };
@@ -337,6 +349,8 @@ fn resolve(d: Draft, drafts: List<Draft>, types: List<TypeDesc>): Function throw
         constants = constants.toArray(),
         strings = strings.toArray(),
         lines = lines.toArray(),
+        retS = d.retS,
+        retR = d.retR,
     };
 }
 
@@ -533,6 +547,7 @@ pub fn disassemble(module: Module): string {
                 .Void => "",
                 .Scalar => " -> s",
                 .Ref => " -> r",
+                .Slots => f" -> slots {f.retS} {f.retR}",
             }
         );
         out.appendStr(f" regs {f.scalars} {f.refs}\n");

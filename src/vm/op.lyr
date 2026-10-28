@@ -76,6 +76,11 @@ pub enum Op :: [Variants, Equatable] {
     GetGR,
     SetGR,
     CallN,
+    // S3: values of several slots, and null.
+    RetN,
+    CheckS,
+    CheckR,
+    IsNil,
 }
 
 /// What an operand of an operation names.
@@ -187,6 +192,10 @@ pub fn info(op: Op): OpInfo {
         .GetGR => OpInfo { mnemonic = "get.gr", operands = [.Ref, .GlobalR] },
         .SetGR => OpInfo { mnemonic = "set.gr", operands = [.GlobalR, .Ref] },
         .CallN => OpInfo { mnemonic = "call.n", operands = [.Native, .ScalarBase, .RefBase] },
+        .RetN => OpInfo { mnemonic = "ret.n", operands = [.ScalarBase, .RefBase] },
+        .CheckS => OpInfo { mnemonic = "check.s", operands = [.Scalar] },
+        .CheckR => OpInfo { mnemonic = "check.r", operands = [.Ref] },
+        .IsNil => OpInfo { mnemonic = "is.nil", operands = [.Scalar, .Ref] },
     };
 }
 

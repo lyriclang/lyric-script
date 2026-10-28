@@ -14,7 +14,7 @@ import std.io { print, println };
 import std.task { spawn, yieldNow };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Module };
-import lyric_script.vm.heap { HeapRef, ScriptObject, ScriptString, nil, nilRef, sameRef };
+import lyric_script.vm.heap { HeapRef, Nil, ScriptObject, ScriptString, nil, nilRef, sameRef };
 import lyric_script.vm.native { nativeOf };
 
 /// How a run ended.
@@ -25,6 +25,8 @@ pub enum Outcome {
     Scalar(uint64),
     /// The entry function returned a reference.
     Ref(HeapRef),
+    /// The entry function returned a value of several slots.
+    Slots(uint64[], HeapRef[]),
     /// The script panicked.
     Panic(ScriptPanic),
     /// The fuel ran out (design/v1, 01 S5); the run stopped at a backward jump or a call.
@@ -325,17 +327,34 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 code = f.code;
                 pc = 0;
             }
-            .Ret | .RetS | .RetR => {
+            .Ret | .RetS | .RetR | .RetN => {
                 if (ins.op == .RetS) {
                     s[bs] = s[bs + a];
                 } else if (ins.op == .RetR) {
                     r[br] = r[br + a];
+                } else if (ins.op == .RetN) {
+                    // the result's slots to the bases: from higher registers to lower ones, in
+                    // order, so an overlap reads before it writes
+                    var k = 0;
+                    while (k < f.retS) {
+                        s[bs + k] = s[bs + a + k];
+                        k += 1;
+                    }
+                    k = 0;
+                    while (k < f.retR) {
+                        r[br + k] = r[br + b + k];
+                        k += 1;
+                    }
                 }
                 let back = frames.pop();
                 if (back == null) {
                     return match (ins.op) {
                         .RetS => Outcome.Scalar(s[bs]),
                         .RetR => Outcome.Ref(r[br]),
+                        .RetN => Outcome.Slots(
+                            firstScalars(s, bs, f.retS),
+                            firstRefs(r, br, f.retR)
+                        ),
                         _ => Outcome.Void,
                     };
                 }
@@ -490,6 +509,22 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 gr[a] = r[br + b];
                 pc += 1;
             }
+            .CheckS => {
+                if (s[bs + a] == 0) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0004", "a null value unwrapped");
+                }
+                pc += 1;
+            }
+            .CheckR => {
+                if (r[br + a] is Nil) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0004", "a null value unwrapped");
+                }
+                pc += 1;
+            }
+            .IsNil => {
+                s[bs + a] = truth(r[br + b] is Nil);
+                pc += 1;
+            }
             .CallN => {
                 let x = bs + b;
                 let y = br + c;
@@ -518,6 +553,20 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
 /// The text of a string reference; the compiler gives a native nothing else.
 fn textOf(v: HeapRef): string {
     return if (v is ScriptString) v.text else "";
+}
+
+fn firstScalars(s: uint64[], from: int, n: int): uint64[] {
+    var out: uint64[] = [0 as uint64] * n;
+    var k = 0;
+    while (k < n) {
+        out[k] = s[from + k];
+        k += 1;
+    }
+    return out;
+}
+
+fn firstRefs(r: HeapRef[], from: int, n: int): HeapRef[] {
+    return arrayOf(n, (k: int) => r[from + k]);
 }
 
 fn signed16(v: int): int {

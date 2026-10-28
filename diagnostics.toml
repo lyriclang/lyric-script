@@ -18,3 +18,39 @@ $ lyric-script frobnicate
 error[LYS-CLI0001]: unknown command 'frobnicate'
   = help: lyric-script help lists the commands
 '''
+
+[LYS-ICE0001]
+title = "the VM failed"
+severity = "panic"
+area = "17-host"
+summary = "A fault of the Lyric-Script VM itself, not of the script: the VM's task ended by a panic of Lyric 5 or without a result. The host gets it as a panic; the VM stays usable. Worth a report."
+
+[LYS-RT0001]
+title = "integer division by zero"
+severity = "panic"
+area = "08-expressions"
+summary = "An integer `/` or `%` has a zero divisor. The code and its meaning are Lyric 5's LYR-RT0001."
+
+[LYS-RT0002]
+title = "integer overflow"
+severity = "panic"
+area = "08-expressions"
+summary = "An `int` operation's result does not fit 64 bits. The code and its meaning are Lyric 5's LYR-RT0002."
+
+[LYS-RT0004]
+title = "a null value used"
+severity = "panic"
+area = "03-types"
+summary = "A field of `null` read or written. The code and its meaning are Lyric 5's LYR-RT0004."
+
+[LYS-RT0006]
+title = "stack overflow"
+severity = "panic"
+area = "17-host"
+summary = "The script's calls nest deeper than the VM runs (10 000 frames). The code and its meaning are Lyric 5's LYR-RT0006."
+
+[LYS-RT0008]
+title = "panic called by the script"
+severity = "panic"
+area = "06-errors"
+summary = "The script called `panic` with a message. The code and its meaning are Lyric 5's LYR-RT0008."

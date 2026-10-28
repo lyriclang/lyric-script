@@ -1,0 +1,215 @@
+// The interpreter: hand-written programs run to their results; overflow, division by zero, null,
+// a too deep recursion and `panic` end as the script's panics with their codes and frames; the
+// fuel stops a loop deterministically.
+import std.test { assertEq, assertTrue };
+import lyric_script.vm.asm { assemble };
+import lyric_script.vm.heap { ScriptString };
+import lyric_script.vm.interp { Outcome, ScriptPanic, execute, maxDepth };
+
+fn runText(text: string, entry: string, args: uint64[], fuel: int): Outcome {
+    return execute(try! assemble(text, "t"), entry, args, fuel);
+}
+
+fn scalar(o: Outcome): int {
+    return match (o) {
+        .Scalar(bits) => bits as int,
+        _ => -999999,
+    };
+}
+
+fn suspended(o: Outcome): bool {
+    return match (o) {
+        .Suspended => true,
+        _ => false,
+    };
+}
+
+fn panicOf(o: Outcome): ScriptPanic {
+    return match (o) {
+        .Panic(p) => p,
+        _ => ScriptPanic { code = "none", message = "", trace = [] },
+    };
+}
+
+let fib: string = """
+    fn fib(s) -> s regs 4 0
+        load.i s1, 2
+        jump.lt.i s0, s1, @small
+        add.imm s2, s0, -1
+        call fib, s2, r0
+        add.imm s3, s0, -2
+        call fib, s3, r0
+        add.i s0, s2, s3
+        ret.s s0
+    small:
+        ret.s s0
+    end
+    """;
+
+@Test
+fn fibRuns(): void {
+    assertEq(scalar(runText(fib, "fib", [20], -1)), 6765);
+}
+
+let sum: string = """
+    fn sum(s) -> s regs 4 0
+        load.i s1, 0
+        load.i s2, 1
+    loop:
+        add.i s1, s1, s2
+        add.imm s2, s2, 1
+        le.i s3, s2, s0
+        jump.if s3, @loop
+        ret.s s1
+    end
+    """;
+
+@Test
+fn aLoopSums(): void {
+    assertEq(scalar(runText(sum, "sum", [1000], -1)), 500500);
+}
+
+@Test
+fn theFuelStopsALoopAtTheSameBackwardJump(): void {
+    // 1000 iterations take 999 backward jumps
+    assertTrue(suspended(runText(sum, "sum", [1000], 998)));
+    assertEq(scalar(runText(sum, "sum", [1000], 999)), 500500);
+}
+
+@Test
+fn overflowIsTheScriptsPanic(): void {
+    let text = """
+        fn top() -> s regs 2 0
+            load.k s0, 9223372036854775807
+            load.i s1, 1
+            add.i s0, s0, s1
+            ret.s s0
+        end
+        """;
+    let p = panicOf(runText(text, "top", [], -1));
+    assertEq(p.code, "LYS-RT0002");
+    assertEq(p.trace.length(), 1);
+    assertTrue(p.trace[0].contains("top (line 4)"));
+}
+
+@Test
+fn divisionByZeroIsTheScriptsPanicWithItsCallers(): void {
+    let text = """
+        fn div(s, s) -> s regs 2 0
+            div.i s0, s0, s1
+            ret.s s0
+        end
+
+        fn main() -> s regs 2 0
+            load.i s0, 7
+            load.i s1, 0
+            call div, s0, r0
+            ret.s s0
+        end
+        """;
+    let p = panicOf(runText(text, "main", [], -1));
+    assertEq(p.code, "LYS-RT0001");
+    assertEq(p.trace.length(), 2);
+    assertTrue(p.trace[0].contains("div"));
+    assertTrue(p.trace[1].contains("main"));
+}
+
+@Test
+fn aTooDeepRecursionIsAStackOverflow(): void {
+    let text = """
+        fn down(s) -> s regs 1 0
+            call down, s0, r0
+            ret.s s0
+        end
+        """;
+    let p = panicOf(runText(text, "down", [0], -1));
+    assertEq(p.code, "LYS-RT0006");
+    assertEq(p.trace.length(), maxDepth + 1);
+}
+
+@Test
+fn objectsHoldTheirFields(): void {
+    let text = """
+        type Node scalar value ref next
+
+        fn main() -> s regs 3 3
+            load.null r2
+            new r0, Node
+            load.i s0, 30
+            set.s r0, Node.value, s0
+            set.r r0, Node.next, r2
+            new r1, Node
+            load.i s0, 12
+            set.s r1, Node.value, s0
+            set.r r1, Node.next, r0
+            get.r r2, r1, Node.next
+            get.s s1, r2, Node.value
+            get.s s2, r1, Node.value
+            add.i s0, s1, s2
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text, "main", [], -1)), 42);
+}
+
+@Test
+fn aFieldOfNullIsTheScriptsPanic(): void {
+    let text = """
+        type Node scalar value
+
+        fn main() -> s regs 1 1
+            load.null r0
+            get.s s0, r0, Node.value
+            ret.s s0
+        end
+        """;
+    assertEq(panicOf(runText(text, "main", [], -1)).code, "LYS-RT0004");
+}
+
+@Test
+fn floatsCompute(): void {
+    let text = """
+        fn main() -> s regs 3 0
+            load.k s0, 1.5
+            load.k s1, 2.25
+            add.f s2, s0, s1
+            f2i s0, s2
+            ret.s s2
+        end
+        """;
+    let o = runText(text, "main", [], -1);
+    let v = match (o) {
+        .Scalar(bits) => float.fromBits(bits),
+        _ => 0.0,
+    };
+    assertEq(v, 3.75);
+}
+
+@Test
+fn panicCarriesItsMessage(): void {
+    let text = """
+        fn main() regs 0 1
+            load.str r0, "no way"
+            panic r0
+        end
+        """;
+    let p = panicOf(runText(text, "main", [], -1));
+    assertEq(p.code, "LYS-RT0008");
+    assertEq(p.message, "no way");
+}
+
+@Test
+fn aStringIsReturnedAsAReference(): void {
+    let text = """
+        fn main() -> r regs 0 1
+            load.str r0, "hello"
+            ret.r r0
+        end
+        """;
+    let o = runText(text, "main", [], -1);
+    let ok = match (o) {
+        .Ref(v) => v is ScriptString && v.text == "hello",
+        _ => false,
+    };
+    assertTrue(ok);
+}

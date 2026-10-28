@@ -1,0 +1,488 @@
+//! The interpreter (design/v1, 11): one dispatch loop over a module's code, with the VM's own
+//! frames (11 Co) on two register stacks, one of scalars and one of references.
+//!
+//! A call's callee frame starts at the caller's argument bases: the arguments are already in
+//! place, and the result lands at the base. A call therefore takes the caller's registers from
+//! its bases up; the compiler places the arguments above the registers it still needs.
+//!
+//! Panics of the script — overflow, division by zero, `null`, a too deep recursion, `panic` —
+//! the VM detects itself and reports as an outcome; a panic of Lyric 5 itself (a fault of the
+//! VM) is caught at a task boundary (`execute`).
+import std.collections { List };
+import std.core { arrayOf };
+import std.task { spawn, yieldNow };
+import lyric_script.vm.op { Instr };
+import lyric_script.vm.module { Function, Module };
+import lyric_script.vm.heap { HeapRef, ScriptObject, ScriptString, nil, nilRef, sameRef };
+
+/// How a run ended.
+pub enum Outcome {
+    /// The entry function returned nothing.
+    Void,
+    /// The entry function returned a scalar, as its 64 bits.
+    Scalar(uint64),
+    /// The entry function returned a reference.
+    Ref(HeapRef),
+    /// The script panicked.
+    Panic(ScriptPanic),
+    /// The fuel ran out (design/v1, 01 S5); the run stopped at a backward jump or a call.
+    Suspended,
+}
+
+/// A panic of the script: its code, its message and the script's frames, innermost first.
+pub struct ScriptPanic {
+    pub code: string,
+    pub message: string,
+    pub trace: string[],
+}
+
+/// The deepest recursion the VM runs before it reports a stack overflow.
+pub let maxDepth: int = 10000;
+
+/// A caller's frame while its callee runs.
+struct CallFrame {
+    function: int,
+    pc: int,
+    baseS: int,
+    baseR: int,
+}
+
+/// Runs `entry` of `module` with `args` in its first scalar registers, with `fuel` units of
+/// budget (a backward jump or a call costs one; `-1` runs without a limit), on a task of its
+/// own: a panic of the VM itself becomes `Outcome.Panic` with the code `LYS-ICE0001`.
+pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
+    let task = spawn(() => run(module, entry, args, fuel));
+    while (!task.isDone()) {
+        try? yieldNow();
+    }
+    return match (task.status()) {
+        .Done(outcome) => outcome,
+        .Panicked(p) => Outcome.Panic(
+            ScriptPanic {
+                code = "LYS-ICE0001",
+                message = f"the VM failed: {p.code}: {p.message}",
+                trace = [p.trace],
+            }
+        ),
+        _ => Outcome.Panic(
+            ScriptPanic {
+                code = "LYS-ICE0001",
+                message = "the VM's task ended without a result",
+                trace = [],
+            }
+        ),
+    };
+}
+
+/// Runs `entry` of `module` on the current task; see `execute`.
+pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
+    var fi = -1;
+    var i = 0;
+    while (i < module.functions.length()) {
+        if (module.functions[i].name == entry) {
+            fi = i;
+        }
+        i += 1;
+    }
+    if (fi < 0) {
+        return Outcome.Panic(
+            ScriptPanic { code = "LYS-ICE0001", message = f"no function '{entry}'", trace = [] }
+        );
+    }
+    var f = module.functions[fi];
+    var s: uint64[] = [0 as uint64] * grown(0, f.scalars);
+    var r: HeapRef[] = refArray(grown(0, f.refs));
+    var k = 0;
+    while (k < args.length() && k < f.paramsS) {
+        s[k] = args[k];
+        k += 1;
+    }
+    let frames = List<CallFrame>.new();
+    var code: Instr[] = f.code;
+    var pc = 0;
+    var bs = 0;
+    var br = 0;
+    var budget = fuel;
+    while (true) {
+        let ins = code[pc];
+        let a = ins.a as int;
+        let b = ins.b as int;
+        let c = ins.c as int;
+        match (ins.op) {
+            .MoveS => {
+                s[bs + a] = s[bs + b];
+                pc += 1;
+            }
+            .MoveR => {
+                r[br + a] = r[br + b];
+                pc += 1;
+            }
+            .LoadI => {
+                s[bs + a] = signed16(b) as uint64;
+                pc += 1;
+            }
+            .LoadK => {
+                s[bs + a] = f.constants[b];
+                pc += 1;
+            }
+            .LoadStr => {
+                r[br + a] = ScriptString { text = f.strings[b] };
+                pc += 1;
+            }
+            .LoadNull => {
+                r[br + a] = nil;
+                pc += 1;
+            }
+            .AddI => {
+                let z = (s[bs + b] as int).checkedAdd(s[bs + c] as int);
+                if (z == null) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
+                }
+                s[bs + a] = z as uint64;
+                pc += 1;
+            }
+            .SubI => {
+                let z = (s[bs + b] as int).checkedSub(s[bs + c] as int);
+                if (z == null) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
+                }
+                s[bs + a] = z as uint64;
+                pc += 1;
+            }
+            .MulI => {
+                let z = (s[bs + b] as int).checkedMul(s[bs + c] as int);
+                if (z == null) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
+                }
+                s[bs + a] = z as uint64;
+                pc += 1;
+            }
+            .DivI | .RemI => {
+                let y = s[bs + c] as int;
+                if (y == 0) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0001",
+                        "integer division by zero"
+                    );
+                }
+                let x = s[bs + b] as int;
+                let z = if (ins.op == .DivI) x.checkedDiv(y) else x.checkedRem(y);
+                if (z == null) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
+                }
+                s[bs + a] = z as uint64;
+                pc += 1;
+            }
+            .NegI => {
+                let z = (0).checkedSub(s[bs + b] as int);
+                if (z == null) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
+                }
+                s[bs + a] = z as uint64;
+                pc += 1;
+            }
+            .AddImm => {
+                let z = (s[bs + b] as int).checkedAdd(signed16(c));
+                if (z == null) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
+                }
+                s[bs + a] = z as uint64;
+                pc += 1;
+            }
+            .AddF => {
+                s[bs + a] = (float.fromBits(s[bs + b]) + float.fromBits(s[bs + c])).toBits();
+                pc += 1;
+            }
+            .SubF => {
+                s[bs + a] = (float.fromBits(s[bs + b]) - float.fromBits(s[bs + c])).toBits();
+                pc += 1;
+            }
+            .MulF => {
+                s[bs + a] = (float.fromBits(s[bs + b]) * float.fromBits(s[bs + c])).toBits();
+                pc += 1;
+            }
+            .DivF => {
+                s[bs + a] = (float.fromBits(s[bs + b]) / float.fromBits(s[bs + c])).toBits();
+                pc += 1;
+            }
+            .NegF => {
+                s[bs + a] = (-float.fromBits(s[bs + b])).toBits();
+                pc += 1;
+            }
+            .EqI => {
+                s[bs + a] = truth(s[bs + b] == s[bs + c]);
+                pc += 1;
+            }
+            .NeI => {
+                s[bs + a] = truth(s[bs + b] != s[bs + c]);
+                pc += 1;
+            }
+            .LtI => {
+                s[bs + a] = truth((s[bs + b] as int) < (s[bs + c] as int));
+                pc += 1;
+            }
+            .LeI => {
+                s[bs + a] = truth((s[bs + b] as int) <= (s[bs + c] as int));
+                pc += 1;
+            }
+            .EqF => {
+                s[bs + a] = truth(float.fromBits(s[bs + b]) == float.fromBits(s[bs + c]));
+                pc += 1;
+            }
+            .NeF => {
+                s[bs + a] = truth(float.fromBits(s[bs + b]) != float.fromBits(s[bs + c]));
+                pc += 1;
+            }
+            .LtF => {
+                s[bs + a] = truth(float.fromBits(s[bs + b]) < float.fromBits(s[bs + c]));
+                pc += 1;
+            }
+            .LeF => {
+                s[bs + a] = truth(float.fromBits(s[bs + b]) <= float.fromBits(s[bs + c]));
+                pc += 1;
+            }
+            .Same => {
+                s[bs + a] = truth(sameRef(r[br + b], r[br + c]));
+                pc += 1;
+            }
+            .Not => {
+                s[bs + a] = truth(s[bs + b] == 0);
+                pc += 1;
+            }
+            .IToF => {
+                s[bs + a] = ((s[bs + b] as int) as float).toBits();
+                pc += 1;
+            }
+            .FToI => {
+                s[bs + a] = (float.fromBits(s[bs + b]) as int) as uint64;
+                pc += 1;
+            }
+            .Jump => {
+                if (a <= pc) {
+                    budget = spend(budget);
+                    if (budget == -2) {
+                        return Outcome.Suspended;
+                    }
+                }
+                pc = a;
+            }
+            .JumpIf | .JumpIfNot => {
+                let taken = (s[bs + a] != 0) == (ins.op == .JumpIf);
+                if (taken) {
+                    if (b <= pc) {
+                        budget = spend(budget);
+                        if (budget == -2) {
+                            return Outcome.Suspended;
+                        }
+                    }
+                    pc = b;
+                } else {
+                    pc += 1;
+                }
+            }
+            .JumpLtI => {
+                if ((s[bs + a] as int) < (s[bs + b] as int)) {
+                    if (c <= pc) {
+                        budget = spend(budget);
+                        if (budget == -2) {
+                            return Outcome.Suspended;
+                        }
+                    }
+                    pc = c;
+                } else {
+                    pc += 1;
+                }
+            }
+            .Call => {
+                budget = spend(budget);
+                if (budget == -2) {
+                    return Outcome.Suspended;
+                }
+                if (frames.length() >= maxDepth) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
+                }
+                let callee = module.functions[a];
+                frames.push(CallFrame { function = fi, pc = pc + 1, baseS = bs, baseR = br });
+                bs += b;
+                br += c;
+                if (bs + callee.scalars > s.length()) {
+                    s = growScalars(s, bs + callee.scalars);
+                }
+                if (br + callee.refs > r.length()) {
+                    r = growRefs(r, br + callee.refs);
+                }
+                fi = a;
+                f = callee;
+                code = f.code;
+                pc = 0;
+            }
+            .Ret | .RetS | .RetR => {
+                if (ins.op == .RetS) {
+                    s[bs] = s[bs + a];
+                } else if (ins.op == .RetR) {
+                    r[br] = r[br + a];
+                }
+                let back = frames.pop();
+                if (back == null) {
+                    return match (ins.op) {
+                        .RetS => Outcome.Scalar(s[bs]),
+                        .RetR => Outcome.Ref(r[br]),
+                        _ => Outcome.Void,
+                    };
+                }
+                fi = back.function;
+                f = module.functions[fi];
+                code = f.code;
+                pc = back.pc;
+                bs = back.baseS;
+                br = back.baseR;
+            }
+            .New => {
+                let t = module.types[b];
+                r[br + a] = ScriptObject {
+                    typeDesc = t,
+                    scalars = [0 as uint64] * t.scalarFields.length(),
+                    refs = refArray(t.refFields.length()),
+                };
+                pc += 1;
+            }
+            .GetS => {
+                let o = r[br + b];
+                if (o is ScriptObject) {
+                    s[bs + a] = o.scalars[c];
+                } else {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0004", "a field of null read");
+                }
+                pc += 1;
+            }
+            .SetS => {
+                let o = r[br + a];
+                if (o is ScriptObject) {
+                    o.scalars[b] = s[bs + c];
+                } else {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0004",
+                        "a field of null written"
+                    );
+                }
+                pc += 1;
+            }
+            .GetR => {
+                let o = r[br + b];
+                if (o is ScriptObject) {
+                    r[br + a] = o.refs[c];
+                } else {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0004", "a field of null read");
+                }
+                pc += 1;
+            }
+            .SetR => {
+                let o = r[br + a];
+                if (o is ScriptObject) {
+                    o.refs[b] = r[br + c];
+                } else {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0004",
+                        "a field of null written"
+                    );
+                }
+                pc += 1;
+            }
+            .Panic => {
+                let m = r[br + a];
+                let text = if (m is ScriptString) m.text else "panic";
+                return panicOut(module, frames, fi, pc, "LYS-RT0008", text);
+            }
+        }
+    }
+}
+
+fn signed16(v: int): int {
+    return if (v >= 32768) v - 65536 else v;
+}
+
+fn truth(b: bool): uint64 {
+    return if (b) 1 else 0;
+}
+
+/// One unit of budget spent: the budget left, `-1` for none, `-2` once it ran out.
+fn spend(budget: int): int {
+    if (budget < 0) {
+        return budget;
+    }
+    if (budget == 0) {
+        return -2;
+    }
+    return budget - 1;
+}
+
+/// The length a register stack grows to so that it holds `need`: at least 256, doubling.
+fn grown(have: int, need: int): int {
+    var n = if (have < 256) 256 else have;
+    while (n < need) {
+        n *= 2;
+    }
+    return n;
+}
+
+/// `n` reference registers, each `null`.
+fn refArray(n: int): HeapRef[] {
+    return arrayOf(n, (i: int) => nilRef());
+}
+
+fn growScalars(s: uint64[], need: int): uint64[] {
+    var bigger: uint64[] = [0 as uint64] * grown(s.length(), need);
+    var i = 0;
+    while (i < s.length()) {
+        bigger[i] = s[i];
+        i += 1;
+    }
+    return bigger;
+}
+
+fn growRefs(r: HeapRef[], need: int): HeapRef[] {
+    var bigger: HeapRef[] = refArray(grown(r.length(), need));
+    var i = 0;
+    while (i < r.length()) {
+        bigger[i] = r[i];
+        i += 1;
+    }
+    return bigger;
+}
+
+/// The panic outcome, with the script's frames: the current one first, then its callers.
+fn panicOut(
+    module: Module,
+    frames: List<CallFrame>,
+    fi: int,
+    pc: int,
+    code: string,
+    message: string
+): Outcome {
+    let trace = List<string>.new();
+    trace.push(frameText(module.functions[fi], pc));
+    var i = frames.length() - 1;
+    while (i >= 0) {
+        let fr = frames[i];
+        trace.push(frameText(module.functions[fr.function], fr.pc - 1));
+        i -= 1;
+    }
+    return Outcome.Panic(ScriptPanic { code = code, message = message, trace = trace.toArray() });
+}
+
+fn frameText(f: Function, pc: int): string {
+    let line = if (pc >= 0 && pc < f.lines.length()) f.lines[pc] else 0;
+    return f"at {f.name} (line {line})";
+}

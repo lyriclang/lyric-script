@@ -17,7 +17,11 @@ Lyric 4.x status up to the 4.6 cut is archived at
   bytecode in CI on every Tier 1 target; measurement point 1: **4.3×** 4.6 (target 5×, missed by
   less than 2× — no re-cut; the call path is the first lever before measurement point 3; V3 stays
   A').
-- **Open milestone: S2** — the front-end core.
+- **S2 done** (2026-10-28, lyric-script#4, lyric-spec#382, tag `s2-complete`): `lyric-script run
+  hello.lyrs` in CI on every Tier 1 target — lexer, parser, checker and code generator for the
+  core, diagnostics as text and JSON, the bytecode cache; measurement point 2: warm 1.36 ms, cold
+  1.66 ms (targets 10 and 50 ms).
+- **Open milestone: S3** — the type system complete.
 
 ## Milestones
 
@@ -25,8 +29,8 @@ Lyric 4.x status up to the 4.6 cut is archived at
 |---|---|---|---|
 | S0 | Cut and scaffold | M | **done** 2026-10-28 |
 | S1 | VM core | L | **done** 2026-10-28 |
-| S2 | Front-end core | XL | **open** |
-| S3 | Type system complete | L | — |
+| S2 | Front-end core | XL | **done** 2026-10-28 |
+| S3 | Type system complete | L | **open** |
 | S4 | Errors and control | M | — |
 | S5 | Modules and packages | M | — |
 | S6 | Coroutines and tasks | L | — |
@@ -58,7 +62,7 @@ Sizes are sessions, not dates: S days, M 1–2 weeks, L 3–4 weeks, XL more. A 
 
 Exit criterion: hand-written bytecode runs in CI on every Tier 1 target; measurement point 1 recorded.
 
-### S2 — open
+### S2 — done
 
 | Slice | State |
 |---|---|
@@ -69,7 +73,7 @@ Exit criterion: hand-written bytecode runs in CI on every Tier 1 target; measure
 | S2e code generation | done — one pass per function, registers Lua's way; the VM gains globals, natives and the core's missing operations; `lyric-script run` |
 | S2f diagnostics | done — rustc's text form with columns in characters, Lyric 5's JSON events with `--json`, every code in the catalog |
 | S2g `run` and the bytecode cache | done — `run`, `lyric-script x.lyrs`, `--json`, the cache in the user's cache directory (Lyric 5's place), `clean` |
-| S2h measurement point 2 | open |
+| S2h measurement point 2 | done — warm 1.36 ms, cold 1.66 ms (release, median); both targets hold ([`bench/startup/README.md`](bench/startup/README.md)) |
 
 Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; measurement point 2 recorded.
 

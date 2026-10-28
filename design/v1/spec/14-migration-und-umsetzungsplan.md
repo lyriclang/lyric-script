@@ -192,3 +192,9 @@ Offen für S3 und später: Generics, Interfaces, Optionals, Patterns, Fehler, Mo
 *Nachtrag S2b (2026-10-28):* `check` wächst mit dem Compiler — erst der Lexer, dann Parser und
 Typen —, damit die Konformanzsuite ab S2b läuft; die lexikalischen Codes spiegeln Lyric 5
 (unter `LYS-LEX0100` dieselbe Bedeutung wie die gleiche Nummer von `LYR-LEX`, ab 0100 Script-eigen).
+
+**Ergebnis S2 (2026-10-28):** `lyric-script run hello.lyrs` läuft in der CI auf allen
+Tier-1-Zielen, dazu `fib` und `tally`; 97 Tests, 33 Konformanzfälle (Kapitel 01, 02 Kern, 03, 07,
+08, 12, 14, 16 der Spec). Messpunkt 2: warm 1,36 ms, kalt 1,66 ms — beide Ratchets halten.
+`run` kam schon mit S2e (der Ende-zu-Ende-Test brauchte es), S2g brachte den Cache. Entscheidungen,
+die das Design präzisieren, stehen als offene Punkte in STATUS (P2–P5).

@@ -210,6 +210,8 @@ Compile-Zeit-Synthese und dient Debug-Ausgaben und Inspektoren.
 
 ## Offene Folgefragen für die Detailbereiche
 
+*Die Punkte zu 03 und 04 sind in `03-werte-und-typen.md` entschieden.*
+
 - **03**: Ist `[1, 2, 3]` eine wachsende `List` (Python) oder ein Array `int[]` (Lyric 5), und
   braucht Script beide? Stringmodell (Lyric 5: Bytes, `s[i]` = Zeichen an Byte `i`).
 - **04**: Literale, die einen Typ bauen (Interfaces, Regeln); Inferenzgrenzen.

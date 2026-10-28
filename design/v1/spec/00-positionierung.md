@@ -109,8 +109,8 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | 00 | Positionierung (dieses Dokument) |
 | 01 | Host und Sicherheit: Profile, Capabilities, Budget, Hot-Reload, Determinismus |
 | 02 | **Leitbild**: Beispielprogramme in Stilvarianten, Katalog der Skript-Merkmale |
-| 03 | Wertmodell der Sprache: Zahlen, Strings, Sammlungen, Mutabilität, `Any` |
-| 04 | Typsystem und Inferenz (inkl. Generics: monomorphisiert oder gelöscht) |
+| 03 | **Werte und Typen** (Wertmodell und Typsystem zusammen, 2026-10-28) |
+| 04 | — in 03 aufgegangen |
 | 05 | Abstraktion: Klassen, Vererbung?, Interfaces, strukturelle Typen? |
 | 06 | Fehler |
 | 07 | Nebenläufigkeit: Koroutinen, vom Host gepumpte Event-Loop |

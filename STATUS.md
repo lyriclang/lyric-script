@@ -68,7 +68,7 @@ Exit criterion: hand-written bytecode runs in CI on every Tier 1 target; measure
 | S2d names and types (core) | done — the checker for the core; `LYS-NYI0001` names what later milestones build |
 | S2e code generation | done — one pass per function, registers Lua's way; the VM gains globals, natives and the core's missing operations; `lyric-script run` |
 | S2f diagnostics | done — rustc's text form with columns in characters, Lyric 5's JSON events with `--json`, every code in the catalog |
-| S2g `run` and the bytecode cache | in part — `run` and `lyric-script x.lyrs` (S2e); the cache open |
+| S2g `run` and the bytecode cache | done — `run`, `lyric-script x.lyrs`, `--json`, the cache in the user's cache directory (Lyric 5's place), `clean` |
 | S2h measurement point 2 | open |
 
 Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; measurement point 2 recorded.

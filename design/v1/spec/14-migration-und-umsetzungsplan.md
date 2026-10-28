@@ -126,3 +126,19 @@ plattformübergreifender Determinismus (fdlibm); Vertrauensliste im Terminal; `d
 Unionen; optionale Parametertypen; `eval`; dynamischer Import; `reflect.construct`; Decorators;
 Worker-Instanzen; Sichten (`Slice`); JIT; .NET-Paket und weitere Bindings; Notebook-Kernel;
 Registry.
+
+## S0 — Slices (Plan, 2026-10-28)
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S0a** | dieser Plan | — |
+| **S0b Schnitt** | Tag `v4.6-final` und Branch `archive/4.x` auf `33339164` (der letzte reine 4.6-Baum); auf `main`: die C#-Toolchain, ihre Tests, Werkzeuge und Build-Dateien entfernt; `docs/archive/4.x/` nimmt Grammatik, Guide, Bytecode-Format, Pack-Format, die 4.x-Designnotizen, `STATUS.md`, `CHANGELOG.md` und die `examples/` (Eingabe von S14) auf; neue `README.md`, `STATUS.md`, `CHANGELOG.md`, `CONTRIBUTING.md` für die Script-Linie | der Baum enthält keinen C#-Code mehr; `v4.6-final` baut wie zuvor |
+| **S0c Gerüst** | Lyric-5-Paket `lyric_script` (`lyric.toml`): Bibliotheksmodule `lyric_script.vm`, `lyric_script.compiler` (Platzhalter mit einem Test), Binary `lyric-script` (`--version`, `help`, Exit-Codes nach 12), C-ABI-Stub `lyrs_version()` über `@Export`; Version `1.0.0-dev`; `diagnostics.toml` mit Präfix `LYS-` (Format wie Lyric 5) | lokal unter WSL gegen den gepinnten Lyric-5-Bau: `lyric5 build`, `lyric5 test`, `lyric-script --version` |
+| **S0d CI** | `lyric5.pin` (Commit von `lyriclang/lyric`); Workflow: Lyric 5 aus dem Pin auschecken, `lyric5` per NativeAOT bauen (Cache je Pin und Ziel), zig aus dessen `tooling/zig-version`; `lyric-script` bauen, testen und `--version` prüfen auf linux-x64, linux-arm64, win-x64, osx-arm64; die 4.x-Workflows fallen weg | PR-Lauf grün auf allen Tier-1-Zielen |
+| **S0e Spec-Skelett** | `lyric-spec` Branch `script`: der 4.x-Text als Tag `script-4.x-final`, dann das Delta-Skelett (Kapitelliste nach Lyric 5.0, je Kapitel „Es gilt Lyric 5.0 §n mit folgenden Abweichungen", leere Suite mit `since: 1.0.0`); `spec.pin` hier | Skelett gemergt, Pin zeigt darauf |
+| **S0f Werte-Probe** | Ergebnis der Probe (`design/v1/probes/werte/`) einchecken und in 11 eintragen: V2/V3/Gen bestätigt — oder die widerlegte Frage zurück in den Dialog | Probe-Bericht mit Kontrollen |
+| **Abschluss** | `STATUS.md`: S0 erledigt mit Artefakt; PR, CI grün, Merge | `lyric-script --version` in der CI auf allen Tier-1-Zielen |
+
+**Vorsichtsregeln** (14 Start): der gepinnte Lyric-5-Bau liegt in einem eigenen Worktree unter
+WSL (`~/dev/projects/lyric-worktrees/script-pin`), nie im Checkout der Lyric-5-Session; keine
+Lyric-5-Testläufe; Builds nicht, während eine Messprobe läuft.

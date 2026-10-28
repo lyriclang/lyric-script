@@ -1,5 +1,0 @@
-Defer [0..18)
-  ExprStmt [6..18)
-    Call [6..17)
-      Ident close [6..11)
-      Ident file [12..16)

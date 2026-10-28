@@ -1,1 +1,0 @@
-fn readFile(path: string): string throws FileNotFound { return path; }

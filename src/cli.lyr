@@ -1,0 +1,33 @@
+//! The `lyric-script` command line (design/v1, 12). In S0 it knows `--version` and `help`.
+import std.io { println, eprintln };
+import std.os { args };
+import lyric_script { version };
+import lyric_script.vm { bytecodeFormat };
+
+fn usage(): void {
+    println("usage: lyric-script <command>");
+    println("");
+    println("commands:");
+    println("  version    print the version (also --version)");
+    println("  help       print this text (also --help)");
+}
+
+fn main(): int {
+    let given = args();
+    if (given.length() < 2) {
+        usage();
+        return 0;
+    }
+    let command = given[1];
+    if (command == "--version" || command == "version") {
+        println(f"lyric-script {version} (bytecode format {bytecodeFormat})");
+        return 0;
+    }
+    if (command == "--help" || command == "help") {
+        usage();
+        return 0;
+    }
+    eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
+    eprintln("  = help: lyric-script help lists the commands");
+    return 2;
+}

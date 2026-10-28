@@ -1,5 +1,0 @@
-StructInit Outer [0..33)
-  InitField inner [8..31)
-    StructInit Inner [16..31)
-      InitField v [24..29)
-        Int 1 [28..29)

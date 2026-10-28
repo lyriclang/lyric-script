@@ -1,0 +1,353 @@
+{
+  "part": "w3",
+  "runs": 9,
+  "load_before": [
+    "1.03",
+    "1.11",
+    "4.31"
+  ],
+  "load_after": [
+    "1.02",
+    "1.08",
+    "3.84"
+  ],
+  "oracle_acc": null,
+  "rows": [
+    {
+      "name": "small-mono",
+      "what": "hash/eq on string, direct (monomorphized)",
+      "args": [
+        "mono",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 519982476,
+      "min_ns": 499310698,
+      "max_ns": 542245508,
+      "runs_ns": [
+        513198940,
+        531160233,
+        536860331,
+        510851820,
+        542245508,
+        499310698,
+        516011900,
+        530265737,
+        519982476
+      ],
+      "wall_median_s": 0.5232292879954912,
+      "cpu_median_s": 0.522797,
+      "startup_s": null,
+      "ns_per_unit": 51.9982476,
+      "unit": "lookup",
+      "output": {
+        "mode": "mono",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "513198940",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-iface",
+      "what": "hash/eq through the key's interface table (KeyRef)",
+      "args": [
+        "iface",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 600781820,
+      "min_ns": 571354030,
+      "max_ns": 647067615,
+      "runs_ns": [
+        647067615,
+        597964015,
+        590132182,
+        602422365,
+        634237856,
+        591921088,
+        571354030,
+        610548328,
+        600781820
+      ],
+      "wall_median_s": 0.6043230410141405,
+      "cpu_median_s": 0.6035539999999999,
+      "startup_s": null,
+      "ns_per_unit": 60.078182,
+      "unit": "lookup",
+      "output": {
+        "mode": "iface",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "647067615",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-wit",
+      "what": "hash/eq through a witness object over HeapRef keys",
+      "args": [
+        "wit",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 617118196,
+      "min_ns": 593987237,
+      "max_ns": 667739436,
+      "runs_ns": [
+        600323914,
+        619068271,
+        617885091,
+        593987237,
+        633625022,
+        610249970,
+        607678117,
+        617118196,
+        667739436
+      ],
+      "wall_median_s": 0.6208946339902468,
+      "cpu_median_s": 0.620247,
+      "startup_s": null,
+      "ns_per_unit": 61.7118196,
+      "unit": "lookup",
+      "output": {
+        "mode": "wit",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "600323914",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-hash",
+      "what": "hashStr(query) alone, no table",
+      "args": [
+        "hash",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 175962864,
+      "min_ns": 164922514,
+      "max_ns": 191334472,
+      "runs_ns": [
+        164922514,
+        175962864,
+        177170260,
+        182734731,
+        188709071,
+        170631292,
+        172685081,
+        168272380,
+        191334472
+      ],
+      "wall_median_s": 0.1796023079950828,
+      "cpu_median_s": 0.179166,
+      "startup_s": null,
+      "ns_per_unit": 17.5962864,
+      "unit": "lookup",
+      "output": {
+        "mode": "hash",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "164922514",
+        "allocs": "0",
+        "check": "328712534772",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-mono",
+      "what": "hash/eq on string, direct (monomorphized)",
+      "args": [
+        "mono",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 2263389375,
+      "min_ns": 2190674657,
+      "max_ns": 2317501779,
+      "runs_ns": [
+        2192452049,
+        2317501779,
+        2255515813,
+        2260071814,
+        2282094527,
+        2292015592,
+        2263389375,
+        2190674657,
+        2276651343
+      ],
+      "wall_median_s": 2.9143472359864973,
+      "cpu_median_s": 2.911266,
+      "startup_s": null,
+      "ns_per_unit": 226.3389375,
+      "unit": "lookup",
+      "output": {
+        "mode": "mono",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "2192452049",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-iface",
+      "what": "hash/eq through the key's interface table (KeyRef)",
+      "args": [
+        "iface",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 3919851074,
+      "min_ns": 3831812431,
+      "max_ns": 4118734549,
+      "runs_ns": [
+        3831812431,
+        4118734549,
+        3869938108,
+        3922027234,
+        3949255068,
+        3870946245,
+        3987783076,
+        3834894654,
+        3919851074
+      ],
+      "wall_median_s": 4.7749987530114595,
+      "cpu_median_s": 4.770212,
+      "startup_s": null,
+      "ns_per_unit": 391.9851074,
+      "unit": "lookup",
+      "output": {
+        "mode": "iface",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "3831812431",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-wit",
+      "what": "hash/eq through a witness object over HeapRef keys",
+      "args": [
+        "wit",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 4261914701,
+      "min_ns": 4133964057,
+      "max_ns": 4392049003,
+      "runs_ns": [
+        4261914701,
+        4259140017,
+        4325491626,
+        4311789911,
+        4246805859,
+        4392049003,
+        4239839526,
+        4342289567,
+        4133964057
+      ],
+      "wall_median_s": 5.212346856016666,
+      "cpu_median_s": 5.20896,
+      "startup_s": null,
+      "ns_per_unit": 426.1914701,
+      "unit": "lookup",
+      "output": {
+        "mode": "wit",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "4261914701",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-hash",
+      "what": "hashStr(query) alone, no table",
+      "args": [
+        "hash",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 197586553,
+      "min_ns": 178509076,
+      "max_ns": 203086383,
+      "runs_ns": [
+        199859349,
+        186829504,
+        197586553,
+        188768094,
+        203086383,
+        202266364,
+        198629132,
+        197266974,
+        178509076
+      ],
+      "wall_median_s": 0.6567713669792283,
+      "cpu_median_s": 0.6561279999999999,
+      "startup_s": null,
+      "ns_per_unit": 19.7586553,
+      "unit": "lookup",
+      "output": {
+        "mode": "hash",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "199859349",
+        "allocs": "0",
+        "check": "327548191882",
+        "side": "5"
+      }
+    }
+  ]
+}

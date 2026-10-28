@@ -1,3 +1,0 @@
-RangePattern ..= [0..5)
-  Int 0 [0..1)
-  Int 9 [4..5)

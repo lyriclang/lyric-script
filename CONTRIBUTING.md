@@ -1,43 +1,39 @@
-# Contributing to Lyric
+# Contributing to Lyric-Script
 
-This is currently a solo project. The rules below are the maintainer's
-self-binding contract to avoid the failure modes of a previous language
-project ("Oil"), where scope creep and parallel-mechanism creep killed
-forward progress.
-
-Even when read by future contributors, the rules below are non-negotiable
-until v1.0 ships.
+This is currently a solo project. The rules below are the maintainer's self-binding contract to
+avoid the failure modes of a previous language project ("Oil"), where scope creep and
+parallel-mechanism creep killed forward progress. They follow the Lyric 5 line's rules
+([lyriclang/lyric](https://github.com/lyriclang/lyric/blob/main/CONTRIBUTING.md)), adapted to
+Lyric-Script; the decisions they refer to live in [`design/v1/spec/`](design/v1/spec/)
+(areas 00–14, the plan in 14).
 
 ---
 
 ## The Three Rules
 
-### Rule 1 — No post-v1 roadmap document
+### Rule 1 — No open idea store
 
-Until v1.0 is released, the file `POST-V1-ROADMAP.md` **does not exist**.
-
-Ideas for post-v1 features go into GitHub issues with the `idea` label —
-still not a plan, just a structured discussion.
-
-Reason: Oil grew a 2761-line post-v1 roadmap that absorbed all design
-energy and prevented v1.0 from ever shipping. We will not repeat that.
+Every idea written down in this repository carries **a decision or a clock**: it is decided in a
+`design/v1/spec` document (with the reasoning and what was rejected), or it is named there as a
+**door** together with what would open it, or it is an issue with a date by which it gets
+decided. A list of wishes without an answer does not exist here.
 
 ### Rule 2 — One mechanism per concept
 
-Each language concept has exactly one mechanism in the language:
+| Concept | Single mechanism | Decided in |
+|---|---|---|
+| Error handling | Thrown errors with inferred sets; a written `throws` is a checked contract; `try?` and `try … catch` handle; `Result` is a value | 02 K2, 05 |
+| Cleanup on scope exit | `defer` and `using let` on one LIFO list | 05 |
+| Memory management | Lyric 5's tracing GC | 00, 11 |
+| Polymorphism | Interfaces with defaults, generic `extend`, delegation `by`; no inheritance | 02, 05 |
+| Sum types | `enum` — no unions | 02 T4 |
+| Concurrency | Coroutines and tasks on one scheduler per instance; waiting parks; no threads | 07 |
+| Foreign code | Native modules (Lyric 5 packages) and the host API (`.lyrs` declarations) | 00 Z5, 11 |
+| Code generation | None; synthesis from the compiler's list plus reflection in default bodies | 05 Syn, 09 |
+| Sandbox | Rights from imports with optional scopes; budget; ownership per instance | 01 |
 
-| Concept | Single mechanism |
-|---|---|
-| Error handling | Typed exceptions with `throws` |
-| Cleanup on scope exit | `defer` only (no `finally`) |
-| Memory management | GC only (no manual/borrow/refcount) |
-| Polymorphism | Interfaces with default methods + `::` declaration |
-| Concurrency | Single-threaded + coroutines (no native threads) |
-| FFI / host integration | Host-controlled bindings + capability gating |
-
-Adding a parallel mechanism for any of these (e.g. `Result<T, E>` alongside
-exceptions, `finally` alongside `defer`) is a breaking design change and
-requires a written ADR plus 30 days of consideration.
+Changing a row reopens its area document: the change is written there with its reasoning and
+what it replaces, before any code.
 
 ### Rule 3 — Every milestone ships something
 
@@ -45,42 +41,36 @@ A milestone is not done until:
 
 1. Its exit criteria, as recorded in [`STATUS.md`](STATUS.md), are met.
 2. A git tag exists.
-3. Someone could clone the repo, follow the README, and *do something* with
-   it — even if that something is small (e.g. tokenize a file).
+3. Someone could clone the repo, follow the README, and *do something* with it.
 
-No milestone may be marked done by intent alone. There must be an
-artifact.
+No milestone may be marked done by intent alone. There must be an artifact.
 
 ---
 
-## How to add a language feature before v1.0
+## How to add a language feature before 1.0
 
-Don't, unless it's already in [`docs/Grammar.md`](docs/Grammar.md).
+Don't, unless its area document in [`design/v1/spec/`](design/v1/spec/) decides it. A door named
+there is not a feature; it opens with its own decision.
 
-If you really must add something not currently in v1:
+If you really must add something not decided there:
 
-1. Open a GitHub issue using the **Feature Idea** template. Fill in all
-   required fields. "It would be nice" is not a problem statement.
-2. Wait at least **7 days** before opening a PR. The waiting period is
-   mandatory even for the maintainer. If after 7 days you still consider
-   it essential, proceed.
-3. The PR must include:
-   - A change to `docs/Grammar.md` reflecting the new feature.
-   - A change to `docs/guide/` with a user-facing explanation and example.
-   - Tests covering the new behavior.
+1. Write the decision into the area document first — question, options, comparison with Lyric 5
+   and other languages, what is rejected. Lyric 5 is the reference: a deviation names its reason
+   and joins the deviation table (09).
+2. Wait at least **7 days** before opening a PR. The waiting period is mandatory even for the
+   maintainer.
+3. The PR must include the specification delta and conformance cases (spec-first: the rule in
+   `lyric-spec` branch `script`, then its twin here), user-facing documentation, and tests.
 
-If the change would push v1.0 by more than 4 weeks, it is rejected by
-default and goes to an `idea` issue for post-v1.
+If the change would push the milestone it lands in by more than 100 % of its size (14), it is
+rejected by default and stays a door.
 
 ---
 
 ## How to fix a bug
 
-Bugs do not need the 7-day wait. The standard flow:
-
-1. Add a failing test that demonstrates the bug.
-2. Make the test pass.
-3. Open a PR. Include the issue number if there is one.
+Bugs do not need the 7-day wait: add a failing test that demonstrates the bug, make it pass, open
+a PR. A bug found in Lyric 5 goes to `lyriclang/lyric` as an issue, not as a workaround here.
 
 ---
 
@@ -90,13 +80,11 @@ On the first Sunday of each month, do a **scope check**:
 
 1. Read the current milestone and its estimate in [`STATUS.md`](STATUS.md).
 2. Compare the actual elapsed time with the estimate.
-3. If you are >50% over the estimate: honestly evaluate which features can
-   be cut.
-4. If you are >100% over: re-cut the milestone and record the change in
-   `STATUS.md`.
+3. If you are >50% over the estimate: honestly evaluate which features can be cut.
+4. If you are >100% over: re-cut the milestone and record the change in `STATUS.md`.
 
-This is the **only** legitimate place for plan adjustment. Plan changes
-made on impulse (e.g. "I just thought of something better") are forbidden.
+A measurement point that misses its ratchet by more than 2× triggers the same re-cut (11 Perf).
+Plan changes made on impulse are forbidden.
 
 ---
 
@@ -104,46 +92,18 @@ made on impulse (e.g. "I just thought of something better") are forbidden.
 
 | Topic | Convention |
 |---|---|
-| Naming (C# code) | Standard .NET: `PascalCase` types/methods, `_camelCase` private fields, `camelCase` parameters |
-| Naming (Lyric stdlib code in `.lyr`) | `PascalCase` types, `camelCase` everything else (see `docs/Grammar.md`) |
+| Naming (Lyric 5 and Lyric-Script code) | `PascalCase` types, `camelCase` everything else |
 | Indentation | 4 spaces, no tabs |
 | Line length | Soft 100, hard 120 |
-| Trailing commas | Allowed in multi-line lists/blocks |
-| `var` (C#) | Prefer when type is obvious from RHS; use explicit type otherwise |
 | Comments | English, describing the technique and the logic. No justifications, no project history, no milestone or decision references. |
 
-For C# code, follow these rules manually. For Lyric code (`.lyr`) the formatter is the rule:
-`lyric fmt` writes the one shape there is, the repository's own Lyric (stdlib, examples,
-templates) is kept formatted, and a test in `Lyric.Tests.Formatting` fails when it stops
-being it.
-
----
-
-## Testing
-
-Each subsystem has its own test project:
-
-- `tests/Lyric.Tests.Core/` — `SourceManager`, `DiagnosticEngine`, `Span`
-- `tests/Lyric.Tests.Lexing/` — tokenizer
-- `tests/Lyric.Tests.Parsing/` — AST construction
-- `tests/Lyric.Tests.Resolver/` — name resolution
-- `tests/Lyric.Tests.Sema/` — type checking
-- `tests/Lyric.Tests.Ir/` — AST to IR lowering
-- `tests/Lyric.Tests.Bytecode/` — the `.lyrbc` format, writer and reader
-- `tests/Lyric.Tests.Vm/` — bytecode execution
-- `tests/Lyric.Tests.Embedding/` — the host API
-- `tests/Lyric.Tests.Cli/` — the binaries end to end, plus the examples
-
-Tests use xUnit. Golden tests compare against snapshot files in
-`tests/<project>/golden/`; set `LYRIC_UPDATE_SNAPSHOTS=1` to rewrite them.
-
-Before committing: `dotnet test` must pass.
+Lyric 5 code is kept in `lyric5 fmt`'s form; Lyric-Script code in `lyric-script fmt`'s form once
+the formatter exists (S11). Diagnostics follow Lyric 5's house style; codes carry the prefix
+`LYS-` and each has an entry in `diagnostics.toml`.
 
 ---
 
 ## Commits
-
-Conventional-ish, but loose. Format:
 
 ```
 <area>: <short imperative description>
@@ -151,42 +111,15 @@ Conventional-ish, but loose. Format:
 [optional body explaining why, not what]
 ```
 
-Examples:
-
-```
-lexer: handle nested block comments
-sema: detect non-exhaustive match with missing variants
-docs: clarify defer ordering with multiple defers
-```
-
-The area is the subsystem the change lands in.
+The area is the subsystem the change lands in (`vm`, `compiler`, `std`, `cli`, `ci`, `design`, …).
 
 ---
 
 ## Releases
 
-Tags follow `vMAJOR.MINOR.PATCH` semver, with all three components written
-out from v1.0 on. Every release has an **annotated tag**; its message is the
-release note: what the version delivers, and what it cannot do yet.
-
-Two channels, both described in the [README](README.md#releases):
-
-- **stable** — pushing an annotated `vX.Y.Z` tag runs `.github/workflows/release.yml`,
-  which verifies on Linux and Windows, packages `win-x64`, `linux-x64` and
-  `osx-arm64`, and publishes the archives as a GitHub release.
-- **nightly** — `.github/workflows/nightly.yml` builds `main` once a day and
-  replaces the `nightly` prerelease. No compatibility promise.
-
-**The changelog starts at `v1.0.0`.** A changelog answers "what changed for me
-since last time", and that question presupposes something to be compatible with.
-Pre-1.0 there was no such promise, neither for the `.lyrbc` format nor for the
-language itself, so those releases carry their notes in their annotated tags and
-appear in no entry.
-
-From `v1.0.0` on, every release has three things: the tag, a GitHub release page,
-and an entry in [`CHANGELOG.md`](CHANGELOG.md). An entry lists what changed for
-someone USING the toolchain — the language, the standard library, the bytecode
-format, the command line, the embedding API. Compiler internals stay in `git log`.
+Tags follow `vMAJOR.MINOR.PATCH` semver; every release has an **annotated tag** whose message is
+the release note, a GitHub release page, and an entry in [`CHANGELOG.md`](CHANGELOG.md) listing
+what changed for someone using Lyric-Script. The release process is decided in S13 and S15.
 
 ---
 

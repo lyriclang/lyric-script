@@ -1,1 +1,0 @@
-{ yield a; yield; resume co; let v = resume co; }

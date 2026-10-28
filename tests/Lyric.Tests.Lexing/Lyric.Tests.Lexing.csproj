@@ -1,6 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <ProjectReference Include="..\Lyric.Tests.Core\Lyric.Tests.Core.csproj" />
-    <ProjectReference Include="..\..\src\Lyric.Frontend\Lyric.Frontend.csproj" />
-  </ItemGroup>
-</Project>

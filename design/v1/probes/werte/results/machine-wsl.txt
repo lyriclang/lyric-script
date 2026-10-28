@@ -1,0 +1,11 @@
+date: 2026-10-28T16:00:30+01:00
+cpu: Intel(R) Core(TM) Ultra 5 228V
+vcpus: 8
+kernel: 6.18.54.1-microsoft-standard-WSL2
+os: "Arch Linux"
+lyric5: lyric 5.0.0+61c33e7
+commit: 61c33e73f4117cfc155ce3ce785b3cde6402a822 (toolchain: the archive carries its runtime prebuilt and a manifest (M15 S1) (#603))
+origin/main at measurement: aba389ed51ffe00af56b484f267919c8cd7433f6
+zig: 0.16.0
+python: Python 3.14.8
+power: on battery (Win32_Battery BatteryStatus 1, 52 %), Windows scheme Ausbalanciert

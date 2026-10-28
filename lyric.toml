@@ -1,0 +1,9 @@
+[package]
+name = "lyric_script"
+version = "1.0.0-dev"
+description = "Lyric-Script: its compiler and VM as a Lyric 5 library, and the lyric-script command line"
+toolchain = ">=5.0"
+
+[[bin]]
+name = "lyric-script"
+entry = "src/cli.lyr"

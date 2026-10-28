@@ -101,6 +101,7 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | A2c | **Exakter Toolchain-Pin** (heute nur Mindestversion; `lyric toolchain install` kommt mit M15); bis dahin baut die CI von Lyric-Script Lyric 5 aus einem festen Commit | 11 W9, M15 | Umsetzungsbeginn |
 | A2d | **Indexprüfung im heißen Pfad: gemessen 24 %** der Dispatch-Zeit (1,26 → 0,96 ns/Befehl, wenn nur `LYR_CHECK_INDEX` entfällt — praktisch der ganze Abstand zu C); der `Ptr`-Weg ist **kein** Ausweg (ohne LTO 3× langsamer, mit LTO +27 %, weil `offset` geprüft rechnet). Anforderung, falls Bereich 11 die 24 % holen will: ein ungeprüfter, inline gehender Elementzugriff (z. B. `getUnchecked` in `unsafe {}`) oder Elimination der Prüfung in Schleifen | 03 N5, std.ffi | Bereich 11 |
 | A3 | **Instanz-Zuordnung im GC** (Heap-Partitionen oder Abrechnung beim Markieren) für eine Live-Speichergrenze pro Instanz (01 S6, Tür) | 01 S6; Lyric 5 01, M11 | erst wenn die Tür geöffnet wird |
+| A4 | **Schreibbarriere für 16-Byte-Werte** (Interface-Werte) mit einer Kartenmarkierung statt `lyr_gc_card_span` — heute +2,4 ns je Speicherung einer Referenz in der VM (Werte-Probe) | Lyric 5 Laufzeit (`gc.h`) | gestellt: lyric#610; entscheidet 11 V3 bei Messpunkt 1 |
 
 ## Fahrplan der Runde
 

@@ -681,11 +681,11 @@ class Parser {
                 if (this.atWord("type") && this.peek(1).kind == .Ident) {
                     this.advance();
                     let name = this.advance();
-                    let bounds = try this.parseConformances(false);
+                    let bounds = this.parseConformances(false);
                     var dflt: ?TypeExpr = null;
                     if (this.at(.Assign)) {
                         this.advance();
-                        dflt = try this.parseType();
+                        dflt = this.parseType();
                     }
                     assoc.push(
                         AssocDecl {
@@ -2196,9 +2196,14 @@ class Parser {
         }
         var name = this.text(this.advance());
         // `T.Item`, `Self.Item`: an associated type through a type (05 §8 rule 4)
-        while (this.at(.Dot) && this.peek(1).kind == .Ident) {
-            this.advance();
-            name = name + "." + this.text(this.advance());
+        if (this.at(.Dot) && this.peek(1).kind == .Ident) {
+            let parts = List<string>.new();
+            parts.push(name);
+            while (this.at(.Dot) && this.peek(1).kind == .Ident) {
+                this.advance();
+                parts.push(this.text(this.advance()));
+            }
+            name = parts.toArray().join(".");
         }
         let args = List<TypeExpr>.new();
         if (this.at(.Lt)) {

@@ -14,7 +14,7 @@ Releases gibt es nicht mehr; 4.6 ist Ausgangsmaterial, nicht Kompatibilitätsver
 | # | Frage | Entscheidung |
 |---|---|---|
 | Z0 | Was ist unverhandelbar? | **Statisch typisiert** (die VM-Sicherheit hängt daran), **Sandbox**, **Instruktionsbudget**, **Hot-Reload**. Typisierung „statisch mit explizitem Ausweg“: Inferenz so weit wie möglich, ein expliziter Typ `Any` für dynamische Daten mit geprüftem `is`/`as?`; **eine fehlende Annotation bedeutet nie `Any`**. |
-| Z1 | Primärer Einsatz | **Terminal-Skripte und Automatisierung (b)** vor **Erweiterungssprache in Hosts (a)** und **Einbettung in Lyric-5-Programme (d)**. **Eine Sprache, eine Endung `.lyrs`, zwei Profile**: *standalone* (Top-Level-Code als Einstieg, volle `std`, Freigaben per Flag/Manifest, kein Budget) und *embedded* (der Host bestimmt Rechte, API und Budget; Vorgabe: nichts erlaubt). Top-Level-Code ist in beiden Profilen erlaubt; eingebettet läuft er beim Instanziieren als Initialisierung. |
+| Z1 | Primärer Einsatz | **Terminal-Skripte und Automatisierung (b)** vor **Erweiterungssprache in Hosts (a)** und **Einbettung in Lyric-5-Programme (d)**. **Eine Sprache, eine Endung `.lyrs`, zwei Profile**: *standalone* (Top-Level-Code als Einstieg, volle `std`, Freigaben per Abfrage oder Flag (01 S4), kein Budget) und *embedded* (der Host bestimmt Rechte, API und Budget; Vorgabe: nichts erlaubt). Top-Level-Code ist in beiden Profilen erlaubt; eingebettet läuft er beim Instanziieren als Initialisierung. |
 | Z2 | Laufzeit und Implementierung | **Lyric-Script wird in Lyric 5 neu geschrieben — Compiler, VM und native Teile der std.** Präzisiert 2026-10-28 (Strategie B): **Beginn vor 5.0 gegen einen gepinnten `dev`-Build** — nach den Sprachbereichen und dem VM-Bereich (11); vorgezogen nur die sprachunabhängige Dispatch-Probe (Reihenfolge geändert 2026-10-28, siehe Fahrplan). Die C#-Codebasis von 4.6 ist Vorlage (VM, Format, Sema), Testorakel und Korpus, kein Code, der überlebt; der Lyric-Quelltext von 4.6 (std 8,4k Zeilen, Beispiele 5k) wandert über `lyric fix --from-4` (Lyric 5, M16) mit. Keine .NET-Abhängigkeit in Sprache, Laufzeit oder Einbettung. |
 | Z6 | Sprache der Standardbibliothek | **Python-Modell**: der Großteil in Lyric-Script selbst; nativ (Lyric 5, als native Module nach Z5) nur I/O, OS-Zugang und gemessene heiße Pfade (Text-Kerne, Hashing, Regex, Parser). 4.6 steht bei 74 % Lyric zu 26 % nativ (617 Funktionen, 162 ohne Rumpf). Der Compiler wird **nicht** selbst gehostet (Startzeit und Reload, Bootstrap). |
 | Z3 | Verhältnis zu Lyric 5 | **Sprachfamilie: Lyric 5 ist die Referenz.** Script weicht nur ab, wo die Abweichung dem Skript-Charakter dient; jede Abweichung steht mit Begründung in einer **Abweichungstabelle** (je Bereich, gesammelt im Plan). „Als Lyric erkennbar, mit den Abkürzungen einer Skriptsprache.“ |
@@ -113,8 +113,8 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | 04 | — in 03 aufgegangen |
 | 05 | **Abstraktion und Fehler** (zusammen, 2026-10-28) |
 | 06 | — in 05 aufgegangen |
-| 07 | Nebenläufigkeit: Koroutinen, vom Host gepumpte Event-Loop |
-| 08 | Programmstruktur und Module: Top-Level-Code, Shebang, Abhängigkeiten, Manifest |
+| 07 | **Nebenläufigkeit und Programmstruktur** (zusammen, 2026-10-28) |
+| 08 | — in 07 aufgegangen |
 | 09 | Syntax und Grammatik, Abweichungstabelle |
 | 10 | Reflexion und Metaprogrammierung |
 | 11 | Laufzeit und VM in Lyric 5: Grundform, Werte, Format, Startzeit, Einbettung |

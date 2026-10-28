@@ -537,7 +537,14 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                     target = env.scalars[0] as int;
                 }
                 if (target < 0 || target >= module.functions.length()) {
-                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a call through no function");
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a call through no function"
+                    );
                 }
                 let callee = module.functions[target];
                 frames.push(CallFrame { function = fi, pc = pc + 1, baseS = bs, baseR = br });

@@ -131,6 +131,16 @@ enum Expr :: [Debug] {
     VariantInit(?string, string, FieldInit[], Span),
     /// `match (e) { arms }`.
     Match(Box<Expr>, MatchArm[], Span),
+    /// A lambda: its parameters, its result type if written, its body (an expression or a value
+    /// block), and whether it is a trailing block without named parameters (`it`, or none).
+    Lambda(LambdaParam[], ?TypeExpr, Box<Expr>, bool, Span),
+}
+
+/// A lambda's parameter: its name, its type if written.
+struct LambdaParam :: [Debug] {
+    name: string,
+    type: ?TypeExpr,
+    span: Span,
 }
 
 /// An arm of a `match`: its pattern, its guard, its value — an expression or a value block.
@@ -174,6 +184,8 @@ enum Stmt :: [Debug] {
     Expr(Expr, Span),
     /// `let` or, with the flag, `var`: the name, its type if written, its value if given.
     Let(bool, string, ?TypeExpr, ?Expr, Span),
+    /// `fn name(…) { … }` in a block: a named closure (Lyric 5 03 §8.6).
+    LocalFn(FnDecl),
     /// `let P = value`, or `var`, and `let P = value else { … }`: the value taken apart.
     Destructure(bool, Pattern, Expr, ?Block, Span),
     /// `if` as a statement: the `else` is a block's statement or another `if`, or none.

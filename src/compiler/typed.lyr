@@ -23,6 +23,37 @@ enum Ty :: [Equatable, Debug] {
     /// The type of a `null` no place has given a type yet.
     NullLit,
     Tuple(TupleTy),
+    /// `fn(A, B) -> R`: a function value, an object holding its function and its captures.
+    Fn(FnTy),
+    /// A captured `var`'s box, holding a value of the type: a reference.
+    Cell(Box<Ty>),
+}
+
+/// A function type's parameters and result.
+pub struct FnTy :: [Debug, Equatable] {
+    params: Ty[],
+    result: Box<Ty>,
+
+    /// Whether `o` takes the same parameters and gives the same result.
+    pub fn equals(o: FnTy): bool {
+        if (this.params.length() != o.params.length() || this.result.value != o.result.value) {
+            return false;
+        }
+        var k = 0;
+        while (k < this.params.length()) {
+            if (this.params[k] != o.params[k]) {
+                return false;
+            }
+            k += 1;
+        }
+        return true;
+    }
+}
+
+/// A capture of a lambda: the value's type, and whether it is a `var`'s box.
+struct CaptureInfo :: [Debug] {
+    ty: Ty,
+    isCell: bool,
 }
 
 /// A tuple's elements, and the labels its written type gave them (`""` where none). A label is a
@@ -115,6 +146,12 @@ class FnInfo {
     var returns: Ty = Ty.Void,
     var locals: Ty[] = [],
     var body: TStmt[] = [],
+    // a lambda's function: its first parameter, local 0, is the function value itself
+    var env: bool = false,
+    // the locals a lambda captures as `var`s: they live in a box
+    var boxed: bool[] = [],
+    // what a lambda's function value holds after its function's index
+    var captures: CaptureInfo[] = [],
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).
@@ -174,6 +211,11 @@ fn typeOf(e: TExpr): Ty {
         .Tag(_) => Ty.Int,
         .Payload(_, _, _, _, t) => t,
         .Unreachable(t) => t,
+        .Closure(_, _, t) => t,
+        .Captured(_, t) => t,
+        .CapturedCell(_, t) => t,
+        .CellOf(_, t) => t,
+        .CallValue(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
 }
@@ -184,6 +226,8 @@ enum Place :: [Debug] {
     Global(int),
     /// A field of an object, by index; the object is evaluated once.
     Field(Box<TExpr>, int),
+    /// A captured `var`, through the box capture `k` of the lambda's function value holds.
+    CapturedCell(int),
 }
 
 enum TExpr :: [Debug] {
@@ -243,6 +287,16 @@ enum TExpr :: [Debug] {
     Payload(Box<TExpr>, int, int, int, Ty),
     /// Where no arm of a `match` took the value — never reached once the arms are exhaustive.
     Unreachable(Ty),
+    /// A function value: the function, what it captures in order, its type.
+    Closure(int, TExpr[], Ty),
+    /// Capture `k` of the running lambda's function value, as it holds it.
+    Captured(int, Ty),
+    /// The value in the box capture `k` holds.
+    CapturedCell(int, Ty),
+    /// The box of local `id`, which a lambda captures; typed `Cell(T)`.
+    CellOf(int, Ty),
+    /// A call through a function value.
+    CallValue(Box<TExpr>, TExpr[], Ty),
     Unknown,
 }
 
@@ -259,6 +313,8 @@ enum TStmt :: [Debug] {
     Continue(int),
     Return(?TExpr, int),
     Block(TStmt[], int),
+    /// `var x: T` without a value: its box where a lambda captures it.
+    DeclareLocal(int, int),
 }
 
 /// The checked program: its types, its functions (one of them `main`), its globals.

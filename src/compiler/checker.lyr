@@ -23,6 +23,7 @@ import lyric_script.compiler.ast {
     FieldPattern,
     FnDecl,
     Item,
+    LambdaParam,
     MatchArm,
     Module,
     Pattern,
@@ -49,6 +50,8 @@ import lyric_script.compiler.typed {
     Ty,
     TypeInfo,
     TypeKind,
+    CaptureInfo,
+    FnTy,
     TupleTy,
     tupleOf,
     typeOf,
@@ -130,6 +133,13 @@ class FnCtx {
     var nullVars: int = 0,
     sought: Map<int, int>,
     soughtGlobals: Map<int, int>,
+    // a lambda's: the function around it, what it captures by name in order, and the locals of
+    // its own a lambda inside captures as `var`s (Lyric 5 03 §8.3)
+    var isLambda: bool = false,
+    var outer: ?FnCtx = null,
+    captures: List<Capture>,
+    captureIndex: Map<string, int>,
+    boxed: List<bool>,
 
     static fn new(fnIndex: int, returns: Ty, isMain: bool, fixing: bool): FnCtx {
         let scopes = List<Scope>.new();
@@ -148,6 +158,9 @@ class FnCtx {
             fixes = List<?Ty>.new(),
             sought = Map<int, int>.new(),
             soughtGlobals = Map<int, int>.new(),
+            captures = List<Capture>.new(),
+            captureIndex = Map<string, int>.new(),
+            boxed = List<bool>.new(),
         };
     }
 }
@@ -176,6 +189,8 @@ class Checker {
     globalIndex: Map<string, int>,
     var ctx: FnCtx,
     var mainIndex: int = -1,
+    // the function value of each function named without a call: its thunk's index
+    thunks: Map<int, int>,
     // what the statement just checked lets the rest of its block know (an `if` whose one branch
     // never comes out)
     var postFacts: List<Fact> = List<Fact>.new(),
@@ -194,6 +209,7 @@ class Checker {
             fnStates = List<FnState>.new(),
             globals = List<GlobalInfo>.new(),
             globalIndex = Map<string, int>.new(),
+            thunks = Map<int, int>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -599,9 +615,14 @@ class Checker {
                 }
                 Ty.Tuple(TupleTy { elements = tys.toArray(), labels = labels })
             }
-            .Fn(_, _, at) => {
-                this.notYet("a function type", "S3", at);
-                Ty.Unknown
+            .Fn(params, result, _) => {
+                let tys = List<Ty>.new();
+                for (x in params) {
+                    tys.push(this.resolveType(x));
+                }
+                Ty.Fn(
+                    FnTy { params = tys.toArray(), result = boxTy(this.resolveType(result.value)) }
+                )
             }
         };
     }
@@ -708,6 +729,14 @@ class Checker {
                 }
                 "(" + parts.toArray().join(", ") + ")"
             }
+            .Fn(ft) => {
+                let parts = List<string>.new();
+                for (x in ft.params) {
+                    parts.push(this.tyName(x));
+                }
+                "fn(" + parts.toArray().join(", ") + ") -> " + this.tyName(ft.result.value)
+            }
+            .Cell(inner) => this.tyName(inner.value),
         };
     }
 
@@ -781,9 +810,11 @@ class Checker {
         var fixes = List<?Ty>.new();
         if (declaresNull(stmts.toArray())) {
             // 03 Leer: a quiet first pass; the globals it declares are declared again by the second
+            let made = this.functions.length();
             this.ctx = FnCtx.new(index, Ty.Void, true, true);
             this.stmtList(stmts.toArray());
             fixes = this.ctx.fixes;
+            this.dropFunctionsFrom(made);
             this.globals.clear();
             this.globalIndex.clear();
         }
@@ -796,6 +827,7 @@ class Checker {
         let info = this.functions[index];
         info.body = body.toArray();
         info.locals = this.ctx.locals.toArray();
+        info.boxed = this.ctx.boxed.toArray();
     }
 
     mut fn checkBodies(): void {
@@ -843,16 +875,39 @@ class Checker {
         var fixes = List<?Ty>.new();
         if (fnDeclaresNull(decl)) {
             // 03 Leer: a quiet first pass finds the type of each `var x = null`
+            let made = this.functions.length();
             this.enterFn(k, decl, true);
             this.fnBody(k, decl);
             fixes = this.ctx.fixes;
+            this.dropFunctionsFrom(made);
         }
         this.enterFn(k, decl, false);
         this.ctx.fixes = fixes;
         info.body = this.fnBody(k, decl);
         info.locals = this.ctx.locals.toArray();
+        info.boxed = this.ctx.boxed.toArray();
         this.fnStates[k] = FnState.Done;
         this.ctx = saved;
+    }
+
+    /// Takes back the functions from `n` on: the lambdas and values a quiet pass made, which the
+    /// second pass makes again.
+    mut fn dropFunctionsFrom(n: int): void {
+        while (this.functions.length() > n) {
+            this.functions.pop();
+            this.fnDecls.pop();
+            this.fnStates.pop();
+        }
+        let stale = List<int>.new();
+        for (target in this.thunks.keys()) {
+            let index = this.thunks.get(target) ?? -1;
+            if (index >= n) {
+                stale.push(target);
+            }
+        }
+        for (target in stale) {
+            this.thunks.remove(target);
+        }
     }
 
     /// A fresh context for function `k`: its receiver and its parameters its first locals.
@@ -907,6 +962,7 @@ class Checker {
         this.ctx.locals.push(t);
         this.ctx.localIsVar.push(isVar);
         this.ctx.localNames.push(name);
+        this.ctx.boxed.push(false);
         scope.insert(name, id);
         return id;
     }
@@ -1116,6 +1172,7 @@ class Checker {
         return match (s) {
             .Expr(e, at) => this.exprStmt(e, at),
             .Let(isVar, name, written, value, at) => this.letStmt(isVar, name, written, value, at),
+            .LocalFn(f) => this.localFn(f),
             .Destructure(isVar, pattern, value, otherwise, at) => this.destructure(
                 isVar,
                 pattern,
@@ -2410,7 +2467,7 @@ class Checker {
         }
         let id = this.declareLocal(name, t, isVar, at);
         this.ctx.unassigned = withId(this.ctx.unassigned, id);
-        return TStmt.Expr(TExpr.Unit, at.line);
+        return TStmt.DeclareLocal(id, at.line);
     }
 
     /// `var x = null` (03 Leer): its type is the first a use in the function fixes — sought by the
@@ -2570,6 +2627,13 @@ class Checker {
             return TStmt.Return(null, at.line);
         }
         let expected = this.ctx.returns;
+        if (this.ctx.isLambda && expected == .Unknown) {
+            this.error(
+                "LYS-SEM0010",
+                "this lambda's result type is not known where it returns: write it, (…): T => …",
+                at
+            );
+        }
         if (value == null) {
             if (expected != .Void && expected != .Unknown) {
                 this.error(
@@ -2625,8 +2689,23 @@ class Checker {
                     }
                 }
             }
-            .Name(name, at) => this.name(name, at),
+            .Name(name, at) => this.name(name, expected, at),
+            .Lambda(params, result, body, implicit, at) => this.lambda(
+                params,
+                result,
+                body.value,
+                implicit,
+                expected,
+                at
+            ),
             .This(at) => {
+                if (this.ctx.isLambda) {
+                    // a lambda in a method captures its receiver (Lyric 5 03 §8.3 rule 3)
+                    let k = this.capture(this.ctx, "this", at);
+                    if (k >= 0) {
+                        return TExpr.Captured(k, this.ctx.captures[k].ty);
+                    }
+                }
                 let fnIndex = this.ctx.fnIndex;
                 if (fnIndex >= 0
                     && this.functions[fnIndex].owner >= 0
@@ -2739,7 +2818,7 @@ class Checker {
         return TExpr.Elem(boxE(o), found, tt.elements[found]);
     }
 
-    mut fn name(name: string, at: Span): TExpr {
+    mut fn name(name: string, expected: ?Ty, at: Span): TExpr {
         let local = this.lookupLocal(name);
         if (local != null) {
             if (this.ctx.unassigned.contains(local)) {
@@ -2756,6 +2835,14 @@ class Checker {
             }
             return TExpr.Local(local, declared);
         }
+        // a lambda sees the bindings of the functions around it (Lyric 5 03 §8.3)
+        if (this.ctx.isLambda) {
+            let k = this.capture(this.ctx, name, at);
+            if (k >= 0) {
+                let c = this.ctx.captures[k];
+                return if (c.isCell) TExpr.CapturedCell(k, c.ty) else TExpr.Captured(k, c.ty);
+            }
+        }
         let global = this.globalIndex.get(name);
         if (global != null) {
             let declared = this.globals[global].ty;
@@ -2765,8 +2852,9 @@ class Checker {
             }
             return TExpr.Global(global, declared);
         }
-        if (this.fnByName.containsKey(name)) {
-            return this.notYet("a function as a value", "S3 (function values)", at);
+        let candidates = this.fnByName.get(name);
+        if (candidates != null) {
+            return this.functionValue(name, candidates.toArray(), expected, at);
         }
         if (this.typeIndex.containsKey(name)
             || this.aliases.containsKey(name)
@@ -2940,6 +3028,14 @@ class Checker {
         if (ta == .Str && tb == .Str) {
             let eq = TExpr.Native(Native.StrEq, [a, b], Ty.Bool);
             return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
+        }
+        let isFn = match (ta) {
+            .Fn(_) => true,
+            _ => false,
+        };
+        if (isFn) {
+            this.error("LYS-SEM0059", "two function values are not compared", at);
+            return TExpr.Unknown;
         }
         if (ta == tb) {
             return this.notYet(
@@ -3205,7 +3301,26 @@ class Checker {
             .Name(name, nameAt) => {
                 let local = this.lookupLocal(name);
                 let global = this.globalIndex.get(name);
-                if (local != null) {
+                let captured = if (local == null && this.ctx.isLambda) this.capture(
+                    this.ctx,
+                    name,
+                    nameAt
+                )
+                    else -1;
+                if (captured >= 0) {
+                    // a captured `var` is written in the box the function around shares
+                    let c = this.ctx.captures[captured];
+                    if (!c.isCell) {
+                        this.error(
+                            "LYS-SEM0019",
+                            f"'{name}' is a let: declare it with var to write it",
+                            nameAt
+                        );
+                    }
+                    place = Place.CapturedCell(captured);
+                    t = c.ty;
+                    current = TExpr.CapturedCell(captured, t);
+                } else if (local != null) {
                     if (!this.ctx.localIsVar[local]) {
                         this.error(
                             "LYS-SEM0019",
@@ -3236,7 +3351,7 @@ class Checker {
                     t = this.globals[global].ty;
                     current = TExpr.Global(global, t);
                 } else {
-                    this.name(name, nameAt);
+                    this.name(name, null, nameAt);
                     return TExpr.Unknown;
                 }
             }
@@ -3791,8 +3906,11 @@ class Checker {
                 return this.variantCall(i, k, args, at);
             }
             .Name(name, nameAt) => {
-                if (this.lookupLocal(name) != null || this.globalIndex.containsKey(name)) {
-                    return this.notYet("a call through a value", "S3 (function values)", nameAt);
+                let bound = this.lookupLocal(name) != null
+                    || (this.ctx.isLambda && this.capture(this.ctx, name, nameAt) >= 0)
+                    || this.globalIndex.containsKey(name);
+                if (bound) {
+                    return this.callValue(this.name(name, null, nameAt), args, at);
                 }
                 let candidates = this.fnByName.get(name);
                 if (candidates != null) {
@@ -3806,7 +3924,7 @@ class Checker {
                     // `Point(1, 2)` is `Point.new(1, 2)` (05 D11)
                     return this.staticCall(index, "new", args, at);
                 }
-                return this.name(name, nameAt);
+                return this.name(name, null, nameAt);
             }
             .Member(object, method, optional, memberAt) => {
                 if (optional) {
@@ -3838,8 +3956,394 @@ class Checker {
             }
             _ => { }
         }
-        this.expr(callee, null);
-        return this.notYet("a call through a value", "S3 (function values)", at);
+        return this.callValue(this.expr(callee, null), args, at);
+    }
+
+    /// `f(a, b)` where `f` is a function value: the arguments by position (Lyric 5 03 §8.1).
+    mut fn callValue(f: TExpr, args: Arg[], at: Span): TExpr {
+        let t = typeOf(f);
+        match (t) {
+            .Fn(ft) => {
+                if (args.length() != ft.params.length()) {
+                    this.error(
+                        "LYS-SEM0014",
+                        f"the function takes {ft.params.length()} values; {args.length()} are given",
+                        at
+                    );
+                    return TExpr.Unknown;
+                }
+                let values = List<TExpr>.new();
+                var k = 0;
+                for (a in args) {
+                    if (a.name != null) {
+                        this.error(
+                            "LYS-SEM0119",
+                            "a function value takes its arguments by position",
+                            spanOf(a.value)
+                        );
+                    }
+                    let pt = ft.params[k];
+                    values.push(this.coerce(this.expr(a.value, pt), pt, spanOf(a.value)));
+                    k += 1;
+                }
+                return TExpr.CallValue(boxE(f), values.toArray(), ft.result.value);
+            }
+            .Unknown => {
+                return TExpr.Unknown;
+            }
+            _ => {
+                this.error("LYS-SEM0013", f"{this.tyName(t)} is no function: it is not called", at);
+                return TExpr.Unknown;
+            }
+        }
+    }
+
+    // --- lambdas and function values --------------------------------------------------------------
+
+    /// Name `name` as the lambda of context `c` sees it in the functions around it: the index of
+    /// its capture, made where it is first used; -1 where none binds it. A `let` and a parameter
+    /// are captured as a copy, a `var` as its box, which the function around shares.
+    mut fn capture(c: FnCtx, name: string, at: Span): int {
+        let known = c.captureIndex.get(name);
+        if (known != null) {
+            return known;
+        }
+        let outer = c.outer;
+        if (outer == null) {
+            return -1;
+        }
+        var source = TExpr.Unknown;
+        var ty = Ty.Unknown;
+        var cell = false;
+        let id = lookupIn(outer, name);
+        if (id != null) {
+            ty = outer.locals[id];
+            if (outer.unassigned.contains(id)) {
+                this.error(
+                    "LYS-SEM0018",
+                    f"'{name}' is captured where it may not be assigned yet",
+                    at
+                );
+            }
+            if (outer.localIsVar[id]) {
+                outer.boxed[id] = true;
+                cell = true;
+                source = TExpr.CellOf(id, Ty.Cell(boxTy(ty)));
+            } else {
+                source = TExpr.Local(id, ty);
+            }
+        } else {
+            if (!outer.isLambda) {
+                return -1;
+            }
+            let k = this.capture(outer, name, at);
+            if (k < 0) {
+                return -1;
+            }
+            let theirs = outer.captures[k];
+            ty = theirs.ty;
+            cell = theirs.isCell;
+            source = TExpr.Captured(k, if (cell) Ty.Cell(boxTy(ty)) else ty);
+        }
+        c.captures.push(Capture { name = name, source = source, ty = ty, isCell = cell });
+        let k = c.captures.length() - 1;
+        c.captureIndex.insert(name, k);
+        return k;
+    }
+
+    /// A lambda (Lyric 5 03 §8.2): its parameters' types written or from the function type the
+    /// position expects; a trailing block without names takes `it`, or nothing.
+    mut fn lambda(
+        params: LambdaParam[],
+        result: ?TypeExpr,
+        body: Expr,
+        implicit: bool,
+        expected: ?Ty,
+        at: Span
+    ): TExpr {
+        let want = expectedFn(expected);
+        let names = List<string>.new();
+        let tys = List<Ty>.new();
+        if (implicit) {
+            if (want == null || want.params.length() > 1) {
+                this.error(
+                    "LYS-SEM0045",
+                    if (want
+                        == null) "this block's parameter has no type: the position expects no function"
+                        else f"the function takes {want.params.length()} parameters: name them before '=>'",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            if (want.params.length() == 1) {
+                names.push("it");
+                tys.push(want.params[0]);
+            }
+        } else {
+            let fits = want != null && want.params.length() == params.length();
+            if (want != null && !fits) {
+                this.error(
+                    "LYS-SEM0001",
+                    f"the position expects a function of {want.params.length()} parameters; this lambda takes {params.length()}",
+                    at
+                );
+            }
+            var k = 0;
+            for (p in params) {
+                names.push(p.name);
+                let written = p.type;
+                if (written != null) {
+                    tys.push(this.resolveType(written));
+                } else if (want != null && fits) {
+                    tys.push(want.params[k]);
+                } else {
+                    this.error(
+                        "LYS-SEM0045",
+                        f"'{p.name}' has no type: write it, or pass the lambda where a function type is expected",
+                        p.span
+                    );
+                    tys.push(Ty.Unknown);
+                }
+                k += 1;
+            }
+        }
+        var rt: ?Ty = null;
+        if (result != null) {
+            rt = this.resolveType(result);
+        } else if (want != null) {
+            rt = want.result.value;
+        }
+        return this.makeLambda("<lambda>", names.toArray(), tys.toArray(), rt, body, at);
+    }
+
+    /// The function of a lambda or a local function: a function of its own whose first parameter,
+    /// local 0, is its function value — a local function's name for itself — and the function value
+    /// built where the lambda stands, holding what it captures.
+    mut fn makeLambda(
+        selfName: string,
+        names: string[],
+        tys: Ty[],
+        result: ?Ty,
+        body: Expr,
+        at: Span
+    ): TExpr {
+        let index = this.functions.length();
+        this.functions.push(
+            FnInfo { name = selfName, owner = -1, isStatic = true, line = at.line }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let info = this.functions[index];
+        let params = List<ParamInfo>.new();
+        var k = 0;
+        for (n in names) {
+            params.push(ParamInfo { name = n, ty = tys[k], default = null });
+            k += 1;
+        }
+        info.params = params.toArray();
+        info.env = true;
+        let saved = this.ctx;
+        let savedFacts = this.postFacts;
+        this.ctx = FnCtx.new(index, result ?? Ty.Unknown, false, saved.fixing);
+        this.ctx.isLambda = true;
+        this.ctx.outer = saved;
+        this.declareLocal(
+            selfName,
+            Ty.Fn(FnTy { params = tys, result = boxTy(result ?? Ty.Unknown) }),
+            false,
+            at
+        );
+        k = 0;
+        for (n in names) {
+            this.declareLocal(n, tys[k], false, at);
+            k += 1;
+        }
+        var rt = result;
+        let stmts = List<TStmt>.new();
+        match (body) {
+            .Block(b, _) => {
+                if (rt == Ty.Void) {
+                    for (st in this.stmtList(b.stmts)) {
+                        stmts.push(st);
+                    }
+                } else {
+                    // a block's last expression is its value (Lyric 5 03 §8.2 rule 3)
+                    let v = this.valueBlock(b, rt);
+                    let vt = typeOf(v);
+                    if (rt == null) {
+                        rt = if (vt == .Never) Ty.Void else vt;
+                    }
+                    let want = rt ?? Ty.Void;
+                    if (want == .Void || vt == .Void || vt == .Never) {
+                        stmts.push(TStmt.Expr(v, at.line));
+                        if (want != .Void && want != .Unknown && vt == .Void && !blockEnds(v)) {
+                            this.error(
+                                "LYS-SEM0017",
+                                f"the lambda can reach its end without giving its {this.tyName(want)}",
+                                at
+                            );
+                        }
+                    } else {
+                        stmts.push(TStmt.Return(this.coerce(v, want, at), at.line));
+                    }
+                }
+            }
+            _ => {
+                let v = this.expr(body, rt);
+                if (rt == null) {
+                    rt = typeOf(v);
+                }
+                let want = rt ?? Ty.Void;
+                stmts.push(
+                    TStmt.Return(
+                        if (want == .Void) null else this.coerce(v, want, spanOf(body)),
+                        at.line
+                    )
+                );
+            }
+        }
+        let resultTy = rt ?? Ty.Void;
+        info.returns = resultTy;
+        info.body = stmts.toArray();
+        info.locals = this.ctx.locals.toArray();
+        info.boxed = this.ctx.boxed.toArray();
+        let infos = List<CaptureInfo>.new();
+        let sources = List<TExpr>.new();
+        for (c in this.ctx.captures) {
+            infos.push(
+                CaptureInfo { ty = if (c.isCell) Ty.Cell(boxTy(c.ty)) else c.ty, isCell = c.isCell }
+            );
+            sources.push(c.source);
+        }
+        info.captures = infos.toArray();
+        this.ctx = saved;
+        this.postFacts = savedFacts;
+        return TExpr.Closure(
+            index,
+            sources.toArray(),
+            Ty.Fn(FnTy { params = tys, result = boxTy(resultTy) })
+        );
+    }
+
+    /// `fn name(…) { … }` in a block (Lyric 5 03 §8.6): a named closure, bound as a `let` from
+    /// here on; in its own body its name is itself.
+    mut fn localFn(f: FnDecl): TStmt {
+        let names = List<string>.new();
+        let tys = List<Ty>.new();
+        for (p in f.params) {
+            if (p.default != null) {
+                this.error("LYS-PAR0060", "a local function's parameter takes no default", p.span);
+            }
+            names.push(p.name);
+            tys.push(this.resolveType(p.type));
+        }
+        var rt: ?Ty = null;
+        let written = f.returns;
+        var body = Expr.Null(f.span);
+        match (f.body) {
+            .Block(b) => {
+                body = Expr.Block(b, b.span);
+                rt = Ty.Void;
+            }
+            .Expr(e) => {
+                body = e;
+            }
+        }
+        if (written != null) {
+            rt = this.resolveType(written);
+        }
+        let closure = this.makeLambda(f.name, names.toArray(), tys.toArray(), rt, body, f.span);
+        let t = typeOf(closure);
+        if (this.atTop()) {
+            return TStmt.SetGlobal(
+                this.declareGlobal(f.name, t, false, f.span),
+                closure,
+                f.span.line
+            );
+        }
+        return TStmt.SetLocal(this.declareLocal(f.name, t, false, f.span), closure, f.span.line);
+    }
+
+    /// A function named without a call (Lyric 5 03 §8.4 rule 1): one of its name, or the one the
+    /// expected function type's parameter count picks.
+    mut fn functionValue(name: string, candidates: int[], expected: ?Ty, at: Span): TExpr {
+        var pick = -1;
+        if (candidates.length() == 1) {
+            pick = candidates[0];
+        } else {
+            let want = expectedFn(expected);
+            if (want != null) {
+                for (c in candidates) {
+                    if (this.functions[c].params.length() == want.params.length()) {
+                        pick = c;
+                    }
+                }
+            }
+        }
+        if (pick < 0) {
+            this.error(
+                "LYS-SEM0013",
+                f"several functions are named '{name}': the position's function type says which",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        return this.thunk(pick, at);
+    }
+
+    /// The function value of function `target`: a function of its own that takes the value
+    /// first and calls `target` with the rest, made once.
+    mut fn thunk(target: int, at: Span): TExpr {
+        let rt = this.returnsOf(target, at);
+        let tys = List<Ty>.new();
+        for (p in this.functions[target].params) {
+            tys.push(p.ty);
+        }
+        let fnTy = Ty.Fn(FnTy { params = tys.toArray(), result = boxTy(rt) });
+        let known = this.thunks.get(target);
+        if (known != null) {
+            return TExpr.Closure(known, [], fnTy);
+        }
+        let index = this.functions.length();
+        let targetInfo = this.functions[target];
+        this.functions.push(
+            FnInfo {
+                name = targetInfo.name + "#value",
+                owner = -1,
+                isStatic = true,
+                line = at.line,
+            }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let info = this.functions[index];
+        let params = List<ParamInfo>.new();
+        let locals = List<Ty>.new();
+        let args = List<TExpr>.new();
+        locals.push(fnTy);
+        var k = 0;
+        for (p in targetInfo.params) {
+            params.push(ParamInfo { name = p.name, ty = p.ty, default = null });
+            locals.push(p.ty);
+            args.push(TExpr.Local(k + 1, p.ty));
+            k += 1;
+        }
+        info.params = params.toArray();
+        info.env = true;
+        info.returns = rt;
+        info.locals = locals.toArray();
+        let flags = List<bool>.new();
+        for (_ in locals) {
+            flags.push(false);
+        }
+        info.boxed = flags.toArray();
+        let call = TExpr.Call(target, args.toArray(), rt);
+        info.body = [TStmt.Return(if (rt == .Void) null else call, at.line)];
+        if (rt == .Void) {
+            info.body = [TStmt.Expr(call, at.line), TStmt.Return(null, at.line)];
+        }
+        this.thunks.insert(target, index);
+        return TExpr.Closure(index, [], fnTy);
     }
 
     /// A method called on a value: one of its type's, not static.
@@ -4106,6 +4610,7 @@ fn stmtSpan(s: Stmt): Span {
     return match (s) {
         .Expr(_, at) => at,
         .Let(_, _, _, _, at) => at,
+        .LocalFn(f) => f.span,
         .Destructure(_, _, _, _, at) => at,
         .If(_, _, _, at) => at,
         .While(_, _, _, at) => at,
@@ -4326,6 +4831,51 @@ fn litKey(e: Expr): string {
     };
 }
 
+/// What a lambda captures: the name, the value in the function around, its type, and whether
+/// it is a `var`'s box.
+struct Capture {
+    name: string,
+    source: TExpr,
+    ty: Ty,
+    isCell: bool,
+}
+
+/// Whether the value block `v` never comes out of its statements: they return or leave.
+fn blockEnds(v: TExpr): bool {
+    return match (v) {
+        .Block(list, _, _) => endsAll(list),
+        _ => false,
+    };
+}
+
+/// The local `name` binds in context `c`, from its innermost scope out.
+fn lookupIn(c: FnCtx, name: string): ?int {
+    var k = c.scopes.length() - 1;
+    while (k >= 0) {
+        let id = c.scopes[k].names.get(name);
+        if (id != null) {
+            return id;
+        }
+        k -= 1;
+    }
+    return null;
+}
+
+/// The function type the position expects, through an optional; `null` where it expects none.
+fn expectedFn(expected: ?Ty): ?FnTy {
+    if (expected == null) {
+        return null;
+    }
+    let t = match (expected) {
+        .Optional(inner) => inner.value,
+        _ => expected,
+    };
+    return match (t) {
+        .Fn(ft) => ft,
+        _ => null,
+    };
+}
+
 /// A name a pattern binds, and the part of the matched value it holds.
 struct Bound {
     name: string,
@@ -4426,6 +4976,12 @@ fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
     return match (s) {
         .Expr(e, _) => exprAny(e, onStmt, onExpr),
         .Let(_, _, _, v, _) => v != null && exprAny(v, onStmt, onExpr),
+        .LocalFn(f) => {
+            match (f.body) {
+                .Block(b) => blockAny(b, onStmt, onExpr),
+                .Expr(e) => exprAny(e, onStmt, onExpr),
+            }
+        }
         .Destructure(_, _, v, e, _) => exprAny(v, onStmt, onExpr)
             || (e != null && blockAny(e, onStmt, onExpr)),
         .If(c, then, o, _) => exprAny(c, onStmt, onExpr)
@@ -4519,6 +5075,7 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
             }
             found
         }
+        .Lambda(_, _, body, _, _) => exprAny(body.value, onStmt, onExpr),
         .VariantInit(_, _, fields, _) => {
             var found = false;
             for (f in fields) {
@@ -4572,5 +5129,6 @@ fn spanOf(e: Expr): Span {
         .Implicit(_, at) => at,
         .VariantInit(_, _, _, at) => at,
         .Match(_, _, at) => at,
+        .Lambda(_, _, _, _, at) => at,
     };
 }

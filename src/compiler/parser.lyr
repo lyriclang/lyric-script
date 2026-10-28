@@ -22,6 +22,7 @@ import lyric_script.compiler.ast {
     FnDecl,
     Item,
     MapEntry,
+    LambdaParam,
     MatchArm,
     Module,
     Param,
@@ -99,6 +100,8 @@ class Parser {
     var depth: int = 0,
     // a `>>` of which one `>` closed type arguments, the other still to read
     var halfShr: bool = false,
+    // in a match arm's guard, which a `=>` ends: no lambda begins there (Lyric 5 does likewise)
+    var inGuard: bool = false,
 
     static fn new(source: string, tokens: Token[]): Parser {
         return Parser {
@@ -620,6 +623,10 @@ class Parser {
         if (this.atWord("let") || this.atWord("var")) {
             return try this.parseLet();
         }
+        // a local function, a named closure
+        if (this.atWord("fn") && this.peek(1).kind == .Ident) {
+            return Stmt.LocalFn(try this.parseFn(false, false, first));
+        }
         if (this.atWord("if")) {
             return try this.parseIf();
         }
@@ -1030,6 +1037,9 @@ class Parser {
                 return this.interpolated(t);
             }
             .LParen => {
+                if (!this.inGuard && this.lambdaAhead()) {
+                    return try this.parseLambda();
+                }
                 this.advance();
                 let inner = try this.parseExpr();
                 if (!this.at(.Comma)) {
@@ -1103,6 +1113,14 @@ class Parser {
                     return Expr.Loop(body, null, this.since(t));
                 }
                 let name = this.text(t);
+                // `x => x * 3`: a lambda of one parameter, its type from the position
+                if (this.peek(1).kind == .FatArrow && !this.inGuard) {
+                    this.advance();
+                    this.advance();
+                    let body = try this.lambdaBody();
+                    let param = LambdaParam { name = name, type = null, span = span };
+                    return Expr.Lambda([param], null, boxed(body), false, this.since(t));
+                }
                 this.advance();
                 if (this.at(.LBrace) && isTypeName(name)) {
                     return try this.parseStructInit(name, t);
@@ -1112,6 +1130,99 @@ class Parser {
             _ => { }
         }
         throw this.failure("LYS-PAR0002", f"an expression is missing: found {this.shown(t)}", t);
+    }
+
+    /// Whether the `(` here opens a lambda: its `)` is followed by `=>`, or by `:` and a result
+    /// type before a `=>`.
+    mut fn lambdaAhead(): bool {
+        var k = 0;
+        var depth = 0;
+        loop {
+            let kind = this.peek(k).kind;
+            if (kind == .Eof) {
+                return false;
+            }
+            if (kind == .LParen || kind == .LBracket || kind == .LBrace) {
+                depth += 1;
+            } else if (kind == .RParen || kind == .RBracket || kind == .RBrace) {
+                depth -= 1;
+                if (depth == 0) {
+                    break;
+                }
+            }
+            k += 1;
+        }
+        let after = this.peek(k + 1).kind;
+        if (after == .FatArrow) {
+            return true;
+        }
+        if (after != .Colon) {
+            return false;
+        }
+        // `): T =>` — a type goes on to its `=>`, and stops at what ends an expression
+        var j = k + 2;
+        var inner = 0;
+        while (j < k + 40) {
+            let kind = this.peek(j).kind;
+            if (kind == .FatArrow) {
+                return true;
+            }
+            // `fn(int, int) -> int`: a comma in the type's own parentheses
+            if (kind == .LParen) {
+                inner += 1;
+            } else if (kind == .RParen) {
+                inner -= 1;
+            }
+            if (kind == .Eof
+                || kind == .Newline
+                || (kind == .Comma && inner == 0)
+                || kind == .Assign
+                || kind == .RBracket
+                || kind == .RBrace
+                || kind == .LBrace
+                || kind == .Semi) {
+                return false;
+            }
+            j += 1;
+        }
+        return false;
+    }
+
+    /// `(a: int, b): int => body`.
+    mut fn parseLambda(): Expr throws SyntaxError {
+        let first = this.advance();
+        let params = List<LambdaParam>.new();
+        while (!this.at(.RParen)) {
+            let pt = try this.expect(.Ident, "LYS-PAR0020", "a parameter's name");
+            var ty: ?TypeExpr = null;
+            if (this.at(.Colon)) {
+                this.advance();
+                ty = try this.parseType();
+            }
+            params.push(LambdaParam { name = this.text(pt), type = ty, span = this.since(pt) });
+            if (!this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        try this.expect(.RParen, "LYS-PAR0008", "')' after the lambda's parameters");
+        var result: ?TypeExpr = null;
+        if (this.at(.Colon)) {
+            this.advance();
+            result = try this.parseType();
+        }
+        try this.expect(.FatArrow, "LYS-PAR0034", "'=>' before the lambda's body");
+        let body = try this.lambdaBody();
+        return Expr.Lambda(params.toArray(), result, boxed(body), false, this.since(first));
+    }
+
+    /// A lambda's body: a value block, or an expression.
+    mut fn lambdaBody(): Expr throws SyntaxError {
+        if (this.at(.LBrace)) {
+            let b = try this.parseBlock();
+            return Expr.Block(b, b.span);
+        }
+        return try this.parseExpr();
     }
 
     /// `if (c) a else b` where a value stands; each branch an expression or a value block.
@@ -1251,6 +1362,10 @@ class Parser {
             var guard: ?Expr = null;
             if (this.atWord("if")) {
                 this.advance();
+                this.inGuard = true;
+                defer {
+                    this.inGuard = false;
+                }
                 guard = try this.parseExpr();
             }
             try this.expect(.FatArrow, "LYS-PAR0034", "'=>' after the arm's pattern");

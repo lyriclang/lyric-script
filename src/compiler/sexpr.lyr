@@ -175,6 +175,7 @@ fn showStmt(s: Stmt): string {
             let given = if (value != null) " " + showExpr(value) else "";
             "(" + word + " " + name + typed + given + ")"
         }
+        .LocalFn(f) => showFn(f),
         .Destructure(isVar, pattern, value, otherwise, _) => "("
             + (if (isVar) "var " else "let ")
             + showPattern(pattern)
@@ -320,6 +321,17 @@ fn showExpr(e: Expr): string {
             "(tuple " + parts.toArray().join(" ") + ")"
         }
         .Implicit(name, _) => "." + name,
+        .Lambda(params, result, body, implicit, _) => {
+            let parts = List<string>.new();
+            for (p in params) {
+                let t = p.type;
+                parts.push(if (t != null) p.name + ": " + showType(t) else p.name);
+            }
+            let r = if (result != null) ": " + showType(result) else "";
+            let head = if (implicit) "(lambda-it"
+                else "(lambda (" + parts.toArray().join(" ") + ")" + r;
+            head + " " + showExpr(body.value) + ")"
+        }
         .VariantInit(enumName, name, fields, _) => {
             let parts = List<string>.new();
             for (f in fields) {

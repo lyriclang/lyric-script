@@ -5,7 +5,7 @@
 //! temporaries are taken above the locals like a stack and given back after each statement, and a
 //! call's arguments go on top of the registers still live, where the callee's frame starts (S1's
 //! convention). Loops are rotated: the test stands after the body, so a turn costs one jump.
-import std.collections { List };
+import std.collections { List, Map };
 import lyric_script.compiler.ast { BinaryOp };
 import lyric_script.compiler.typed {
     Native,
@@ -99,6 +99,12 @@ struct Placement {
     // an enum with payloads: the module type of each variant, and where its fields' slots start
     variantType: int[][],
     variantLoc: Loc[][][],
+    // a lambda's function value: its module type by function, -1 for a function of none, and
+    // where each capture starts in it (after the function's index, scalar 0)
+    closureType: int[],
+    captureLoc: Loc[][],
+    // a captured `var`'s box: its module type by the slots of the value it holds, "s,r"
+    cellType: Map<string, int>,
     // each program type's fields: where their slots start in the object
     fieldLoc: Loc[][],
     descs: TypeDesc[],
@@ -169,6 +175,63 @@ struct Placement {
                 }
             );
         }
+        // the function values of lambdas, and the boxes of the `var`s they capture
+        let closureType = List<int>.new();
+        let captureLoc = List<Loc[]>.new();
+        let cellType = Map<string, int>.new();
+        for (f in p.functions) {
+            if (f.env) {
+                let scalars = List<string>.new();
+                scalars.push("fn");
+                let refs = List<string>.new();
+                let fields = List<FieldInfo>.new();
+                var k = 0;
+                for (c in f.captures) {
+                    fields.push(
+                        FieldInfo { name = f"c{k}", ty = c.ty, isVar = false, default = null }
+                    );
+                    k += 1;
+                }
+                captureLoc.push(layOut(fields.toArray(), scalars, refs, p.types));
+                closureType.push(descs.length());
+                descs.push(
+                    TypeDesc {
+                        name = f"<{f.name}>",
+                        scalarFields = scalars.toArray(),
+                        refFields = refs.toArray(),
+                    }
+                );
+            } else {
+                closureType.push(-1);
+                captureLoc.push([]);
+            }
+            var id = 0;
+            for (t in f.locals) {
+                if (id < f.boxed.length() && f.boxed[id]) {
+                    let (ns, nr) = slotsOf(t, p.types);
+                    let key = f"{ns},{nr}";
+                    if (!cellType.containsKey(key)) {
+                        let scalars = List<string>.new();
+                        let refs = List<string>.new();
+                        layOut(
+                            [FieldInfo { name = "v", ty = t, isVar = true, default = null }],
+                            scalars,
+                            refs,
+                            p.types
+                        );
+                        cellType.insert(key, descs.length());
+                        descs.push(
+                            TypeDesc {
+                                name = "<box>",
+                                scalarFields = scalars.toArray(),
+                                refFields = refs.toArray(),
+                            }
+                        );
+                    }
+                }
+                id += 1;
+            }
+        }
         let globalLoc = List<Loc>.new();
         var gs = 0;
         var gr = 0;
@@ -182,6 +245,9 @@ struct Placement {
             moduleType = moduleType.toArray(),
             variantType = variantType.toArray(),
             variantLoc = variantLoc.toArray(),
+            closureType = closureType.toArray(),
+            captureLoc = captureLoc.toArray(),
+            cellType = cellType,
             fieldLoc = fieldLoc.toArray(),
             descs = descs.toArray(),
             globalLoc = globalLoc.toArray(),
@@ -242,13 +308,16 @@ class FnGen {
         let info = this.p.functions[this.index];
         this.line = info.line;
         // the receiver and the parameters are the first locals, in order: the first registers
-        let paramCount = info.params.length() + (if (info.owner >= 0 && !info.isStatic) 1 else 0);
+        let paramCount = info.params.length()
+            + (if (info.owner >= 0 && !info.isStatic) 1 else 0)
+            + (if (info.env) 1 else 0);
         var paramsS = 0;
         var paramsR = 0;
         var id = 0;
         for (t in info.locals) {
             this.localLoc.push(Loc { s = this.nextS, r = this.nextR });
-            let (ns, nr) = this.slots(t);
+            // a captured `var` is its box, one reference
+            let (ns, nr) = if (this.isBoxed(id)) (0, 1) else this.slots(t);
             this.nextS += ns;
             this.nextR += nr;
             if (id < paramCount) {
@@ -321,6 +390,19 @@ class FnGen {
             .JumpLtI => Instr { op = old.op, a = old.a, b = old.b, c = t },
             _ => Instr { op = old.op, a = old.a, b = t, c = old.c },
         };
+    }
+
+    /// Whether local `id` lives in a box: a `var` a lambda captures.
+    mut fn isBoxed(id: int): bool {
+        let boxed = this.p.functions[this.index].boxed;
+        return id < boxed.length() && boxed[id];
+    }
+
+    /// A new box for local `id`, holding a value of type `t`.
+    mut fn newBox(id: int, t: Ty): void {
+        let (ns, nr) = this.slots(t);
+        let key = f"{ns},{nr}";
+        this.emit(Op.New, this.localLoc[id].r, this.layout.cellType.get(key) ?? 0, 0);
     }
 
     mut fn slots(t: Ty): (int, int) {
@@ -454,7 +536,22 @@ class FnGen {
             }
             .SetLocal(id, e, line) => {
                 this.line = line;
-                this.into(e, this.localLoc[id]);
+                if (this.isBoxed(id)) {
+                    // a declaration: a fresh box each time, so a loop's pass captures its own
+                    let t = this.p.functions[this.index].locals[id];
+                    let v = this.temp(t);
+                    this.to(e, v);
+                    this.newBox(id, t);
+                    this.setField(this.localLoc[id].r, Loc { s = 0, r = 0 }, v, t);
+                } else {
+                    this.into(e, this.localLoc[id]);
+                }
+            }
+            .DeclareLocal(id, line) => {
+                this.line = line;
+                if (this.isBoxed(id)) {
+                    this.newBox(id, this.p.functions[this.index].locals[id]);
+                }
             }
             .SetGlobal(g, e, line) => {
                 this.line = line;
@@ -609,13 +706,17 @@ class FnGen {
     mut fn any(e: TExpr): Loc {
         match (e) {
             .Local(id, _) => {
-                return this.localLoc[id];
+                if (!this.isBoxed(id)) {
+                    return this.localLoc[id];
+                }
             }
             // a narrowed local's value is the first of its slots: read where it lies
             .Narrow(x, _) => {
                 match (x.value) {
                     .Local(id, _) => {
-                        return this.localLoc[id];
+                        if (!this.isBoxed(id)) {
+                            return this.localLoc[id];
+                        }
                     }
                     _ => { }
                 }
@@ -640,7 +741,7 @@ class FnGen {
             .Binary(_, op, _, _) => op == .And || op == .Or,
             .If(_, _, _, _) | .Block(_, _, _) | .Loop(_, _) | .New(_, _) | .Coalesce(_, _, _) => true,
             // `t = (t.1, t.0)` reads the local after its first write
-            .Tuple(_, _) | .MakeVariant(_, _, _) => true,
+            .Tuple(_, _) | .MakeVariant(_, _, _) | .Closure(_, _, _) => true,
             .Wrap(_, _) => true,
             _ => false,
         };
@@ -673,7 +774,13 @@ class FnGen {
                     this.emit(Op.LoadStr, dst.r, this.stringConst(text), 0);
                 }
             }
-            .Local(id, t) => this.move(dst, this.localLoc[id], t),
+            .Local(id, t) => {
+                if (this.isBoxed(id)) {
+                    this.getField(dst, this.localLoc[id].r, Loc { s = 0, r = 0 }, t);
+                } else {
+                    this.move(dst, this.localLoc[id], t);
+                }
+            }
             .Global(g, t) => this.getGlobal(dst, g, t),
             .Variant(_, k) => this.loadInt(dst.s, k),
             .Unary(op, x, t) => {
@@ -843,6 +950,50 @@ class FnGen {
                 let ro = this.any(x.value).r;
                 this.getField(dst, ro, this.layout.variantLoc[ti][k][j], t);
             }
+            // a function value: its function's index, then what it captures
+            .Closure(fi, captures, _) => {
+                this.emit(Op.New, dst.r, this.layout.closureType[fi], 0);
+                let index = this.tempS();
+                this.loadInt(index, fi);
+                this.setField(dst.r, Loc { s = 0, r = 0 }, Loc { s = index, r = -1 }, Ty.Int);
+                let infos = this.p.functions[fi].captures;
+                var k = 0;
+                for (c in captures) {
+                    let cm = this.mark();
+                    let at = this.any(c);
+                    this.setField(dst.r, this.layout.captureLoc[fi][k], at, infos[k].ty);
+                    this.release(cm);
+                    k += 1;
+                }
+            }
+            .Captured(k, t) => {
+                let env = this.localLoc[0].r;
+                this.getField(dst, env, this.layout.captureLoc[this.index][k], t);
+            }
+            .CapturedCell(k, t) => {
+                let cell = this.capturedBox(k);
+                this.getField(dst, cell, Loc { s = 0, r = 0 }, t);
+            }
+            .CellOf(id, _) => {
+                if (dst.r >= 0 && dst.r != this.localLoc[id].r) {
+                    this.emit(Op.MoveR, dst.r, this.localLoc[id].r, 0);
+                }
+            }
+            // a call through a function value: the value goes first, as the callee's environment
+            .CallValue(f, args, t) => {
+                let bs = this.nextS;
+                let br = this.nextR;
+                let all = List<TExpr>.new();
+                all.push(f.value);
+                for (a in args) {
+                    all.push(a);
+                }
+                this.arguments(all.toArray(), bs, br);
+                let (rs, rr) = this.slots(t);
+                this.need(bs + rs, br + rr);
+                this.emit(Op.CallV, bs, br, 0);
+                this.move(dst, Loc { s = bs, r = br }, t);
+            }
             .Unreachable(_) => {
                 let message = this.temp(Ty.Str).r;
                 this.emit(
@@ -856,6 +1007,14 @@ class FnGen {
             .Unit | .Unknown => { }
         }
         this.release(m);
+    }
+
+    /// The box capture `k` of the running lambda holds, in a reference temporary.
+    mut fn capturedBox(k: int): int {
+        // a reference register: a box is an object
+        let cell = this.temp(Ty.Str).r;
+        this.emit(Op.GetR, cell, this.localLoc[0].r, this.layout.captureLoc[this.index][k].r);
+        return cell;
     }
 
     /// `null` of type `t`: a reference `nil`; or an absent presence, the value's references `nil`
@@ -1033,6 +1192,10 @@ class FnGen {
     mut fn assign(place: Place, op: ?BinaryOp, value: TExpr, t: Ty, dst: Loc): void {
         match (place) {
             .Local(id) => {
+                if (this.isBoxed(id)) {
+                    this.assignBoxed(this.localLoc[id].r, op, value, t, dst);
+                    return;
+                }
                 let at = this.localLoc[id];
                 if (op != null) {
                     this.combine(op, t, at, value, at);
@@ -1073,7 +1236,28 @@ class FnGen {
                 this.move(dst, v, t);
                 this.release(m);
             }
+            .CapturedCell(k) => {
+                let m = this.mark();
+                let cell = this.capturedBox(k);
+                this.assignBoxed(cell, op, value, t, dst);
+                this.release(m);
+            }
         }
+    }
+
+    /// An assignment to the value in the box in reference register `cell`.
+    mut fn assignBoxed(cell: int, op: ?BinaryOp, value: TExpr, t: Ty, dst: Loc): void {
+        let m = this.mark();
+        let v = this.temp(t);
+        if (op != null) {
+            this.getField(v, cell, Loc { s = 0, r = 0 }, t);
+            this.combine(op, t, v, value, v);
+        } else {
+            this.to(value, v);
+        }
+        this.setField(cell, Loc { s = 0, r = 0 }, v, t);
+        this.move(dst, v, t);
+        this.release(m);
     }
 
     /// `out = cur op value`, for `op=`: strings join through the native; `&&=`, `||=` and `??=`

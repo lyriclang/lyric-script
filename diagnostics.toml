@@ -394,6 +394,12 @@ severity = "error"
 area = "02-grammar"
 summary = "`a < b < c` is refused rather than read left to right: write each comparison on its own and join them with `&&`. Lyric 5's LYR-PAR0059."
 
+[LYS-PAR0060]
+title = "a default on a local function's parameter"
+severity = "error"
+area = "03-types"
+summary = "A local function is one closure: its parameters take no default. Lyric 5's LYR-PAR0060."
+
 [LYS-PAR0900]
 title = "a digit beyond its literal's base"
 severity = "error"
@@ -475,6 +481,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "The type has no field, method or variant of the name, a tuple no element at the position or under the label; `Point(1, 2)` is `Point.new(1, 2)` and needs a `static fn new`. Lyric 5's LYR-SEM0012."
 
+[LYS-SEM0013]
+title = "a call on something that is no function"
+severity = "error"
+area = "03-types"
+summary = "A call `f(…)` whose callee is no function value, or a function named without a call where several of the name exist and the position's function type does not pick one. Lyric 5's LYR-SEM0013."
+
 [LYS-SEM0014]
 title = "a call with the wrong number of arguments"
 severity = "error"
@@ -540,6 +552,12 @@ title = "alternatives that bind different names"
 severity = "error"
 area = "09-patterns"
 summary = "Every alternative of `P | Q` binds the same names at the same types. Lyric 5's LYR-SEM0032."
+
+[LYS-SEM0045]
+title = "a lambda parameter whose type nothing gives"
+severity = "error"
+area = "03-types"
+summary = "A parameter without a written type in a lambda where no function type is expected, or a trailing block's `it` where the expected function does not take one parameter. Lyric 5's LYR-SEM0045."
 
 [LYS-SEM0050]
 title = "a match that does not cover every value"

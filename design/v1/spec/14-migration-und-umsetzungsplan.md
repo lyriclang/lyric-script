@@ -322,3 +322,8 @@ Objektsicherheit mit S3g; Operator-Interfaces und Synthese mit S3h).
   sucht in der Tabelle, mit Eingrenzung (Auspacken bei Boxen); Typ-Muster `c: Circle` im
   `match`; ein `sealed interface` macht die Abdeckung über seine Konformer geschlossen.
 - *Delegation* `by` (§5): Weiterleitungsfunktionen je nicht selbst geschriebenem Member.
+
+**S3f, Ergebnis.** Wie präzisiert, in vier Stufen (Interfaces und `call.i`; Boxen und `extend`
+auf eingebauten Typen; `Any`, `is`, Typ-Muster, `sealed`; `by`). Eine Kontrolle der Boxen blieb
+zuerst grün, weil der richtige Wert zufällig im Skalarregister an der Basis lag; der Test ruft
+jetzt gespeicherte Interface-Werte nach anderer Arbeit. 142 Tests, 82 Konformanzfälle.

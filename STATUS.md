@@ -86,7 +86,7 @@ Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; meas
 | S3c tuples | done — Lyric 5 §6 rules 1–5: labels outside the type, `t.0`/`t.x`, `let (a, b) = t` nested and with `_`; in the VM a tuple is its elements' slots in order, inline. Equality and display with S3h, `for ((a, b) in …)` with S7 |
 | S3d enums with values, `match`, patterns | done — tuple and struct variants, `.Variant` where the position names the enum; an enum with payloads is a reference (an object per variant, the tag its first scalar), so it holds itself without a box; `match` as statement and value, Lyric 5's patterns (type patterns with S3f, array patterns with S7), coverage with a witness (Maranget), unreachable arms; patterns in `if let`, `while let`, `let … else`. Arms stand apart by `,` or a line end (P10) |
 | S3e function values | done — `fn(A) -> R`, lambdas in three forms (trailing blocks with `it` or named parameters), functions, statics and bound methods as values, calls through values (`call.v`, new); captures: a `let` copied, a `var` in a box made at its declaration, so fresh per loop pass; local `fn` calling itself. Without `throws` until S4 |
-| S3f interfaces | — |
+| S3f interfaces | done — declarations, defaults (their `this` the interface value), parents, conformance in a list or `extend` (also on `int`, `string`), `by`; an interface value is the conformer's reference or a box; each descriptor carries its slot table and interfaces (format 2), `call.i`, `is.t`, `is.i`; `Any`, `is` with narrowing, type patterns, `sealed`. `Self`, statics, associated types, object safety with S3g |
 | S3g generics | — |
 | S3h synthesis, `with`, literal protocols | — |
 | S3i runtime descriptors | — |

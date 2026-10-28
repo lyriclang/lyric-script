@@ -1,0 +1,112 @@
+# Lyric-Script is a Lyric 5 package: CI builds the Lyric 5 command line from the commit that
+# lyric5.pin names (until Lyric 5's `lyric toolchain install` can pin an exact build), then builds,
+# tests and runs `lyric-script` with it on every Tier 1 target (design/v1, 14 S0).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: lyric-script (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { rid: linux-x64, os: ubuntu-latest }
+          - { rid: linux-arm64, os: ubuntu-24.04-arm }
+          - { rid: win-x64, os: windows-latest }
+          - { rid: osx-arm64, os: macos-latest }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Read the Lyric 5 pin
+        id: pin
+        shell: bash
+        run: echo "sha=$(tr -d '[:space:]' < lyric5.pin)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Lyric 5 at the pin
+        uses: actions/checkout@v7
+        with:
+          repository: lyriclang/lyric
+          ref: ${{ steps.pin.outputs.sha }}
+          path: lyric5-src
+
+      # The NativeAOT build of one pinned commit never changes: kept per commit and target.
+      - name: Cache the pinned lyric5
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: lyric5
+          key: lyric5-${{ matrix.rid }}-${{ steps.pin.outputs.sha }}
+
+      - name: The preinstalled .NET, if it is 10
+        id: dotnet
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: dotnet --list-sdks 2>/dev/null | grep -q '^10\.' && echo "have=1" >> "$GITHUB_OUTPUT" || true
+
+      - name: Set up .NET from Lyric 5's global.json
+        if: steps.cache.outputs.cache-hit != 'true' && steps.dotnet.outputs.have != '1'
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: lyric5-src/global.json
+
+      - name: Build lyric5 (NativeAOT)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: dotnet publish lyric5-src/src/Lyric5/Lyric5.csproj --configuration Release -r ${{ matrix.rid }} -o lyric5
+
+      - name: Read Lyric 5's zig pin
+        id: zig
+        shell: bash
+        run: echo "version=$(tr -d '[:space:]' < lyric5-src/tooling/zig-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ steps.zig.outputs.version }}
+
+      - name: Build
+        shell: bash
+        run: |
+          lyric5=lyric5/lyric5; [ "${{ runner.os }}" = "Windows" ] && lyric5=lyric5/lyric5.exe
+          "$lyric5" --version
+          "$lyric5" build
+
+      - name: Test
+        shell: bash
+        run: |
+          lyric5=lyric5/lyric5; [ "${{ runner.os }}" = "Windows" ] && lyric5=lyric5/lyric5.exe
+          "$lyric5" test
+
+      # The milestone's artefact: the command line runs and reports itself; an unknown command
+      # exits with 2.
+      - name: Run lyric-script
+        shell: bash
+        run: |
+          bin=$(find out -type f \( -name 'lyric-script' -o -name 'lyric-script.exe' \) | head -1)
+          echo "binary: $bin"
+          "$bin" --version | tee version.txt
+          grep -q '^lyric-script 1\.0\.0-dev ' version.txt
+          code=0; "$bin" frobnicate || code=$?
+          [ "$code" -eq 2 ]
+
+      - name: Build the C ABI library
+        shell: bash
+        run: |
+          lyric5=lyric5/lyric5; [ "${{ runner.os }}" = "Windows" ] && lyric5=lyric5/lyric5.exe
+          "$lyric5" build --lib
+          header=$(find out -type f -name 'lyric_script.h' | head -1)
+          echo "header: $header"
+          grep -q 'lyrs_abi_version' "$header"

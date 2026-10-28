@@ -1,0 +1,7 @@
+//! The bytecode VM (design/v1, 11): a register machine over separate scalar and reference files.
+//! In S0 only the version of its internal format exists; the machine comes with S1.
+
+/// The version of the internal bytecode format. It is part of the cache key and of the header
+/// that `loadTrusted` checks, so every change of the format raises it; nothing outside this
+/// toolchain reads it (11 Fmt).
+pub let BYTECODE_FORMAT: int = 0;

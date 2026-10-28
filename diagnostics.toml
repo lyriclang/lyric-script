@@ -1,0 +1,20 @@
+# The diagnostic catalog of the Lyric-Script toolchain: every code it reports, in code order.
+# The form of an entry is Lyric 5's (src/Lyric.Core/diagnostics.toml in lyriclang/lyric): title,
+# severity, area (the chapter of the specification on lyric-spec's script branch), summary,
+# explanation, example. Codes carry the prefix LYS-; a guard that holds this file against the
+# toolchain comes with S11.
+
+[LYS-CLI0001]
+title = "an unknown command"
+severity = "error"
+area = "14-cli"
+summary = "Reported when the first argument of `lyric-script` names no command. The exit code is 2."
+explanation = '''
+`lyric-script` takes a command as its first argument. A word it does not know stops it before
+anything runs; `lyric-script help` lists the commands there are.
+'''
+example = '''
+$ lyric-script frobnicate
+error[LYS-CLI0001]: unknown command 'frobnicate'
+  = help: lyric-script help lists the commands
+'''

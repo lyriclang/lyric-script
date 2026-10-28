@@ -1,0 +1,12 @@
+//! Lyric-Script as a library: the compiler and the bytecode VM a host links (design/v1, 11).
+//! In S0 it holds the version and the first export of the C ABI; the VM comes with S1.
+
+/// The version of this toolchain, as `lyric-script --version` reports it.
+pub let VERSION: string = "1.0.0-dev";
+
+/// The version of the C ABI of `liblyric_script`. A host compares it with the one its header
+/// was generated for; it changes with every incompatible change of an export.
+@Export("lyrs_abi_version")
+pub fn abiVersion(): int {
+    return 1;
+}

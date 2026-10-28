@@ -79,6 +79,25 @@ class LoopCtx {
 /// yet (lyriclang/lyric#612).
 class Scope {
     names: Map<string, int>,
+    // the locals and the script's globals a condition has narrowed here: what they hold
+    narrowed: Map<int, Ty>,
+    narrowedGlobals: Map<int, Ty>,
+
+    static fn new(): Scope {
+        return Scope {
+            names = Map<string, int>.new(),
+            narrowed = Map<int, Ty>.new(),
+            narrowedGlobals = Map<int, Ty>.new(),
+        };
+    }
+}
+
+/// What a condition says where it holds, or where it does not: a binding of an optional holds
+/// its value (03 O).
+struct Fact {
+    isGlobal: bool,
+    id: int,
+    ty: Ty,
 }
 
 /// The function being checked: its scopes of locals and its loops.
@@ -87,6 +106,7 @@ class FnCtx {
     scopes: List<Scope>,
     locals: List<Ty>,
     localIsVar: List<bool>,
+    localNames: List<string>,
     loops: List<LoopCtx>,
     returns: Ty,
     // whether `let` and `var` at the outermost scope are the script's globals (main's code)
@@ -94,12 +114,13 @@ class FnCtx {
 
     static fn new(fnIndex: int, returns: Ty, isMain: bool): FnCtx {
         let scopes = List<Scope>.new();
-        scopes.push(Scope { names = Map<string, int>.new() });
+        scopes.push(Scope.new());
         return FnCtx {
             fnIndex = fnIndex,
             scopes = scopes,
             locals = List<Ty>.new(),
             localIsVar = List<bool>.new(),
+            localNames = List<string>.new(),
             loops = List<LoopCtx>.new(),
             returns = returns,
             isMain = isMain,
@@ -131,6 +152,9 @@ class Checker {
     globalIndex: Map<string, int>,
     var ctx: FnCtx,
     var mainIndex: int = -1,
+    // what the statement just checked lets the rest of its block know (an `if` whose one branch
+    // never comes out)
+    var postFacts: List<Fact> = List<Fact>.new(),
 
     static fn new(): Checker {
         return Checker {
@@ -427,6 +451,15 @@ class Checker {
                     this.ctx = saved;
                 }
             }
+            // a `?T` field without a default starts as null (03 Initialisierung)
+            match (f.ty) {
+                .Optional(_) => {
+                    if (dflt == null) {
+                        dflt = TExpr.Null(f.ty);
+                    }
+                }
+                _ => { }
+            }
             fields.push(FieldInfo { name = f.name, ty = f.ty, isVar = f.isVar, default = dflt });
         }
         info.fields = fields.toArray();
@@ -541,6 +574,7 @@ class Checker {
             .List(e) => f"{this.tyName(e.value)}[]",
             .Map(k, v) => f"Map<{this.tyName(k.value)}, {this.tyName(v.value)}>",
             .Optional(e) => f"?{this.tyName(e.value)}",
+            .NullLit => "null",
         };
     }
 
@@ -551,11 +585,9 @@ class Checker {
         if (actual == target || actual == .Unknown || target == .Unknown || actual == .Never) {
             return e;
         }
-        if (actual == .Int && target == .Float) {
-            return match (e) {
-                .Int(n) => TExpr.Float(n as float),
-                _ => TExpr.ToFloat(boxE(e)),
-            };
+        let fitted = this.fit(e, target);
+        if (fitted != null) {
+            return fitted;
         }
         this.error(
             "LYS-SEM0001",
@@ -563,6 +595,35 @@ class Checker {
             at
         );
         return TExpr.Unknown;
+    }
+
+    /// `e` as a value of `target` without a report: the same, an `int` widened to `float`, a
+    /// value wrapped as present where an optional of it is taken, `null` given its type; `null`
+    /// where it does not fit.
+    mut fn fit(e: TExpr, target: Ty): ?TExpr {
+        let actual = typeOf(e);
+        if (actual == target) {
+            return e;
+        }
+        if (actual == .Int && target == .Float) {
+            return match (e) {
+                .Int(n) => TExpr.Float(n as float),
+                _ => TExpr.ToFloat(boxE(e)),
+            };
+        }
+        match (target) {
+            .Optional(inner) => {
+                if (actual == .NullLit) {
+                    return TExpr.Null(target);
+                }
+                let v = this.fit(e, inner.value);
+                if (v != null) {
+                    return TExpr.Wrap(boxE(v), target);
+                }
+            }
+            _ => { }
+        }
+        return null;
     }
 
     // --- bodies ----------------------------------------------------------------------------------
@@ -577,12 +638,16 @@ class Checker {
         this.fnDecls.push(null);
         this.fnStates.push(FnState.Done);
         this.ctx = FnCtx.new(index, Ty.Void, true);
-        let body = List<TStmt>.new();
+        let stmts = List<Stmt>.new();
         for (item in module.items) {
             match (item) {
-                .Stmt(s) => body.push(this.stmt(s)),
+                .Stmt(s) => stmts.push(s),
                 .Decl(_) => { }
             }
+        }
+        let body = List<TStmt>.new();
+        for (s in this.stmtList(stmts.toArray())) {
+            body.push(s);
         }
         let info = this.functions[index];
         info.body = body.toArray();
@@ -637,8 +702,8 @@ class Checker {
         let body = List<TStmt>.new();
         match (decl.body) {
             .Block(b) => {
-                for (s in b.stmts) {
-                    body.push(this.stmt(s));
+                for (s in this.stmtList(b.stmts)) {
+                    body.push(s);
                 }
                 if (info.returns != .Void && info.returns != .Unknown && !endsAll(body.toArray())) {
                     this.error(
@@ -673,8 +738,120 @@ class Checker {
         let id = this.ctx.locals.length();
         this.ctx.locals.push(t);
         this.ctx.localIsVar.push(isVar);
+        this.ctx.localNames.push(name);
         scope.insert(name, id);
         return id;
+    }
+
+    /// A local the program does not name: where `?.`, `if let` and `while let` hold a value.
+    mut fn hidden(t: Ty, at: Span): int {
+        return this.declareLocal(f"${this.ctx.locals.length()}", t, false, at);
+    }
+
+    mut fn narrowedLocal(id: int): ?Ty {
+        var k = this.ctx.scopes.length() - 1;
+        while (k >= 0) {
+            let t = this.ctx.scopes[k].narrowed.get(id);
+            if (t != null) {
+                return t;
+            }
+            k -= 1;
+        }
+        return null;
+    }
+
+    mut fn narrowedGlobal(id: int): ?Ty {
+        var k = this.ctx.scopes.length() - 1;
+        while (k >= 0) {
+            let t = this.ctx.scopes[k].narrowedGlobals.get(id);
+            if (t != null) {
+                return t;
+            }
+            k -= 1;
+        }
+        return null;
+    }
+
+    /// The facts condition `c` gives where it is `when`: `x != null` narrows `x` where true,
+    /// `x == null` where false; `&&` gives both sides' where true, `||` where false; `!` turns.
+    mut fn factsOf(c: TExpr, when: bool): List<Fact> {
+        let out = List<Fact>.new();
+        this.collectFacts(c, when, out);
+        return out;
+    }
+
+    mut fn collectFacts(c: TExpr, when: bool, out: List<Fact>): void {
+        match (c) {
+            .IsNull(x) => {
+                if (!when) {
+                    this.factOf(x.value, out);
+                }
+            }
+            .Unary(op, x, _) => {
+                if (op == .Not) {
+                    this.collectFacts(x.value, !when, out);
+                }
+            }
+            .Binary(a, op, b, _) => {
+                if ((op == .And && when) || (op == .Or && !when)) {
+                    this.collectFacts(a.value, when, out);
+                    this.collectFacts(b.value, when, out);
+                }
+            }
+            _ => { }
+        }
+    }
+
+    mut fn factOf(x: TExpr, out: List<Fact>): void {
+        match (x) {
+            .Local(id, t) => {
+                match (t) {
+                    .Optional(inner) => out.push(Fact { isGlobal = false, id = id, ty = inner.value }),
+                    _ => { }
+                }
+            }
+            .Global(g, t) => {
+                match (t) {
+                    .Optional(inner) => out.push(Fact { isGlobal = true, id = g, ty = inner.value }),
+                    _ => { }
+                }
+            }
+            _ => { }
+        }
+    }
+
+    /// Narrows the bindings of `facts` in the innermost scope: a `let` and a parameter always, a
+    /// `var` only where `region` (from `from` on) never writes it; a global `let` too, never a
+    /// global `var`, which any call may write.
+    mut fn narrow(facts: List<Fact>, region: Stmt[], from: int): void {
+        let scope = this.ctx.scopes[this.ctx.scopes.length() - 1];
+        for (f in facts) {
+            if (f.isGlobal) {
+                if (!this.globals[f.id].isVar) {
+                    scope.narrowedGlobals.insert(f.id, f.ty);
+                }
+            } else if (!this.ctx.localIsVar[f.id] || !writesIn(region, from, this.ctx.localNames[f.id])) {
+                scope.narrowed.insert(f.id, f.ty);
+            }
+        }
+    }
+
+    /// The statements of a block in order: what one of them lets the rest know is narrowed for the
+    /// rest (an `if` whose one branch never comes out).
+    mut fn stmtList(stmts: Stmt[]): TStmt[] {
+        let out = List<TStmt>.new();
+        var k = 0;
+        while (k < stmts.length()) {
+            this.postFacts = List<Fact>.new();
+            out.push(this.stmt(stmts[k]));
+            if (this.postFacts.length() > 0) {
+                let facts = this.postFacts;
+                this.postFacts = List<Fact>.new();
+                this.narrow(facts, stmts, k + 1);
+            }
+            k += 1;
+        }
+        return out.toArray();
     }
 
     mut fn lookupLocal(name: string): ?int {
@@ -690,7 +867,7 @@ class Checker {
     }
 
     mut fn pushScope(): void {
-        this.ctx.scopes.push(Scope { names = Map<string, int>.new() });
+        this.ctx.scopes.push(Scope.new());
     }
 
     mut fn popScope(): void {
@@ -699,12 +876,18 @@ class Checker {
 
     mut fn block(b: Block): TStmt[] {
         this.pushScope();
-        let out = List<TStmt>.new();
-        for (s in b.stmts) {
-            out.push(this.stmt(s));
-        }
+        let out = this.stmtList(b.stmts);
         this.popScope();
-        return out.toArray();
+        return out;
+    }
+
+    /// A block where `facts` hold.
+    mut fn blockWith(b: Block, facts: List<Fact>): TStmt[] {
+        this.pushScope();
+        this.narrow(facts, b.stmts, 0);
+        let out = this.block(b);
+        this.popScope();
+        return out;
     }
 
     // --- statements ------------------------------------------------------------------------------
@@ -715,22 +898,33 @@ class Checker {
             .Let(isVar, name, written, value, at) => this.letStmt(isVar, name, written, value, at),
             .If(cond, then, otherwise, at) => {
                 let c = this.condition(cond);
-                let t = this.block(then);
+                let yes = this.factsOf(c, true);
+                let no = this.factsOf(c, false);
+                let t = this.blockWith(then, yes);
                 var o: TStmt[] = [];
                 if (otherwise != null) {
                     this.pushScope();
+                    this.narrow(no, [otherwise.value], 0);
                     o = [this.stmt(otherwise.value)];
                     this.popScope();
+                }
+                // where one branch never comes out, what the other knows holds after the `if`
+                if (endsAll(t) && !endsAll(o)) {
+                    this.postFacts = no;
+                } else if (otherwise != null && endsAll(o) && !endsAll(t)) {
+                    this.postFacts = yes;
                 }
                 TStmt.If(c, t, o, at.line)
             }
             .While(cond, body, _, at) => {
                 let c = this.condition(cond);
                 this.ctx.loops.push(LoopCtx { isLoop = false });
-                let b = this.block(body);
+                let b = this.blockWith(body, this.factsOf(c, true));
                 this.ctx.loops.pop();
                 TStmt.While(c, b, at.line)
             }
+            .IfLet(name, value, then, otherwise, at) => this.ifLet(name, value, then, otherwise, at),
+            .WhileLet(name, value, body, _, at) => this.whileLet(name, value, body, at),
             .For(name, iterable, body, _, at) => this.forStmt(name, iterable, body, at),
             .Break(_, value, at) => this.breakStmt(value, at),
             .Continue(_, at) => {
@@ -742,6 +936,64 @@ class Checker {
             .Return(value, at) => this.returnStmt(value, at),
             .Block(b, at) => TStmt.Block(this.block(b), at.line),
         };
+    }
+
+    /// The optional of an `if let` or a `while let` and what it holds; reported where it is none.
+    mut fn optionalOf(v: TExpr, word: string, at: Span): Ty {
+        return match (typeOf(v)) {
+            .Optional(inner) => inner.value,
+            .Unknown => Ty.Unknown,
+            _ => {
+                this.error("LYS-SEM0005", f"'{word}' takes an optional: this value is never null", at);
+                Ty.Unknown
+            }
+        };
+    }
+
+    /// `if (let x = e) { … } else { … }`: `e` held in a local of its own, `x` its value in the
+    /// block where it is there.
+    mut fn ifLet(name: string, value: Expr, then: Block, otherwise: ?Box<Stmt>, at: Span): TStmt {
+        let v = this.expr(value, null);
+        let ot = typeOf(v);
+        let inner = this.optionalOf(v, "if let", spanOf(value));
+        let tmp = this.hidden(ot, at);
+        this.pushScope();
+        let x = this.declareLocal(name, inner, false, at);
+        let body = List<TStmt>.new();
+        body.push(TStmt.SetLocal(x, TExpr.Narrow(boxE(TExpr.Local(tmp, ot)), inner), at.line));
+        for (s in this.block(then)) {
+            body.push(s);
+        }
+        this.popScope();
+        var o: TStmt[] = [];
+        if (otherwise != null) {
+            this.pushScope();
+            o = [this.stmt(otherwise.value)];
+            this.popScope();
+        }
+        let present = TExpr.Unary(UnaryOp.Not, boxE(TExpr.IsNull(boxE(TExpr.Local(tmp, ot)))), Ty.Bool);
+        return TStmt.Block([TStmt.SetLocal(tmp, v, at.line), TStmt.If(present, body.toArray(), o, at.line)], at.line);
+    }
+
+    /// `while (let x = e) { … }`: `e` again before each turn, the loop's end where it is null.
+    mut fn whileLet(name: string, value: Expr, body: Block, at: Span): TStmt {
+        this.pushScope();
+        let v = this.expr(value, null);
+        let ot = typeOf(v);
+        let inner = this.optionalOf(v, "while let", spanOf(value));
+        let tmp = this.hidden(ot, at);
+        let x = this.declareLocal(name, inner, false, at);
+        this.ctx.loops.push(LoopCtx { isLoop = false });
+        let turn = List<TStmt>.new();
+        turn.push(TStmt.SetLocal(tmp, v, at.line));
+        turn.push(TStmt.If(TExpr.IsNull(boxE(TExpr.Local(tmp, ot))), [TStmt.Break(null, at.line)], [], at.line));
+        turn.push(TStmt.SetLocal(x, TExpr.Narrow(boxE(TExpr.Local(tmp, ot)), inner), at.line));
+        for (s in this.block(body)) {
+            turn.push(s);
+        }
+        this.ctx.loops.pop();
+        this.popScope();
+        return TStmt.While(TExpr.Bool(true), turn.toArray(), at.line);
     }
 
     /// An expression as a statement: a call, an assignment or a loop; anything else would be
@@ -777,7 +1029,14 @@ class Checker {
             v = this.coerce(v, t, spanOf(value));
         } else {
             t = typeOf(v);
-            if (t == .Void || t == .Never) {
+            if (t == .NullLit) {
+                this.error(
+                    "LYS-SEM0010",
+                    f"'{name}' is null, and nothing says of what: write its type, '?T'",
+                    at
+                );
+                t = Ty.Unknown;
+            } else if (t == .Void || t == .Never) {
                 this.error(
                     "LYS-SEM0010",
                     f"'{name}' takes the value of something that gives none",
@@ -921,7 +1180,24 @@ class Checker {
             .Str(s, _) => TExpr.Str(s),
             .Bytes(_, at) => this.notYet("a byte string", "S7 (Bytes)", at),
             .Interpolated(segments, at) => this.interpolated(segments, at),
-            .Null(at) => this.notYet("null", "S3 (optionals)", at),
+            .Null(_) => {
+                let t = expected ?? Ty.NullLit;
+                match (t) {
+                    .Optional(_) => TExpr.Null(t),
+                    _ => TExpr.Null(Ty.NullLit),
+                }
+            }
+            .Unwrap(x, at) => {
+                let v = this.expr(x.value, null);
+                match (typeOf(v)) {
+                    .Optional(inner) => TExpr.Unwrap(boxE(v), inner.value),
+                    .Unknown => TExpr.Unknown,
+                    _ => {
+                        this.error("LYS-SEM0005", "'!' on a value that is never null", at);
+                        TExpr.Unknown
+                    }
+                }
+            }
             .Name(name, at) => this.name(name, at),
             .This(at) => {
                 let fnIndex = this.ctx.fnIndex;
@@ -968,11 +1244,21 @@ class Checker {
     mut fn name(name: string, at: Span): TExpr {
         let local = this.lookupLocal(name);
         if (local != null) {
-            return TExpr.Local(local, this.ctx.locals[local]);
+            let declared = this.ctx.locals[local];
+            let narrowed = this.narrowedLocal(local);
+            if (narrowed != null) {
+                return TExpr.Narrow(boxE(TExpr.Local(local, declared)), narrowed);
+            }
+            return TExpr.Local(local, declared);
         }
         let global = this.globalIndex.get(name);
         if (global != null) {
-            return TExpr.Global(global, this.globals[global].ty);
+            let declared = this.globals[global].ty;
+            let narrowed = this.narrowedGlobal(global);
+            if (narrowed != null) {
+                return TExpr.Narrow(boxE(TExpr.Global(global, declared)), narrowed);
+            }
+            return TExpr.Global(global, declared);
         }
         if (this.fnByName.containsKey(name)) {
             return this.notYet("a function as a value", "S3 (function values)", at);
@@ -1008,7 +1294,7 @@ class Checker {
     mut fn binary(l: Expr, op: BinaryOp, r: Expr, at: Span): TExpr {
         match (op) {
             .Coalesce => {
-                return this.notYet("'??'", "S3 (optionals)", at);
+                return this.coalesce(l, r, at);
             }
             .In | .NotIn => {
                 return this.notYet(f"'{binaryText(op)}'", "S7 (the core collections)", at);
@@ -1016,11 +1302,35 @@ class Checker {
             _ => { }
         }
         let a = this.expr(l, null);
-        let b = this.expr(r, null);
+        // the right side of `&&` and `||` sees what the left one says where it is checked
+        var b = TExpr.Unknown;
+        if (op == .And || op == .Or) {
+            this.pushScope();
+            this.narrow(this.factsOf(a, op == .And), [Stmt.Expr(r, spanOf(r))], 0);
+            b = this.expr(r, null);
+            this.popScope();
+        } else {
+            b = this.expr(r, null);
+        }
         let ta = typeOf(a);
         let tb = typeOf(b);
         if (ta == .Unknown || tb == .Unknown) {
             return TExpr.Unknown;
+        }
+        // `x == null`, `x != null`
+        if ((op == .Eq || op == .Ne) && (ta == .NullLit || tb == .NullLit)) {
+            let other = if (ta == .NullLit) b else a;
+            let ot = typeOf(other);
+            match (ot) {
+                .Optional(_) => {
+                    let test = TExpr.IsNull(boxE(other));
+                    return if (op == .Eq) test else TExpr.Unary(UnaryOp.Not, boxE(test), Ty.Bool);
+                }
+                _ => {
+                    this.error("LYS-SEM0005", f"'{binaryText(op)} null' on a value that is never null", at);
+                    return TExpr.Unknown;
+                }
+            }
         }
         let numeric = (ta == .Int || ta == .Float) && (tb == .Int || tb == .Float);
         let wide = if (ta == .Float || tb == .Float) Ty.Float else Ty.Int;
@@ -1105,6 +1415,39 @@ class Checker {
         return TExpr.Unknown;
     }
 
+    /// `a ?? b`: `a` an optional; `b` its value's type, which the result has, or an optional of
+    /// it, which the result has then.
+    mut fn coalesce(l: Expr, r: Expr, at: Span): TExpr {
+        let a = this.expr(l, null);
+        let ta = typeOf(a);
+        return match (ta) {
+            .Optional(inner) => {
+                let b = this.expr(r, inner.value);
+                let plain = this.fit(b, inner.value);
+                if (plain != null) {
+                    return TExpr.Coalesce(boxE(a), boxE(plain), inner.value);
+                }
+                let opt = this.fit(b, ta);
+                if (opt != null) {
+                    return TExpr.Coalesce(boxE(a), boxE(opt), ta);
+                }
+                if (typeOf(b) != .Unknown) {
+                    this.error(
+                        "LYS-SEM0001",
+                        f"expected {this.tyName(inner.value)}, found {this.tyName(typeOf(b))}",
+                        spanOf(r)
+                    );
+                }
+                TExpr.Unknown
+            }
+            .Unknown => TExpr.Unknown,
+            _ => {
+                this.error("LYS-SEM0005", "'??' on a value that is never null", at);
+                TExpr.Unknown
+            }
+        };
+    }
+
     mut fn isEnum(t: Ty): bool {
         return match (t) {
             .Named(i) => this.types[i].kind == .Enum,
@@ -1185,6 +1528,22 @@ class Checker {
                     spanOf(target)
                 );
                 return TExpr.Unknown;
+            }
+        }
+        if (op == BinaryOp.Coalesce) {
+            // `x ??= v`: v, as an optional of x's type, only where x is absent
+            match (t) {
+                .Optional(_) => {
+                    let v = this.coerce(this.expr(value, t), t, spanOf(value));
+                    return TExpr.Assign(place, op, boxE(v), t);
+                }
+                .Unknown => {
+                    return TExpr.Unknown;
+                }
+                _ => {
+                    this.error("LYS-SEM0005", "'??=' on a value that is never null", at);
+                    return TExpr.Unknown;
+                }
             }
         }
         if (op != null) {
@@ -1287,9 +1646,58 @@ class Checker {
         return null;
     }
 
+    /// The value of `x?.…` in a local of its own: its type, and what it holds where it is there;
+    /// reported where `x` is never null.
+    mut fn optionalReceiver(x: Expr, at: Span): ?(TExpr, int, Ty) {
+        let o = this.expr(x, null);
+        let ot = typeOf(o);
+        return match (ot) {
+            .Optional(inner) => (o, this.hidden(ot, at), inner.value),
+            .Unknown => null,
+            _ => {
+                this.error("LYS-SEM0005", "'?.' on a value that is never null", at);
+                null
+            }
+        };
+    }
+
+    /// `x?.m` with `x` held in local `tmp`: null where `x` is, else the member, as an optional —
+    /// one level only where the member is an optional itself (03 O: `?.` flattens).
+    mut fn optChain(tmp: int, value: TExpr, access: TExpr, at: Span): TExpr {
+        let ot = typeOf(value);
+        let mt = typeOf(access);
+        let absent = TExpr.IsNull(boxE(TExpr.Local(tmp, ot)));
+        let store = [TStmt.SetLocal(tmp, value, at.line)];
+        return match (mt) {
+            .Void => TExpr.Block(store, boxE(TExpr.If(boxE(absent), boxE(TExpr.Unit), boxE(access), Ty.Void)), Ty.Void),
+            .Unknown => TExpr.Unknown,
+            .Optional(_) => TExpr.Block(store, boxE(TExpr.If(boxE(absent), boxE(TExpr.Null(mt)), boxE(access), mt)), mt),
+            _ => {
+                let rt = Ty.Optional(boxTy(mt));
+                TExpr.Block(
+                    store,
+                    boxE(TExpr.If(boxE(absent), boxE(TExpr.Null(rt)), boxE(TExpr.Wrap(boxE(access), rt)), rt)),
+                    rt
+                )
+            }
+        };
+    }
+
     mut fn member(x: Expr, name: string, optional: bool, at: Span): TExpr {
         if (optional) {
-            return this.notYet("'?.'", "S3 (optionals)", at);
+            let held = this.optionalReceiver(x, at);
+            if (held == null) {
+                return TExpr.Unknown;
+            }
+            let (o, tmp, inner) = held;
+            let present = TExpr.Narrow(boxE(TExpr.Local(tmp, typeOf(o))), inner);
+            let found = this.fieldOf(present, name, at);
+            if (found == null) {
+                return TExpr.Unknown;
+            }
+            let (owner, index) = found;
+            let access = TExpr.Field(boxE(present), index, this.types[owner].fields[index].ty);
+            return this.optChain(tmp, o, access, at);
         }
         // `Color.Red`: a variant of an enum
         match (x) {
@@ -1388,8 +1796,14 @@ class Checker {
 
     mut fn ifExpr(cond: Expr, then: Expr, otherwise: Expr, expected: ?Ty, at: Span): TExpr {
         let c = this.condition(cond);
+        this.pushScope();
+        this.narrow(this.factsOf(c, true), [Stmt.Expr(then, spanOf(then))], 0);
         let a = this.expr(then, expected);
+        this.popScope();
+        this.pushScope();
+        this.narrow(this.factsOf(c, false), [Stmt.Expr(otherwise, spanOf(otherwise))], 0);
         let b = this.expr(otherwise, expected);
+        this.popScope();
         let t = this.unify(typeOf(a), typeOf(b), at);
         return TExpr.If(boxE(c), boxE(this.coerce(a, t, at)), boxE(this.coerce(b, t, at)), t);
     }
@@ -1405,6 +1819,35 @@ class Checker {
         }
         if ((a == .Int && b == .Float) || (a == .Float && b == .Int)) {
             return Ty.Float;
+        }
+        // a value beside null, or beside an optional of it: the optional (`if (c) 1 else null`)
+        if (a == .NullLit) {
+            return match (b) {
+                .Optional(_) => b,
+                _ => Ty.Optional(boxTy(b)),
+            };
+        }
+        if (b == .NullLit) {
+            return match (a) {
+                .Optional(_) => a,
+                _ => Ty.Optional(boxTy(a)),
+            };
+        }
+        match (a) {
+            .Optional(inner) => {
+                if (inner.value == b) {
+                    return a;
+                }
+            }
+            _ => { }
+        }
+        match (b) {
+            .Optional(inner) => {
+                if (inner.value == a) {
+                    return b;
+                }
+            }
+            _ => { }
         }
         this.error("LYS-SEM0016", f"the branches give {this.tyName(a)} and {this.tyName(b)}", at);
         return Ty.Unknown;
@@ -1526,7 +1969,14 @@ class Checker {
             }
             .Member(object, method, optional, memberAt) => {
                 if (optional) {
-                    return this.notYet("'?.'", "S3 (optionals)", memberAt);
+                    let held = this.optionalReceiver(object.value, memberAt);
+                    if (held == null) {
+                        return TExpr.Unknown;
+                    }
+                    let (o, tmp, inner) = held;
+                    let present = TExpr.Narrow(boxE(TExpr.Local(tmp, typeOf(o))), inner);
+                    let access = this.methodCall(present, method, args, at, memberAt);
+                    return this.optChain(tmp, o, access, at);
                 }
                 match (object.value) {
                     .Name(typeName, _) => {
@@ -1540,9 +1990,18 @@ class Checker {
                     }
                     _ => { }
                 }
-                let receiver = this.expr(object.value, null);
-                let t = typeOf(receiver);
-                match (t) {
+                return this.methodCall(this.expr(object.value, null), method, args, at, memberAt);
+            }
+            _ => { }
+        }
+        this.expr(callee, null);
+        return this.notYet("a call through a value", "S3 (function values)", at);
+    }
+
+    /// A method called on a value: one of its type's, not static.
+    mut fn methodCall(receiver: TExpr, method: string, args: Arg[], at: Span, memberAt: Span): TExpr {
+        let t = typeOf(receiver);
+        match (t) {
                     .Unknown => {
                         return TExpr.Unknown;
                     }
@@ -1574,11 +2033,6 @@ class Checker {
                         );
                     }
                 }
-            }
-            _ => { }
-        }
-        this.expr(callee, null);
-        return this.notYet("a call through a value", "S3 (function values)", at);
     }
 
     mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
@@ -1786,6 +2240,102 @@ fn stmtSpan(s: Stmt): Span {
         .Continue(_, at) => at,
         .Return(_, at) => at,
         .Block(_, at) => at,
+        .IfLet(_, _, _, _, at) => at,
+        .WhileLet(_, _, _, _, at) => at,
+    };
+}
+
+/// Whether any of `stmts`, from `from` on, writes the binding `name` (a narrowed `var` stays
+/// narrowed only where nothing writes it).
+fn writesIn(stmts: Stmt[], from: int, name: string): bool {
+    var k = from;
+    while (k < stmts.length()) {
+        if (writesStmt(stmts[k], name)) {
+            return true;
+        }
+        k += 1;
+    }
+    return false;
+}
+
+fn writesStmt(s: Stmt, name: string): bool {
+    return match (s) {
+        .Expr(e, _) => writesExpr(e, name),
+        .Let(_, _, _, v, _) => v != null && writesExpr(v, name),
+        .If(c, then, o, _) => writesExpr(c, name)
+            || writesIn(then.stmts, 0, name)
+            || (o != null && writesStmt(o.value, name)),
+        .While(c, b, _, _) => writesExpr(c, name) || writesIn(b.stmts, 0, name),
+        .For(_, it, b, _, _) => writesExpr(it, name) || writesIn(b.stmts, 0, name),
+        .Break(_, v, _) => v != null && writesExpr(v, name),
+        .Continue(_, _) => false,
+        .Return(v, _) => v != null && writesExpr(v, name),
+        .Block(b, _) => writesIn(b.stmts, 0, name),
+        .IfLet(_, v, b, o, _) => writesExpr(v, name)
+            || writesIn(b.stmts, 0, name)
+            || (o != null && writesStmt(o.value, name)),
+        .WhileLet(_, v, b, _, _) => writesExpr(v, name) || writesIn(b.stmts, 0, name),
+    };
+}
+
+fn writesExpr(e: Expr, name: string): bool {
+    return match (e) {
+        .Assign(target, _, value, _) => {
+            let direct = match (target.value) {
+                .Name(n, _) => n == name,
+                _ => false,
+            };
+            direct || writesExpr(target.value, name) || writesExpr(value.value, name)
+        }
+        .Unary(_, x, _) => writesExpr(x.value, name),
+        .Binary(l, _, r, _) => writesExpr(l.value, name) || writesExpr(r.value, name),
+        .Range(a, b, _, _) => writesExpr(a.value, name) || writesExpr(b.value, name),
+        .Cast(x, _, _) => writesExpr(x.value, name),
+        .Call(c, args, _) => {
+            var found = writesExpr(c.value, name);
+            for (a in args) {
+                found = found || writesExpr(a.value, name);
+            }
+            found
+        }
+        .Index(x, i, _) => writesExpr(x.value, name) || writesExpr(i.value, name),
+        .Member(x, _, _, _) => writesExpr(x.value, name),
+        .List(items, _) => {
+            var found = false;
+            for (x in items) {
+                found = found || writesExpr(x, name);
+            }
+            found
+        }
+        .Map(entries, _) => {
+            var found = false;
+            for (en in entries) {
+                found = found || writesExpr(en.key, name) || writesExpr(en.value, name);
+            }
+            found
+        }
+        .StructInit(_, fields, _) => {
+            var found = false;
+            for (f in fields) {
+                found = found || writesExpr(f.value, name);
+            }
+            found
+        }
+        .Interpolated(segments, _) => {
+            var found = false;
+            for (seg in segments) {
+                match (seg) {
+                    .Hole(x, _) => found = found || writesExpr(x, name),
+                    .Text(_) => { }
+                }
+            }
+            found
+        }
+        .If(c, a, b, _) => writesExpr(c.value, name) || writesExpr(a.value, name) || writesExpr(b.value, name),
+        .Block(b, _) => writesIn(b.stmts, 0, name),
+        .Loop(b, _, _) => writesIn(b.stmts, 0, name),
+        .Unwrap(x, _) => writesExpr(x.value, name),
+        _ => false,
     };
 }
 
@@ -1816,5 +2366,6 @@ fn spanOf(e: Expr): Span {
         .If(_, _, _, at) => at,
         .Block(_, at) => at,
         .Loop(_, _, at) => at,
+        .Unwrap(_, at) => at,
     };
 }

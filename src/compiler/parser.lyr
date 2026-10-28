@@ -540,6 +540,12 @@ class Parser {
         }
         if (this.atWord("while")) {
             this.advance();
+            if (this.peek(1).kind == .Keyword && this.isWord(this.peek(1), "let")) {
+                let (name, value) = try this.parseLetCondition("while");
+                this.skipNewlines();
+                let body = try this.parseBlock();
+                return Stmt.WhileLet(name, value, body, null, this.since(first));
+            }
             let cond = try this.parseCondition("while");
             this.skipNewlines();
             let body = try this.parseBlock();
@@ -611,9 +617,32 @@ class Parser {
     }
 
     /// `if` as a statement: its bodies are blocks, its `else` a block or another `if`.
+    /// `(let name = value)` after `if` or `while`.
+    mut fn parseLetCondition(word: string): (string, Expr) throws SyntaxError {
+        try this.expect(.LParen, "LYS-PAR0019", f"'(' after '{word}'");
+        this.advance();
+        let name = this.current();
+        if (name.kind != .Ident) {
+            throw this.failure("LYS-PAR0020", f"a binding without its name: found {this.shown(name)}", name);
+        }
+        this.advance();
+        try this.expect(.Assign, "LYS-PAR0020", "'=' and the optional the binding takes");
+        let value = try this.parseExpr();
+        try this.expect(.RParen, "LYS-PAR0008", "')' after the condition");
+        return (this.text(name), value);
+    }
+
     mut fn parseIf(): Stmt throws SyntaxError {
         let first = this.advance();
-        let cond = try this.parseCondition("if");
+        var letName: ?string = null;
+        var cond = Expr.Bool(true, this.spanOf(first));
+        if (this.peek(1).kind == .Keyword && this.isWord(this.peek(1), "let")) {
+            let (name, value) = try this.parseLetCondition("if");
+            letName = name;
+            cond = value;
+        } else {
+            cond = try this.parseCondition("if");
+        }
         this.skipNewlines();
         let then = try this.parseBlock();
         var otherwise: ?Box<Stmt> = null;
@@ -626,6 +655,9 @@ class Parser {
                 let b = try this.parseBlock();
                 otherwise = boxedStmt(Stmt.Block(b, b.span));
             }
+        }
+        if (letName != null) {
+            return Stmt.IfLet(letName, cond, then, otherwise, this.since(first));
         }
         return Stmt.If(cond, then, otherwise, this.since(first));
     }
@@ -810,6 +842,10 @@ class Parser {
                 let index = try this.parseExpr();
                 try this.expect(.RBracket, "LYS-PAR0004", "']' after the index");
                 e = Expr.Index(boxed(e), boxed(index), this.since(first));
+            } else if (this.at(.Bang)) {
+                // `x!`: a `!` after an operand is the unwrap; before one it is `not`
+                this.advance();
+                e = Expr.Unwrap(boxed(e), this.since(first));
             } else if (this.at(.Dot) || this.at(.QuestionDot)) {
                 let optional = this.at(.QuestionDot);
                 this.advance();
@@ -1096,6 +1132,13 @@ class Parser {
             this.advance();
             let inner = try this.parseType();
             return TypeExpr.Optional(boxedType(inner), this.since(first));
+        }
+        // `??T`: the lexer reads `??` as one token; in a type it is two `?`
+        if (this.at(.QuestionQuestion)) {
+            this.advance();
+            let inner = try this.parseType();
+            let once = TypeExpr.Optional(boxedType(inner), this.since(first));
+            return TypeExpr.Optional(boxedType(once), this.since(first));
         }
         if (this.at(.LParen)) {
             this.advance();

@@ -20,6 +20,8 @@ enum Ty :: [Equatable, Debug] {
     List(Box<Ty>),
     Map(Box<Ty>, Box<Ty>),
     Optional(Box<Ty>),
+    /// The type of a `null` no place has given a type yet.
+    NullLit,
 }
 
 enum TypeKind :: [Equatable, Debug] {

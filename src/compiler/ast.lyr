@@ -120,6 +120,8 @@ enum Expr :: [Debug] {
     If(Box<Expr>, Box<Expr>, Box<Expr>, Span),
     Block(Block, Span),
     Loop(Block, ?string, Span),
+    /// `x!`: the optional's value, the script's panic where it is absent.
+    Unwrap(Box<Expr>, Span),
 }
 
 /// A statement, each form a variant.
@@ -136,6 +138,10 @@ enum Stmt :: [Debug] {
     Continue(?string, Span),
     Return(?Expr, Span),
     Block(Block, Span),
+    /// `if (let name = optional) { … }`: the block sees the value where it is there.
+    IfLet(string, Expr, Block, ?Box<Stmt>, Span),
+    /// `while (let name = optional) { … }`: a turn for each value that is there.
+    WhileLet(string, Expr, Block, ?string, Span),
 }
 
 /// A block: its statements, in order. Where a block gives a value, its last statement does,

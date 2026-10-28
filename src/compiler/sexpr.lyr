@@ -131,6 +131,11 @@ fn showStmt(s: Stmt): string {
         .Continue(_, _) => "(continue)",
         .Return(value, _) => if (value != null) "(return " + showExpr(value) + ")" else "(return)",
         .Block(b, _) => showBlock(b),
+        .IfLet(name, value, then, otherwise, _) => {
+            let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";
+            "(if-let " + name + " " + showExpr(value) + " " + showBlock(then) + rest + ")"
+        }
+        .WhileLet(name, value, body, _, _) => "(while-let " + name + " " + showExpr(value) + " " + showBlock(body) + ")",
     };
 }
 
@@ -226,6 +231,7 @@ fn showExpr(e: Expr): string {
             + ")",
         .Block(b, _) => showBlock(b),
         .Loop(body, _, _) => "(loop " + showBlock(body) + ")",
+        .Unwrap(x, _) => "(unwrap " + showExpr(x.value) + ")",
     };
 }
 

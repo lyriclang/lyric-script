@@ -10,7 +10,7 @@
 //! A code means what Lyric 5's `LYR-SEM` code of the same number means; Lyric-Script's own start
 //! at 0900. `LYS-NYI0001` names what the plan builds later: it
 //! leaves the toolchain before 1.0.
-import std.collections { List, Map };
+import std.collections { List, Map, Set };
 import lyric_script.compiler.ast {
     AliasDecl,
     Arg,
@@ -73,6 +73,8 @@ class LoopCtx {
     isLoop: bool,
     var breakTy: ?Ty = null,
     var breaks: int = 0,
+    // the bindings without a value its breaks leave unassigned: what follows a `loop`
+    var exits: Set<int> = Set<int>.new(),
 }
 
 /// A scope's locals by name. A class of its own: a field of type `List<Map<…>>` does not lower
@@ -111,8 +113,19 @@ class FnCtx {
     returns: Ty,
     // whether `let` and `var` at the outermost scope are the script's globals (main's code)
     isMain: bool,
+    // the bindings declared without a value that are not assigned on every way to here (Lyric 5
+    // §7.1 rule 5); never changed in place, so a saved set stays as it was
+    var unassigned: Set<int>,
+    // 03 Leer: the first pass over a function that declares `var x = null` reports nothing and
+    // records, for each such binding in order, the first type a use fixes; the second pass gives
+    // the bindings these types
+    fixing: bool,
+    var fixes: List<?Ty>,
+    var nullVars: int = 0,
+    sought: Map<int, int>,
+    soughtGlobals: Map<int, int>,
 
-    static fn new(fnIndex: int, returns: Ty, isMain: bool): FnCtx {
+    static fn new(fnIndex: int, returns: Ty, isMain: bool, fixing: bool): FnCtx {
         let scopes = List<Scope>.new();
         scopes.push(Scope.new());
         return FnCtx {
@@ -124,6 +137,11 @@ class FnCtx {
             loops = List<LoopCtx>.new(),
             returns = returns,
             isMain = isMain,
+            unassigned = Set<int>.new(),
+            fixing = fixing,
+            fixes = List<?Ty>.new(),
+            sought = Map<int, int>.new(),
+            soughtGlobals = Map<int, int>.new(),
         };
     }
 }
@@ -170,7 +188,7 @@ class Checker {
             fnStates = List<FnState>.new(),
             globals = List<GlobalInfo>.new(),
             globalIndex = Map<string, int>.new(),
-            ctx = FnCtx.new(-1, Ty.Void, false),
+            ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
 
@@ -186,6 +204,14 @@ class Checker {
     // --- reports ---------------------------------------------------------------------------------
 
     mut fn error(code: string, message: string, at: Span): void {
+        this.errorHelp(code, message, null, at);
+    }
+
+    mut fn errorHelp(code: string, message: string, help: ?string, at: Span): void {
+        // the first pass of 03 Leer reports nothing: the second reports what holds
+        if (this.ctx.fixing) {
+            return;
+        }
         this.errors.push(
             Diagnostic {
                 code = code,
@@ -194,7 +220,7 @@ class Checker {
                 end = at.end,
                 line = at.line,
                 column = at.column,
-                help = null,
+                help = help,
             }
         );
     }
@@ -285,7 +311,7 @@ class Checker {
             let written = p.default;
             if (written != null) {
                 let saved = this.ctx;
-                this.ctx = FnCtx.new(-1, Ty.Void, false);
+                this.ctx = FnCtx.new(-1, Ty.Void, false, false);
                 dflt = this.coerce(this.expr(written, t), t, spanOf(written));
                 this.ctx = saved;
             }
@@ -446,7 +472,7 @@ class Checker {
                 let written = d.default;
                 if (d.name == f.name && written != null) {
                     let saved = this.ctx;
-                    this.ctx = FnCtx.new(-1, Ty.Void, false);
+                    this.ctx = FnCtx.new(-1, Ty.Void, false, false);
                     dflt = this.coerce(this.expr(written, f.ty), f.ty, spanOf(written));
                     this.ctx = saved;
                 }
@@ -581,6 +607,7 @@ class Checker {
     /// `e` where a value of type `target` stands: the same type, `int` widened to `float`, or a
     /// fault (`LYS-SEM0001`).
     mut fn coerce(e: TExpr, target: Ty, at: Span): TExpr {
+        this.fixFrom(e, target);
         let actual = typeOf(e);
         if (actual == target || actual == .Unknown || target == .Unknown || actual == .Never) {
             return e;
@@ -637,7 +664,6 @@ class Checker {
         this.functions.push(FnInfo { name = "<script>", owner = -1, isStatic = true, line = line });
         this.fnDecls.push(null);
         this.fnStates.push(FnState.Done);
-        this.ctx = FnCtx.new(index, Ty.Void, true);
         let stmts = List<Stmt>.new();
         for (item in module.items) {
             match (item) {
@@ -645,6 +671,17 @@ class Checker {
                 .Decl(_) => { }
             }
         }
+        var fixes = List<?Ty>.new();
+        if (declaresNull(stmts.toArray())) {
+            // 03 Leer: a quiet first pass; the globals it declares are declared again by the second
+            this.ctx = FnCtx.new(index, Ty.Void, true, true);
+            this.stmtList(stmts.toArray());
+            fixes = this.ctx.fixes;
+            this.globals.clear();
+            this.globalIndex.clear();
+        }
+        this.ctx = FnCtx.new(index, Ty.Void, true, false);
+        this.ctx.fixes = fixes;
         let body = List<TStmt>.new();
         for (s in this.stmtList(stmts.toArray())) {
             body.push(s);
@@ -671,6 +708,10 @@ class Checker {
     mut fn returnsOf(k: int, at: Span): Ty {
         let state = this.fnStates[k];
         if (state == .Declared) {
+            // the quiet pass of 03 Leer checks no other function: the second pass does
+            if (this.ctx.fixing) {
+                return Ty.Unknown;
+            }
             let decl = this.fnDecls[k];
             if (decl != null) {
                 this.checkFn(k, decl);
@@ -692,13 +733,35 @@ class Checker {
             this.fnStates[k] = FnState.Inferring;
         }
         let saved = this.ctx;
-        this.ctx = FnCtx.new(k, info.returns, false);
+        var fixes = List<?Ty>.new();
+        if (fnDeclaresNull(decl)) {
+            // 03 Leer: a quiet first pass finds the type of each `var x = null`
+            this.enterFn(k, decl, true);
+            this.fnBody(k, decl);
+            fixes = this.ctx.fixes;
+        }
+        this.enterFn(k, decl, false);
+        this.ctx.fixes = fixes;
+        info.body = this.fnBody(k, decl);
+        info.locals = this.ctx.locals.toArray();
+        this.fnStates[k] = FnState.Done;
+        this.ctx = saved;
+    }
+
+    /// A fresh context for function `k`: its receiver and its parameters its first locals.
+    mut fn enterFn(k: int, decl: FnDecl, fixing: bool): void {
+        let info = this.functions[k];
+        this.ctx = FnCtx.new(k, info.returns, false, fixing);
         if (info.owner >= 0 && !info.isStatic) {
             this.declareLocal("this", Ty.Named(info.owner), false, decl.span);
         }
         for (p in info.params) {
             this.declareLocal(p.name, p.ty, false, decl.span);
         }
+    }
+
+    mut fn fnBody(k: int, decl: FnDecl): TStmt[] {
+        let info = this.functions[k];
         let body = List<TStmt>.new();
         match (decl.body) {
             .Block(b) => {
@@ -714,9 +777,10 @@ class Checker {
                 }
             }
             .Expr(e) => {
-                let value = if (this.fnStates[k] == .Inferring) this.expr(e, null)
+                let inferring = this.fnStates[k] == .Inferring;
+                let value = if (inferring) this.expr(e, null)
                     else this.coerce(this.expr(e, info.returns), info.returns, spanOf(e));
-                if (this.fnStates[k] == .Inferring) {
+                if (inferring && !this.ctx.fixing) {
                     info.returns = typeOf(value);
                 }
                 body.push(
@@ -724,10 +788,7 @@ class Checker {
                 );
             }
         }
-        info.body = body.toArray();
-        info.locals = this.ctx.locals.toArray();
-        this.fnStates[k] = FnState.Done;
-        this.ctx = saved;
+        return body.toArray();
     }
 
     mut fn declareLocal(name: string, t: Ty, isVar: bool, at: Span): int {
@@ -936,6 +997,15 @@ class Checker {
     // --- statements ------------------------------------------------------------------------------
 
     mut fn stmt(s: Stmt): TStmt {
+        let out = this.stmtOf(s);
+        // nothing follows a statement that never comes out: it adds nothing to what is assigned
+        if (leaves(out)) {
+            this.ctx.unassigned = Set<int>.new();
+        }
+        return out;
+    }
+
+    mut fn stmtOf(s: Stmt): TStmt {
         return match (s) {
             .Expr(e, at) => this.exprStmt(e, at),
             .Let(isVar, name, written, value, at) => this.letStmt(isVar, name, written, value, at),
@@ -943,7 +1013,10 @@ class Checker {
                 let c = this.condition(cond);
                 let yes = this.factsOf(c, true);
                 let no = this.factsOf(c, false);
+                let before = this.ctx.unassigned;
                 let t = this.blockWith(then, yes);
+                let afterThen = this.ctx.unassigned;
+                this.ctx.unassigned = before;
                 var o: TStmt[] = [];
                 if (otherwise != null) {
                     this.pushScope();
@@ -951,6 +1024,7 @@ class Checker {
                     o = [this.stmt(otherwise.value)];
                     this.popScope();
                 }
+                this.ctx.unassigned = afterThen.union(this.ctx.unassigned);
                 // where one branch never comes out, what the other knows holds after the `if`
                 if (leavesAll(t) && !leavesAll(o)) {
                     this.postFacts = no;
@@ -962,9 +1036,12 @@ class Checker {
             .While(cond, body, _, at) => {
                 this.unnarrowWritten([s]);
                 let c = this.condition(cond);
+                let before = this.ctx.unassigned;
                 this.ctx.loops.push(LoopCtx { isLoop = false });
                 let b = this.blockWith(body, this.factsOf(c, true));
                 this.ctx.loops.pop();
+                // the body may not run: what follows knows what the condition left
+                this.ctx.unassigned = before;
                 TStmt.While(c, b, at.line)
             }
             .IfLet(name, value, then, otherwise, at) => this.ifLet(
@@ -1017,6 +1094,7 @@ class Checker {
         let ot = typeOf(v);
         let inner = this.optionalOf(v, "if let", spanOf(value));
         let tmp = this.hidden(ot, at);
+        let before = this.ctx.unassigned;
         this.pushScope();
         let x = this.declareLocal(name, inner, false, at);
         let body = List<TStmt>.new();
@@ -1025,12 +1103,15 @@ class Checker {
             body.push(s);
         }
         this.popScope();
+        let afterThen = this.ctx.unassigned;
+        this.ctx.unassigned = before;
         var o: TStmt[] = [];
         if (otherwise != null) {
             this.pushScope();
             o = [this.stmt(otherwise.value)];
             this.popScope();
         }
+        this.ctx.unassigned = afterThen.union(this.ctx.unassigned);
         let present = TExpr.Unary(
             UnaryOp.Not,
             boxE(TExpr.IsNull(boxE(TExpr.Local(tmp, ot)))),
@@ -1050,6 +1131,7 @@ class Checker {
         let inner = this.optionalOf(v, "while let", spanOf(value));
         let tmp = this.hidden(ot, at);
         let x = this.declareLocal(name, inner, false, at);
+        let before = this.ctx.unassigned;
         this.ctx.loops.push(LoopCtx { isLoop = false });
         let turn = List<TStmt>.new();
         turn.push(TStmt.SetLocal(tmp, v, at.line));
@@ -1067,6 +1149,7 @@ class Checker {
         }
         this.ctx.loops.pop();
         this.popScope();
+        this.ctx.unassigned = before;
         return TStmt.While(TExpr.Bool(true), turn.toArray(), at.line);
     }
 
@@ -1094,9 +1177,10 @@ class Checker {
             t = this.resolveType(written);
         }
         if (value == null) {
-            this.notYet("a binding without a value", "S3 (definite assignment)", at);
-            this.declareLocal(name, t, isVar, at);
-            return TStmt.Expr(TExpr.Unit, at.line);
+            return this.unassignedLet(isVar, name, written != null, t, at);
+        }
+        if (isVar && written == null && isNullLit(value)) {
+            return this.nullVar(name, at);
         }
         var v = this.expr(value, if (written != null) t else null);
         if (written != null) {
@@ -1120,17 +1204,110 @@ class Checker {
             }
         }
         // the outermost scope of the script's code: a global of the script (07 Top)
-        if (this.ctx.isMain && this.ctx.scopes.length() == 1) {
-            if (this.globalIndex.containsKey(name)) {
-                this.error("LYS-SEM0176", f"'{name}' is bound twice in one scope", at);
-            }
-            let g = this.globals.length();
-            this.globals.push(GlobalInfo { name = name, ty = t, isVar = isVar });
-            this.globalIndex.insert(name, g);
-            return TStmt.SetGlobal(g, v, at.line);
+        if (this.atTop()) {
+            return TStmt.SetGlobal(this.declareGlobal(name, t, isVar, at), v, at.line);
         }
         let id = this.declareLocal(name, t, isVar, at);
         return TStmt.SetLocal(id, v, at.line);
+    }
+
+    /// Whether a binding here is a global of the script: the outermost scope of its code.
+    mut fn atTop(): bool {
+        return this.ctx.isMain && this.ctx.scopes.length() == 1;
+    }
+
+    mut fn declareGlobal(name: string, t: Ty, isVar: bool, at: Span): int {
+        if (this.globalIndex.containsKey(name)) {
+            this.error("LYS-SEM0176", f"'{name}' is bound twice in one scope", at);
+        }
+        let g = this.globals.length();
+        this.globals.push(GlobalInfo { name = name, ty = t, isVar = isVar });
+        this.globalIndex.insert(name, g);
+        return g;
+    }
+
+    /// `var x: T` without a value: assigned later, and read only where it is assigned on every
+    /// way (Lyric 5 §7.1 rule 5). A `let` so declared is never written, as in Lyric 5.
+    mut fn unassignedLet(isVar: bool, name: string, typed: bool, t: Ty, at: Span): TStmt {
+        if (!typed) {
+            this.error(
+                "LYS-SEM0010",
+                f"'{name}' has neither a type nor a value: write its type",
+                at
+            );
+        }
+        if (this.atTop()) {
+            this.error(
+                "LYS-SEM0903",
+                f"'{name}' is a global of the script: it takes its value where it is declared, as a function may read it before any statement assigns it",
+                at
+            );
+            this.declareGlobal(name, t, isVar, at);
+            return TStmt.Expr(TExpr.Unit, at.line);
+        }
+        let id = this.declareLocal(name, t, isVar, at);
+        this.ctx.unassigned = withId(this.ctx.unassigned, id);
+        return TStmt.Expr(TExpr.Unit, at.line);
+    }
+
+    /// `var x = null` (03 Leer): its type is the first a use in the function fixes — sought by the
+    /// first pass, given by the second; where nothing fixes it, it is written.
+    mut fn nullVar(name: string, at: Span): TStmt {
+        let ord = this.ctx.nullVars;
+        this.ctx.nullVars += 1;
+        var t = Ty.Unknown;
+        if (this.ctx.fixing) {
+            this.ctx.fixes.push(null);
+        } else {
+            let fixed: ?Ty = if (ord < this.ctx.fixes.length()) this.ctx.fixes[ord] else null;
+            if (fixed != null) {
+                t = fixed;
+            } else {
+                this.errorHelp(
+                    "LYS-SEM0010",
+                    f"nothing in this function fixes the type of '{name}'",
+                    f"write it: var {name}: ?T = null",
+                    at
+                );
+            }
+        }
+        let v = if (t == .Unknown) TExpr.Unknown else TExpr.Null(t);
+        if (this.atTop()) {
+            let g = this.declareGlobal(name, t, true, at);
+            if (this.ctx.fixing) {
+                this.ctx.soughtGlobals.insert(g, ord);
+            }
+            return TStmt.SetGlobal(g, v, at.line);
+        }
+        let id = this.declareLocal(name, t, true, at);
+        if (this.ctx.fixing) {
+            this.ctx.sought.insert(id, ord);
+        }
+        return TStmt.SetLocal(id, v, at.line);
+    }
+
+    /// In the first pass of 03 Leer: where `e` is a `var x = null` whose type is still sought, `t`
+    /// fixes it — the first such use in the function, as an optional.
+    mut fn fixFrom(e: TExpr, t: Ty): void {
+        if (!this.ctx.fixing) {
+            return;
+        }
+        let ord: ?int = match (e) {
+            .Local(id, _) => this.ctx.sought.get(id),
+            .Global(g, _) => this.ctx.soughtGlobals.get(g),
+            _ => null,
+        };
+        if (ord == null || this.ctx.fixes[ord] != null) {
+            return;
+        }
+        let fixed: ?Ty = match (t) {
+            .Optional(_) => t,
+            .NullLit | .Unknown | .Void | .Never => null,
+            _ => Ty.Optional(boxTy(t)),
+        };
+        if (fixed != null) {
+            this.ctx.fixes[ord] = fixed;
+        }
     }
 
     mut fn condition(e: Expr): TExpr {
@@ -1149,12 +1326,15 @@ class Checker {
             .Range(from, to, inclusive, _) => {
                 let a = this.coerce(this.expr(from.value, Ty.Int), Ty.Int, spanOf(from.value));
                 let b = this.coerce(this.expr(to.value, Ty.Int), Ty.Int, spanOf(to.value));
+                let before = this.ctx.unassigned;
                 this.pushScope();
                 let id = this.declareLocal(name, Ty.Int, false, at);
                 this.ctx.loops.push(LoopCtx { isLoop = false });
                 let stmts = this.block(body);
                 this.ctx.loops.pop();
                 this.popScope();
+                // the body may not run
+                this.ctx.unassigned = before;
                 return TStmt.ForRange(id, a, b, inclusive, stmts, at.line);
             }
             _ => { }
@@ -1168,6 +1348,15 @@ class Checker {
     }
 
     mut fn breakStmt(value: ?Expr, at: Span): TStmt {
+        let out = this.breakOf(value, at);
+        if (this.ctx.loops.length() > 0) {
+            let loop = this.ctx.loops[this.ctx.loops.length() - 1];
+            loop.exits = loop.exits.union(this.ctx.unassigned);
+        }
+        return out;
+    }
+
+    mut fn breakOf(value: ?Expr, at: Span): TStmt {
         if (this.ctx.loops.length() == 0) {
             this.error("LYS-SEM0147", "'break' outside a loop", at);
             return TStmt.Break(null, at.line);
@@ -1309,6 +1498,8 @@ class Checker {
                 this.ctx.loops.push(ctx);
                 let stmts = this.block(body);
                 this.ctx.loops.pop();
+                // left only by its breaks: what follows knows what each of them left
+                this.ctx.unassigned = ctx.exits;
                 let given = ctx.breakTy;
                 let t = if (given != null) given else if (ctx.breaks > 0) Ty.Void else Ty.Never;
                 TExpr.Loop(stmts, t)
@@ -1319,6 +1510,13 @@ class Checker {
     mut fn name(name: string, at: Span): TExpr {
         let local = this.lookupLocal(name);
         if (local != null) {
+            if (this.ctx.unassigned.contains(local)) {
+                this.error(
+                    "LYS-SEM0018",
+                    f"'{name}' is read where it may not be assigned yet: assign it on every way to here",
+                    at
+                );
+            }
             let declared = this.ctx.locals[local];
             let narrowed = this.narrowedLocal(local);
             if (narrowed != null) {
@@ -1380,10 +1578,13 @@ class Checker {
         // the right side of `&&` and `||` sees what the left one says where it is checked
         var b = TExpr.Unknown;
         if (op == .And || op == .Or) {
+            // the right side may not run: what it assigns does not count
+            let before = this.ctx.unassigned;
             this.pushScope();
             this.narrow(this.factsOf(a, op == .And));
             b = this.expr(r, null);
             this.popScope();
+            this.ctx.unassigned = before;
         } else {
             b = this.expr(r, null);
         }
@@ -1563,9 +1764,12 @@ class Checker {
     mut fn coalesce(l: Expr, r: Expr, at: Span): TExpr {
         let a = this.expr(l, null);
         let ta = typeOf(a);
+        let before = this.ctx.unassigned;
         return match (ta) {
             .Optional(inner) => {
                 let b = this.expr(r, inner.value);
+                // the right side may not run: what it assigns does not count
+                this.ctx.unassigned = before;
                 let plain = this.fit(b, inner.value);
                 if (plain != null) {
                     return TExpr.Coalesce(boxE(a), boxE(plain), inner.value);
@@ -1600,12 +1804,13 @@ class Checker {
 
     mut fn assign(target: Expr, op: ?BinaryOp, value: Expr, at: Span): TExpr {
         let result = this.assignTo(target, op, value, at);
-        // an assignment ends a narrowing of the binding (Lyric 5 §3.2 rule 4)
+        // an assignment ends a narrowing of the binding (Lyric 5 §3.2 rule 4), and assigns it
         match (target) {
             .Name(name, _) => {
                 let local = this.lookupLocal(name);
                 if (local != null) {
                     this.unnarrow(local);
+                    this.ctx.unassigned = withoutId(this.ctx.unassigned, local);
                 }
             }
             _ => { }
@@ -1626,6 +1831,14 @@ class Checker {
                         this.error(
                             "LYS-SEM0019",
                             f"'{name}' is a let: declare it with var to write it",
+                            nameAt
+                        );
+                    }
+                    // `x op= v` and `x ??= v` read it first
+                    if (op != null && this.ctx.unassigned.contains(local)) {
+                        this.error(
+                            "LYS-SEM0018",
+                            f"'{name}' is read where it may not be assigned yet: assign it on every way to here",
                             nameAt
                         );
                     }
@@ -1697,10 +1910,14 @@ class Checker {
             // `x ??= v`: v, as an optional of x's type, only where x is absent
             match (t) {
                 .Optional(_) => {
+                    // the value may not be evaluated: what it assigns does not count
+                    let before = this.ctx.unassigned;
                     let v = this.coerce(this.expr(value, t), t, spanOf(value));
+                    this.ctx.unassigned = before;
                     return TExpr.Assign(place, op, boxE(v), t);
                 }
                 .Unknown => {
+                    this.fixFrom(current, typeOf(this.expr(value, null)));
                     return TExpr.Unknown;
                 }
                 _ => {
@@ -1715,6 +1932,7 @@ class Checker {
             return TExpr.Assign(place, op, boxE(this.coerceOperand(combined, t, at)), t);
         }
         let v = this.coerce(this.expr(value, t), t, spanOf(value));
+        this.fixFrom(current, typeOf(v));
         return TExpr.Assign(place, null, boxE(v), t);
     }
 
@@ -1974,16 +2192,25 @@ class Checker {
 
     mut fn ifExpr(cond: Expr, then: Expr, otherwise: Expr, expected: ?Ty, at: Span): TExpr {
         let c = this.condition(cond);
+        let before = this.ctx.unassigned;
         this.pushScope();
         this.narrow(this.factsOf(c, true));
         let a = this.expr(then, expected);
         this.popScope();
+        let afterThen = this.reached(a);
+        this.ctx.unassigned = before;
         this.pushScope();
         this.narrow(this.factsOf(c, false));
         let b = this.expr(otherwise, expected);
         this.popScope();
+        this.ctx.unassigned = afterThen.union(this.reached(b));
         let t = this.unify(typeOf(a), typeOf(b), at);
         return TExpr.If(boxE(c), boxE(this.coerce(a, t, at)), boxE(this.coerce(b, t, at)), t);
+    }
+
+    /// What a branch that gave `e` leaves unassigned: nothing where it never comes out.
+    mut fn reached(e: TExpr): Set<int> {
+        return if (typeOf(e) == .Never) Set<int>.new() else this.ctx.unassigned;
     }
 
     /// The type both branches give: the same one, `float` where one is `int`, the other where one
@@ -2064,10 +2291,13 @@ class Checker {
 
     mut fn ifStmtValue(cond: Expr, then: Block, otherwise: Stmt, expected: ?Ty, at: Span): TExpr {
         let c = this.condition(cond);
+        let before = this.ctx.unassigned;
         this.pushScope();
         this.narrow(this.factsOf(c, true));
         let a = this.valueBlock(then, expected);
         this.popScope();
+        let afterThen = this.reached(a);
+        this.ctx.unassigned = before;
         this.pushScope();
         this.narrow(this.factsOf(c, false));
         let b = match (otherwise) {
@@ -2078,6 +2308,7 @@ class Checker {
             _ => TExpr.Unit,
         };
         this.popScope();
+        this.ctx.unassigned = afterThen.union(this.reached(b));
         let t = this.unify(typeOf(a), typeOf(b), at);
         return TExpr.If(boxE(c), boxE(this.coerce(a, t, at)), boxE(this.coerce(b, t, at)), t);
     }
@@ -2159,7 +2390,10 @@ class Checker {
                     }
                     let (o, tmp, inner) = held;
                     let present = TExpr.Narrow(boxE(TExpr.Local(tmp, typeOf(o))), inner);
+                    // the arguments may not be evaluated: what they assign does not count
+                    let before = this.ctx.unassigned;
                     let access = this.methodCall(present, method, args, at, memberAt);
+                    this.ctx.unassigned = before;
                     return this.optChain(tmp, o, access, at);
                 }
                 match (object.value) {
@@ -2453,12 +2687,12 @@ fn stmtSpan(s: Stmt): Span {
     };
 }
 
-/// Whether any of `stmts`, from `from` on, writes the binding `name` (a narrowed `var` stays
-/// narrowed only where nothing writes it).
+/// Whether any of `stmts`, from `from` on, writes the binding `name` (a loop that writes a
+/// narrowed binding has it narrowed in none of its turns).
 fn writesIn(stmts: Stmt[], from: int, name: string): bool {
     var k = from;
     while (k < stmts.length()) {
-        if (writesStmt(stmts[k], name)) {
+        if (stmtAny(stmts[k], (_: Stmt) => false, (e: Expr) => assigns(e, name))) {
             return true;
         }
         k += 1;
@@ -2466,66 +2700,146 @@ fn writesIn(stmts: Stmt[], from: int, name: string): bool {
     return false;
 }
 
-fn writesStmt(s: Stmt, name: string): bool {
-    return match (s) {
-        .Expr(e, _) => writesExpr(e, name),
-        .Let(_, _, _, v, _) => v != null && writesExpr(v, name),
-        .If(c, then, o, _) => writesExpr(c, name)
-            || writesIn(then.stmts, 0, name)
-            || (o != null && writesStmt(o.value, name)),
-        .While(c, b, _, _) => writesExpr(c, name) || writesIn(b.stmts, 0, name),
-        .For(_, it, b, _, _) => writesExpr(it, name) || writesIn(b.stmts, 0, name),
-        .Break(_, v, _) => v != null && writesExpr(v, name),
-        .Continue(_, _) => false,
-        .Return(v, _) => v != null && writesExpr(v, name),
-        .Block(b, _) => writesIn(b.stmts, 0, name),
-        .IfLet(_, v, b, o, _) => writesExpr(v, name)
-            || writesIn(b.stmts, 0, name)
-            || (o != null && writesStmt(o.value, name)),
-        .WhileLet(_, v, b, _, _) => writesExpr(v, name) || writesIn(b.stmts, 0, name),
+/// Whether `e` is an assignment to the name `name` itself.
+fn assigns(e: Expr, name: string): bool {
+    return match (e) {
+        .Assign(target, _, _, _) => {
+            match (target.value) {
+                .Name(n, _) => n == name,
+                _ => false,
+            }
+        }
+        _ => false,
     };
 }
 
-fn writesExpr(e: Expr, name: string): bool {
-    return match (e) {
-        .Assign(target, _, value, _) => {
-            let direct = match (target.value) {
-                .Name(n, _) => n == name,
-                _ => false,
-            };
-            direct || writesExpr(target.value, name) || writesExpr(value.value, name)
+/// Whether one of `stmts`, or a statement in a block in them, is `var x = null`: its function
+/// takes two passes (03 Leer).
+fn declaresNull(stmts: Stmt[]): bool {
+    for (s in stmts) {
+        if (stmtAny(s, (t: Stmt) => isNullVar(t), (_: Expr) => false)) {
+            return true;
         }
-        .Unary(_, x, _) => writesExpr(x.value, name),
-        .Binary(l, _, r, _) => writesExpr(l.value, name) || writesExpr(r.value, name),
-        .Range(a, b, _, _) => writesExpr(a.value, name) || writesExpr(b.value, name),
-        .Cast(x, _, _) => writesExpr(x.value, name),
+    }
+    return false;
+}
+
+fn fnDeclaresNull(decl: FnDecl): bool {
+    return match (decl.body) {
+        .Block(b) => declaresNull(b.stmts),
+        .Expr(e) => exprAny(e, (t: Stmt) => isNullVar(t), (_: Expr) => false),
+    };
+}
+
+fn isNullVar(s: Stmt): bool {
+    match (s) {
+        .Let(isVar, _, written, value, _) => {
+            if (isVar && written == null && value != null) {
+                return isNullLit(value);
+            }
+        }
+        _ => { }
+    }
+    return false;
+}
+
+fn isNullLit(e: Expr): bool {
+    return match (e) {
+        .Null(_) => true,
+        _ => false,
+    };
+}
+
+/// `s` and `id` in it, as a new set: the sets of what is unassigned are never changed in place.
+fn withId(s: Set<int>, id: int): Set<int> {
+    let out = s.union(Set<int>.new());
+    out.insert(id);
+    return out;
+}
+
+fn withoutId(s: Set<int>, id: int): Set<int> {
+    if (!s.contains(id)) {
+        return s;
+    }
+    let out = s.union(Set<int>.new());
+    out.remove(id);
+    return out;
+}
+
+/// Whether `onStmt` holds of `s` or of a statement in it, or `onExpr` of an expression in it: the
+/// one walk over the children of a statement.
+fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
+    if (onStmt(s)) {
+        return true;
+    }
+    return match (s) {
+        .Expr(e, _) => exprAny(e, onStmt, onExpr),
+        .Let(_, _, _, v, _) => v != null && exprAny(v, onStmt, onExpr),
+        .If(c, then, o, _) => exprAny(c, onStmt, onExpr)
+            || blockAny(then, onStmt, onExpr)
+            || (o != null && stmtAny(o.value, onStmt, onExpr)),
+        .While(c, b, _, _) => exprAny(c, onStmt, onExpr) || blockAny(b, onStmt, onExpr),
+        .For(_, it, b, _, _) => exprAny(it, onStmt, onExpr) || blockAny(b, onStmt, onExpr),
+        .Break(_, v, _) => v != null && exprAny(v, onStmt, onExpr),
+        .Continue(_, _) => false,
+        .Return(v, _) => v != null && exprAny(v, onStmt, onExpr),
+        .Block(b, _) => blockAny(b, onStmt, onExpr),
+        .IfLet(_, v, b, o, _) => exprAny(v, onStmt, onExpr)
+            || blockAny(b, onStmt, onExpr)
+            || (o != null && stmtAny(o.value, onStmt, onExpr)),
+        .WhileLet(_, v, b, _, _) => exprAny(v, onStmt, onExpr) || blockAny(b, onStmt, onExpr),
+    };
+}
+
+fn blockAny(b: Block, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
+    for (s in b.stmts) {
+        if (stmtAny(s, onStmt, onExpr)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
+    if (onExpr(e)) {
+        return true;
+    }
+    return match (e) {
+        .Assign(target, _, value, _) => exprAny(target.value, onStmt, onExpr)
+            || exprAny(value.value, onStmt, onExpr),
+        .Unary(_, x, _) => exprAny(x.value, onStmt, onExpr),
+        .Binary(l, _, r, _) => exprAny(l.value, onStmt, onExpr) || exprAny(r.value, onStmt, onExpr),
+        .Range(a, b, _, _) => exprAny(a.value, onStmt, onExpr) || exprAny(b.value, onStmt, onExpr),
+        .Cast(x, _, _) => exprAny(x.value, onStmt, onExpr),
         .Call(c, args, _) => {
-            var found = writesExpr(c.value, name);
+            var found = exprAny(c.value, onStmt, onExpr);
             for (a in args) {
-                found = found || writesExpr(a.value, name);
+                found = found || exprAny(a.value, onStmt, onExpr);
             }
             found
         }
-        .Index(x, i, _) => writesExpr(x.value, name) || writesExpr(i.value, name),
-        .Member(x, _, _, _) => writesExpr(x.value, name),
+        .Index(x, i, _) => exprAny(x.value, onStmt, onExpr) || exprAny(i.value, onStmt, onExpr),
+        .Member(x, _, _, _) => exprAny(x.value, onStmt, onExpr),
         .List(items, _) => {
             var found = false;
             for (x in items) {
-                found = found || writesExpr(x, name);
+                found = found || exprAny(x, onStmt, onExpr);
             }
             found
         }
         .Map(entries, _) => {
             var found = false;
             for (en in entries) {
-                found = found || writesExpr(en.key, name) || writesExpr(en.value, name);
+                found = found
+                    || exprAny(en.key, onStmt, onExpr)
+                    || exprAny(en.value, onStmt, onExpr);
             }
             found
         }
         .StructInit(_, fields, _) => {
             var found = false;
             for (f in fields) {
-                found = found || writesExpr(f.value, name);
+                found = found || exprAny(f.value, onStmt, onExpr);
             }
             found
         }
@@ -2533,18 +2847,18 @@ fn writesExpr(e: Expr, name: string): bool {
             var found = false;
             for (seg in segments) {
                 match (seg) {
-                    .Hole(x, _) => found = found || writesExpr(x, name),
+                    .Hole(x, _) => found = found || exprAny(x, onStmt, onExpr),
                     .Text(_) => { }
                 }
             }
             found
         }
-        .If(c, a, b, _) => writesExpr(c.value, name)
-            || writesExpr(a.value, name)
-            || writesExpr(b.value, name),
-        .Block(b, _) => writesIn(b.stmts, 0, name),
-        .Loop(b, _, _) => writesIn(b.stmts, 0, name),
-        .Unwrap(x, _) => writesExpr(x.value, name),
+        .If(c, a, b, _) => exprAny(c.value, onStmt, onExpr)
+            || exprAny(a.value, onStmt, onExpr)
+            || exprAny(b.value, onStmt, onExpr),
+        .Block(b, _) => blockAny(b, onStmt, onExpr),
+        .Loop(b, _, _) => blockAny(b, onStmt, onExpr),
+        .Unwrap(x, _) => exprAny(x.value, onStmt, onExpr),
         _ => false,
     };
 }

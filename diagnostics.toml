@@ -443,7 +443,7 @@ summary = "`this` is a method's receiver. Lyric 5's LYR-SEM0008."
 title = "a binding whose type nothing fixes"
 severity = "error"
 area = "03-types"
-summary = "A binding's value gives no value, or a function's type depends on itself: write the type. Lyric 5's LYR-SEM0010."
+summary = "A binding has neither a type nor a value, its value gives none or is a bare `null`, a `var x = null` has nothing in its function that fixes its type (03 Leer), or a function's type depends on itself: write the type. Lyric 5's LYR-SEM0010."
 
 [LYS-SEM0011]
 title = "a name in type position that is no type"
@@ -480,6 +480,12 @@ title = "a path of a function that returns no value"
 severity = "error"
 area = "07-statements"
 summary = "A function with a result type can reach its end without a `return`. Lyric 5's LYR-SEM0017."
+
+[LYS-SEM0018]
+title = "a variable read before it is surely assigned"
+severity = "error"
+area = "07-statements"
+summary = "A `var` declared without a value is read on a way no assignment has reached: a branch without `else`, a `while` or `for` that may not run, the right side of `&&`, `||` or `??`. Lyric 5's LYR-SEM0018."
 
 [LYS-SEM0019]
 title = "a write to something that cannot be written"
@@ -618,6 +624,12 @@ title = "'return' outside a function"
 severity = "error"
 area = "07-statements"
 summary = "A script ends at its end, or with `exit(n)` (spec 7 rule 1)."
+
+[LYS-SEM0903]
+title = "a global of the script without a value"
+severity = "error"
+area = "07-statements"
+summary = "A `let` or `var` of the script's outermost code takes its value where it is declared: a function may read it before any statement assigns it (spec 7)."
 
 # What the plan builds later, and the toolchain's own faults.
 

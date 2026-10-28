@@ -1,0 +1,611 @@
+//! The lexer (design/v1, 09; spec chapter 01). It works in two passes: the first reads the
+//! source into tokens, every line end among them; the second applies the continuation rules of
+//! 09 NL and keeps a line end only where it ends a statement:
+//!
+//! 1. inside `( )` and `[ ]` a line end is no token;
+//! 2. a line end after a token that asks for more — a binary operator, `=` and its compounds,
+//!    `,`, `.`, `?.`, `=>`, `->`, `::`, `(`, `[`, `{` — is no token; `>` and `>>` excepted,
+//!    which also close type arguments (`let xs: List<int>`);
+//! 3. a line end before a token that cannot start a statement — `.`, `?.`, `else`, `catch`, `)`,
+//!    `]`, an operator that is only binary — is no token;
+//! 4. `+` or `-` at the start of a line starts a new statement, with a warning;
+//! 5. several line ends are one, a line end after `;` is none, and none stands first.
+import std.collections { List };
+import lyric_script.compiler.token { Token, TokenKind, keywords };
+
+/// A fault in the source the lexer found: its code, its message and where it stands.
+pub struct LexDiagnostic {
+    pub code: string,
+    pub message: string,
+    pub start: int,
+    pub end: int,
+    pub line: int,
+    pub column: int,
+}
+
+/// What the lexer made of a source: its tokens, ending in `Eof`, and its errors and warnings.
+pub struct Lexed {
+    pub tokens: Token[],
+    pub errors: LexDiagnostic[],
+    pub warnings: LexDiagnostic[],
+}
+
+/// Reads `source` into tokens.
+pub fn lex(source: string): Lexed {
+    let s = Scanner.new(source);
+    s.scan();
+    let warnings = List<LexDiagnostic>.new();
+    let tokens = applyLineRules(s.tokens.toArray(), source, warnings);
+    return Lexed { tokens = tokens, errors = s.errors.toArray(), warnings = warnings.toArray() };
+}
+
+/// The first pass: characters to tokens, every line end among them.
+class Scanner {
+    source: string,
+    chars: char[],
+    offsets: int[],
+    tokens: List<Token>,
+    errors: List<LexDiagnostic>,
+    var i: int = 0,
+    var line: int = 1,
+    var lineStart: int = 0,
+    // where the token being read starts: a token over lines has the line it starts on
+    var tokenLine: int = 1,
+    var tokenLineStart: int = 0,
+
+    static fn new(source: string): Scanner {
+        let cs = List<char>.new();
+        let os = List<int>.new();
+        for ((at, c) in source.charIndices()) {
+            cs.push(c);
+            os.push(at);
+        }
+        return Scanner {
+            source = source,
+            chars = cs.toArray(),
+            offsets = os.toArray(),
+            tokens = List<Token>.new(),
+            errors = List<LexDiagnostic>.new(),
+        };
+    }
+
+    /// The byte offset of character `k`; the source's length past its end.
+    fn offset(k: int): int {
+        return if (k < this.offsets.length()) this.offsets[k] else this.source.length();
+    }
+
+    fn peek(ahead: int): char {
+        let k = this.i + ahead;
+        return if (k < this.chars.length()) this.chars[k] else '\0';
+    }
+
+    fn atEnd(): bool {
+        return this.i >= this.chars.length();
+    }
+
+    fn begin(): void {
+        this.tokenLine = this.line;
+        this.tokenLineStart = this.lineStart;
+    }
+
+    fn add(kind: TokenKind, from: int): void {
+        let start = this.offset(from);
+        this.tokens.push(Token {
+            kind = kind,
+            start = start,
+            end = this.offset(this.i),
+            line = this.tokenLine,
+            column = start - this.tokenLineStart + 1,
+        });
+    }
+
+    fn fail(code: string, message: string, from: int): void {
+        let start = this.offset(from);
+        this.errors.push(LexDiagnostic {
+            code = code,
+            message = message,
+            start = start,
+            end = this.offset(this.i),
+            line = this.tokenLine,
+            column = start - this.tokenLineStart + 1,
+        });
+    }
+
+    /// Steps over a line end inside a token or a comment.
+    fn nextLine(): void {
+        this.i += 1;
+        this.line += 1;
+        this.lineStart = this.offset(this.i);
+    }
+
+    fn scan(): void {
+        this.shebangAndFrontmatter();
+        while (!this.atEnd()) {
+            let c = this.peek(0);
+            let from = this.i;
+            this.begin();
+            if (c == '\n') {
+                this.add(.Newline, from);
+                this.nextLine();
+            } else if (c == ' ' || c == '\t' || c == '\r') {
+                this.i += 1;
+            } else if (c == '/' && this.peek(1) == '/') {
+                this.lineComment();
+            } else if (c == '/' && this.peek(1) == '*') {
+                this.blockComment();
+            } else if (isIdentStart(c)) {
+                this.word();
+            } else if (isDigit(c)) {
+                this.number();
+            } else if (c == '"') {
+                this.string(.Str, from, false, 0);
+            } else if (c == '\'') {
+                this.charLiteral();
+            } else {
+                this.operator();
+            }
+        }
+        this.begin();
+        this.add(.Eof, this.i);
+    }
+
+    /// `#!` on the first line, then an optional frontmatter block between two `---` lines.
+    fn shebangAndFrontmatter(): void {
+        if (this.peek(0) == '#' && this.peek(1) == '!') {
+            this.skipLine();
+        }
+        if (!this.lineIs("---")) {
+            return;
+        }
+        let from = this.i;
+        this.begin();
+        this.skipLine();
+        while (!this.atEnd()) {
+            if (this.lineIs("---")) {
+                this.skipLine();
+                this.add(.Frontmatter, from);
+                return;
+            }
+            this.skipLine();
+        }
+        this.fail("LYS-LEX0006", "the frontmatter has no closing '---' line", from);
+    }
+
+    /// Whether the line at the current position is exactly `text`, trailing blanks aside.
+    fn lineIs(text: string): bool {
+        var k = 0;
+        for (c in text.chars()) {
+            if (this.peek(k) != c) {
+                return false;
+            }
+            k += 1;
+        }
+        while (this.peek(k) == ' ' || this.peek(k) == '\t' || this.peek(k) == '\r') {
+            k += 1;
+        }
+        return this.peek(k) == '\n' || this.i + k >= this.chars.length();
+    }
+
+    fn skipLine(): void {
+        while (!this.atEnd() && this.peek(0) != '\n') {
+            this.i += 1;
+        }
+        if (!this.atEnd()) {
+            this.nextLine();
+        }
+    }
+
+    fn lineComment(): void {
+        let from = this.i;
+        let kind: ?TokenKind = if (this.peek(2) == '/' && this.peek(3) != '/') TokenKind.DocComment
+            else if (this.peek(2) == '!') TokenKind.ModuleDoc
+            else null;
+        while (!this.atEnd() && this.peek(0) != '\n') {
+            this.i += 1;
+        }
+        if (kind != null) {
+            this.add(kind, from);
+        }
+    }
+
+    /// `/* … */`, nested.
+    fn blockComment(): void {
+        let from = this.i;
+        var depth = 0;
+        while (!this.atEnd()) {
+            if (this.peek(0) == '/' && this.peek(1) == '*') {
+                depth += 1;
+                this.i += 2;
+            } else if (this.peek(0) == '*' && this.peek(1) == '/') {
+                depth -= 1;
+                this.i += 2;
+                if (depth == 0) {
+                    return;
+                }
+            } else if (this.peek(0) == '\n') {
+                this.nextLine();
+            } else {
+                this.i += 1;
+            }
+        }
+        this.fail("LYS-LEX0004", "the block comment has no end", from);
+    }
+
+    fn word(): void {
+        let from = this.i;
+        // a prefix glued to a string: `f"…"`, `fr"…"`, `r"…"`, `r#"…"#`, `b"…"`
+        let c = this.peek(0);
+        if (c == 'f' && this.peek(1) == '"') {
+            this.i += 1;
+            this.string(.FormatStr, from, false, 0);
+            return;
+        }
+        if (c == 'f' && this.peek(1) == 'r' && this.peek(2) == '"') {
+            this.i += 2;
+            this.string(.FormatStr, from, true, 0);
+            return;
+        }
+        if (c == 'r' && (this.peek(1) == '"' || this.peek(1) == '#' && this.hashesThenQuote())) {
+            this.i += 1;
+            var hashes = 0;
+            while (this.peek(0) == '#') {
+                hashes += 1;
+                this.i += 1;
+            }
+            this.string(.Str, from, true, hashes);
+            return;
+        }
+        if (c == 'b' && this.peek(1) == '"') {
+            this.i += 1;
+            this.string(.ByteStr, from, false, 0);
+            return;
+        }
+        while (!this.atEnd() && isIdentPart(this.peek(0))) {
+            this.i += 1;
+        }
+        let text = this.source[this.offset(from)..this.offset(this.i)].toString();
+        var isKeyword = false;
+        for (k in keywords) {
+            if (text == k) {
+                isKeyword = true;
+            }
+        }
+        this.add(if (isKeyword) .Keyword else .Ident, from);
+    }
+
+    /// Decimal, `0x`, `0b`, `0o` integers with `_`; floats with a fraction or an exponent.
+    /// `1..5` is an integer and a range: a dot only belongs to a number before a digit.
+    fn number(): void {
+        let from = this.i;
+        if (this.peek(0) == '0' && (this.peek(1) == 'x' || this.peek(1) == 'b' || this.peek(1) == 'o')) {
+            this.i += 2;
+            while (!this.atEnd() && (isHexDigit(this.peek(0)) || this.peek(0) == '_')) {
+                this.i += 1;
+            }
+            this.suffix(from);
+            this.add(.Int, from);
+            return;
+        }
+        var isFloat = false;
+        this.digits();
+        // `t.0.1` is two fields of a tuple, not `t . 0.1`
+        let afterDot = this.tokens.length() > 0 && this.tokens[this.tokens.length() - 1].kind == .Dot;
+        if (!afterDot && this.peek(0) == '.' && isDigit(this.peek(1))) {
+            isFloat = true;
+            this.i += 1;
+            this.digits();
+        }
+        if (this.peek(0) == 'e' || this.peek(0) == 'E') {
+            let sign = if (this.peek(1) == '+' || this.peek(1) == '-') 1 else 0;
+            if (isDigit(this.peek(1 + sign))) {
+                isFloat = true;
+                this.i += 1 + sign;
+                this.digits();
+            }
+        }
+        this.suffix(from);
+        this.add(if (isFloat) .Float else .Int, from);
+    }
+
+    /// A word glued to a number: Lyric 5's width suffix (`1u8`), which Lyric-Script has not.
+    fn suffix(from: int): void {
+        if (!isIdentStart(this.peek(0))) {
+            return;
+        }
+        while (!this.atEnd() && isIdentPart(this.peek(0))) {
+            this.i += 1;
+        }
+        this.fail("LYS-LEX0005", "a number with a suffix: Lyric-Script has one integer type and one float type", from);
+    }
+
+    fn digits(): void {
+        while (!this.atEnd() && (isDigit(this.peek(0)) || this.peek(0) == '_')) {
+            this.i += 1;
+        }
+    }
+
+    /// After `r`: `#`s, then a quote.
+    fn hashesThenQuote(): bool {
+        var k = 1;
+        while (this.peek(k) == '#') {
+            k += 1;
+        }
+        return this.peek(k) == '"';
+    }
+
+    /// A string from its opening quote. A raw string reads `\` as itself and ends at a `"`
+    /// followed by `hashes` times `#`; `"""…"""` spans lines; a format string skips its
+    /// interpolations whole, strings in them included. Escapes and indentation are the parser's
+    /// to read.
+    fn string(kind: TokenKind, from: int, raw: bool, hashes: int): void {
+        let triple = hashes == 0 && this.peek(0) == '"' && this.peek(1) == '"' && this.peek(2) == '"';
+        this.i += if (triple) 3 else 1;
+        if (!this.stringBody(raw, hashes, triple, kind == .FormatStr)) {
+            this.fail("LYS-LEX0002", "the string has no closing quote", from);
+        }
+        this.add(kind, from);
+    }
+
+    /// Reads past the closing quote; false where the line (or, for `"""`, the source) ends first.
+    fn stringBody(raw: bool, hashes: int, triple: bool, format: bool): bool {
+        while (!this.atEnd()) {
+            let c = this.peek(0);
+            if (triple && c == '"' && this.peek(1) == '"' && this.peek(2) == '"') {
+                this.i += 3;
+                return true;
+            }
+            if (!triple && c == '"' && this.closesWithHashes(hashes)) {
+                this.i += 1 + hashes;
+                return true;
+            }
+            if (c == '\n') {
+                if (!triple) {
+                    return false;
+                }
+                this.nextLine();
+            } else if (c == '\\' && !raw) {
+                // the escaped character, unless it is the line end
+                this.i += 1;
+                if (!this.atEnd() && this.peek(0) != '\n') {
+                    this.i += 1;
+                }
+            } else if (format && c == '{' && this.peek(1) == '{') {
+                this.i += 2;
+            } else if (format && c == '{') {
+                this.i += 1;
+                if (!this.interpolation()) {
+                    return false;
+                }
+            } else {
+                this.i += 1;
+            }
+        }
+        return false;
+    }
+
+    fn closesWithHashes(hashes: int): bool {
+        var k = 1;
+        while (k <= hashes) {
+            if (this.peek(k) != '#') {
+                return false;
+            }
+            k += 1;
+        }
+        return true;
+    }
+
+    /// An interpolation past its `{`, to its `}`, on one line; the strings in it are skipped whole.
+    fn interpolation(): bool {
+        var depth = 1;
+        while (!this.atEnd() && this.peek(0) != '\n') {
+            let c = this.peek(0);
+            this.i += 1;
+            if (c == '"') {
+                if (!this.stringBody(false, 0, false, false)) {
+                    return false;
+                }
+            } else if (c == '{') {
+                depth += 1;
+            } else if (c == '}') {
+                depth -= 1;
+                if (depth == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fn charLiteral(): void {
+        let from = this.i;
+        this.i += 1;
+        while (!this.atEnd() && this.peek(0) != '\'' && this.peek(0) != '\n') {
+            if (this.peek(0) == '\\') {
+                this.i += 1;
+            }
+            this.i += 1;
+        }
+        if (this.peek(0) == '\'') {
+            this.i += 1;
+        } else {
+            this.fail("LYS-LEX0003", "the character literal has no closing quote", from);
+        }
+        this.add(.Char, from);
+    }
+
+    fn operator(): void {
+        let from = this.i;
+        let c = this.peek(0);
+        let n = this.peek(1);
+        let n2 = this.peek(2);
+        let (kind, width): (?TokenKind, int) = match (c) {
+            '(' => (.LParen, 1),
+            ')' => (.RParen, 1),
+            '[' => (.LBracket, 1),
+            ']' => (.RBracket, 1),
+            '{' => (.LBrace, 1),
+            '}' => (.RBrace, 1),
+            ',' => (.Comma, 1),
+            ';' => (.Semi, 1),
+            '@' => (.At, 1),
+            '~' => (.Tilde, 1),
+            ':' => if (n == ':') (.ColonColon, 2) else (.Colon, 1),
+            '.' => if (n == '.' && n2 == '=') (.DotDotEq, 3)
+                else if (n == '.' && n2 == '.') (.DotDotDot, 3)
+                else if (n == '.') (.DotDot, 2)
+                else (.Dot, 1),
+            '?' => if (n == '?' && n2 == '=') (.QuestionQuestionAssign, 3)
+                else if (n == '?') (.QuestionQuestion, 2)
+                else if (n == '.') (.QuestionDot, 2)
+                else (.Question, 1),
+            '+' => if (n == '%' && n2 == '=') (.PlusWrapAssign, 3)
+                else if (n == '%') (.PlusWrap, 2)
+                else if (n == '+') (.PlusPlus, 2)
+                else if (n == '=') (.PlusAssign, 2)
+                else (.Plus, 1),
+            '-' => if (n == '%' && n2 == '=') (.MinusWrapAssign, 3)
+                else if (n == '%') (.MinusWrap, 2)
+                else if (n == '-') (.MinusMinus, 2)
+                else if (n == '=') (.MinusAssign, 2)
+                else if (n == '>') (.Arrow, 2)
+                else (.Minus, 1),
+            '*' => if (n == '%' && n2 == '=') (.StarWrapAssign, 3)
+                else if (n == '%') (.StarWrap, 2)
+                else if (n == '=') (.StarAssign, 2)
+                else (.Star, 1),
+            '/' => if (n == '=') (.SlashAssign, 2) else (.Slash, 1),
+            '%' => if (n == '=') (.PercentAssign, 2) else (.Percent, 1),
+            '^' => if (n == '=') (.CaretAssign, 2) else (.Caret, 1),
+            '&' => if (n == '&' && n2 == '=') (.AndAndAssign, 3)
+                else if (n == '&') (.AndAnd, 2)
+                else if (n == '=') (.AmpAssign, 2)
+                else (.Amp, 1),
+            '|' => if (n == '|' && n2 == '=') (.OrOrAssign, 3)
+                else if (n == '|') (.OrOr, 2)
+                else if (n == '=') (.PipeAssign, 2)
+                else (.Pipe, 1),
+            '!' => if (n == '=') (.NotEq, 2)
+                else if (n == 'i' && n2 == 'n' && !isIdentPart(this.peek(3))) (.NotIn, 3)
+                else (.Bang, 1),
+            '=' => if (n == '=') (.EqEq, 2) else if (n == '>') (.FatArrow, 2) else (.Assign, 1),
+            '<' => if (n == '<' && n2 == '=') (.ShlAssign, 3)
+                else if (n == '<') (.Shl, 2)
+                else if (n == '=') (.Le, 2)
+                else (.Lt, 1),
+            '>' => if (n == '>' && n2 == '=') (.ShrAssign, 3)
+                else if (n == '>') (.Shr, 2)
+                else if (n == '=') (.Ge, 2)
+                else (.Gt, 1),
+            _ => (null, 1),
+        };
+        this.i += width;
+        if (kind != null) {
+            this.add(kind, from);
+        } else {
+            this.fail("LYS-LEX0001", f"no token starts with '{c}'", from);
+        }
+    }
+}
+
+fn isDigit(c: char): bool {
+    return c >= '0' && c <= '9';
+}
+
+fn isHexDigit(c: char): bool {
+    return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+fn isIdentStart(c: char): bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+fn isIdentPart(c: char): bool {
+    return isIdentStart(c) || isDigit(c);
+}
+
+/// The second pass: the line ends that end statements, and the warnings of rule 4. Comments of
+/// documentation leave the stream here; the parser reads no comment.
+fn applyLineRules(raw: Token[], source: string, warnings: List<LexDiagnostic>): Token[] {
+    let out = List<Token>.new();
+    let brackets = List<TokenKind>.new();
+    var k = 0;
+    while (k < raw.length()) {
+        let t = raw[k];
+        if (t.kind == .Newline) {
+            let depth = brackets.length();
+            let inside = depth > 0 && (brackets[depth - 1] == .LParen || brackets[depth - 1] == .LBracket);
+            let next = nextAfterLineEnds(raw, k);
+            let keep = !inside
+                && out.length() > 0
+                && out[out.length() - 1].kind != .Newline
+                && out[out.length() - 1].kind != .Semi
+                && !continuesAfter(out[out.length() - 1])
+                && !continuesBefore(next, source);
+            if (keep) {
+                out.push(t);
+                if (next.kind == .Plus || next.kind == .Minus) {
+                    warnings.push(LexDiagnostic {
+                        code = "LYS-LEX0101",
+                        message = "this line starts a new statement with a sign; to go on with the line before, put the operator at its end",
+                        start = next.start,
+                        end = next.end,
+                        line = next.line,
+                        column = next.column,
+                    });
+                }
+            }
+        } else if (t.kind != .DocComment && t.kind != .ModuleDoc) {
+            match (t.kind) {
+                .LParen | .LBracket | .LBrace => brackets.push(t.kind),
+                .RParen | .RBracket | .RBrace => {
+                    if (brackets.length() > 0) {
+                        brackets.pop();
+                    }
+                }
+                _ => {}
+            }
+            out.push(t);
+        }
+        k += 1;
+    }
+    return out.toArray();
+}
+
+/// The first token after the line ends at `k`, comments of documentation skipped.
+fn nextAfterLineEnds(raw: Token[], k: int): Token {
+    var j = k;
+    while (j < raw.length() - 1 && (raw[j].kind == .Newline || raw[j].kind == .DocComment || raw[j].kind == .ModuleDoc)) {
+        j += 1;
+    }
+    return raw[j];
+}
+
+/// Rule 2: a token after which the statement goes on.
+fn continuesAfter(t: Token): bool {
+    return match (t.kind) {
+        .Plus | .Minus | .Star | .Slash | .Percent | .PlusWrap | .MinusWrap | .StarWrap => true,
+        .Amp | .Pipe | .Caret | .Shl | .AndAnd | .OrOr | .QuestionQuestion => true,
+        .EqEq | .NotEq | .Lt | .Le | .Ge | .NotIn | .DotDot | .DotDotEq => true,
+        .Assign | .PlusAssign | .MinusAssign | .StarAssign | .SlashAssign | .PercentAssign => true,
+        .PlusWrapAssign | .MinusWrapAssign | .StarWrapAssign | .AmpAssign | .PipeAssign => true,
+        .CaretAssign | .ShlAssign | .ShrAssign | .AndAndAssign | .OrOrAssign => true,
+        .QuestionQuestionAssign | .Comma | .Dot | .QuestionDot | .FatArrow | .Arrow => true,
+        .ColonColon | .LParen | .LBracket | .LBrace => true,
+        _ => false,
+    };
+}
+
+/// Rule 3: a token no statement starts with.
+fn continuesBefore(t: Token, source: string): bool {
+    return match (t.kind) {
+        .Dot | .QuestionDot | .RParen | .RBracket => true,
+        .Star | .Slash | .Percent | .StarWrap | .AndAnd | .OrOr | .QuestionQuestion => true,
+        .EqEq | .NotEq | .Lt | .Gt | .Le | .Ge | .Shl | .Shr | .DotDot | .DotDotEq => true,
+        .Pipe | .Amp | .Caret | .NotIn => true,
+        .Keyword => {
+            let w = source[t.start..t.end].toString();
+            w == "else" || w == "catch"
+        }
+        _ => false,
+    };
+}

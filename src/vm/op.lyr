@@ -77,6 +77,10 @@ pub enum Operand {
     Func,
     /// An index into the module's types.
     Type,
+    /// The first scalar register of a call's arguments, and where a scalar result lands.
+    ScalarBase,
+    /// The first reference register of a call's arguments, and where a reference result lands.
+    RefBase,
     /// A field index of the object's type: a scalar field for `GetS`/`SetS`, a reference field
     /// for `GetR`/`SetR`.
     Field,
@@ -134,7 +138,7 @@ pub fn info(op: Op): OpInfo {
         .JumpIf => OpInfo { mnemonic = "jump.if", operands = [.Scalar, .Label] },
         .JumpIfNot => OpInfo { mnemonic = "jump.ifnot", operands = [.Scalar, .Label] },
         .JumpLtI => OpInfo { mnemonic = "jump.lt.i", operands = [.Scalar, .Scalar, .Label] },
-        .Call => OpInfo { mnemonic = "call", operands = [.Func, .Scalar, .Ref] },
+        .Call => OpInfo { mnemonic = "call", operands = [.Func, .ScalarBase, .RefBase] },
         .Ret => OpInfo { mnemonic = "ret", operands = [] },
         .RetS => OpInfo { mnemonic = "ret.s", operands = [.Scalar] },
         .RetR => OpInfo { mnemonic = "ret.r", operands = [.Ref] },

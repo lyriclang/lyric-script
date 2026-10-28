@@ -84,6 +84,12 @@ jobs:
           "$lyric5" --version
           "$lyric5" build
 
+      - name: Format
+        shell: bash
+        run: |
+          lyric5=lyric5/lyric5; [ "${{ runner.os }}" = "Windows" ] && lyric5=lyric5/lyric5.exe
+          "$lyric5" fmt --check --diff
+
       - name: Test
         shell: bash
         run: |

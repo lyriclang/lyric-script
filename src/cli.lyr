@@ -1,8 +1,8 @@
 //! The `lyric-script` command line (design/v1, 12). In S0 it knows `--version` and `help`.
 import std.io { println, eprintln };
 import std.os { args };
-import lyric_script { VERSION };
-import lyric_script.vm { BYTECODE_FORMAT };
+import lyric_script { version };
+import lyric_script.vm { bytecodeFormat };
 
 fn usage(): void {
     println("usage: lyric-script <command>");
@@ -20,7 +20,7 @@ fn main(): int {
     }
     let command = given[1];
     if (command == "--version" || command == "version") {
-        println(f"lyric-script {VERSION} (bytecode format {BYTECODE_FORMAT})");
+        println(f"lyric-script {version} (bytecode format {bytecodeFormat})");
         return 0;
     }
     if (command == "--help" || command == "help") {

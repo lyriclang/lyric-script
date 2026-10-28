@@ -44,10 +44,10 @@ Sizes are sessions, not dates: S days, M 1–2 weeks, L 3–4 weeks, XL more. A 
 |---|---|
 | S0a the plan | done |
 | S0b the cut (`v4.6-final`, `archive/4.x`, `docs/archive/4.x/`, new root files) | done |
-| S0c scaffold (`lyric_script` package, `lyric-script --version`, C-ABI stub, `diagnostics.toml`) | open |
-| S0d CI against pinned Lyric 5 on every Tier 1 target | open |
-| S0e specification skeleton (`lyric-spec` branch `script`, `spec.pin`) | open |
-| S0f value probe evaluated into 11 | open |
+| S0c scaffold (`lyric_script` package, `lyric-script --version`, C-ABI stub, `diagnostics.toml`) | done — built, tested and run under WSL against the pin |
+| S0d CI against pinned Lyric 5 on every Tier 1 target | done — this PR's run |
+| S0e specification skeleton (`lyric-spec` branch `script`, `spec.pin`) | done — lyric-spec#380 |
+| S0f value probe evaluated into 11 | done — V2 and Gen hold, V3 = A' with lyric#610 (A4) |
 
 Exit criterion: `lyric-script --version` built and run in CI on every Tier 1 target.
 
@@ -76,3 +76,4 @@ the understanding of the code keeps pace with its size.
 | A2c | exact toolchain pin | worked around until Lyric 5 M15 |
 | A2d | unchecked element access on the hot path | only if the throughput ratchet is missed |
 | A3 | instance attribution in the GC | door (live memory limit per instance) |
+| A4 | one card mark for a 16-byte store (interface values) | filed: lyric#610; decides 11 V3 at S1's first measurement point |

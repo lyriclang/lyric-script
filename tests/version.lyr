@@ -1,10 +1,10 @@
 // The version the toolchain reports, and the first export of the C ABI.
 import std.test { assertEq, assertTrue };
-import lyric_script { VERSION, abiVersion };
+import lyric_script { version, abiVersion };
 
 @Test
 fn theVersionIsOfTheOneLine(): void {
-    assertTrue(VERSION.startsWith("1."));
+    assertTrue(version.startsWith("1."));
 }
 
 @Test

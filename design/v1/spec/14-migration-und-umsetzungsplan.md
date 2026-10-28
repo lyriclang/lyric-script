@@ -191,7 +191,9 @@ Offen für S3 und später: Generics, Interfaces, Optionals, Patterns, Fehler, Mo
 
 *Nachtrag S2b (2026-10-28):* `check` wächst mit dem Compiler — erst der Lexer, dann Parser und
 Typen —, damit die Konformanzsuite ab S2b läuft; die lexikalischen Codes spiegeln Lyric 5
-(unter `LYS-LEX0100` dieselbe Bedeutung wie die gleiche Nummer von `LYR-LEX`, ab 0100 Script-eigen).
+(dieselbe Bedeutung wie die gleiche Nummer von `LYR-LEX`; Script-eigen zuerst ab 0100, seit S3b
+ab 0900 — Lyric 5 belegt `SEM` bis 0232, und seine `SEM0101`/`SEM0102` braucht Script mit den
+Labels selbst).
 
 **Ergebnis S2 (2026-10-28):** `lyric-script run hello.lyrs` läuft in der CI auf allen
 Tier-1-Zielen, dazu `fib` und `tally`; 97 Tests, 33 Konformanzfälle (Kapitel 01, 02 Kern, 03, 07,
@@ -221,3 +223,30 @@ hier (Optionals, Tupel, Funktionswerte, Synthese, Definite Assignment).
 
 Reihenfolge: a–e vor f–g (Interfaces und Generics bauen auf Optionals, Tupeln und Funktionswerten
 auf), h nach f (Synthese braucht die Interfaces), i zuletzt.
+
+**S3a, Ergebnis.** Optionals wie Lyric 5 §3.1–3.3 mit dessen Codes; Slot-Formen nach 11 V2,
+Rückgaben mit mehreren Slots. Eingrenzung endet an einer Zuweisung, eine Schleife, die die Bindung
+schreibt, grenzt in keinem Durchlauf ein; ein zweiter Test grenzt erneut ein. Nachgezogen in S3b
+(Abgleich mit §3.2): Eingrenzung auch hinter einem Zweig, der mit `break` oder `continue` endet,
+im mehrzeiligen Wert-`if`, und `==` auf `?T` (Regel 7: beide leer oder beide gleich; ein `T` auf
+einer Seite wird zu `?T`).
+
+**S3b, präzisiert.**
+
+- *Definite Assignment* wie Lyric 5 §7.1 Regel 5 (`LYS-SEM0018`), im Checker in Quellreihenfolge
+  mitgeführt: die Menge der Bindungen ohne Wert, die noch nicht auf jedem Weg zugewiesen sind.
+  Zweige vereinigen ihre Mengen, ein Zweig, der nicht herauskommt (`return`, `break`, `continue`,
+  `never`), trägt nichts bei; `while` und `for` hinterlassen den Stand vor dem Rumpf, `loop` den
+  seiner `break`s; die rechte Seite von `&&`, `||`, `??`, `??=` und die Argumente hinter `?.`
+  zählen nicht. Später zuweisen lässt sich nur ein `var`; ein `let` ohne Wert ist wie in Lyric 5
+  nie schreibbar (`LYS-SEM0019`).
+- Eine *globale* Bindung des Skripts braucht ihren Wert an der Deklaration (`LYS-SEM0903`):
+  Funktionen lesen sie zu jeder Zeit, auch bevor der Skriptcode sie zuweist (offener Punkt P8).
+- *Leer* für `var x = null` (in einer Funktion und im Skriptcode): die Funktion wird in zwei
+  Läufen geprüft. Der erste schweigt und sucht die erste festlegende Verwendung in
+  Quellreihenfolge — eine Zuweisung, `??=`, der Wert an einer Stelle mit Zieltyp (Argument,
+  Rückgabe, getypte Bindung, Feld); der zweite prüft mit dem gefundenen Typ `?T`. Findet sich
+  keine, meldet der zweite `LYS-SEM0010` an der Deklaration mit dem Vorschlag `var x: ?T = null`.
+  Funktionen, deren Ergebnistyp erst ihr Rumpf festlegt, prüft der stille Lauf nicht mit. Ein
+  `let x = null` bleibt `LYS-SEM0010` (ein `let` bekommt nie einen zweiten Wert).
+- Leere Sammlungsliterale `[]` und `[:]` gehen mit den Literalen in S7 denselben Weg.

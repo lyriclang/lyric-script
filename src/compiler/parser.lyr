@@ -4,8 +4,8 @@
 //! reads `;`. A fault is reported where it stands and gives up the statement at hand
 //! (`SyntaxError`); the parse goes on with the next statement.
 //!
-//! The codes below `LYS-PAR0100` mean what Lyric 5's `LYR-PAR` code of the same number means;
-//! from 0100 on they are Lyric-Script's own.
+//! A code means what Lyric 5's `LYR-PAR` code of the same number means; Lyric-Script's own start
+//! at 0900.
 import std.collections { List };
 import lyric_script.compiler.ast {
     AliasDecl,
@@ -492,7 +492,7 @@ class Parser {
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the enum's body");
         for (f in fields) {
             this.report(
-                "LYS-PAR0101",
+                "LYS-PAR0901",
                 f"an enum holds variants and methods, no field: '{f.name}'",
                 this.current()
             );
@@ -1018,7 +1018,7 @@ class Parser {
                     break;
                 }
                 let key = try this.parseExpr();
-                try this.expect(.Colon, "LYS-PAR0102", "':' between a key and its value");
+                try this.expect(.Colon, "LYS-PAR0902", "':' between a key and its value");
                 entries.push(MapEntry { key = key, value = try this.parseExpr() });
             }
             try this.expect(.RBracket, "LYS-PAR0004", "']' to close the map");

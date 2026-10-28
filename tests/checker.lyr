@@ -75,7 +75,7 @@ fn functionsReturnWhatTheySay(): void {
     assertEq(errs("fn k(): int {\n    return\n}"), ["LYS-SEM0226"]);
     // a loop without a break never ends: nothing follows it
     assertEq(errs("fn forever(): int {\n    loop {\n        println(1)\n    }\n}"), []);
-    assertEq(errs("return"), ["LYS-SEM0102"]);
+    assertEq(errs("return"), ["LYS-SEM0902"]);
 }
 
 @Test
@@ -111,7 +111,7 @@ fn structsAreBuiltWhole(): void {
     assertEq(errs(p + "let a = P { x = 1, x = 2 }\nprintln(a.y)"), ["LYS-SEM0070"]);
     assertEq(errs(p + "let a = P { z = 1 }\nprintln(a.y)"), ["LYS-SEM0015", "LYS-SEM0106"]);
     assertEq(errs(p + "let a = P(1)\nprintln(a.y)"), ["LYS-SEM0012"]);
-    assertEq(errs("struct Q {\n    var x: int\n}"), ["LYS-SEM0101"]);
+    assertEq(errs("struct Q {\n    var x: int\n}"), ["LYS-SEM0901"]);
     // `P(1)` is `P.new(1)` (05 D11)
     assertEq(
         errs(
@@ -157,7 +157,7 @@ fn valuesOfIfAndBlocks(): void {
 
 @Test
 fn whatLyricScriptHasNot(): void {
-    assertEq(errs("let a: int8 = 1\nprintln(a)"), ["LYS-SEM0100"]);
+    assertEq(errs("let a: int8 = 1\nprintln(a)"), ["LYS-SEM0900"]);
     // what a later milestone builds is named as such
     assertEq(errs("let xs = [1]\nprintln(1)"), ["LYS-NYI0001"]);
 }

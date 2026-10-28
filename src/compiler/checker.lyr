@@ -7,8 +7,8 @@
 //! function whose body is `= expr` without a written type gets the type of `expr` (09 Ret),
 //! checked when it is first needed.
 //!
-//! The codes below `LYS-SEM0100` mean what Lyric 5's `LYR-SEM` code of the same number means;
-//! from 0100 on they are Lyric-Script's own. `LYS-NYI0001` names what the plan builds later: it
+//! A code means what Lyric 5's `LYR-SEM` code of the same number means; Lyric-Script's own start
+//! at 0900. `LYS-NYI0001` names what the plan builds later: it
 //! leaves the toolchain before 1.0.
 import std.collections { List, Map };
 import lyric_script.compiler.ast {
@@ -325,7 +325,7 @@ class Checker {
             seen.insert(f.name, true);
             if (f.isVar && !t.isClass) {
                 this.error(
-                    "LYS-SEM0101",
+                    "LYS-SEM0901",
                     f"a struct's fields are never written: '{f.name}' takes no 'var' (a class's may)",
                     f.span
                 );
@@ -529,7 +529,7 @@ class Checker {
         }
         if (isWidthType(name)) {
             this.error(
-                "LYS-SEM0100",
+                "LYS-SEM0900",
                 f"'{name}' is a width type of Lyric 5: Lyric-Script has one integer type, int, and one float type, float",
                 at
             );
@@ -1211,7 +1211,7 @@ class Checker {
     mut fn returnStmt(value: ?Expr, at: Span): TStmt {
         if (this.ctx.isMain) {
             this.error(
-                "LYS-SEM0102",
+                "LYS-SEM0902",
                 "'return' outside a function: a script ends at its end, or with exit(n)",
                 at
             );

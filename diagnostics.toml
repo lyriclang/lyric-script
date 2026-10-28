@@ -79,8 +79,8 @@ severity = "error"
 area = "14-cli"
 summary = "Reported when a command cannot read the file it is given. The exit code is 2."
 
-# The lexer (S2b). Below 0100 a code means what Lyric 5's LYR-LEX code of the same number means;
-# from 0100 on the codes are Lyric-Script's own.
+# The lexer (S2b). A code means what Lyric 5's LYR-LEX code of the same number means;
+# Lyric-Script's own codes start at 0900.
 
 [LYS-LEX0001]
 title = "a character that starts no token, or a name beyond ASCII"
@@ -152,7 +152,7 @@ severity = "error"
 area = "01-lexical"
 summary = "`1.` or `.5`: a digit stands on both sides of a float's point. The literal is refused once and read as the float it means. `3.show()` is a call and `1..3` a range; after an operand `.5` names a tuple's element. Lyric 5's LYR-LEX0016."
 
-[LYS-LEX0100]
+[LYS-LEX0900]
 title = "a frontmatter block that is not closed"
 severity = "error"
 area = "01-lexical"
@@ -166,7 +166,7 @@ csv = "1"
 println("hello")
 '''
 
-[LYS-LEX0101]
+[LYS-LEX0901]
 title = "a line that starts with a sign"
 severity = "warning"
 area = "01-lexical"
@@ -223,8 +223,8 @@ severity = "error"
 area = "01-lexical"
 summary = "The closing line's indentation is taken off every line; a line with less of it is refused (a blank one need not have it). Lyric 5's LYR-LEX0015."
 
-# The parser (S2c). Below 0100 a code means what Lyric 5's LYR-PAR code of the same number
-# means; from 0100 on the codes are Lyric-Script's own.
+# The parser (S2c). A code means what Lyric 5's LYR-PAR code of the same number means;
+# Lyric-Script's own codes start at 0900.
 
 [LYS-PAR0001]
 title = "a token after one whole statement"
@@ -376,26 +376,26 @@ severity = "error"
 area = "02-grammar"
 summary = "`a < b < c` is refused rather than read left to right: write each comparison on its own and join them with `&&`. Lyric 5's LYR-PAR0059."
 
-[LYS-PAR0100]
+[LYS-PAR0900]
 title = "a digit beyond its literal's base"
 severity = "error"
 area = "02-grammar"
 summary = "A digit the literal's base does not have: `0b12`, `0o9`."
 
-[LYS-PAR0101]
+[LYS-PAR0901]
 title = "a field in an enum"
 severity = "error"
 area = "02-grammar"
 summary = "An enum holds variants and methods (spec 2 D3)."
 
-[LYS-PAR0102]
+[LYS-PAR0902]
 title = "an entry of a map literal without ':'"
 severity = "error"
 area = "02-grammar"
 summary = "`[\"a\": 1, \"b\": 2]`: every entry is `key: value` (spec 2 D5)."
 
-# The checker (S2d). Below 0100 a code means what Lyric 5's LYR-SEM code of the same number
-# means; from 0100 on the codes are Lyric-Script's own.
+# The checker (S2d). A code means what Lyric 5's LYR-SEM code of the same number means;
+# Lyric-Script's own codes start at 0900.
 
 [LYS-SEM0001]
 title = "a value of another type than the place takes"
@@ -601,19 +601,19 @@ severity = "error"
 area = "07-statements"
 summary = "The function has a result type; its `return` gives a value. Lyric 5's LYR-SEM0226."
 
-[LYS-SEM0100]
+[LYS-SEM0900]
 title = "a width type of Lyric 5"
 severity = "error"
 area = "03-types"
 summary = "Lyric-Script has one integer type, `int`, and one float type, `float` (spec 3 rule 1)."
 
-[LYS-SEM0101]
+[LYS-SEM0901]
 title = "'var' on a struct's field"
 severity = "error"
 area = "03-types"
 summary = "A struct's fields are never written; a class has `var` fields (spec 3 rule 3)."
 
-[LYS-SEM0102]
+[LYS-SEM0902]
 title = "'return' outside a function"
 severity = "error"
 area = "07-statements"

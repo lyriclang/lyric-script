@@ -11,8 +11,8 @@
 //! 4. `+` or `-` at the start of a line starts a new statement, with a warning;
 //! 5. several line ends are one, a line end after `;` is none, and none stands first.
 //!
-//! The codes below `LYS-LEX0100` mean what Lyric 5's `LYR-LEX` code of the same number means;
-//! from 0100 on they are Lyric-Script's own. Escapes, character literals and the lines of a
+//! A code means what Lyric 5's `LYR-LEX` code of the same number means; Lyric-Script's own start
+//! at 0900. Escapes, character literals and the lines of a
 //! multi-line string are the parser's to read (0007, 0008, 0013–0015).
 import std.collections { List };
 import lyric_script.compiler.diagnostic { Diagnostic };
@@ -218,7 +218,7 @@ class Scanner {
             }
             this.skipLine();
         }
-        this.fail("LYS-LEX0100", "the frontmatter has no closing '---' line", from);
+        this.fail("LYS-LEX0900", "the frontmatter has no closing '---' line", from);
     }
 
     /// Whether the line at the current position is exactly `text`, trailing blanks aside.
@@ -658,7 +658,7 @@ fn applyLineRules(raw: Token[], source: string, warnings: List<Diagnostic>): Tok
                 if (next.kind == .Plus || next.kind == .Minus) {
                     warnings.push(
                         Diagnostic {
-                            code = "LYS-LEX0101",
+                            code = "LYS-LEX0901",
                             message = "this line starts a new statement with a sign",
                             start = next.start,
                             end = next.end,

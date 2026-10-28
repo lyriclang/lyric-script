@@ -95,6 +95,7 @@ pub enum Op :: [Variants, Equatable] {
     DescVar,
     NewD,
     IsD,
+    CallS,
 }
 
 /// What an operand of an operation names.
@@ -221,6 +222,7 @@ pub fn info(op: Op): OpInfo {
         .DescVar => OpInfo { mnemonic = "desc.var", operands = [.Ref, .Ref, .Imm] },
         .NewD => OpInfo { mnemonic = "new.d", operands = [.Ref, .Ref] },
         .IsD => OpInfo { mnemonic = "is.d", operands = [.Scalar, .Ref, .Ref] },
+        .CallS => OpInfo { mnemonic = "call.s", operands = [.Imm, .ScalarBase, .RefBase] },
     };
 }
 

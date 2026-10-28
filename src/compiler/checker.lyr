@@ -221,6 +221,11 @@ class Checker {
     var debugSlot: int = -1,
     var fnDebug: int = -1,
     var quietDebug: bool = false,
+    // what `Self` names where a type is resolved now: the type whose members these are, `null`
+    // outside them (S3i, Lyric 5 05 §7 rule 1)
+    var selfTyIs: ?Ty = null,
+    // while a static default's copy is made: one of its own, never shared
+    var copyExact: bool = false,
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -361,6 +366,8 @@ class Checker {
                 .Stmt(_) => { }
             }
         }
+        // which interfaces are a constraint only (05 §7 rule 3), before a type is resolved
+        this.classifyInterfaces(module);
         // then what they hold, and the functions' signatures
         for (item in module.items) {
             match (item) {
@@ -519,6 +526,81 @@ class Checker {
 
     /// `interface I :: [P] { … }` (Lyric 5 05 §1): its members, each a slot of the program; a
     /// default's `this` is the interface value.
+    /// Marks each interface whose members name `Self` beyond the receiver or are static — its
+    /// members are generic over `Self` — and each that is a constraint only: that, a generic
+    /// member, or a parent that is one (Lyric 5 05 §7 rule 3).
+    mut fn classifyInterfaces(module: Module): void {
+        let decls = List<InterfaceDecl>.new();
+        for (item in module.items) {
+            match (item) {
+                .Decl(d) => match (d) {
+                    .Interface(i) => decls.push(i),
+                    _ => { }
+                },
+                .Stmt(_) => { }
+            }
+        }
+        for (i in decls) {
+            let index = this.typeIndex.get(i.name);
+            if (index == null) {
+                continue;
+            }
+            let info = this.types[index];
+            for (m in i.members) {
+                var names = m.isStatic;
+                for (p in m.params) {
+                    names = names || mentionsSelf(p.type);
+                }
+                let r = m.returns;
+                if (r != null) {
+                    names = names || mentionsSelf(r);
+                }
+                if (names && !info.selfParam) {
+                    info.selfParam = true;
+                    info.constraintOnly = true;
+                    info.onlyWhy = if (m.isStatic) f"its member '{m.name}' is static"
+                        else f"its member '{m.name}' names 'Self' beyond the receiver";
+                }
+                if (m.typeParams.length() > 0 && !info.constraintOnly) {
+                    info.constraintOnly = true;
+                    info.onlyWhy = f"its member '{m.name}' is generic";
+                }
+            }
+        }
+        // a parent's members are the child's
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (i in decls) {
+                let index = this.typeIndex.get(i.name);
+                if (index == null || this.types[index].constraintOnly) {
+                    continue;
+                }
+                for (p in i.parents) {
+                    let pi = this.typeIndex.get(p.name);
+                    if (pi != null && this.types[pi].constraintOnly) {
+                        this.types[index].constraintOnly = true;
+                        this.types[index].onlyWhy = f"its parent '{p.name}' is one";
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// What `Self` names in the members of `owner`: the type itself (a generic one at its own
+    /// parameters, a built-in's its type); in an interface generic over `Self`, its parameter.
+    mut fn selfFor(owner: int): ?Ty {
+        if (owner < 0) {
+            return null;
+        }
+        let info = this.types[owner];
+        if (info.kind == .Interface) {
+            return if (info.selfParam) Ty.Param(0) else null;
+        }
+        return this.selfTy(owner);
+    }
+
     mut fn declareInterface(i: InterfaceDecl): void {
         let index = this.typeIndex.get(i.name);
         if (index == null) {
@@ -555,6 +637,19 @@ class Checker {
                     this.functions[fi].abstract = true;
                 }
                 _ => { }
+            }
+            if (info.selfParam) {
+                if (m.typeParams.length() > 0) {
+                    this.notYet(
+                        "a generic member of an interface generic over 'Self'",
+                        "S3i",
+                        m.span
+                    );
+                }
+                // generic over `Self`, the conformer, bound by the receiver or the type
+                this.functions[fi].typeParams = [
+                    TypeParamInfo { name = "Self", constraints = [index] },
+                ];
             }
             info.methods.insert(m.name, fi);
             info.slotOf.insert(m.name, this.slotCount);
@@ -790,17 +885,24 @@ class Checker {
                 let declared = iface.methods.get(member) ?? -1;
                 let own = info.methods.get(member);
                 if (own != null) {
-                    if (!this.sameSignature(own, declared)) {
+                    let selfArgs: Ty[] = if (iface.selfParam) [self] else [];
+                    if (!this.sameSignatureAs(own, declared, selfArgs)
+                        || this.functions[own].isStatic != this.functions[declared].isStatic) {
                         this.error(
                             "LYS-SEM0042",
                             f"'{info.name}.{member}' does not take and give what '{iface.name}.{member}' declares",
                             conforms[0].span
                         );
                     }
-                    // through a box the method takes the value inside
+                    // through a box the method takes the value inside; a static takes no value
                     info.witness.insert(
                         slot,
-                        if (boxedSelf) this.unboxer(own, self, Ty.Named(ii)) else own
+                        if (boxedSelf && !this.functions[own].isStatic) this.unboxer(
+                            own,
+                            self,
+                            Ty.Named(ii)
+                        )
+                            else own
                     );
                 } else if (this.functions[declared].abstract && via.containsKey(ii)) {
                     // forwarded to the field, callable on the type too
@@ -871,6 +973,24 @@ class Checker {
     }
 
     /// Whether functions `a` and `b` take the same parameters and give the same result.
+    /// Whether `a` takes and gives what `b` declares, `b`'s `Self` read as `selfArgs[0]`.
+    mut fn sameSignatureAs(a: int, b: int, selfArgs: Ty[]): bool {
+        let fa = this.functions[a];
+        let fb = this.functions[b];
+        if (fa.params.length() != fb.params.length()
+            || fa.returns != this.subst(fb.returns, selfArgs)) {
+            return false;
+        }
+        var k = 0;
+        while (k < fa.params.length()) {
+            if (fa.params[k].ty != this.subst(fb.params[k].ty, selfArgs)) {
+                return false;
+            }
+            k += 1;
+        }
+        return true;
+    }
+
     mut fn sameSignature(a: int, b: int): bool {
         let fa = this.functions[a];
         let fb = this.functions[b];
@@ -924,6 +1044,19 @@ class Checker {
                 var found = false;
                 for (x in kinds) {
                     found = found || x == ii;
+                }
+                found
+            }
+            // a type parameter is what its constraints are, and their parents
+            .Param(k) => {
+                let g = this.genericFn;
+                var found = false;
+                if (g >= 0 && k < this.functions[g].typeParams.length()) {
+                    for (c in this.functions[g].typeParams[k].constraints) {
+                        for (x in this.ancestry(c)) {
+                            found = found || x == ii;
+                        }
+                    }
                 }
                 found
             }
@@ -1017,6 +1150,12 @@ class Checker {
             isStatic = f.isStatic || owner < 0,
             line = f.span.line,
         };
+        // `Self` in its signature: its type's (S3i)
+        let savedSelf = this.selfTyIs;
+        this.selfTyIs = this.selfFor(owner);
+        defer {
+            this.selfTyIs = savedSelf;
+        }
         // its type parameters, in scope for its signature (03 §9.1)
         let savedScope = this.typeParams;
         if (f.typeParams.length() > 0) {
@@ -1178,6 +1317,37 @@ class Checker {
     }
 
     mut fn resolveNamed(name: string, args: TypeExpr[], at: Span): Ty {
+        if (name == "Self" && args.length() == 0 && this.typeParams.get(name) == null) {
+            let s = this.selfTyIs;
+            if (s != null) {
+                return s;
+            }
+            this.error(
+                "LYS-SEM0011",
+                "'Self' names the type whose members these are: in an interface or a type",
+                at
+            );
+            return Ty.Unknown;
+        }
+        let t = this.resolveNamedType(name, args, at);
+        match (t) {
+            .Named(i) => {
+                let info = this.types[i];
+                if (info.kind == .Interface && info.constraintOnly) {
+                    this.error(
+                        "LYS-SEM0126",
+                        f"'{info.name}' is a constraint only, no value of it arises: {info.onlyWhy}",
+                        at
+                    );
+                    return Ty.Unknown;
+                }
+            }
+            _ => { }
+        }
+        return t;
+    }
+
+    mut fn resolveNamedType(name: string, args: TypeExpr[], at: Span): Ty {
         let param = this.typeParams.get(name);
         if (param != null && args.length() == 0) {
             return Ty.Param(param);
@@ -1463,6 +1633,11 @@ class Checker {
         let saved = this.ctx;
         let savedScope = this.typeParams;
         let savedGeneric = this.genericFn;
+        let savedSelf = this.selfTyIs;
+        this.selfTyIs = this.selfFor(info.owner);
+        defer {
+            this.selfTyIs = savedSelf;
+        }
         if (info.typeParams.length() > 0) {
             let scope = Map<string, int>.new();
             var t = 0;
@@ -1538,6 +1713,7 @@ class Checker {
         while (ti < this.types.length() || k < this.functions.length()) {
             while (ti < this.types.length()) {
                 this.tableInstance(ti);
+                this.tableSelf(ti);
                 ti += 1;
             }
             while (k < this.functions.length()) {
@@ -1567,7 +1743,7 @@ class Checker {
         let shaped = List<Ty>.new();
         let keys = List<string>.new();
         for (a in args) {
-            if (this.sharedShape(a)) {
+            if (this.sharedShape(a) && !this.copyExact) {
                 shaped.push(Ty.Named(this.anyIndex));
                 keys.push("ref");
             } else {
@@ -1630,11 +1806,15 @@ class Checker {
         let fromThis = this.descsFromThis(fi);
         var k = 0;
         for (x in args) {
-            if (generic.templateOf >= 0 || !this.sharedShape(x)) {
+            if (generic.templateOf >= 0 || !this.sharedShape(x) || this.copyExact) {
                 sources.push(null);
             } else if (fromThis) {
                 let own = TExpr.DescOfValue(boxE(TExpr.Local(0, anyTy)), anyTy);
-                sources.push(TExpr.DescArg(boxE(own), k, anyTy));
+                // Self is the receiver's type; a generic type's argument is in its descriptor
+                sources.push(
+                    if (this.types[generic.owner].kind == .Interface) own
+                        else TExpr.DescArg(boxE(own), k, anyTy)
+                );
             } else {
                 let id = locals.length();
                 locals.push(anyTy);
@@ -1663,14 +1843,16 @@ class Checker {
     /// of a generic type, which a call through an interface reaches without them.
     mut fn descsFromThis(fi: int): bool {
         let g = this.functions[fi];
-        return g.owner >= 0 && !g.isStatic && this.types[g.owner].typeParams.length() > 0;
+        return g.owner >= 0
+            && !g.isStatic
+            && (this.types[g.owner].typeParams.length() > 0 || this.types[g.owner].selfParam);
     }
 
     /// The type parameters of `fi` whose descriptors a copy for `bound` takes as hidden
     /// parameters, in order: those it shares, where it does not read them from its receiver.
     mut fn hiddenOf(fi: int, bound: Ty[]): int[] {
         let out = List<int>.new();
-        if (this.functions[fi].templateOf >= 0 || this.descsFromThis(fi)) {
+        if (this.functions[fi].templateOf >= 0 || this.descsFromThis(fi) || this.copyExact) {
             return out.toArray();
         }
         var k = 0;
@@ -1941,6 +2123,33 @@ class Checker {
                 }
             }
             .IsDesc(x, d) => TExpr.IsDesc(this.specBox(x, a), this.specBox(d, a)),
+            .CallStatic(k, ii, member, slot, xs, t) => {
+                let all = this.specAll(xs, a);
+                let rt = this.subst(t, a);
+                let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
+                if (src != null) {
+                    // a shared copy: the function in the slot of the argument's descriptor
+                    return TExpr.CallStaticD(slot, boxE(src), all, rt);
+                }
+                let concrete = if (k < a.length()) a[k] else Ty.Unknown;
+                let entry = this.entryOf(concrete);
+                let own = if (entry >= 0) this.types[entry].methods.get(member) else null;
+                if (own != null && this.functions[own].isStatic) {
+                    return TExpr.Call(own, all, rt);
+                }
+                let found = this.ifaceMember(ii, member);
+                if (found == null) {
+                    return TExpr.Unknown;
+                }
+                let (fi, _) = found;
+                TExpr.Call(this.selfCopy(fi, concrete), all, rt)
+            }
+            .CallStaticD(slot, d, xs, t) => TExpr.CallStaticD(
+                slot,
+                this.specBox(d, a),
+                this.specAll(xs, a),
+                this.subst(t, a)
+            ),
             .TextParam(x, k, t) => {
                 let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
                 if (src != null || k >= a.length()) {
@@ -1998,6 +2207,10 @@ class Checker {
                     return TExpr.Unknown;
                 }
                 let (fi, _) = found;
+                if (this.selfGeneric(fi)) {
+                    // a default generic over `Self`: its copy for the type, the receiver as it is
+                    return TExpr.Call(this.selfCopy(fi, concrete), all, rt);
+                }
                 let iface = Ty.Named(this.functions[fi].owner);
                 let rest = List<TExpr>.new();
                 rest.push(
@@ -2177,6 +2390,47 @@ class Checker {
     }
 
     /// An instance's table: each slot's function, the template's copied for the arguments.
+    /// A type's table entries that are an interface's defaults generic over `Self`: copied for
+    /// the type, a static one a copy of its own (S3i).
+    mut fn tableSelf(i: int): void {
+        let info = this.types[i];
+        if (info.kind == .Interface || (info.template >= 0 && info.template != i)) {
+            return;
+        }
+        if (info.typeParams.length() > 0) {
+            // a template: its instances copy their entries
+            return;
+        }
+        for (slot in info.witness.keys()) {
+            let fi = info.witness.get(slot) ?? -1;
+            if (fi >= 0 && this.selfGeneric(fi)) {
+                info.witness.insert(slot, this.selfCopy(fi, this.selfTy(i)));
+            }
+        }
+    }
+
+    /// Whether `fi` is a member of an interface generic over `Self`.
+    mut fn selfGeneric(fi: int): bool {
+        let f = this.functions[fi];
+        return f.owner >= 0
+            && this.types[f.owner].kind == .Interface
+            && this.types[f.owner].selfParam
+            && f.typeParams.length() > 0;
+    }
+
+    /// The copy of `fi`, generic over `Self`, for the type `self`: a static one a copy of its
+    /// own, since a call through a descriptor hands it no `Self`.
+    mut fn selfCopy(fi: int, self: Ty): int {
+        if (!this.functions[fi].isStatic) {
+            return this.instanceOf(fi, [self]);
+        }
+        let saved = this.copyExact;
+        this.copyExact = true;
+        let k = this.instanceOf(fi, [self]);
+        this.copyExact = saved;
+        return k;
+    }
+
     mut fn tableInstance(i: int): void {
         let info = this.types[i];
         if (info.tabled || info.template < 0 || info.template == i) {
@@ -2190,8 +2444,12 @@ class Checker {
             if (fi >= 0) {
                 info.witness.insert(
                     slot,
-                    if (this.functions[fi].typeParams.length() > 0) this.instanceOf(fi, info.args)
-                        else fi
+                    if (this.selfGeneric(fi)) this.selfCopy(fi, Ty.Named(i))
+                        else if (this.functions[fi].typeParams.length() > 0) this.instanceOf(
+                            fi,
+                            info.args
+                        )
+                            else fi
                 );
             }
         }
@@ -2237,7 +2495,8 @@ class Checker {
         let info = this.functions[k];
         this.ctx = FnCtx.new(k, info.returns, false, fixing);
         if (info.owner >= 0 && !info.isStatic) {
-            this.declareLocal("this", this.selfTy(info.owner), false, decl.span);
+            let recv = this.selfFor(info.owner) ?? this.selfTy(info.owner);
+            this.declareLocal("this", recv, false, decl.span);
         }
         for (p in info.params) {
             this.declareLocal(p.name, p.ty, false, decl.span);
@@ -4168,7 +4427,9 @@ class Checker {
                 if (fnIndex >= 0
                     && this.functions[fnIndex].owner >= 0
                     && !this.functions[fnIndex].isStatic) {
-                    TExpr.Local(0, this.selfTy(this.functions[fnIndex].owner))
+                    // in an interface generic over `Self` the receiver is a `Self` (S3i)
+                    let owner = this.functions[fnIndex].owner;
+                    TExpr.Local(0, this.selfFor(owner) ?? this.selfTy(owner))
                 } else {
                     this.error("LYS-SEM0008", "'this' outside a method", at);
                     TExpr.Unknown
@@ -6224,6 +6485,19 @@ class Checker {
                     .Name(typeName, _) => {
                         if (this.lookupLocal(typeName) == null
                             && !this.globalIndex.containsKey(typeName)) {
+                            let pk = this.typeParams.get(typeName);
+                            if (pk != null) {
+                                return this.paramStatic(pk, method, args, at);
+                            }
+                            if (typeName == "Self") {
+                                let s = this.selfTyIs;
+                                if (s != null) {
+                                    let si = this.entryOf(s);
+                                    if (si >= 0) {
+                                        return this.staticCall(si, method, args, at);
+                                    }
+                                }
+                            }
                             let index = this.typeIndex.get(typeName);
                             if (index != null) {
                                 return this.staticCall(index, method, args, at);
@@ -6712,9 +6986,30 @@ class Checker {
                         let found = this.ifaceMember(ii, method);
                         if (found != null) {
                             let (fi, slot) = found;
+                            if (this.functions[fi].isStatic) {
+                                this.error(
+                                    "LYS-SEM0055",
+                                    f"'{method}' is static: reach it through the type, {this.tyName(t)}.{method}(…)",
+                                    memberAt
+                                );
+                                return TExpr.Unknown;
+                            }
+                            // `Self` is the receiver's type
+                            if (this.selfGeneric(fi)) {
+                                this.presetBinds = [t];
+                            }
                             let call = this.callAmong(method, [fi], receiver, args, at);
+                            this.presetBinds = [];
                             return match (call) {
                                 .Call(_, all, rt) => TExpr.CallConstraint(
+                                    k,
+                                    ii,
+                                    method,
+                                    slot,
+                                    all,
+                                    rt
+                                ),
+                                .CallGeneric(_, _, all, rt) => TExpr.CallConstraint(
                                     k,
                                     ii,
                                     method,
@@ -6768,6 +7063,12 @@ class Checker {
                         let found = this.ifaceMember(ii, method);
                         if (found != null && m == null) {
                             let (fi, _) = found;
+                            if (!this.functions[fi].abstract && this.selfGeneric(fi)) {
+                                this.presetBinds = [t];
+                                let call = this.callAmong(method, [fi], receiver, args, at);
+                                this.presetBinds = [];
+                                return call;
+                            }
                             if (!this.functions[fi].abstract) {
                                 let owner = this.functions[fi].owner;
                                 let up = if (this.boxed(t)) TExpr.BoxOf(
@@ -6838,6 +7139,52 @@ class Checker {
                 );
             }
         }
+    }
+
+    /// `T.parse(s)`: a static member of a constraint of type parameter `k` (05 §7 rule 2), the
+    /// argument's own in each copy.
+    mut fn paramStatic(k: int, method: string, args: Arg[], at: Span): TExpr {
+        let g = this.genericFn;
+        let t = Ty.Param(k);
+        if (g >= 0 && k < this.functions[g].typeParams.length()) {
+            for (ii in this.functions[g].typeParams[k].constraints) {
+                let found = this.ifaceMember(ii, method);
+                if (found != null) {
+                    let (fi, slot) = found;
+                    if (!this.functions[fi].isStatic) {
+                        this.error(
+                            "LYS-SEM0055",
+                            f"'{method}' needs a {this.tyName(t)} to call it on",
+                            at
+                        );
+                        return TExpr.Unknown;
+                    }
+                    if (this.selfGeneric(fi)) {
+                        this.presetBinds = [t];
+                    }
+                    let call = this.callAmong(method, [fi], null, args, at);
+                    this.presetBinds = [];
+                    return match (call) {
+                        .Call(_, all, rt) => TExpr.CallStatic(k, ii, method, slot, all, rt),
+                        .CallGeneric(_, _, all, rt) => TExpr.CallStatic(
+                            k,
+                            ii,
+                            method,
+                            slot,
+                            all,
+                            rt
+                        ),
+                        _ => call,
+                    };
+                }
+            }
+        }
+        this.error(
+            "LYS-SEM0012",
+            f"'{this.tyName(t)}' has no static member '{method}': its constraints give none",
+            at
+        );
+        return TExpr.Unknown;
     }
 
     mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
@@ -7531,6 +7878,35 @@ struct WithUpdate {
     path: string[],
     from: int,
     value: TExpr,
+}
+
+/// Whether a written type names `Self`.
+fn mentionsSelf(t: TypeExpr): bool {
+    return match (t) {
+        .Named(name, args, _) => {
+            var found = name == "Self";
+            for (x in args) {
+                found = found || mentionsSelf(x);
+            }
+            found
+        }
+        .Optional(inner, _) => mentionsSelf(inner.value),
+        .List(inner, _) => mentionsSelf(inner.value),
+        .Tuple(elements, _, _) => {
+            var found = false;
+            for (x in elements) {
+                found = found || mentionsSelf(x);
+            }
+            found
+        }
+        .Fn(params, result, _) => {
+            var found = mentionsSelf(result.value);
+            for (x in params) {
+                found = found || mentionsSelf(x);
+            }
+            found
+        }
+    };
 }
 
 /// A type's name as declared: an instance's without its arguments.

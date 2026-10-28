@@ -575,7 +575,7 @@ summary = "Every alternative of `P | Q` binds the same names at the same types. 
 title = "an implementation whose signature differs from the member's"
 severity = "error"
 area = "05-interfaces"
-summary = "A conformer's method takes the member's parameters and gives its result, exactly. Lyric 5's LYR-SEM0042."
+summary = "A conformer's method takes the member's parameters and gives its result, exactly — its own type where the interface writes `Self` —, and is static where the member is. Lyric 5's LYR-SEM0042."
 
 [LYS-SEM0045]
 title = "a lambda parameter whose type nothing gives"
@@ -599,7 +599,7 @@ summary = "A type's name stands where a value is expected. Lyric 5's LYR-SEM0052
 title = "a member that needs a receiver named without one"
 severity = "error"
 area = "05-interfaces"
-summary = "A method is called through its type; it needs a value to be called on. Lyric 5's LYR-SEM0055."
+summary = "A method is called through its type, or through a type parameter, and needs a value to be called on; or a static member is called on a value, where the type reaches it. Lyric 5's LYR-SEM0055."
 
 [LYS-SEM0058]
 title = "a destructuring that does not fit the value"
@@ -726,6 +726,12 @@ title = "an extend block on what is no type it adds to"
 severity = "error"
 area = "05-interfaces"
 summary = "`extend T { … }` adds to a struct, a class, an enum or a built-in type; an interface is not extended directly. Lyric 5's LYR-SEM0124."
+
+[LYS-SEM0126]
+title = "an interface that is a constraint only, written as a value's type"
+severity = "error"
+area = "05-interfaces"
+summary = "An interface whose members name `Self` beyond the receiver, are static or generic, or that extends such an interface, has no values: a table would hold no one function for such a member. It is refused as the type of a binding, a parameter, a result or a field, and goes on as no type. Lyric 5's LYR-SEM0126."
 
 [LYS-SEM0131]
 title = "a type test of what is no interface value"

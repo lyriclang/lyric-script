@@ -1331,7 +1331,23 @@ class FnGen {
             }
             // resolved to instances before code is made
             .CallGeneric(_, _, _, _) | .CallConstraint(_, _, _, _, _, _) | .IsParam(_, _, _) => { }
-            .DebugParam(_, _, _) | .TextParam(_, _, _) => { }
+            .DebugParam(_, _, _) | .TextParam(_, _, _) | .CallStatic(_, _, _, _, _, _) => { }
+            // a static member through a descriptor: the descriptor first, the arguments after
+            // it, the result where the callee's frame begins (S3i)
+            .CallStaticD(slot, d, args, t) => {
+                let bs = this.nextS;
+                let br = this.nextR;
+                let all = List<TExpr>.new();
+                all.push(d.value);
+                for (x in args) {
+                    all.push(x);
+                }
+                this.arguments(all.toArray(), bs, br);
+                let (rs, rr) = this.slots(t);
+                this.need(bs + rs, br + 1 + rr);
+                this.emit(Op.CallS, slot, bs, br);
+                this.move(dst, Loc { s = bs, r = br + 1 }, t);
+            }
             // S3i: descriptors (11 Gen)
             .DescOfType(t, _) => {
                 if (dst.r >= 0) {

@@ -655,6 +655,12 @@ class Parser {
             }
             try {
                 let at = this.current();
+                // a static member (Lyric 5 05 §7 rule 2)
+                var isStatic = false;
+                if (this.atWord("static")) {
+                    isStatic = true;
+                    this.advance();
+                }
                 if (!this.atWord("fn")) {
                     throw this.failure(
                         "LYS-PAR0001",
@@ -662,7 +668,7 @@ class Parser {
                         at
                     );
                 }
-                members.push(this.parseFn(false, false, at));
+                members.push(this.parseFn(false, isStatic, at));
             } catch (_: SyntaxError) {
                 this.synchronize();
             }

@@ -98,7 +98,9 @@ fn aTypeParameterPrintsItsArgument(): void {
 
 @Test
 fn aTypeMadeAtRunTimeHasItsTable(): void {
-    // `Pair<Baz>` is written nowhere: its table is the shared copy's, called and printed
-    let d = "fn d(): int {\n    let all = f\"{nestsOf(Baz { }).nested()}\"\n    return if (all == \"Pair { a = Pair { a = Baz { n = 3 } } }\") 1 else 0\n}";
-    assertEq(value(types + printing + d, "d"), 1);
+    // `Box<Baz>` is written nowhere and no member of `Box` makes an instance: the shared copy's
+    // `Box<Any>`, whose table the type made at run time takes, arises only while copying
+    let alone = "interface Named {\n    fn name(): string\n}\nstruct Box<T> :: Named {\n    v: T\n\n    fn name(): string = \"box\"\n}\nclass Baz {\n    var n: int = 3\n}\nfn named<T>(x: T): Named = Box { v = x }\n";
+    let d = "fn d(): int {\n    let b = named(Baz { })\n    let all = f\"{b.name()}|{b}\"\n    return if (all == \"box|Box { v = Baz { n = 3 } }\") 1 else 0\n}";
+    assertEq(value(alone + d, "d"), 1);
 }

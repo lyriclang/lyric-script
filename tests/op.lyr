@@ -1,0 +1,31 @@
+// The instruction table: every operation has a mnemonic of its own, at most three operands, and
+// its mnemonic leads back to it.
+import std.collections { Set };
+import std.test { assertEq, assertTrue };
+import lyric_script.vm.op { Op, info, opOf };
+
+@Test
+fn everyMnemonicIsItsOwn(): void {
+    var seen: Set<string> = [];
+    for (op in Op.all()) {
+        let name = info(op).mnemonic;
+        assertTrue(!seen.contains(name));
+        seen.insert(name);
+    }
+    assertEq(seen.length(), Op.all().length());
+}
+
+@Test
+fn everyOperationHasAtMostThreeOperands(): void {
+    for (op in Op.all()) {
+        assertTrue(info(op).operands.length() <= 3);
+    }
+}
+
+@Test
+fn aMnemonicLeadsBackToItsOperation(): void {
+    for (op in Op.all()) {
+        assertTrue(opOf(info(op).mnemonic) == op);
+    }
+    assertTrue(opOf("frobnicate") == null);
+}

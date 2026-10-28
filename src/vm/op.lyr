@@ -1,0 +1,158 @@
+//! The instruction set of the VM: a register machine over two register files, one of 64-bit
+//! scalars (`int`, `float`, `bool`, `char`) and one of references (design/v1, 11 V1, V2).
+//! Every instruction is one `Instr` of four fields — the operation and three 16-bit operands;
+//! what each operand means is the operation's `OpInfo`.
+
+/// One operation. The dispatch is a `match` over this enum, which the C compiler turns into a
+/// single jump table.
+@Layout(uint8)
+pub enum Op :: [Variants, Equatable] {
+    // Moves and constants.
+    MoveS,
+    MoveR,
+    LoadI,
+    LoadK,
+    LoadStr,
+    LoadNull,
+    // `int` arithmetic; overflow and division by zero panic.
+    AddI,
+    SubI,
+    MulI,
+    DivI,
+    RemI,
+    NegI,
+    AddImm,
+    // `float` arithmetic, IEEE 754.
+    AddF,
+    SubF,
+    MulF,
+    DivF,
+    NegF,
+    // Comparisons; the result is a `bool` in a scalar register.
+    EqI,
+    NeI,
+    LtI,
+    LeI,
+    EqF,
+    NeF,
+    LtF,
+    LeF,
+    Same,
+    Not,
+    // Conversions: `int` to `float`, and `float` to `int` saturating (NaN to 0).
+    IToF,
+    FToI,
+    // Control.
+    Jump,
+    JumpIf,
+    JumpIfNot,
+    JumpLtI,
+    Call,
+    Ret,
+    RetS,
+    RetR,
+    // Objects.
+    New,
+    GetS,
+    SetS,
+    GetR,
+    SetR,
+    // Failure.
+    Panic,
+}
+
+/// What an operand of an operation names.
+pub enum Operand {
+    /// A scalar register of the frame.
+    Scalar,
+    /// A reference register of the frame.
+    Ref,
+    /// A signed 16-bit immediate.
+    Imm,
+    /// An index into the function's constant pool.
+    Const,
+    /// An instruction index in the same function: a jump target.
+    Label,
+    /// An index into the module's functions.
+    Func,
+    /// An index into the module's types.
+    Type,
+    /// A field index of the object's type: a scalar field for `GetS`/`SetS`, a reference field
+    /// for `GetR`/`SetR`.
+    Field,
+}
+
+/// How an operation is written and what its operands are, in the order `a`, `b`, `c`.
+pub struct OpInfo {
+    mnemonic: string,
+    operands: Operand[],
+}
+
+/// One instruction: an operation and up to three operands; an operand an operation does not
+/// use is 0. A signed immediate is stored as its 16-bit two's complement.
+pub struct Instr {
+    op: Op,
+    a: uint16,
+    b: uint16,
+    c: uint16,
+}
+
+/// The mnemonic and the operands of `op`.
+pub fn info(op: Op): OpInfo {
+    return match (op) {
+        .MoveS => OpInfo { mnemonic = "move.s", operands = [.Scalar, .Scalar] },
+        .MoveR => OpInfo { mnemonic = "move.r", operands = [.Ref, .Ref] },
+        .LoadI => OpInfo { mnemonic = "load.i", operands = [.Scalar, .Imm] },
+        .LoadK => OpInfo { mnemonic = "load.k", operands = [.Scalar, .Const] },
+        .LoadStr => OpInfo { mnemonic = "load.str", operands = [.Ref, .Const] },
+        .LoadNull => OpInfo { mnemonic = "load.null", operands = [.Ref] },
+        .AddI => OpInfo { mnemonic = "add.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .SubI => OpInfo { mnemonic = "sub.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .MulI => OpInfo { mnemonic = "mul.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .DivI => OpInfo { mnemonic = "div.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .RemI => OpInfo { mnemonic = "rem.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .NegI => OpInfo { mnemonic = "neg.i", operands = [.Scalar, .Scalar] },
+        .AddImm => OpInfo { mnemonic = "add.imm", operands = [.Scalar, .Scalar, .Imm] },
+        .AddF => OpInfo { mnemonic = "add.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .SubF => OpInfo { mnemonic = "sub.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .MulF => OpInfo { mnemonic = "mul.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .DivF => OpInfo { mnemonic = "div.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .NegF => OpInfo { mnemonic = "neg.f", operands = [.Scalar, .Scalar] },
+        .EqI => OpInfo { mnemonic = "eq.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .NeI => OpInfo { mnemonic = "ne.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .LtI => OpInfo { mnemonic = "lt.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .LeI => OpInfo { mnemonic = "le.i", operands = [.Scalar, .Scalar, .Scalar] },
+        .EqF => OpInfo { mnemonic = "eq.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .NeF => OpInfo { mnemonic = "ne.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .LtF => OpInfo { mnemonic = "lt.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .LeF => OpInfo { mnemonic = "le.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .Same => OpInfo { mnemonic = "same", operands = [.Scalar, .Ref, .Ref] },
+        .Not => OpInfo { mnemonic = "not", operands = [.Scalar, .Scalar] },
+        .IToF => OpInfo { mnemonic = "i2f", operands = [.Scalar, .Scalar] },
+        .FToI => OpInfo { mnemonic = "f2i", operands = [.Scalar, .Scalar] },
+        .Jump => OpInfo { mnemonic = "jump", operands = [.Label] },
+        .JumpIf => OpInfo { mnemonic = "jump.if", operands = [.Scalar, .Label] },
+        .JumpIfNot => OpInfo { mnemonic = "jump.ifnot", operands = [.Scalar, .Label] },
+        .JumpLtI => OpInfo { mnemonic = "jump.lt.i", operands = [.Scalar, .Scalar, .Label] },
+        .Call => OpInfo { mnemonic = "call", operands = [.Func, .Scalar, .Ref] },
+        .Ret => OpInfo { mnemonic = "ret", operands = [] },
+        .RetS => OpInfo { mnemonic = "ret.s", operands = [.Scalar] },
+        .RetR => OpInfo { mnemonic = "ret.r", operands = [.Ref] },
+        .New => OpInfo { mnemonic = "new", operands = [.Ref, .Type] },
+        .GetS => OpInfo { mnemonic = "get.s", operands = [.Scalar, .Ref, .Field] },
+        .SetS => OpInfo { mnemonic = "set.s", operands = [.Ref, .Field, .Scalar] },
+        .GetR => OpInfo { mnemonic = "get.r", operands = [.Ref, .Ref, .Field] },
+        .SetR => OpInfo { mnemonic = "set.r", operands = [.Ref, .Field, .Ref] },
+        .Panic => OpInfo { mnemonic = "panic", operands = [.Ref] },
+    };
+}
+
+/// The operation a mnemonic names, `null` for none.
+pub fn opOf(mnemonic: string): ?Op {
+    for (op in Op.all()) {
+        if (info(op).mnemonic == mnemonic) {
+            return op;
+        }
+    }
+    return null;
+}

@@ -1,0 +1,29 @@
+config: Release, ops per case: 100000, repetitions: 9, figures are minima
+
+| case | ns/op | B/op | ns/op adj. | B/op adj. |
+|---|---:|---:|---:|---:|
+| scalar | 107.5 | 0.2 | 107.5 | 0.2 |
+| call | 145.5 | 0.2 | 38.0 | 0.0 |
+| construct | 231.1 | 56.2 | 123.6 | 56.0 |
+| construct_call | 336.6 | 112.3 | 229.1 | 112.1 |
+| operator | 320.1 | 112.3 | 212.6 | 112.1 |
+| while_range | 46.8 | 0.2 | 46.8 | 0.2 |
+| forin_range | 241.6 | 0.3 | 194.8 | 0.1 |
+| forin_array | 276.8 | 0.5 | 230.0 | 0.3 |
+| native_ret | 67.9 | 0.0 | -39.7 | -0.2 |
+| native_void4 | 186.1 | 0.0 | 78.5 | -0.2 |
+| native_vec2_arg | 233.2 | 56.0 | 125.7 | 55.8 |
+| native_vec2_ret | 284.6 | 112.0 | 177.1 | 111.8 |
+| set_iter | 654.4 | 5.7 | 607.6 | 5.5 |
+
+interpreter: 1000000 iterations differenced, 15 interleaved trials, minima
+
+| case | instr/iter | ns/iter | ns/instr |
+|---|---:|---:|---:|
+| loopOnly | 3.0 | 37.4 | 12.47 |
+| intAdd | 4.0 | 56.7 | 14.17 |
+| floatAdd | 4.0 | 56.4 | 14.11 |
+| maskOnly | 9.0 | 115.6 | 12.85 |
+| nativeSqrt | 8.0 | 112.3 | 14.03 |
+| randomFloat | 32.0 | 399.7 | 12.49 |
+| arrayRead | 11.0 | 114.2 | 10.38 |

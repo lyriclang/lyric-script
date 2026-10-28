@@ -1,0 +1,9 @@
+date: 2026-10-28T11:55:02+01:00
+lyric5: lyric 5.0.0+61c33e7  commit 61c33e73f4117cfc155ce3ce785b3cde6402a822
+zig: 0.16.0; zig cc: clang version 21.1.8
+kernel: 6.18.54.1-microsoft-standard-WSL2
+CPU(s):                                  8
+Model name:                              Intel(R) Core(TM) Ultra 5 228V
+Thread(s) per core:                      1
+8
+0.89 8.14 11.92 1/282 79725

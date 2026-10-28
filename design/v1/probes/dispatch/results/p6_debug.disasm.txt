@@ -1,0 +1,165 @@
+module (format 4.0)
+  capabilities: 0x0
+  strings:
+    s0 "Utf8Error"
+    s1 "<tuple>"
+    s2 "Result<int, ParseError>"
+    s3 "Result<int, ParseError>.Ok"
+    s4 "ParseError"
+    s5 "ParseErrorKind"
+    s6 "ParseErrorKind.Empty"
+    s7 "ParseErrorKind.InvalidDigit"
+    s8 "ParseErrorKind.Overflow"
+    s9 "Result<int, ParseError>.Err"
+    s10 "StringBuilder"
+    s11 "Exception"
+    s12 "Iterator<int>"
+    s13 "RangeIterator"
+    s14 "InclusiveRangeIterator"
+    s15 "Iterator<float>"
+    s16 "UnsignedRangeIterator"
+    s17 "InclusiveUnsignedRangeIterator"
+    s18 "StringIterator"
+    s19 "FilterIterator<int>"
+    s20 "TakeIterator<int>"
+    s21 "SkipIterator<int>"
+    s22 "TakeWhileIterator<int>"
+    s23 "ChainIterator<int>"
+    s24 "SkipWhileIterator<int>"
+    s25 "StepByIterator<int>"
+    s26 "InspectIterator<int>"
+    s27 "DedupIterator<int>"
+    s28 "FilterIterator<float>"
+    s29 "TakeIterator<float>"
+    s30 "SkipIterator<float>"
+    s31 "TakeWhileIterator<float>"
+    s32 "ChainIterator<float>"
+    s33 "SkipWhileIterator<float>"
+    s34 "StepByIterator<float>"
+    s35 "InspectIterator<float>"
+    s36 "DedupIterator<float>"
+    s37 "probe.main"
+    s38 "probe"
+    s39 "n"
+    s40 "k"
+    s41 "mask"
+    s42 "i"
+    s43 "acc"
+  start: probe.main
+  type Utf8Error(i64)
+  type <tuple>(i64, i64, i64)
+  enum Result<int, ParseError> {Result<int, ParseError>.Ok, Result<int, ParseError>.Err}
+  type Result<int, ParseError>.Ok(i64, i64)
+  type ParseError(&ParseErrorKind, i64)
+  enum ParseErrorKind {ParseErrorKind.Empty, ParseErrorKind.InvalidDigit, ParseErrorKind.Overflow}
+  type ParseErrorKind.Empty(i64)
+  type ParseErrorKind.InvalidDigit(i64)
+  type ParseErrorKind.Overflow(i64)
+  type Result<int, ParseError>.Err(i64, &ParseError)
+  type StringBuilder(string[], i64)
+  type Exception(string)
+  interface Iterator<int> {next, filter, take, skip, takeWhile, chain, skipWhile, stepBy, inspect, dedupBy, reduce, count, first, last, nth, any, all, none, find, position, countWhere, forEach, toArray}
+  type RangeIterator(i64, i64)
+  type InclusiveRangeIterator(i64, i64, bool)
+  interface Iterator<float> {next, filter, take, skip, takeWhile, chain, skipWhile, stepBy, inspect, dedupBy, reduce, count, first, last, nth, any, all, none, find, position, countWhere, forEach, toArray}
+  type UnsignedRangeIterator(u64, u64)
+  type InclusiveUnsignedRangeIterator(u64, u64, bool)
+  type StringIterator(char[], i64)
+  type FilterIterator<int>(interface, fn)
+  type TakeIterator<int>(interface, i64)
+  type SkipIterator<int>(interface, i64)
+  type TakeWhileIterator<int>(interface, fn, bool)
+  type ChainIterator<int>(interface, interface, bool)
+  type SkipWhileIterator<int>(interface, fn, bool)
+  type StepByIterator<int>(interface, i64, bool)
+  type InspectIterator<int>(interface, fn)
+  type DedupIterator<int>(interface, fn, i64, bool)
+  type FilterIterator<float>(interface, fn)
+  type TakeIterator<float>(interface, i64)
+  type SkipIterator<float>(interface, i64)
+  type TakeWhileIterator<float>(interface, fn, bool)
+  type ChainIterator<float>(interface, interface, bool)
+  type SkipWhileIterator<float>(interface, fn, bool)
+  type StepByIterator<float>(interface, i64, bool)
+  type InspectIterator<float>(interface, fn)
+  type DedupIterator<float>(interface, fn, i64, bool)
+  names Utf8Error(offset)
+  names <tuple>(0, 1, 2)
+  names Result<int, ParseError>.Ok($tag, 0)
+  names ParseError(kind, offset)
+  names ParseErrorKind.Empty($tag)
+  names ParseErrorKind.InvalidDigit($tag)
+  names ParseErrorKind.Overflow($tag)
+  names Result<int, ParseError>.Err($tag, 0)
+  names StringBuilder(parts, count)
+  names Exception(text)
+  names RangeIterator(current, end)
+  names InclusiveRangeIterator(current, last, done)
+  names UnsignedRangeIterator(current, end)
+  names InclusiveUnsignedRangeIterator(current, last, done)
+  names StringIterator(chars, index)
+  names FilterIterator<int>(source, keep)
+  names TakeIterator<int>(source, remaining)
+  names SkipIterator<int>(source, pending)
+  names TakeWhileIterator<int>(source, keep, done)
+  names ChainIterator<int>(first, second, onFirst)
+  names SkipWhileIterator<int>(source, drop, passing)
+  names StepByIterator<int>(source, step, atStart)
+  names InspectIterator<int>(source, look)
+  names DedupIterator<int>(source, key, lastKey, started)
+  names FilterIterator<float>(source, keep)
+  names TakeIterator<float>(source, remaining)
+  names SkipIterator<float>(source, pending)
+  names TakeWhileIterator<float>(source, keep, done)
+  names ChainIterator<float>(first, second, onFirst)
+  names SkipWhileIterator<float>(source, drop, passing)
+  names StepByIterator<float>(source, step, atStart)
+  names InspectIterator<float>(source, look)
+  names DedupIterator<float>(source, key, lastKey, started)
+
+fn probe.main -> i64 {
+  params: 0
+  maxstack: 3
+  slots:
+    l0: i64 ; n
+    l1: i64 ; k
+    l2: i64 ; mask
+    l3: i64 ; i
+    l4: i64 ; acc
+  bb0:
+    const i64 100000000
+    stloc 0
+    const i64 2654435769
+    stloc 1
+    const i64 4611686018427387903
+    stloc 2
+    const i64 0
+    stloc 3
+    const i64 0
+    stloc 4
+    br bb1
+  bb1:
+    brcmp lt i64 l3, l0 -> bb2, bb3
+  bb2:
+    ldloc 4
+    ldloc 3
+    ldloc 3
+    mul i64
+    ldloc 1
+    xor i64
+    add i64
+    stloc 4
+    ldloc 4
+    ldloc 3
+    const i64 65535
+    and i64
+    sub i64
+    ldloc 2
+    and i64
+    stloc 4
+    binlk add i64 l3 = l3, 1
+    br bb1
+  bb3:
+    ldloc 4
+    retval
+}

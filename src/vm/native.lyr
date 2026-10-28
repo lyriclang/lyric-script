@@ -1,0 +1,90 @@
+//! The VM's natives (design/v1, 11 and 12): what a script reaches that is no bytecode. A native is
+//! called as a function is (`call.n`, the S1 convention): its arguments stand in consecutive
+//! registers from the call's bases, and its result lands at the base of its file. S2 has the
+//! prelude's output and the operations on strings the core needs; the standard library's natives
+//! follow with S7.
+
+/// A native, by what it does.
+enum NativeFn :: [Equatable] {
+    /// `print(text)`: the text to standard output.
+    Print,
+    /// `println(text)`: the text and a line end.
+    Println,
+    /// Two strings joined.
+    Concat,
+    IntToStr,
+    FloatToStr,
+    BoolToStr,
+    CharToStr,
+    /// Whether two strings are equal, as a bool.
+    StrEq,
+    /// -1, 0 or 1 as the first string sorts before, with or after the second, by bytes.
+    StrCmp,
+}
+
+/// What a native takes and gives: its name in the text form, its scalar and reference
+/// parameters, the file of its result.
+struct NativeInfo {
+    name: string,
+    scalars: int,
+    refs: int,
+    returnsScalar: bool,
+    returnsRef: bool,
+}
+
+/// How many natives there are: the numbers `0..nativeCount` name them.
+let nativeCount: int = 9;
+
+/// The native of a number; the numbers are the order of `NativeFn`.
+fn nativeOf(n: int): NativeFn {
+    return match (n) {
+        0 => NativeFn.Print,
+        1 => NativeFn.Println,
+        2 => NativeFn.Concat,
+        3 => NativeFn.IntToStr,
+        4 => NativeFn.FloatToStr,
+        5 => NativeFn.BoolToStr,
+        6 => NativeFn.CharToStr,
+        7 => NativeFn.StrEq,
+        _ => NativeFn.StrCmp,
+    };
+}
+
+/// The number of a native.
+fn nativeNumber(n: NativeFn): int {
+    return match (n) {
+        .Print => 0,
+        .Println => 1,
+        .Concat => 2,
+        .IntToStr => 3,
+        .FloatToStr => 4,
+        .BoolToStr => 5,
+        .CharToStr => 6,
+        .StrEq => 7,
+        .StrCmp => 8,
+    };
+}
+
+fn nativeInfo(n: NativeFn): NativeInfo {
+    return match (n) {
+        .Print => sig("print", 0, 1, false, false),
+        .Println => sig("println", 0, 1, false, false),
+        .Concat => sig("concat", 0, 2, false, true),
+        .IntToStr => sig("int.text", 1, 0, false, true),
+        .FloatToStr => sig("float.text", 1, 0, false, true),
+        .BoolToStr => sig("bool.text", 1, 0, false, true),
+        .CharToStr => sig("char.text", 1, 0, false, true),
+        .StrEq => sig("string.eq", 0, 2, true, false),
+        .StrCmp => sig("string.cmp", 0, 2, true, false),
+    };
+}
+
+fn sig(name: string, scalars: int, refs: int, returnsScalar: bool, returnsRef: bool): NativeInfo {
+    return NativeInfo {
+        name = name,
+        scalars = scalars,
+        refs = refs,
+        returnsScalar = returnsScalar,
+        returnsRef = returnsRef,
+    };
+}

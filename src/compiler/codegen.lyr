@@ -1,0 +1,797 @@
+//! The code generator (S2e): the checked program to a VM module, in one pass over each function.
+//! Registers are given as the expressions need them, Lua's way (design/v1 11): a local has a
+//! register of its file for the whole function, temporaries are taken above the locals like a
+//! stack and given back after each statement, and a call's arguments go on top of the registers
+//! still live, where the callee's frame starts (S1's convention). Loops are rotated: the test
+//! stands after the body, so a turn costs one jump.
+import std.collections { List };
+import lyric_script.compiler.ast { BinaryOp };
+import lyric_script.compiler.typed { Native, Place, Program, TExpr, TStmt, Ty, isScalar, typeOf };
+import lyric_script.vm.module { Function, Module, ReturnKind, TypeDesc };
+import lyric_script.vm.native { NativeFn, nativeInfo, nativeNumber };
+import lyric_script.vm.op { Instr, Op };
+
+/// The name of the function that runs a script's top-level code (07 Top).
+let scriptEntry: string = "<script>";
+
+/// Generates the module of a checked program without errors.
+fn generate(p: Program, name: string): Module {
+    let layout = Placement.of(p);
+    let functions = List<Function>.new();
+    var k = 0;
+    while (k < p.functions.length()) {
+        let g = FnGen.new(p, layout, k);
+        functions.push(g.generate());
+        k += 1;
+    }
+    return Module {
+        name = name,
+        functions = functions.toArray(),
+        types = layout.descs,
+        globalsS = layout.globalsS,
+        globalsR = layout.globalsR,
+    };
+}
+
+/// Where the program's types, fields and globals stand in the VM: a struct's or class's fields
+/// split by file, the globals likewise.
+struct Placement {
+    // the module type of a program type, -1 for an enum
+    moduleType: int[],
+    // each program type's fields: the index within their file
+    fieldIndex: int[][],
+    descs: TypeDesc[],
+    globalIndex: int[],
+    globalsS: int,
+    globalsR: int,
+
+    static fn of(p: Program): Placement {
+        let moduleType = List<int>.new();
+        let fieldIndex = List<int[]>.new();
+        let descs = List<TypeDesc>.new();
+        for (t in p.types) {
+            if (t.kind == .Enum) {
+                moduleType.push(-1);
+                fieldIndex.push([]);
+                continue;
+            }
+            let scalars = List<string>.new();
+            let refs = List<string>.new();
+            let indices = List<int>.new();
+            for (f in t.fields) {
+                if (isScalar(f.ty, p.types)) {
+                    indices.push(scalars.length());
+                    scalars.push(f.name);
+                } else {
+                    indices.push(refs.length());
+                    refs.push(f.name);
+                }
+            }
+            moduleType.push(descs.length());
+            fieldIndex.push(indices.toArray());
+            descs.push(TypeDesc { name = t.name, scalarFields = scalars.toArray(), refFields = refs.toArray() });
+        }
+        let globalIndex = List<int>.new();
+        var gs = 0;
+        var gr = 0;
+        for (g in p.globals) {
+            if (isScalar(g.ty, p.types)) {
+                globalIndex.push(gs);
+                gs += 1;
+            } else {
+                globalIndex.push(gr);
+                gr += 1;
+            }
+        }
+        return Placement {
+            moduleType = moduleType.toArray(),
+            fieldIndex = fieldIndex.toArray(),
+            descs = descs.toArray(),
+            globalIndex = globalIndex.toArray(),
+            globalsS = gs,
+            globalsR = gr,
+        };
+    }
+}
+
+/// A loop being generated: the jumps its `break`s and `continue`s leave to patch, and the
+/// register a `loop`'s value goes to (-1 for none).
+class LoopGen {
+    result: int,
+    breaks: List<int>,
+    continues: List<int>,
+}
+
+/// The temporaries' tops of both files, to give back what a part took.
+struct Mark {
+    s: int,
+    r: int,
+}
+
+class FnGen {
+    p: Program,
+    layout: Placement,
+    index: int,
+    code: List<Instr>,
+    lines: List<int>,
+    constants: List<uint64>,
+    strings: List<string>,
+    localReg: List<int>,
+    loops: List<LoopGen>,
+    var nextS: int = 0,
+    var nextR: int = 0,
+    var maxS: int = 0,
+    var maxR: int = 0,
+    // the first registers above the locals
+    var baseS: int = 0,
+    var baseR: int = 0,
+    var line: int = 0,
+
+    static fn new(p: Program, layout: Placement, index: int): FnGen {
+        return FnGen {
+            p = p,
+            layout = layout,
+            index = index,
+            code = List<Instr>.new(),
+            lines = List<int>.new(),
+            constants = List<uint64>.new(),
+            strings = List<string>.new(),
+            localReg = List<int>.new(),
+            loops = List<LoopGen>.new(),
+        };
+    }
+
+    mut fn generate(): Function {
+        let info = this.p.functions[this.index];
+        this.line = info.line;
+        // the receiver and the parameters are the first locals, in order: the first registers
+        let paramCount = info.params.length() + (if (info.owner >= 0 && !info.isStatic) 1 else 0);
+        var paramsS = 0;
+        var paramsR = 0;
+        var id = 0;
+        for (t in info.locals) {
+            let scalar = this.scalar(t);
+            this.localReg.push(if (scalar) this.nextS else this.nextR);
+            if (scalar) {
+                this.nextS += 1;
+                if (id < paramCount) {
+                    paramsS += 1;
+                }
+            } else {
+                this.nextR += 1;
+                if (id < paramCount) {
+                    paramsR += 1;
+                }
+            }
+            id += 1;
+        }
+        this.baseS = this.nextS;
+        this.baseR = this.nextR;
+        this.maxS = this.nextS;
+        this.maxR = this.nextR;
+        for (s in info.body) {
+            this.stmt(s);
+        }
+        let returns = match (info.returns) {
+            .Void | .Never | .Unknown => ReturnKind.Void,
+            _ => if (this.scalar(info.returns)) ReturnKind.Scalar else ReturnKind.Ref,
+        };
+        // the end of the body: a `void` function returns there; for one with a value the checker
+        // has seen to a `return` on every path, and this one is never reached
+        if (returns == .Scalar) {
+            this.need(1, 0);
+            this.emit(Op.RetS, 0, 0, 0);
+        } else if (returns == .Ref) {
+            this.need(0, 1);
+            this.emit(Op.RetR, 0, 0, 0);
+        } else {
+            this.emit(Op.Ret, 0, 0, 0);
+        }
+        let name = if (this.index == this.p.main) scriptEntry
+            else if (info.owner >= 0) f"{this.p.types[info.owner].name}.{info.name}"
+            else info.name;
+        return Function {
+            name = name,
+            paramsS = paramsS,
+            paramsR = paramsR,
+            scalars = this.maxS,
+            refs = this.maxR,
+            returns = returns,
+            code = this.code.toArray(),
+            constants = this.constants.toArray(),
+            strings = this.strings.toArray(),
+            lines = this.lines.toArray(),
+        };
+    }
+
+    // --- instructions and registers --------------------------------------------------------------
+
+    mut fn emit(op: Op, a: int, b: int, c: int): int {
+        this.code.push(Instr { op = op, a = a as uint16, b = b as uint16, c = c as uint16 });
+        this.lines.push(this.line);
+        return this.code.length() - 1;
+    }
+
+    mut fn here(): int {
+        return this.code.length();
+    }
+
+    /// Points the jump at `at` to `target`: operand a of `jump`, b of `jump.if`/`jump.ifnot`, c of
+    /// `jump.lt.i`.
+    mut fn patch(at: int, target: int): void {
+        let old = this.code[at];
+        let t = target as uint16;
+        this.code[at] = match (old.op) {
+            .Jump => Instr { op = old.op, a = t, b = old.b, c = old.c },
+            .JumpLtI => Instr { op = old.op, a = old.a, b = old.b, c = t },
+            _ => Instr { op = old.op, a = old.a, b = t, c = old.c },
+        };
+    }
+
+    mut fn scalar(t: Ty): bool {
+        return match (t) {
+            .Void | .Never | .Unknown => true,
+            _ => isScalar(t, this.p.types),
+        };
+    }
+
+    mut fn temp(scalar: bool): int {
+        if (scalar) {
+            let r = this.nextS;
+            this.nextS += 1;
+            this.need(this.nextS, 0);
+            return r;
+        }
+        let r = this.nextR;
+        this.nextR += 1;
+        this.need(0, this.nextR);
+        return r;
+    }
+
+    /// Makes room for `s` scalar and `r` reference registers.
+    mut fn need(s: int, r: int): void {
+        if (s > this.maxS) {
+            this.maxS = s;
+        }
+        if (r > this.maxR) {
+            this.maxR = r;
+        }
+    }
+
+    mut fn mark(): Mark {
+        return Mark { s = this.nextS, r = this.nextR };
+    }
+
+    mut fn release(m: Mark): void {
+        this.nextS = m.s;
+        this.nextR = m.r;
+    }
+
+    mut fn isLocal(reg: int, scalar: bool): bool {
+        return reg >= 0 && reg < (if (scalar) this.baseS else this.baseR);
+    }
+
+    mut fn constant(bits: uint64): int {
+        var k = 0;
+        while (k < this.constants.length()) {
+            if (this.constants[k] == bits) {
+                return k;
+            }
+            k += 1;
+        }
+        this.constants.push(bits);
+        return this.constants.length() - 1;
+    }
+
+    mut fn stringConst(text: string): int {
+        var k = 0;
+        while (k < this.strings.length()) {
+            if (this.strings[k] == text) {
+                return k;
+            }
+            k += 1;
+        }
+        this.strings.push(text);
+        return this.strings.length() - 1;
+    }
+
+    mut fn loadInt(dst: int, n: int): void {
+        if (n >= -32768 && n <= 32767) {
+            this.emit(Op.LoadI, dst, n & 0xFFFF, 0);
+        } else {
+            this.emit(Op.LoadK, dst, this.constant(n as uint64), 0);
+        }
+    }
+
+    mut fn move(dst: int, src: int, scalar: bool): void {
+        if (dst >= 0 && dst != src) {
+            this.emit(if (scalar) Op.MoveS else Op.MoveR, dst, src, 0);
+        }
+    }
+
+    // --- statements ------------------------------------------------------------------------------
+
+    mut fn stmts(list: TStmt[]): void {
+        for (s in list) {
+            this.stmt(s);
+        }
+    }
+
+    mut fn stmt(s: TStmt): void {
+        let m = this.mark();
+        match (s) {
+            .Expr(e, line) => {
+                this.line = line;
+                this.effect(e);
+            }
+            .SetLocal(id, e, line) => {
+                this.line = line;
+                this.into(e, this.localReg[id]);
+            }
+            .SetGlobal(g, e, line) => {
+                this.line = line;
+                let scalar = this.scalar(typeOf(e));
+                let v = this.any(e);
+                this.emit(if (scalar) Op.SetGS else Op.SetGR, this.layout.globalIndex[g], v, 0);
+            }
+            .If(c, then, otherwise, line) => {
+                this.line = line;
+                let cond = this.any(c);
+                let toElse = this.emit(Op.JumpIfNot, cond, 0, 0);
+                this.release(m);
+                this.stmts(then);
+                if (otherwise.length() > 0) {
+                    let toEnd = this.emit(Op.Jump, 0, 0, 0);
+                    this.patch(toElse, this.here());
+                    this.stmts(otherwise);
+                    this.patch(toEnd, this.here());
+                } else {
+                    this.patch(toElse, this.here());
+                }
+            }
+            .While(c, body, line) => {
+                this.line = line;
+                let toTest = this.emit(Op.Jump, 0, 0, 0);
+                let top = this.here();
+                let loop = this.openLoop(-1);
+                this.stmts(body);
+                let test = this.here();
+                this.line = line;
+                let cond = this.any(c);
+                this.emit(Op.JumpIf, cond, top, 0);
+                this.patch(toTest, test);
+                this.closeLoop(loop, test);
+            }
+            .ForRange(id, from, to, inclusive, body, line) => {
+                this.line = line;
+                let i = this.localReg[id];
+                this.into(from, i);
+                let limit = this.temp(true);
+                this.into(to, limit);
+                if (inclusive) {
+                    // `..=` up to int's last value: the test comes before the step, which
+                    // would overflow
+                    let t = this.temp(true);
+                    this.emit(Op.LeI, t, i, limit);
+                    let skip = this.emit(Op.JumpIfNot, t, 0, 0);
+                    let top = this.here();
+                    let loop = this.openLoop(-1);
+                    this.stmts(body);
+                    let next = this.here();
+                    this.line = line;
+                    this.emit(Op.EqI, t, i, limit);
+                    let done = this.emit(Op.JumpIf, t, 0, 0);
+                    this.emit(Op.AddImm, i, i, 1);
+                    this.emit(Op.Jump, top, 0, 0);
+                    this.patch(skip, this.here());
+                    this.patch(done, this.here());
+                    this.closeLoop(loop, next);
+                } else {
+                    let toTest = this.emit(Op.Jump, 0, 0, 0);
+                    let top = this.here();
+                    let loop = this.openLoop(-1);
+                    this.stmts(body);
+                    let next = this.here();
+                    this.line = line;
+                    this.emit(Op.AddImm, i, i, 1);
+                    this.patch(toTest, this.here());
+                    this.emit(Op.JumpLtI, i, limit, top);
+                    this.closeLoop(loop, next);
+                }
+            }
+            .Break(v, line) => {
+                this.line = line;
+                let loop = this.loops[this.loops.length() - 1];
+                if (v != null && loop.result >= 0) {
+                    this.into(v, loop.result);
+                }
+                loop.breaks.push(this.emit(Op.Jump, 0, 0, 0));
+            }
+            .Continue(line) => {
+                this.line = line;
+                let loop = this.loops[this.loops.length() - 1];
+                loop.continues.push(this.emit(Op.Jump, 0, 0, 0));
+            }
+            .Return(v, line) => {
+                this.line = line;
+                if (v != null) {
+                    let scalar = this.scalar(typeOf(v));
+                    let r = this.any(v);
+                    this.emit(if (scalar) Op.RetS else Op.RetR, r, 0, 0);
+                } else {
+                    this.emit(Op.Ret, 0, 0, 0);
+                }
+            }
+            .Block(list, _) => this.stmts(list),
+        }
+        this.release(m);
+    }
+
+    mut fn openLoop(result: int): LoopGen {
+        let loop = LoopGen { result = result, breaks = List<int>.new(), continues = List<int>.new() };
+        this.loops.push(loop);
+        return loop;
+    }
+
+    /// Ends a loop here: its breaks jump to the next instruction, its continues to `next`.
+    mut fn closeLoop(loop: LoopGen, next: int): void {
+        this.loops.pop();
+        for (at in loop.breaks) {
+            this.patch(at, this.here());
+        }
+        for (at in loop.continues) {
+            this.patch(at, next);
+        }
+    }
+
+    // --- expressions -----------------------------------------------------------------------------
+
+    /// Evaluates an expression for what it does.
+    mut fn effect(e: TExpr): void {
+        let t = typeOf(e);
+        if (t == .Void || t == .Never) {
+            this.to(e, -1);
+            return;
+        }
+        let m = this.mark();
+        this.any(e);
+        this.release(m);
+    }
+
+    /// A register that holds the value: a local's own, or a new temporary.
+    mut fn any(e: TExpr): int {
+        match (e) {
+            .Local(id, _) => {
+                return this.localReg[id];
+            }
+            _ => {}
+        }
+        let r = this.temp(this.scalar(typeOf(e)));
+        this.to(e, r);
+        return r;
+    }
+
+    /// Evaluates `e` into a local's register: an expression of several steps goes through a
+    /// temporary, since it may read the local after its first write.
+    mut fn into(e: TExpr, dst: int): void {
+        let scalar = this.scalar(typeOf(e));
+        let steps = match (e) {
+            .Binary(_, op, _, _) => op == .And || op == .Or,
+            .If(_, _, _, _) | .Block(_, _, _) | .Loop(_, _) | .New(_, _) => true,
+            _ => false,
+        };
+        if (steps && this.isLocal(dst, scalar)) {
+            let m = this.mark();
+            let t = this.temp(scalar);
+            this.to(e, t);
+            this.move(dst, t, scalar);
+            this.release(m);
+            return;
+        }
+        this.to(e, dst);
+    }
+
+    /// Evaluates `e` into `dst`; `-1` where no value is wanted.
+    mut fn to(e: TExpr, dst: int): void {
+        let m = this.mark();
+        match (e) {
+            .Int(n) => this.loadInt(dst, n),
+            .Float(x) => {
+                this.emit(Op.LoadK, dst, this.constant(x.toBits()), 0);
+            }
+            .Bool(b) => {
+                this.emit(Op.LoadI, dst, if (b) 1 else 0, 0);
+            }
+            .Char(c) => this.loadInt(dst, (c as uint32) as int),
+            .Str(text) => {
+                this.emit(Op.LoadStr, dst, this.stringConst(text), 0);
+            }
+            .Local(id, t) => this.move(dst, this.localReg[id], this.scalar(t)),
+            .Global(g, t) => {
+                let scalar = this.scalar(t);
+                this.emit(if (scalar) Op.GetGS else Op.GetGR, dst, this.layout.globalIndex[g], 0);
+            }
+            .Variant(_, k) => this.loadInt(dst, k),
+            .Unary(op, x, t) => {
+                let rx = this.any(x.value);
+                let code = match (op) {
+                    .Neg => if (t == .Float) Op.NegF else Op.NegI,
+                    .Not => Op.Not,
+                    .BitNot => Op.BNot,
+                };
+                this.emit(code, dst, rx, 0);
+            }
+            .Binary(l, op, r, _) => this.binary(l.value, op, r.value, dst),
+            .ToFloat(x) => {
+                let rx = this.any(x.value);
+                this.emit(Op.IToF, dst, rx, 0);
+            }
+            .Cast(x, to) => {
+                let from = typeOf(x.value);
+                let rx = this.any(x.value);
+                if (from == .Int && to == .Float) {
+                    this.emit(Op.IToF, dst, rx, 0);
+                } else if (from == .Float && to == .Int) {
+                    this.emit(Op.FToI, dst, rx, 0);
+                } else if (from == .Int && to == .Char) {
+                    this.emit(Op.IToC, dst, rx, 0);
+                } else {
+                    this.move(dst, rx, true);
+                }
+            }
+            .Call(fi, args, t) => this.call(fi, args, t, dst),
+            .Native(n, args, _) => this.native(n, args, dst),
+            .New(ti, values) => {
+                this.emit(Op.New, dst, this.layout.moduleType[ti], 0);
+                var k = 0;
+                for (v in values) {
+                    let vm = this.mark();
+                    let scalar = this.scalar(this.p.types[ti].fields[k].ty);
+                    let rv = this.any(v);
+                    this.emit(if (scalar) Op.SetS else Op.SetR, dst, this.layout.fieldIndex[ti][k], rv);
+                    this.release(vm);
+                    k += 1;
+                }
+            }
+            .Field(o, k, t) => {
+                let owner = match (typeOf(o.value)) {
+                    .Named(i) => i,
+                    _ => 0,
+                };
+                let ro = this.any(o.value);
+                this.emit(if (this.scalar(t)) Op.GetS else Op.GetR, dst, ro, this.layout.fieldIndex[owner][k]);
+            }
+            .Assign(place, op, value, t) => this.assign(place, op, value.value, t, dst),
+            .If(c, a, b, _) => {
+                let cond = this.any(c.value);
+                let toElse = this.emit(Op.JumpIfNot, cond, 0, 0);
+                this.release(m);
+                this.to(a.value, dst);
+                let toEnd = this.emit(Op.Jump, 0, 0, 0);
+                this.patch(toElse, this.here());
+                this.to(b.value, dst);
+                this.patch(toEnd, this.here());
+            }
+            .Block(list, value, _) => {
+                this.stmts(list);
+                this.to(value.value, dst);
+            }
+            .Loop(list, _) => {
+                let top = this.here();
+                let loop = this.openLoop(dst);
+                this.stmts(list);
+                this.emit(Op.Jump, top, 0, 0);
+                this.closeLoop(loop, top);
+            }
+            .Unit | .Unknown => {}
+        }
+        this.release(m);
+    }
+
+    mut fn binary(l: TExpr, op: BinaryOp, r: TExpr, dst: int): void {
+        if (op == .And || op == .Or) {
+            this.to(l, dst);
+            let skip = this.emit(if (op == .And) Op.JumpIfNot else Op.JumpIf, dst, 0, 0);
+            this.to(r, dst);
+            this.patch(skip, this.here());
+            return;
+        }
+        let a = this.any(l);
+        let b = this.any(r);
+        let f = typeOf(l) == .Float;
+        let (code, x, y) = match (op) {
+            .Add => (if (f) Op.AddF else Op.AddI, a, b),
+            .Sub => (if (f) Op.SubF else Op.SubI, a, b),
+            .Mul => (if (f) Op.MulF else Op.MulI, a, b),
+            .Div => (if (f) Op.DivF else Op.DivI, a, b),
+            .Rem => (if (f) Op.RemF else Op.RemI, a, b),
+            .AddWrap => (Op.AddW, a, b),
+            .SubWrap => (Op.SubW, a, b),
+            .MulWrap => (Op.MulW, a, b),
+            .BitAnd => (Op.BAnd, a, b),
+            .BitOr => (Op.BOr, a, b),
+            .BitXor => (Op.BXor, a, b),
+            .Shl => (Op.Shl, a, b),
+            .Shr => (Op.Shr, a, b),
+            .Eq => (if (f) Op.EqF else Op.EqI, a, b),
+            .Ne => (if (f) Op.NeF else Op.NeI, a, b),
+            .Lt => (if (f) Op.LtF else Op.LtI, a, b),
+            .Le => (if (f) Op.LeF else Op.LeI, a, b),
+            // `a > b` is `b < a`
+            .Gt => (if (f) Op.LtF else Op.LtI, b, a),
+            .Ge => (if (f) Op.LeF else Op.LeI, b, a),
+            _ => (Op.MoveS, a, 0),
+        };
+        this.emit(code, dst, x, y);
+    }
+
+    /// A call: the arguments in consecutive registers of their files from the tops, the callee's
+    /// frame from there; the result lands at the base.
+    mut fn call(fi: int, args: TExpr[], t: Ty, dst: int): void {
+        let m = this.mark();
+        let bs = this.nextS;
+        let br = this.nextR;
+        this.arguments(args, bs, br);
+        let scalar = this.scalar(t);
+        if (t != .Void && t != .Never) {
+            this.need(if (scalar) bs + 1 else 0, if (scalar) 0 else br + 1);
+        }
+        this.emit(Op.Call, fi, bs, br);
+        if (t != .Void && t != .Never) {
+            this.move(dst, if (scalar) bs else br, scalar);
+        }
+        this.release(m);
+    }
+
+    mut fn arguments(args: TExpr[], bs: int, br: int): void {
+        var ns = 0;
+        var nr = 0;
+        for (arg in args) {
+            let scalar = this.scalar(typeOf(arg));
+            let r = this.temp(scalar);
+            this.to(arg, r);
+            if (scalar) {
+                ns += 1;
+            } else {
+                nr += 1;
+            }
+            // what the argument took above its register is free again
+            this.nextS = bs + ns;
+            this.nextR = br + nr;
+        }
+    }
+
+    mut fn native(n: Native, args: TExpr[], dst: int): void {
+        // `Concat` of more than two: joined two at a time
+        if (n == .Concat && args.length() > 2) {
+            var acc = TExpr.Native(Native.Concat, [args[0], args[1]], Ty.Str);
+            var k = 2;
+            while (k < args.length()) {
+                acc = TExpr.Native(Native.Concat, [acc, args[k]], Ty.Str);
+                k += 1;
+            }
+            this.to(acc, dst);
+            return;
+        }
+        let m = this.mark();
+        let bs = this.nextS;
+        let br = this.nextR;
+        this.arguments(args, bs, br);
+        let nf = nativeFn(n);
+        let info = nativeInfo(nf);
+        this.need(bs + info.scalars + (if (info.returnsScalar) 1 else 0), br + info.refs + (if (info.returnsRef) 1 else 0));
+        this.emit(Op.CallN, nativeNumber(nf), bs, br);
+        if (info.returnsScalar) {
+            this.move(dst, bs, true);
+        } else if (info.returnsRef) {
+            this.move(dst, br, false);
+        }
+        this.release(m);
+    }
+
+    mut fn assign(place: Place, op: ?BinaryOp, value: TExpr, t: Ty, dst: int): void {
+        let scalar = this.scalar(t);
+        match (place) {
+            .Local(id) => {
+                let reg = this.localReg[id];
+                if (op != null) {
+                    this.combine(op, t, reg, value, reg);
+                } else {
+                    this.into(value, reg);
+                }
+                this.move(dst, reg, scalar);
+            }
+            .Global(g) => {
+                let m = this.mark();
+                let v = this.temp(scalar);
+                let slot = this.layout.globalIndex[g];
+                if (op != null) {
+                    this.emit(if (scalar) Op.GetGS else Op.GetGR, v, slot, 0);
+                    this.combine(op, t, v, value, v);
+                } else {
+                    this.to(value, v);
+                }
+                this.emit(if (scalar) Op.SetGS else Op.SetGR, slot, v, 0);
+                this.move(dst, v, scalar);
+                this.release(m);
+            }
+            .Field(o, k) => {
+                let m = this.mark();
+                let owner = match (typeOf(o.value)) {
+                    .Named(i) => i,
+                    _ => 0,
+                };
+                let field = this.layout.fieldIndex[owner][k];
+                let ro = this.any(o.value);
+                let v = this.temp(scalar);
+                if (op != null) {
+                    this.emit(if (scalar) Op.GetS else Op.GetR, v, ro, field);
+                    this.combine(op, t, v, value, v);
+                } else {
+                    this.to(value, v);
+                }
+                this.emit(if (scalar) Op.SetS else Op.SetR, ro, field, v);
+                this.move(dst, v, scalar);
+                this.release(m);
+            }
+        }
+    }
+
+    /// `out = cur op value`, for `op=`: strings join through the native; `&&=` and `||=` read
+    /// the value only where the place leaves the answer open.
+    mut fn combine(op: BinaryOp, t: Ty, cur: int, value: TExpr, out: int): void {
+        let m = this.mark();
+        if (op == .And || op == .Or) {
+            this.move(out, cur, true);
+            let skip = this.emit(if (op == .And) Op.JumpIfNot else Op.JumpIf, out, 0, 0);
+            this.to(value, out);
+            this.patch(skip, this.here());
+            this.release(m);
+            return;
+        }
+        let rv = this.any(value);
+        if (t == .Str) {
+            let base = this.nextR;
+            this.temp(false);
+            this.temp(false);
+            this.move(base, cur, false);
+            this.move(base + 1, rv, false);
+            this.emit(Op.CallN, nativeNumber(NativeFn.Concat), this.nextS, base);
+            this.move(out, base, false);
+        } else {
+            let f = t == .Float;
+            let code = match (op) {
+                .Add => if (f) Op.AddF else Op.AddI,
+                .Sub => if (f) Op.SubF else Op.SubI,
+                .Mul => if (f) Op.MulF else Op.MulI,
+                .Div => if (f) Op.DivF else Op.DivI,
+                .Rem => if (f) Op.RemF else Op.RemI,
+                .AddWrap => Op.AddW,
+                .SubWrap => Op.SubW,
+                .MulWrap => Op.MulW,
+                .BitAnd => Op.BAnd,
+                .BitOr => Op.BOr,
+                .BitXor => Op.BXor,
+                .Shl => Op.Shl,
+                .Shr => Op.Shr,
+                _ => Op.MoveS,
+            };
+            this.emit(code, out, cur, rv);
+        }
+        this.release(m);
+    }
+}
+
+fn nativeFn(n: Native): NativeFn {
+    return match (n) {
+        .Print => NativeFn.Print,
+        .Println => NativeFn.Println,
+        .Concat => NativeFn.Concat,
+        .IntToStr => NativeFn.IntToStr,
+        .FloatToStr => NativeFn.FloatToStr,
+        .BoolToStr => NativeFn.BoolToStr,
+        .CharToStr => NativeFn.CharToStr,
+        .StrEq => NativeFn.StrEq,
+        .StrCmp => NativeFn.StrCmp,
+    };
+}

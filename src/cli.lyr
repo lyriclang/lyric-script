@@ -1,27 +1,29 @@
-//! The `lyric-script` command line (design/v1, 12). It knows `--version`, `help`, `check`, which
-//! grows with the compiler (S2: lexer, parser, checker), and, until `run` comes, `asm`, which runs
-//! bytecode in its text form.
+//! The `lyric-script` command line (design/v1, 12): `run` — also `lyric-script script.lyrs` —,
+//! `check`, `--version`, `help`, and, until the debugging tools come, `asm`, which runs bytecode in
+//! its text form.
 import std.fs { readText };
 import std.io { println, eprintln };
 import std.os { args };
 import lyric_script { version };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate, scriptEntry };
 import lyric_script.compiler.parser { parse };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
 import lyric_script.vm.heap { ScriptString };
-import lyric_script.vm.interp { execute };
-import lyric_script.vm.module { check };
+import lyric_script.vm.interp { Outcome, execute };
+import lyric_script.vm.module { Module, check };
 
 fn usage(): void {
-    println("usage: lyric-script <command>");
+    println("usage: lyric-script <command> | lyric-script SCRIPT.lyrs");
     println("");
     println("commands:");
+    println("  run FILE   run a script (also: lyric-script FILE.lyrs)");
+    println("  check FILE check a script without running it");
     println("  version    print the version (also --version)");
     println("  help       print this text (also --help)");
-    println("  check FILE check a script without running it");
-    println("  asm FILE   run a .lyrsasm file's 'main' (provisional, until 'run' in S2)");
+    println("  asm FILE   run a .lyrsasm file's 'main' (bytecode in its text form)");
 }
 
 fn main(): int {
@@ -39,33 +41,58 @@ fn main(): int {
         usage();
         return 0;
     }
-    if (command == "check") {
+    if (command == "run" || command == "check" || command == "asm") {
         if (given.length() != 3) {
-            eprintln("error[LYS-CLI0002]: 'check' takes one file");
-            eprintln("  = help: lyric-script check script.lyrs");
+            eprintln(f"error[LYS-CLI0002]: '{command}' takes one file");
+            eprintln(f"  = help: lyric-script {command} {if (command == "asm") "program.lyrsasm" else "script.lyrs"}");
             return 2;
         }
-        return checkScript(given[2]);
+        return match (command) {
+            "run" => runScript(given[2]),
+            "check" => checkScript(given[2]),
+            _ => runAsm(given[2]),
+        };
     }
-    if (command == "asm") {
-        if (given.length() != 3) {
-            eprintln("error[LYS-CLI0002]: 'asm' takes one file");
-            eprintln("  = help: lyric-script asm program.lyrsasm");
-            return 2;
-        }
-        return runAsm(given[2]);
+    // `lyric-script script.lyrs` runs it (12 CLI)
+    if (command.endsWith(".lyrs") && given.length() == 2) {
+        return runScript(command);
     }
     eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
     eprintln("  = help: lyric-script help lists the commands");
     return 2;
 }
 
+fn readScript(path: string): ?string {
+    return try readText(path) catch (e) {
+        eprintln(f"error[LYS-CLI0003]: cannot read '{path}': {e.message()}");
+        return null;
+    };
+}
+
 /// Checks a script: 1 where it has errors, 0 where it has none; warnings are printed either way.
 fn checkScript(path: string): int {
-    let text = try readText(path) catch (e) {
-        eprintln(f"error[LYS-CLI0003]: cannot read '{path}': {e.message()}");
+    let text = readScript(path);
+    if (text == null) {
         return 2;
-    };
+    }
+    return if (compile(text, path) != null) 0 else 1;
+}
+
+/// Runs a script: 0 at its end, 1 where it does not compile, 101 for a panic.
+fn runScript(path: string): int {
+    let text = readScript(path);
+    if (text == null) {
+        return 2;
+    }
+    let module = compile(text, path);
+    if (module == null) {
+        return 1;
+    }
+    return finish(execute(module, scriptEntry, [], -1));
+}
+
+/// The module of a script, its diagnostics reported; `null` where it has errors.
+fn compile(text: string, path: string): ?Module {
     let parsed = parse(text);
     for (d in parsed.errors) {
         report("error", d, path);
@@ -74,7 +101,7 @@ fn checkScript(path: string): int {
         report("warning", d, path);
     }
     if (parsed.errors.length() > 0) {
-        return 1;
+        return null;
     }
     // the checker reads a tree without faults: a fault of the parse would only echo
     let checked = checkModule(parsed.module);
@@ -84,7 +111,19 @@ fn checkScript(path: string): int {
     for (d in checked.warnings) {
         report("warning", d, path);
     }
-    return if (checked.errors.length() > 0) 1 else 0;
+    if (checked.errors.length() > 0) {
+        return null;
+    }
+    let module = generate(checked.program, path);
+    let faults = check(module);
+    if (faults.length() > 0) {
+        // the compiler's fault, not the script's
+        for (fault in faults) {
+            eprintln(f"error[LYS-ICE0002]: {path}: the compiler made faulty bytecode: {fault.function} at {fault.pc}: {fault.message}");
+        }
+        return null;
+    }
+    return module;
 }
 
 fn report(severity: string, d: Diagnostic, path: string): void {
@@ -92,38 +131,10 @@ fn report(severity: string, d: Diagnostic, path: string): void {
     eprintln(f"  --> {path}:{d.line}:{d.column}");
 }
 
-/// Runs the file's `main`: its result is printed; a panic is reported with its frames and
-/// ends with 101.
-fn runAsm(path: string): int {
-    let text = try readText(path) catch (e) {
-        eprintln(f"error[LYS-CLI0003]: cannot read '{path}': {e.message()}");
-        return 2;
-    };
-    let module = try assemble(text, path) catch (e: AsmError) {
-        eprintln(f"error[LYS-ASM0001]: {path}: {e.message()}");
-        return 1;
-    };
-    let faults = check(module);
-    if (faults.length() > 0) {
-        for (fault in faults) {
-            eprintln(
-                f"error[LYS-ASM0002]: {path}: {fault.function} at {fault.pc}: {fault.message}"
-            );
-        }
-        return 1;
-    }
-    return match (execute(module, "main", [], -1)) {
-        .Void => 0,
-        .Scalar(bits) => {
-            println(bits as int);
-            0
-        }
-        .Ref(v) => {
-            if (v is ScriptString) {
-                println(v.text);
-            }
-            0
-        }
+/// The exit code of a run: 0 at its end, 101 for a panic (reported with its frames).
+fn finish(outcome: Outcome): int {
+    return match (outcome) {
+        .Void | .Scalar(_) | .Ref(_) => 0,
         .Panic(p) => {
             eprintln(f"panic [{p.code}]: {p.message}");
             for (frame in p.trace) {
@@ -136,4 +147,35 @@ fn runAsm(path: string): int {
             1
         }
     };
+}
+
+/// Runs the file's `main`: its result is printed; a panic is reported with its frames and
+/// ends with 101.
+fn runAsm(path: string): int {
+    let text = readScript(path);
+    if (text == null) {
+        return 2;
+    }
+    let module = try assemble(text, path) catch (e: AsmError) {
+        eprintln(f"error[LYS-ASM0001]: {path}: {e.message()}");
+        return 1;
+    };
+    let faults = check(module);
+    if (faults.length() > 0) {
+        for (fault in faults) {
+            eprintln(f"error[LYS-ASM0002]: {path}: {fault.function} at {fault.pc}: {fault.message}");
+        }
+        return 1;
+    }
+    let outcome = execute(module, "main", [], -1);
+    match (outcome) {
+        .Scalar(bits) => println(bits as int),
+        .Ref(v) => {
+            if (v is ScriptString) {
+                println(v.text);
+            }
+        }
+        _ => {}
+    }
+    return finish(outcome);
 }

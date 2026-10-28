@@ -59,6 +59,23 @@ pub enum Op :: [Variants, Equatable] {
     SetR,
     // Failure.
     Panic,
+    // S2: what the checked core needs beyond S1.
+    AddW,
+    SubW,
+    MulW,
+    BAnd,
+    BOr,
+    BXor,
+    Shl,
+    Shr,
+    BNot,
+    RemF,
+    IToC,
+    GetGS,
+    SetGS,
+    GetGR,
+    SetGR,
+    CallN,
 }
 
 /// What an operand of an operation names.
@@ -84,6 +101,12 @@ pub enum Operand :: [Equatable] {
     /// A field index of the object's type: a scalar field for `GetS`/`SetS`, a reference field
     /// for `GetR`/`SetR`.
     Field,
+    /// An index into the module's scalar globals.
+    GlobalS,
+    /// An index into the module's reference globals.
+    GlobalR,
+    /// A native of the VM, by its number (`lyric_script.vm.native`).
+    Native,
 }
 
 /// How an operation is written and what its operands are, in the order `a`, `b`, `c`.
@@ -148,6 +171,22 @@ pub fn info(op: Op): OpInfo {
         .GetR => OpInfo { mnemonic = "get.r", operands = [.Ref, .Ref, .Field] },
         .SetR => OpInfo { mnemonic = "set.r", operands = [.Ref, .Field, .Ref] },
         .Panic => OpInfo { mnemonic = "panic", operands = [.Ref] },
+        .AddW => OpInfo { mnemonic = "add.w", operands = [.Scalar, .Scalar, .Scalar] },
+        .SubW => OpInfo { mnemonic = "sub.w", operands = [.Scalar, .Scalar, .Scalar] },
+        .MulW => OpInfo { mnemonic = "mul.w", operands = [.Scalar, .Scalar, .Scalar] },
+        .BAnd => OpInfo { mnemonic = "and", operands = [.Scalar, .Scalar, .Scalar] },
+        .BOr => OpInfo { mnemonic = "or", operands = [.Scalar, .Scalar, .Scalar] },
+        .BXor => OpInfo { mnemonic = "xor", operands = [.Scalar, .Scalar, .Scalar] },
+        .Shl => OpInfo { mnemonic = "shl", operands = [.Scalar, .Scalar, .Scalar] },
+        .Shr => OpInfo { mnemonic = "shr", operands = [.Scalar, .Scalar, .Scalar] },
+        .BNot => OpInfo { mnemonic = "bnot", operands = [.Scalar, .Scalar] },
+        .RemF => OpInfo { mnemonic = "rem.f", operands = [.Scalar, .Scalar, .Scalar] },
+        .IToC => OpInfo { mnemonic = "i2c", operands = [.Scalar, .Scalar] },
+        .GetGS => OpInfo { mnemonic = "get.gs", operands = [.Scalar, .GlobalS] },
+        .SetGS => OpInfo { mnemonic = "set.gs", operands = [.GlobalS, .Scalar] },
+        .GetGR => OpInfo { mnemonic = "get.gr", operands = [.Ref, .GlobalR] },
+        .SetGR => OpInfo { mnemonic = "set.gr", operands = [.GlobalR, .Ref] },
+        .CallN => OpInfo { mnemonic = "call.n", operands = [.Native, .ScalarBase, .RefBase] },
     };
 }
 

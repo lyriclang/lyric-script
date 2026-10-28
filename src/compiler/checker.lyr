@@ -541,7 +541,7 @@ class Checker {
         let index = this.functions.length();
         this.mainIndex = index;
         let line = if (module.items.length() > 0) itemLine(module.items[0]) else 1;
-        this.functions.push(FnInfo { name = "main", owner = -1, isStatic = true, line = line });
+        this.functions.push(FnInfo { name = "<script>", owner = -1, isStatic = true, line = line });
         this.fnDecls.push(null);
         this.fnStates.push(FnState.Done);
         this.ctx = FnCtx.new(index, Ty.Void, true);

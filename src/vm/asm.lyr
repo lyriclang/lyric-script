@@ -21,6 +21,7 @@ import std.collections { List, Map, Set };
 import std.core { ParseError, StringBuilder };
 import lyric_script.vm.op { Instr, Op, Operand, info, opOf };
 import lyric_script.vm.module { Function, Module, ReturnKind, TypeDesc };
+import lyric_script.vm.native { nativeCount, nativeInfo, nativeOf };
 
 /// A line of assembly text that cannot be read.
 pub struct AsmError :: [Error] {
@@ -57,6 +58,8 @@ class Draft {
 pub fn assemble(text: string, name: string): Module throws AsmError {
     let types = List<TypeDesc>.new();
     let drafts = List<Draft>.new();
+    var globalsS = 0;
+    var globalsR = 0;
     var current: ?Draft = null;
     var lineNo = 0;
     for (raw in text.lines()) {
@@ -80,10 +83,19 @@ pub fn assemble(text: string, name: string): Module throws AsmError {
             }
         } else if (line.startsWith("type ")) {
             types.push(try typeLine(line.toString(), lineNo));
+        } else if (line.startsWith("globals ")) {
+            let counts = line[8..line.length()].split(' ').filter { !it.isEmpty() }.map {
+                it.toString()
+            }.toArray();
+            if (counts.length() != 2) {
+                throw AsmError { line = lineNo, text = "a globals line is 'globals S R'" };
+            }
+            globalsS = try number(counts[0], lineNo);
+            globalsR = try number(counts[1], lineNo);
         } else if (line.startsWith("fn ")) {
             current = try header(line.toString(), lineNo);
         } else {
-            throw AsmError { line = lineNo, text = f"expected 'type' or 'fn', got '{line}'" };
+            throw AsmError { line = lineNo, text = f"expected 'type', 'globals' or 'fn', got '{line}'" };
         }
     }
     if (let d = current) {
@@ -93,7 +105,13 @@ pub fn assemble(text: string, name: string): Module throws AsmError {
     for (d in drafts) {
         functions.push(try resolve(d, drafts, types));
     }
-    return Module { name = name, functions = functions.toArray(), types = types.toArray() };
+    return Module {
+        name = name,
+        functions = functions.toArray(),
+        types = types.toArray(),
+        globalsS = globalsS,
+        globalsR = globalsR,
+    };
 }
 
 fn stripComment(line: StringView): StringView {
@@ -378,6 +396,17 @@ fn operand(
             throw AsmError { line = p.line, text = f"no type '{text}'" }
         }
         .Field => try field(p, text, types),
+        .GlobalS | .GlobalR => try number(text, p.line),
+        .Native => {
+            var i = 0;
+            while (i < nativeCount) {
+                if (nativeInfo(nativeOf(i)).name == text) {
+                    return i;
+                }
+                i += 1;
+            }
+            throw AsmError { line = p.line, text = f"no native '{text}'" }
+        }
     };
 }
 
@@ -466,6 +495,9 @@ fn field(p: Pending, text: string, types: List<TypeDesc>): int throws AsmError {
 /// labels `@L<pc>`, constants as literals and fields as `.index`.
 pub fn disassemble(module: Module): string {
     let out = StringBuilder.new();
+    if (module.globalsS > 0 || module.globalsR > 0) {
+        out.appendStr(f"globals {module.globalsS} {module.globalsR}\n");
+    }
     for (t in module.types) {
         out.appendStr(f"type {t.name}");
         if (t.scalarFields.length() > 0) {
@@ -560,6 +592,8 @@ fn operandText(module: Module, f: Function, op: Op, kind: Operand, v: int): stri
         .Func => module.functions[v].name,
         .Type => module.types[v].name,
         .Field => f".{v}",
+        .GlobalS | .GlobalR => f"{v}",
+        .Native => nativeInfo(nativeOf(v)).name,
     };
 }
 

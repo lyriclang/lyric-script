@@ -120,8 +120,8 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | 11 | Laufzeit und VM in Lyric 5: Grundform, Werte, Format, Startzeit, Einbettung |
 | 12 | **Standardbibliothek und Werkzeuge** (zusammen, 2026-10-28) |
 | 13 | — in 12 aufgegangen |
-| 14 | Migration 4.6 → 1.0 |
-| 15 | Umsetzungsplan zu `lyric-script 1.0.0` |
+| 14 | **Migration und Umsetzungsplan** (zusammen, 2026-10-28) — das Ergebnis der Runde |
+| 15 | — in 14 aufgegangen |
 
 **Reihenfolge geändert (2026-10-28, Maintainer):** die Sprache vor der VM — was die VM können
 muss, folgt aus Sprachentscheidungen (Generics gelöscht oder monomorphisiert, Ganzzahlbreite,

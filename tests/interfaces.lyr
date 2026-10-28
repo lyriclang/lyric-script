@@ -90,3 +90,10 @@ fn whatConformanceRefuses(): void {
     assertEq(errs("struct P {\n    x: int\n}\nstruct S :: [P] {\n    y: int\n}"), ["LYS-SEM0078"]);
     assertEq(errs(i + "fn f(a: I, b: I): bool = a == b"), ["LYS-SEM0059"]);
 }
+
+@Test
+fn builtInValuesAndPlainEnumsConformThroughABox(): void {
+    let src = "interface Named {\n    fn name(): string\n    fn shout(): string = this.name() + \"!\"\n}\nextend int :: [Named] {\n    fn name(): string = if (this > 0) \"pos\" else \"neg\"\n}\nextend string {\n    fn twice(): string = this + this\n}\nenum Color :: [Named] {\n    Red, Green\n    fn name(): string = match (this) {\n        .Red => \"red\",\n        .Green => \"green\",\n    }\n}\nfn label(n: Named): string = n.name()\n";
+    let b = "fn b(): int = (if (label(5) == \"pos\") 1 else 0) + (if (label(Color.Green) == \"green\") 10 else 0) + (if (\"ab\".twice() == \"abab\") 100 else 0) + (if ((-3).shout() == \"neg!\") 1000 else 0)";
+    assertEq(value(src + b, "b"), 1111);
+}

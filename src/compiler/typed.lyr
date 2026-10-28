@@ -105,6 +105,8 @@ enum TypeKind :: [Equatable, Debug] {
     Class,
     Enum,
     Interface,
+    /// `int`, `float`, `bool`, `char`, `string`: their methods and conformances (S3f).
+    Builtin,
 }
 
 struct FieldInfo :: [Debug] {
@@ -229,6 +231,8 @@ fn typeOf(e: TExpr): Ty {
         .CellOf(_, t) => t,
         .CallValue(_, _, t) => t,
         .Upcast(_, t) => t,
+        .BoxOf(_, _, t) => t,
+        .Unbox(_, t) => t,
         .CallIface(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
@@ -315,6 +319,11 @@ enum TExpr :: [Debug] {
     Upcast(Box<TExpr>, Ty),
     /// A call through an interface value: the method's slot, the receiver and the arguments.
     CallIface(int, TExpr[], Ty),
+    /// A value of a scalar type or a `string` as an interface value: put in a box of the type
+    /// of the program `k` names.
+    BoxOf(Box<TExpr>, int, Ty),
+    /// The value a box holds.
+    Unbox(Box<TExpr>, Ty),
     Unknown,
 }
 

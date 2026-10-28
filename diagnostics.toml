@@ -697,6 +697,12 @@ severity = "error"
 area = "03-types"
 summary = "A type has one field, method or variant of each name. Lyric 5's LYR-SEM0121."
 
+[LYS-SEM0124]
+title = "an extend block on what is no type it adds to"
+severity = "error"
+area = "05-interfaces"
+summary = "`extend T { … }` adds to a struct, a class, an enum or a built-in type; an interface is not extended directly. Lyric 5's LYR-SEM0124."
+
 [LYS-SEM0147]
 title = "'break' or 'continue' outside a loop"
 severity = "error"

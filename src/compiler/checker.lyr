@@ -55,6 +55,7 @@ import lyric_script.compiler.typed {
     TypeKind,
     CaptureInfo,
     FnTy,
+    isScalar,
     TupleTy,
     tupleOf,
     typeOf,
@@ -194,6 +195,10 @@ class Checker {
     var mainIndex: int = -1,
     // the interface methods' slots given so far
     var slotCount: int = 0,
+    // the entries of the built-in types that have methods or conformances, by name
+    builtinIndex: Map<string, int>,
+    // the function each boxed conformer's method runs through its box, by method
+    unboxers: Map<int, int>,
     // the function value of each function named without a call: its thunk's index
     thunks: Map<int, int>,
     // the function value of each method named without a call: its function's index
@@ -218,6 +223,8 @@ class Checker {
             globalIndex = Map<string, int>.new(),
             thunks = Map<int, int>.new(),
             bound = Map<int, int>.new(),
+            builtinIndex = Map<string, int>.new(),
+            unboxers = Map<int, int>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -502,9 +509,13 @@ class Checker {
             .Named(n, _, _) => n,
             _ => "",
         };
-        let index = this.typeIndex.get(name);
-        if (index == null || this.types[index].kind == .Interface) {
-            this.notYet("an extend block on this type", "S3f (extend on built-in types)", x.span);
+        let index = this.typeNamed(name);
+        if (index < 0 || this.types[index].kind == .Interface) {
+            this.error(
+                "LYS-SEM0124",
+                f"'{name}' is no type an extend block adds to: a struct, class, enum or built-in type",
+                x.span
+            );
             return;
         }
         let info = this.types[index];
@@ -515,6 +526,108 @@ class Checker {
             }
             info.methods.insert(m.name, this.declareFn(m, index));
         }
+    }
+
+    /// The entry of the type `name` names: one of the program, or a built-in's; -1 for none.
+    mut fn typeNamed(name: string): int {
+        let index = this.typeIndex.get(name);
+        if (index != null) {
+            return index;
+        }
+        return match (name) {
+            "int" | "float" | "bool" | "char" | "string" => this.builtinOf(builtinTy(name)),
+            _ => -1,
+        };
+    }
+
+    /// The entry of a built-in type, made when it is first needed; -1 for a type that is none.
+    mut fn builtinOf(t: Ty): int {
+        let name = match (t) {
+            .Int => "int",
+            .Float => "float",
+            .Bool => "bool",
+            .Char => "char",
+            .Str => "string",
+            _ => "",
+        };
+        if (name == "") {
+            return -1;
+        }
+        let known = this.builtinIndex.get(name);
+        if (known != null) {
+            return known;
+        }
+        let index = this.types.length();
+        this.types.push(
+            TypeInfo { name = name, kind = TypeKind.Builtin, methods = Map<string, int>.new() }
+        );
+        this.builtinIndex.insert(name, index);
+        return index;
+    }
+
+    /// What `this` is in a method of type `owner`: the value of a built-in type, else the type.
+    mut fn selfTy(owner: int): Ty {
+        let info = this.types[owner];
+        return if (info.kind == .Builtin) builtinTy(info.name) else Ty.Named(owner);
+    }
+
+    /// The entry whose methods and conformances `t` has: its type's, or its built-in's.
+    mut fn entryOf(t: Ty): int {
+        return match (t) {
+            .Named(i) => i,
+            _ => this.builtinOf(t),
+        };
+    }
+
+    /// Whether a value of `t` goes into a box to be an interface value: a scalar or a string.
+    mut fn boxed(t: Ty): bool {
+        return t == .Str || isScalar(t, this.types.toArray());
+    }
+
+    /// The function a box of a `t` runs for method `m`: it takes the box first and calls `m` on
+    /// the value inside (made once per method).
+    mut fn unboxer(m: int, t: Ty, iface: Ty): int {
+        let known = this.unboxers.get(m);
+        if (known != null) {
+            return known;
+        }
+        let method = this.functions[m];
+        let index = this.functions.length();
+        this.functions.push(
+            FnInfo { name = method.name + "#box", owner = -1, isStatic = true, line = method.line }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let info = this.functions[index];
+        let params = List<ParamInfo>.new();
+        let locals = List<Ty>.new();
+        let args = List<TExpr>.new();
+        params.push(ParamInfo { name = "this", ty = iface, default = null });
+        locals.push(iface);
+        args.push(TExpr.Unbox(boxE(TExpr.Local(0, iface)), t));
+        var k = 0;
+        for (p in method.params) {
+            params.push(ParamInfo { name = p.name, ty = p.ty, default = null });
+            locals.push(p.ty);
+            args.push(TExpr.Local(k + 1, p.ty));
+            k += 1;
+        }
+        info.params = params.toArray();
+        info.returns = method.returns;
+        info.locals = locals.toArray();
+        let flags = List<bool>.new();
+        for (_ in locals) {
+            flags.push(false);
+        }
+        info.boxed = flags.toArray();
+        let call = TExpr.Call(m, args.toArray(), method.returns);
+        info.body = if (method.returns == .Void) [
+            TStmt.Expr(call, method.line),
+            TStmt.Return(null, method.line),
+        ]
+            else [TStmt.Return(call, method.line)];
+        this.unboxers.insert(m, index);
+        return index;
     }
 
     /// Interface `ii` and its parents, each once.
@@ -545,19 +658,13 @@ class Checker {
         if (conforms.length() == 0) {
             return;
         }
-        let index = this.typeIndex.get(name);
-        if (index == null) {
+        let index = this.typeNamed(name);
+        if (index < 0) {
             return;
         }
         let info = this.types[index];
-        if (info.kind == .Enum && !info.payload) {
-            this.notYet(
-                "an enum without payloads as an interface value",
-                "S3f (boxes)",
-                conforms[0].span
-            );
-            return;
-        }
+        let self = this.selfTy(index);
+        let boxedSelf = this.boxed(self);
         let added = List<int>.new();
         for (c in conforms) {
             let ii = this.typeIndex.get(c.name);
@@ -601,7 +708,11 @@ class Checker {
                             conforms[0].span
                         );
                     }
-                    info.witness.insert(slot, own);
+                    // through a box the method takes the value inside
+                    info.witness.insert(
+                        slot,
+                        if (boxedSelf) this.unboxer(own, self, Ty.Named(ii)) else own
+                    );
                 } else if (!this.functions[declared].abstract) {
                     // the default, its `this` the interface value
                     info.witness.insert(slot, declared);
@@ -649,6 +760,14 @@ class Checker {
     /// interface value of a child.
     mut fn conformsTo(t: Ty, ii: int): bool {
         return match (t) {
+            .Int | .Float | .Bool | .Char | .Str => {
+                let i = this.builtinOf(t);
+                var found = false;
+                for (x in this.types[i].ifaces) {
+                    found = found || x == ii;
+                }
+                found
+            }
             .Named(i) => {
                 let kinds = if (this.types[i].kind == .Interface) this.ancestry(i)
                     else this.types[i].ifaces;
@@ -1024,6 +1143,10 @@ class Checker {
         match (target) {
             .Named(ii) => {
                 if (this.types[ii].kind == .Interface && this.conformsTo(actual, ii)) {
+                    // a scalar or a string goes into a box; a reference is its own
+                    if (this.boxed(actual)) {
+                        return TExpr.BoxOf(boxE(e), this.entryOf(actual), target);
+                    }
                     return TExpr.Upcast(boxE(e), target);
                 }
             }
@@ -1179,7 +1302,7 @@ class Checker {
         let info = this.functions[k];
         this.ctx = FnCtx.new(k, info.returns, false, fixing);
         if (info.owner >= 0 && !info.isStatic) {
-            this.declareLocal("this", Ty.Named(info.owner), false, decl.span);
+            this.declareLocal("this", this.selfTy(info.owner), false, decl.span);
         }
         for (p in info.params) {
             this.declareLocal(p.name, p.ty, false, decl.span);
@@ -2977,7 +3100,7 @@ class Checker {
                 if (fnIndex >= 0
                     && this.functions[fnIndex].owner >= 0
                     && !this.functions[fnIndex].isStatic) {
-                    TExpr.Local(0, Ty.Named(this.functions[fnIndex].owner))
+                    TExpr.Local(0, this.selfTy(this.functions[fnIndex].owner))
                 } else {
                     this.error("LYS-SEM0008", "'this' outside a method", at);
                     TExpr.Unknown
@@ -4723,7 +4846,12 @@ class Checker {
                             let (fi, _) = found;
                             if (!this.functions[fi].abstract) {
                                 let owner = this.functions[fi].owner;
-                                let up = TExpr.Upcast(boxE(receiver), Ty.Named(owner));
+                                let up = if (this.boxed(t)) TExpr.BoxOf(
+                                    boxE(receiver),
+                                    i,
+                                    Ty.Named(owner)
+                                )
+                                    else TExpr.Upcast(boxE(receiver), Ty.Named(owner));
                                 return this.callAmong(method, [fi], up, args, at);
                             }
                         }
@@ -4760,6 +4888,25 @@ class Checker {
                 return this.callAmong(method, [m], receiver, args, at);
             }
             _ => {
+                // a built-in type's methods: its extend blocks', and its conformances' defaults
+                let i = this.builtinOf(t);
+                if (i >= 0) {
+                    let m = this.types[i].methods.get(method);
+                    if (m != null) {
+                        return this.callAmong(method, [m], receiver, args, at);
+                    }
+                    for (ii in this.types[i].ifaces) {
+                        let found = this.ifaceMember(ii, method);
+                        if (found != null) {
+                            let (fi, _) = found;
+                            if (!this.functions[fi].abstract) {
+                                let owner = this.functions[fi].owner;
+                                let up = TExpr.BoxOf(boxE(receiver), i, Ty.Named(owner));
+                                return this.callAmong(method, [fi], up, args, at);
+                            }
+                        }
+                    }
+                }
                 return this.notYet(
                     f"the methods of {this.tyName(t)}",
                     "S7 (the core library)",
@@ -5211,6 +5358,18 @@ fn litKey(e: Expr): string {
         .Null(_) => "null",
         .Unary(op, x, _) => if (op == .Neg) "-" + litKey(x.value) else "?",
         _ => "?",
+    };
+}
+
+/// The built-in type `name` names.
+fn builtinTy(name: string): Ty {
+    return match (name) {
+        "int" => Ty.Int,
+        "float" => Ty.Float,
+        "bool" => Ty.Bool,
+        "char" => Ty.Char,
+        "string" => Ty.Str,
+        _ => Ty.Unknown,
     };
 }
 

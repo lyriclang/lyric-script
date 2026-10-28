@@ -105,6 +105,8 @@ struct Placement {
     captureLoc: Loc[][],
     // a captured `var`'s box: its module type by the slots of the value it holds, "s,r"
     cellType: Map<string, int>,
+    // a scalar's or a string's box as an interface value: its module type by its type's entry
+    boxType: int[],
     // each program type's fields: where their slots start in the object
     fieldLoc: Loc[][],
     descs: TypeDesc[],
@@ -129,10 +131,31 @@ struct Placement {
             }
             rows.push(row.toArray());
         }
+        let boxType = List<int>.new();
+        var bi = 0;
+        for (t in p.types) {
+            // a built-in's or an enum's without payloads: its box, which the type's table rides on
+            let isBoxed = t.kind == .Builtin || (t.kind == .Enum && !t.payload);
+            if (isBoxed) {
+                let isRef = t.kind == .Builtin && t.name == "string";
+                let d = TypeDesc {
+                    name = f"<box {t.name}>",
+                    scalarFields = if (isRef) [] else ["v"],
+                    refFields = if (isRef) ["v"] else [],
+                };
+                d.methods = rows[bi];
+                d.family = bi;
+                boxType.push(descs.length());
+                descs.push(d);
+            } else {
+                boxType.push(-1);
+            }
+            bi += 1;
+        }
         var ti = -1;
         for (t in p.types) {
             ti += 1;
-            if (t.kind == .Interface) {
+            if (t.kind == .Interface || t.kind == .Builtin) {
                 moduleType.push(-1);
                 fieldLoc.push([]);
                 variantType.push([]);
@@ -268,6 +291,7 @@ struct Placement {
             variantType = variantType.toArray(),
             variantLoc = variantLoc.toArray(),
             closureType = closureType.toArray(),
+            boxType = boxType.toArray(),
             captureLoc = captureLoc.toArray(),
             cellType = cellType,
             fieldLoc = fieldLoc.toArray(),
@@ -763,7 +787,7 @@ class FnGen {
             .Binary(_, op, _, _) => op == .And || op == .Or,
             .If(_, _, _, _) | .Block(_, _, _) | .Loop(_, _) | .New(_, _) | .Coalesce(_, _, _) => true,
             // `t = (t.1, t.0)` reads the local after its first write
-            .Tuple(_, _) | .MakeVariant(_, _, _) | .Closure(_, _, _) => true,
+            .Tuple(_, _) | .MakeVariant(_, _, _) | .Closure(_, _, _) | .BoxOf(_, _, _) => true,
             .Wrap(_, _) => true,
             _ => false,
         };
@@ -1018,6 +1042,17 @@ class FnGen {
             }
             // an interface value is the conformer's own reference
             .Upcast(x, _) => this.to(x.value, dst),
+            .BoxOf(x, ti, _) => {
+                let t = typeOf(x.value);
+                let v = this.temp(t);
+                this.to(x.value, v);
+                this.emit(Op.New, dst.r, this.layout.boxType[ti], 0);
+                this.setField(dst.r, Loc { s = 0, r = 0 }, v, t);
+            }
+            .Unbox(x, t) => {
+                let ref = this.any(x.value).r;
+                this.getField(dst, ref, Loc { s = 0, r = 0 }, t);
+            }
             .CallIface(slot, args, t) => {
                 let bs = this.nextS;
                 let br = this.nextR;

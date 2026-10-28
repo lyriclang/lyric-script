@@ -1,0 +1,15 @@
+//! What the compiler reports: a code from the catalog (`diagnostics.toml`), a message and where
+//! it stands. Errors and warnings are kept apart by the list that holds them.
+
+/// One finding: its code, its message, and its place as byte offsets into the source and the
+/// line and column (from 1) of its start.
+struct Diagnostic :: [Debug] {
+    code: string,
+    message: string,
+    start: int,
+    end: int,
+    line: int,
+    column: int,
+    /// What to do about it, where there is a short answer: drawn as `= help: …`.
+    help: ?string,
+}

@@ -17,7 +17,11 @@ Lyric 4.x status up to the 4.6 cut is archived at
   bytecode in CI on every Tier 1 target; measurement point 1: **4.3×** 4.6 (target 5×, missed by
   less than 2× — no re-cut; the call path is the first lever before measurement point 3; V3 stays
   A').
-- **Open milestone: S2** — the front-end core.
+- **S2 done** (2026-10-28, lyric-script#4, lyric-spec#382, tag `s2-complete`): `lyric-script run
+  hello.lyrs` in CI on every Tier 1 target — lexer, parser, checker and code generator for the
+  core, diagnostics as text and JSON, the bytecode cache; measurement point 2: warm 1.36 ms, cold
+  1.66 ms (targets 10 and 50 ms).
+- **Open milestone: S3** — the type system complete.
 
 ## Milestones
 
@@ -25,8 +29,8 @@ Lyric 4.x status up to the 4.6 cut is archived at
 |---|---|---|---|
 | S0 | Cut and scaffold | M | **done** 2026-10-28 |
 | S1 | VM core | L | **done** 2026-10-28 |
-| S2 | Front-end core | XL | **open** |
-| S3 | Type system complete | L | — |
+| S2 | Front-end core | XL | **done** 2026-10-28 |
+| S3 | Type system complete | L | **open** |
 | S4 | Errors and control | M | — |
 | S5 | Modules and packages | M | — |
 | S6 | Coroutines and tasks | L | — |
@@ -58,6 +62,21 @@ Sizes are sessions, not dates: S days, M 1–2 weeks, L 3–4 weeks, XL more. A 
 
 Exit criterion: hand-written bytecode runs in CI on every Tier 1 target; measurement point 1 recorded.
 
+### S2 — done
+
+| Slice | State |
+|---|---|
+| S2a the delta chapters 01/02, the case format, the runner | done for the core — lyric-spec#382 (chapter 1, chapter 2's core, the format, the runner, 16 cases); CI runs the suite at `spec.pin` |
+| S2b the lexer | done — Lyric 5's tokens and codes, the line end as a token (09 NL; `>` and `>>` kept out of rule 2) |
+| S2c the parser | done for the core — `lyric-script check` parses; nesting bounded at 64 (measured on a test's task) |
+| S2d names and types (core) | done — the checker for the core; `LYS-NYI0001` names what later milestones build |
+| S2e code generation | done — one pass per function, registers Lua's way; the VM gains globals, natives and the core's missing operations; `lyric-script run` |
+| S2f diagnostics | done — rustc's text form with columns in characters, Lyric 5's JSON events with `--json`, every code in the catalog |
+| S2g `run` and the bytecode cache | done — `run`, `lyric-script x.lyrs`, `--json`, the cache in the user's cache directory (Lyric 5's place), `clean` |
+| S2h measurement point 2 | done — warm 1.36 ms, cold 1.66 ms (release, median); both targets hold ([`bench/startup/README.md`](bench/startup/README.md)) |
+
+Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; measurement point 2 recorded.
+
 ## Working mode
 
 Decided 2026-10-28 (14): **autonomous, as on the Lyric 5 line** — Claude plans each slice and
@@ -84,6 +103,7 @@ the understanding of the code keeps pace with its size.
 | A2d | unchecked element access on the hot path | not yet: measurement point 1 missed 5× (4.3×), the ratchet binds at measurement point 3 — open point |
 | A3 | instance attribution in the GC | door (live memory limit per instance) |
 | A4 | one card mark for a 16-byte store (interface values) | filed: lyric#610 (open); V3 decided without it at measurement point 1 |
+| F1 | a bug: a field of type `List<Map<…>>` does not lower (LYR-ICE0002) | filed: lyric#612; the checker holds its scopes in a class of their own until it is fixed |
 
 ## Open points for the maintainer
 
@@ -92,3 +112,9 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | # | Point | Since |
 |---|---|---|
 | P1 | File A2d with Lyric 5 now (measurement point 1 missed 5×), or only if measurement point 3 misses? The call path is Script's own lever first. | S1h |
+| P2 | `>` and `>>` kept out of 09 NL rule 2, because they close type arguments too (recorded in 09 as a precision; spec 1 D1). | S2b |
+| P3 | `Name {` opens an initializer only after a capital name (spec 2 D4): with line ends instead of `;`, Lyric 5's rule (what ends the first value) cannot tell an initializer from a trailing block. | S2c |
+| P4 | The parser's nesting bound is 64 (spec 2 D6), below Lyric 5's floor of 128: measured, the parser overflowed a test's task at 95 levels. Raise it by a stack the compiler chooses, once Lyric 5 lets a task choose its stack? | S2c |
+| P5 | A parameter's default is filled in where the call stands, so it cannot read the parameters before it (Lyric 5 §8.1.1 rule 2 lets it). Evaluate defaults in the callee (S3), or keep the narrower rule? | S2d |
+| P6 | After a lexical or syntax error the checker does not run, so a file reports its first kind of fault only. Check the parts that parsed? | S2f |
+| P7 | An unclosed `(` or `[` swallows the line ends after it (09 NL rule 1), so the parser's recovery skips the rest of the file. | S2c |

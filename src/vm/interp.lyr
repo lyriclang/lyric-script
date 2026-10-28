@@ -10,10 +10,12 @@
 //! VM) is caught at a task boundary (`execute`).
 import std.collections { List };
 import std.core { arrayOf };
+import std.io { print, println };
 import std.task { spawn, yieldNow };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Module };
 import lyric_script.vm.heap { HeapRef, ScriptObject, ScriptString, nil, nilRef, sameRef };
+import lyric_script.vm.native { nativeOf };
 
 /// How a run ended.
 pub enum Outcome {
@@ -97,6 +99,9 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
         s[k] = args[k];
         k += 1;
     }
+    // the script's top-level bindings (07 Top), alive for this run
+    var gs: uint64[] = [0 as uint64] * module.globalsS;
+    var gr: HeapRef[] = refArray(module.globalsR);
     let frames = List<CallFrame>.new();
     var code: Instr[] = f.code;
     var pc = 0;
@@ -405,8 +410,114 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 let text = if (m is ScriptString) m.text else "panic";
                 return panicOut(module, frames, fi, pc, "LYS-RT0008", text);
             }
+            .AddW => {
+                s[bs + a] = ((s[bs + b] as int) +% (s[bs + c] as int)) as uint64;
+                pc += 1;
+            }
+            .SubW => {
+                s[bs + a] = ((s[bs + b] as int) -% (s[bs + c] as int)) as uint64;
+                pc += 1;
+            }
+            .MulW => {
+                s[bs + a] = ((s[bs + b] as int) *% (s[bs + c] as int)) as uint64;
+                pc += 1;
+            }
+            .BAnd => {
+                s[bs + a] = s[bs + b] & s[bs + c];
+                pc += 1;
+            }
+            .BOr => {
+                s[bs + a] = s[bs + b] | s[bs + c];
+                pc += 1;
+            }
+            .BXor => {
+                s[bs + a] = s[bs + b] ^ s[bs + c];
+                pc += 1;
+            }
+            .Shl | .Shr => {
+                // a count the width cannot take is an overflow, as in Lyric 5 (no silent masking)
+                let count = s[bs + c] as int;
+                if (count < 0 || count >= 64) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0002",
+                        f"shift by {count} exceeds the width of 64 bits"
+                    );
+                }
+                let x = s[bs + b] as int;
+                s[bs + a] = (if (ins.op == .Shl) x << count else x >> count) as uint64;
+                pc += 1;
+            }
+            .BNot => {
+                s[bs + a] = ~s[bs + b];
+                pc += 1;
+            }
+            .RemF => {
+                s[bs + a] = (float.fromBits(s[bs + b]) % float.fromBits(s[bs + c])).toBits();
+                pc += 1;
+            }
+            .IToC => {
+                let v = s[bs + b] as int;
+                if (v < 0 || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0009",
+                        f"{v} is not a Unicode scalar value"
+                    );
+                }
+                s[bs + a] = v as uint64;
+                pc += 1;
+            }
+            .GetGS => {
+                s[bs + a] = gs[b];
+                pc += 1;
+            }
+            .SetGS => {
+                gs[a] = s[bs + b];
+                pc += 1;
+            }
+            .GetGR => {
+                r[br + a] = gr[b];
+                pc += 1;
+            }
+            .SetGR => {
+                gr[a] = r[br + b];
+                pc += 1;
+            }
+            .CallN => {
+                let x = bs + b;
+                let y = br + c;
+                match (nativeOf(a)) {
+                    .Print => print(textOf(r[y])),
+                    .Println => println(textOf(r[y])),
+                    .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
+                    .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
+                    // Lyric 5's shortest text that reads back, `1.0` for an integral float
+                    .FloatToStr => r[y] = ScriptString { text = f"{float.fromBits(s[x])}" },
+                    .BoolToStr => r[y] = ScriptString { text = if (s[x] != 0) "true" else "false" },
+                    .CharToStr => r[y] = ScriptString { text = f"{(s[x] as uint32) as char}" },
+                    .StrEq => s[x] = truth(textOf(r[y]) == textOf(r[y + 1])),
+                    .StrCmp => {
+                        let p = textOf(r[y]);
+                        let q = textOf(r[y + 1]);
+                        s[x] = (if (p < q) -1 else if (p == q) 0 else 1) as uint64;
+                    }
+                }
+                pc += 1;
+            }
         }
     }
+}
+
+/// The text of a string reference; the compiler gives a native nothing else.
+fn textOf(v: HeapRef): string {
+    return if (v is ScriptString) v.text else "";
 }
 
 fn signed16(v: int): int {

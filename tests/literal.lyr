@@ -1,0 +1,152 @@
+// Literals to values: escapes, the raw and multi-line forms, f-string holes, characters, bytes and
+// numbers, each fault with Lyric 5's code.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.literal {
+    Piece,
+    bytesValue,
+    charValue,
+    floatValue,
+    intValue,
+    stringPieces,
+    stringValue,
+};
+import lyric_script.compiler.token { Token, TokenKind };
+
+let at: Token = Token { kind = TokenKind.Str, start = 0, end = 0, line = 1, column = 1 };
+
+fn codes(errors: List<Diagnostic>): string[] {
+    let out = List<string>.new();
+    for (e in errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+fn str(text: string): string {
+    return stringValue(text, at, List<Diagnostic>.new());
+}
+
+fn strErrors(text: string): string[] {
+    let errors = List<Diagnostic>.new();
+    stringValue(text, at, errors);
+    return codes(errors);
+}
+
+@Test
+fn escapesAreResolved(): void {
+    assertEq(str(r#""a\tb\n\\\"\'\0""#), "a\tb\n\\\"'\0");
+    assertEq(str(r#""\u{1F600}\u{e9}""#), "😀é");
+    assertEq(strErrors(r#""\q""#), ["LYS-LEX0007"]);
+    assertEq(strErrors(r#""\u{110000}""#), ["LYS-LEX0007"]);
+    assertEq(strErrors(r#""\u{D800}""#), ["LYS-LEX0007"]);
+    assertEq(strErrors(r#""\x41""#), ["LYS-LEX0013"]);
+}
+
+@Test
+fn rawStringsTakeNoEscape(): void {
+    assertEq(str(r#"r"C:\path\n""#), r"C:\path\n");
+    assertEq(str(r##"r#"say "hi""#"##), "say \"hi\"");
+}
+
+@Test
+fn aMultiLineStringLosesTheIndentationOfItsClosingLine(): void {
+    assertEq(str("\"\"\"\n    one\n      two\n\n    three\n    \"\"\""), "one\n  two\n\nthree");
+    assertEq(str("\"\"\"\n    \"\"\""), "");
+    assertEq(strErrors("\"\"\"one\n    \"\"\""), ["LYS-LEX0014"]);
+    assertEq(strErrors("\"\"\"\n    one\n    two\"\"\""), ["LYS-LEX0014"]);
+    assertEq(strErrors("\"\"\"\n    one\n  two\n    \"\"\""), ["LYS-LEX0015"]);
+    // escapes are resolved after the lines are read: an escaped line end is no line
+    assertEq(str("\"\"\"\n    a\\nb\n    \"\"\""), "a\nb");
+}
+
+@Test
+fn anFStringIsTextAndHoles(): void {
+    let pieces = stringPieces("f\"a {x} b {y:>5}\"", at, List<Diagnostic>.new());
+    assertEq(pieces.length(), 4);
+    match (pieces[0]) {
+        .Text(s) => assertEq(s, "a "),
+        _ => assertTrue(false, "a text first"),
+    }
+    match (pieces[1]) {
+        .Hole(start, end, line, column, spec) => {
+            assertEq(start, 5);
+            assertEq(end, 6);
+            assertEq(line, 1);
+            assertEq(column, 6);
+            assertTrue(spec == null);
+        }
+        _ => assertTrue(false, "a hole second"),
+    }
+    match (pieces[3]) {
+        .Hole(_, _, _, _, spec) => assertEq(spec ?? "", ">5"),
+        _ => assertTrue(false, "a hole last"),
+    }
+    // `{{` and `}}` are braces; strings in a hole are skipped whole
+    assertEq(stringPieces("f\"{{x}}\"", at, List<Diagnostic>.new()).length(), 1);
+    assertEq(str("f\"{{x}}\""), "{x}");
+    let nested = stringPieces("f\"{m[\"}\"]}\"", at, List<Diagnostic>.new());
+    assertEq(nested.length(), 1);
+    match (nested[0]) {
+        .Hole(start, end, _, _, _) => {
+            assertEq(start, 3);
+            assertEq(end, 9);
+        }
+        _ => assertTrue(false, "one hole"),
+    }
+}
+
+@Test
+fn aCharacterLiteralHoldsOneCharacter(): void {
+    let none = List<Diagnostic>.new();
+    assertEq(charValue("'a'", at, none), 'a');
+    assertEq(charValue(r"'\n'", at, none), '\n');
+    assertEq(charValue("'😀'", at, none), '😀');
+    assertEq(codes(none), []);
+    let errors = List<Diagnostic>.new();
+    charValue("'ab'", at, errors);
+    charValue("''", at, errors);
+    assertEq(codes(errors), ["LYS-LEX0008", "LYS-LEX0008"]);
+}
+
+@Test
+fn aByteStringHoldsBytes(): void {
+    let none = List<Diagnostic>.new();
+    let bytes = bytesValue(r#"b"A\x00\xff\n""#, at, none);
+    assertEq(bytes.length(), 4);
+    assertEq(bytes[0] as int, 65);
+    assertEq(bytes[1] as int, 0);
+    assertEq(bytes[2] as int, 255);
+    assertEq(bytes[3] as int, 10);
+    assertEq(codes(none), []);
+    let errors = List<Diagnostic>.new();
+    bytesValue("b\"ä\"", at, errors);
+    bytesValue(r#"b"\u{41}""#, at, errors);
+    assertEq(codes(errors), ["LYS-LEX0012", "LYS-LEX0012"]);
+}
+
+@Test
+fn integersInEveryBase(): void {
+    let none = List<Diagnostic>.new();
+    assertEq(intValue("1_000", false, at, none), 1000);
+    assertEq(intValue("0xff", false, at, none), 255);
+    assertEq(intValue("0b1010", false, at, none), 10);
+    assertEq(intValue("0o17", false, at, none), 15);
+    assertEq(intValue("9223372036854775807", false, at, none), 9223372036854775807);
+    // the `-` before a literal belongs to it: the least int is written as it is
+    assertEq(intValue("9223372036854775808", true, at, none), -9223372036854775807 - 1);
+    assertEq(codes(none), []);
+    let errors = List<Diagnostic>.new();
+    intValue("9223372036854775808", false, at, errors);
+    intValue("0b12", false, at, errors);
+    assertEq(codes(errors), ["LYS-PAR0007", "LYS-PAR0100"]);
+}
+
+@Test
+fn floats(): void {
+    assertEq(floatValue("2.5e3", false), 2500.0);
+    assertEq(floatValue("1_000.5", false), 1000.5);
+    assertEq(floatValue("1.", false), 1.0);
+    assertEq(floatValue(".5", true), -0.5);
+}

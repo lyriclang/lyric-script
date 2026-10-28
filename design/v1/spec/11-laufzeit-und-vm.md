@@ -133,3 +133,8 @@ schwächste Punkt sind die **Aufrufe** (B1), nicht die Referenzen: der Aufrufpfa
 Funktionstabelle, zwei Wachstumsprüfungen, `spend` je Aufruf) ist der erste eigene Hebel vor
 Messpunkt 3. A2d (ungeprüfter Zugriff) wird nach der Dispatch-Zeile erst gestellt, wenn das
 Ratchet der Bench-Suite verfehlt wird — offener Punkt für den Maintainer, ob schon jetzt.
+
+**Messpunkt 2 (S2h, 2026-10-28, `bench/startup/README.md`).** `hello.lyrs` startet warm in
+1,36 ms und kalt in 1,66 ms (release, Median) — die Ratchets ≤ 10 ms und ≤ 50 ms halten mit 7× und
+30× Abstand. Der Start ist fast ganz Prozess- und Laufzeit-Init; `hello` zu übersetzen kostet
+~0,3 ms. Was der Cache bei großen Skripten spart, misst erst Messpunkt 3.

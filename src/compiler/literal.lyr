@@ -1,0 +1,559 @@
+//! Literals as written to their values (spec chapter 1; Lyric 5 §4): the parser hands each literal
+//! token here with its text. A fault is reported where the literal stands, with Lyric 5's code,
+//! and the literal is read as far as it goes.
+import std.collections { List };
+import std.core { ParseError, StringBuilder };
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.token { Token };
+
+/// A piece of a string's text: text with its escapes resolved, or an f-string's hole — the source
+/// range of its expression, the line and column it starts at, and its format spec.
+enum Piece :: [Debug] {
+    Text(string),
+    Hole(int, int, int, int, ?string),
+}
+
+fn report(errors: List<Diagnostic>, code: string, message: string, t: Token): void {
+    errors.push(
+        Diagnostic {
+            code = code,
+            message = message,
+            start = t.start,
+            end = t.end,
+            line = t.line,
+            column = t.column,
+            help = null,
+        }
+    );
+}
+
+/// An integer literal's value; `negative` where a `-` stands right before it (Lyric 5 §4.1 rule 2).
+fn intValue(text: string, negative: bool, t: Token, errors: List<Diagnostic>): int {
+    var radix = 10;
+    var from = 0;
+    if (text.startsWith("0x")) {
+        radix = 16;
+        from = 2;
+    } else if (text.startsWith("0b")) {
+        radix = 2;
+        from = 2;
+    } else if (text.startsWith("0o")) {
+        radix = 8;
+        from = 2;
+    }
+    let digits = StringBuilder.new();
+    if (negative) {
+        digits.appendChar('-');
+    }
+    var any = false;
+    for (c in text[from..text.length()].chars()) {
+        if (c == '_') {
+            continue;
+        }
+        if (c.toDigit(radix) == null) {
+            report(errors, "LYS-PAR0100", f"'{c}' is no digit of base {radix}", t);
+            return 0;
+        }
+        digits.appendChar(c);
+        any = true;
+    }
+    if (!any) {
+        // the lexer reported the prefix without digits
+        return 0;
+    }
+    return try int.parse(digits.toString(), radix) catch (_: ParseError) {
+        report(errors, "LYS-PAR0007", f"'{text}' does not fit an int", t);
+        return 0;
+    };
+}
+
+/// A float literal's value; `1.` and `.5` read as `1.0` and `0.5`. Its faults are the lexer's
+/// to report (LEX0006, LEX0016).
+fn floatValue(text: string, negative: bool): float {
+    var clean = text.replace('_', "");
+    if (clean.startsWith(".")) {
+        clean = f"0{clean}";
+    }
+    if (clean.endsWith(".")) {
+        clean = f"{clean}0";
+    }
+    if (negative) {
+        clean = f"-{clean}";
+    }
+    return try float.parse(clean) catch (_: ParseError) {
+        // an exponent without digits, reported by the lexer
+        return 0.0;
+    };
+}
+
+/// A string literal's text, escapes resolved: `"…"`, `r"…"`, `r#"…"#`, `"""…"""`, `r"""…"""`.
+fn stringValue(text: string, t: Token, errors: List<Diagnostic>): string {
+    let out = StringBuilder.new();
+    for (piece in stringPieces(text, t, errors)) {
+        match (piece) {
+            .Text(s) => out.appendStr(s),
+            .Hole(_, _, _, _, _) => { }
+        }
+    }
+    return out.toString();
+}
+
+/// The pieces of a string or an f-string: `f"…"`, `fr"…"`, `f"""…"""` and the forms of
+/// `stringValue`.
+fn stringPieces(text: string, t: Token, errors: List<Diagnostic>): Piece[] {
+    let r = TextReader.new(text, t, errors);
+    return r.pieces();
+}
+
+/// A byte string's bytes: ASCII text, the escapes, `\xNN` (Lyric 5 §4.5).
+fn bytesValue(text: string, t: Token, errors: List<Diagnostic>): uint8[] {
+    let r = TextReader.new(text, t, errors);
+    return r.bytes();
+}
+
+/// A character literal's character: exactly one, written or escaped (Lyric 5 §4.3).
+fn charValue(text: string, t: Token, errors: List<Diagnostic>): char {
+    let r = TextReader.new(text, t, errors);
+    return r.character();
+}
+
+/// Reads the text of one literal token.
+class TextReader {
+    text: string,
+    cs: char[],
+    // the byte offset of each character in `text`
+    offs: int[],
+    token: Token,
+    errors: List<Diagnostic>,
+    var i: int = 0,
+
+    static fn new(text: string, t: Token, errors: List<Diagnostic>): TextReader {
+        let cs = List<char>.new();
+        let offs = List<int>.new();
+        for ((at, c) in text.charIndices()) {
+            cs.push(c);
+            offs.push(at);
+        }
+        return TextReader {
+            text = text,
+            cs = cs.toArray(),
+            offs = offs.toArray(),
+            token = t,
+            errors = errors,
+        };
+    }
+
+    mut fn at(k: int): char {
+        return if (k < this.cs.length()) this.cs[k] else '\0';
+    }
+
+    mut fn offset(k: int): int {
+        return if (k < this.offs.length()) this.offs[k] else this.text.length();
+    }
+
+    mut fn fail(code: string, message: string): void {
+        report(this.errors, code, message, this.token);
+    }
+
+    /// The pieces of a string literal, any of its prefixes.
+    mut fn pieces(): Piece[] {
+        var format = false;
+        var raw = false;
+        if (this.at(0) == 'f') {
+            format = true;
+            this.i = 1;
+        }
+        if (this.at(this.i) == 'r') {
+            raw = true;
+            this.i += 1;
+        }
+        var hashes = 0;
+        while (this.at(this.i) == '#') {
+            hashes += 1;
+            this.i += 1;
+        }
+        let triple = hashes == 0
+            && this.at(this.i) == '"'
+            && this.at(this.i + 1) == '"'
+            && this.at(this.i + 2) == '"';
+        let open = if (triple) 3 else 1;
+        let from = this.i + open;
+        // the closing quotes, where the lexer found them (an unclosed literal is reported there)
+        let close = if (triple) 3 else 1 + hashes;
+        var to = this.cs.length();
+        if (to - close >= from && this.closesAt(to - close, triple, hashes)) {
+            to -= close;
+        }
+        if (triple) {
+            return this.multiLine(from, to, raw, format);
+        }
+        let out = List<Piece>.new();
+        this.run(from, to, raw, format, "", out);
+        return out.toArray();
+    }
+
+    mut fn closesAt(k: int, triple: bool, hashes: int): bool {
+        if (triple) {
+            return this.at(k) == '"' && this.at(k + 1) == '"' && this.at(k + 2) == '"';
+        }
+        if (this.at(k) != '"') {
+            return false;
+        }
+        var h = 1;
+        while (h <= hashes) {
+            if (this.at(k + h) != '#') {
+                return false;
+            }
+            h += 1;
+        }
+        return true;
+    }
+
+    /// `"""…"""` (Lyric 5 §4.4 rule 3, Swift's): the text starts on the line after the opening
+    /// quotes and ends with the line before the closing ones, whose indentation every line loses.
+    mut fn multiLine(from: int, to: int, raw: bool, format: bool): Piece[] {
+        let out = List<Piece>.new();
+        var start = from;
+        while (start < to && this.at(start) != '\n') {
+            if (!isBlank(this.at(start))) {
+                this.fail(
+                    "LYS-LEX0014",
+                    "the text of a multi-line string starts on the line after its opening quotes"
+                );
+                return out.toArray();
+            }
+            start += 1;
+        }
+        // the closing line: blanks alone, the indentation
+        var lastBreak = to - 1;
+        while (lastBreak >= start && this.at(lastBreak) != '\n') {
+            if (!isBlank(this.at(lastBreak))) {
+                this.fail(
+                    "LYS-LEX0014",
+                    "the closing quotes of a multi-line string stand on a line of their own"
+                );
+                return out.toArray();
+            }
+            lastBreak -= 1;
+        }
+        if (lastBreak <= start) {
+            // nothing between the two lines of quotes
+            out.push(Piece.Text(""));
+            return out.toArray();
+        }
+        let indent = StringBuilder.new();
+        var k = lastBreak + 1;
+        while (k < to) {
+            indent.appendChar(this.at(k));
+            k += 1;
+        }
+        this.run(start + 1, lastBreak, raw, format, indent.toString(), out);
+        return out.toArray();
+    }
+
+    /// Reads the characters `from..to` into pieces: escapes unless `raw`, holes when `format`,
+    /// `indent` taken off every line.
+    mut fn run(
+        from: int,
+        to: int,
+        raw: bool,
+        format: bool,
+        indent: string,
+        out: List<Piece>
+    ): void {
+        let text = StringBuilder.new();
+        let indentChars = indent.charCount();
+        var k = from;
+        // a hole's column counts characters: on the token's first line from the token's column, on
+        // a later line from that line's start
+        var lineStartChar = 0;
+        var columnBase = this.token.column;
+        var line = this.token.line;
+        var atLineStart = indentChars > 0;
+        // the line ends before `from` count for the holes' lines
+        var b = 0;
+        while (b < from) {
+            if (this.at(b) == '\n') {
+                line += 1;
+                lineStartChar = b + 1;
+                columnBase = 1;
+            }
+            b += 1;
+        }
+        var underIndented = false;
+        while (k < to) {
+            if (atLineStart) {
+                atLineStart = false;
+                if (this.hasPrefix(k, indent)) {
+                    k += indentChars;
+                } else if (this.blankLine(k, to)) {
+                    while (k < to && this.at(k) != '\n') {
+                        k += 1;
+                    }
+                } else if (!underIndented) {
+                    underIndented = true;
+                    this.fail(
+                        "LYS-LEX0015",
+                        "a line of a multi-line string is indented less than its closing quotes"
+                    );
+                }
+                continue;
+            }
+            let c = this.at(k);
+            if (c == '\n') {
+                text.appendChar('\n');
+                line += 1;
+                lineStartChar = k + 1;
+                columnBase = 1;
+                k += 1;
+                atLineStart = indentChars > 0;
+            } else if (c == '\r' && this.at(k + 1) == '\n') {
+                k += 1;
+            } else if (c == '\\' && !raw) {
+                this.i = k;
+                let e = this.escape(false);
+                if (e != null) {
+                    text.appendChar(e);
+                }
+                k = this.i;
+            } else if (format && c == '{' && this.at(k + 1) == '{') {
+                text.appendChar('{');
+                k += 2;
+            } else if (format && c == '}' && this.at(k + 1) == '}') {
+                text.appendChar('}');
+                k += 2;
+            } else if (format && c == '{') {
+                if (text.length() > 0) {
+                    out.push(Piece.Text(text.toString()));
+                    text.clear();
+                }
+                k = this.hole(k + 1, to, line, k + 1 - lineStartChar + columnBase, out);
+            } else {
+                text.appendChar(c);
+                k += 1;
+            }
+        }
+        if (text.length() > 0 || out.length() == 0) {
+            out.push(Piece.Text(text.toString()));
+        }
+    }
+
+    mut fn hasPrefix(k: int, prefix: string): bool {
+        var j = k;
+        for (c in prefix.chars()) {
+            if (this.at(j) != c) {
+                return false;
+            }
+            j += 1;
+        }
+        return true;
+    }
+
+    mut fn blankLine(k: int, to: int): bool {
+        var j = k;
+        while (j < to && this.at(j) != '\n') {
+            if (!isBlank(this.at(j))) {
+                return false;
+            }
+            j += 1;
+        }
+        return true;
+    }
+
+    /// A hole from the character after its `{`: its expression up to a `:` or the `}` that close
+    /// it at its own depth, strings in it skipped whole. Returns the index after the `}`.
+    mut fn hole(from: int, to: int, line: int, column: int, out: List<Piece>): int {
+        var depth = 0;
+        var k = from;
+        var colon = -1;
+        while (k < to) {
+            let c = this.at(k);
+            if (c == '"') {
+                k = this.skipString(k + 1, to);
+                continue;
+            }
+            if (c == '(' || c == '[' || c == '{') {
+                depth += 1;
+            } else if ((c == ')' || c == ']') && depth > 0) {
+                depth -= 1;
+            } else if (c == '}') {
+                if (depth == 0) {
+                    break;
+                }
+                depth -= 1;
+            } else if (c == ':'
+                && depth == 0
+                && colon < 0
+                && this.at(k + 1) != ':'
+                && this.at(k - 1) != ':') {
+                colon = k;
+            }
+            k += 1;
+        }
+        if (k >= to) {
+            // the lexer reported the f-string as not closed
+            return to;
+        }
+        let exprEnd = if (colon >= 0) colon else k;
+        var spec: ?string = null;
+        if (colon >= 0) {
+            let s = StringBuilder.new();
+            var j = colon + 1;
+            while (j < k) {
+                s.appendChar(this.at(j));
+                j += 1;
+            }
+            spec = s.toString();
+        }
+        let start = this.token.start + this.offset(from);
+        out.push(Piece.Hole(start, this.token.start + this.offset(exprEnd), line, column, spec));
+        return k + 1;
+    }
+
+    mut fn skipString(from: int, to: int): int {
+        var k = from;
+        while (k < to && this.at(k) != '"') {
+            if (this.at(k) == '\\') {
+                k += 1;
+            }
+            k += 1;
+        }
+        return k + 1;
+    }
+
+    /// The escape at `this.i`, a `\`: its character, or `null` where it is malformed (reported).
+    /// Leaves `this.i` after it. `\xNN` is a byte's and stands in a byte string alone.
+    mut fn escape(bytes: bool): ?char {
+        let c = this.at(this.i + 1);
+        this.i += 2;
+        return match (c) {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '\\' => '\\',
+            '\'' => '\'',
+            '"' => '"',
+            '0' => '\0',
+            'u' => this.unicodeEscape(bytes),
+            'x' => this.byteEscape(bytes),
+            _ => {
+                this.fail("LYS-LEX0007", f"'\\{c}' is no escape");
+                null
+            }
+        };
+    }
+
+    /// `\u{H…}`: one to eight hex digits naming a scalar value, at most 10FFFF, no surrogate.
+    mut fn unicodeEscape(bytes: bool): ?char {
+        if (bytes) {
+            this.fail("LYS-LEX0012", "a byte string holds bytes: '\\u{…}' names a character");
+        }
+        if (this.at(this.i) != '{') {
+            this.fail("LYS-LEX0007", "'\\u' takes its digits in braces: '\\u{1F600}'");
+            return null;
+        }
+        this.i += 1;
+        var value = 0;
+        var count = 0;
+        while (this.at(this.i) != '}' && this.at(this.i) != '\0' && this.at(this.i) != '"') {
+            let d = this.at(this.i).toDigit(16);
+            if (d == null || count == 8) {
+                this.fail("LYS-LEX0007", "'\\u{…}' takes one to eight hex digits");
+                return null;
+            }
+            value = value * 16 + d;
+            count += 1;
+            this.i += 1;
+        }
+        if (this.at(this.i) != '}' || count == 0) {
+            this.fail("LYS-LEX0007", "'\\u{…}' takes one to eight hex digits");
+            return null;
+        }
+        this.i += 1;
+        if (value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) {
+            this.fail("LYS-LEX0007", "'\\u{…}' names no Unicode scalar value");
+            return null;
+        }
+        return char.fromUint32(value as uint32);
+    }
+
+    /// `\xNN`: a byte by two hex digits, in a byte string alone.
+    mut fn byteEscape(bytes: bool): ?char {
+        if (!bytes) {
+            this.fail(
+                "LYS-LEX0013",
+                "'\\x' is a byte's escape and stands in a byte string alone; a character is '\\u{…}'"
+            );
+        }
+        let hi = this.at(this.i).toDigit(16);
+        let lo = this.at(this.i + 1).toDigit(16);
+        if (hi == null || lo == null) {
+            this.fail("LYS-LEX0007", "'\\x' takes two hex digits");
+            return null;
+        }
+        this.i += 2;
+        return char.fromUint32((hi * 16 + lo) as uint32);
+    }
+
+    /// The bytes of `b"…"`.
+    mut fn bytes(): uint8[] {
+        let out = List<uint8>.new();
+        var k = 2;
+        let to = if (this.cs.length() > 2 && this.at(this.cs.length() - 1) == '"') this.cs.length()
+            - 1
+            else this.cs.length();
+        while (k < to) {
+            let c = this.at(k);
+            if (c == '\\') {
+                this.i = k;
+                let e = this.escape(true);
+                if (e != null) {
+                    out.push((e as uint32) as uint8);
+                }
+                k = this.i;
+            } else {
+                if ((c as uint32) > 127) {
+                    this.fail(
+                        "LYS-LEX0012",
+                        f"a byte string holds ASCII text: '{c}' is written by its number, '\\xNN'"
+                    );
+                } else {
+                    out.push((c as uint32) as uint8);
+                }
+                k += 1;
+            }
+        }
+        return out.toArray();
+    }
+
+    /// The one character of `'…'`.
+    mut fn character(): char {
+        let to = if (this.cs.length() > 1 && this.at(this.cs.length() - 1) == '\'') this.cs.length()
+            - 1
+            else this.cs.length();
+        let found = List<char>.new();
+        var k = 1;
+        while (k < to) {
+            if (this.at(k) == '\\') {
+                this.i = k;
+                let e = this.escape(false);
+                if (e != null) {
+                    found.push(e);
+                }
+                k = this.i;
+            } else {
+                found.push(this.at(k));
+                k += 1;
+            }
+        }
+        if (found.length() != 1) {
+            this.fail("LYS-LEX0008", "a character literal holds exactly one character");
+            return if (found.length() > 0) found[0] else '\0';
+        }
+        return found[0];
+    }
+}
+
+fn isBlank(c: char): bool {
+    return c == ' ' || c == '\t' || c == '\r';
+}

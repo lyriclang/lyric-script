@@ -1,0 +1,26 @@
+// The core together: a struct, a class with a var field, a loop, an f-string, floats.
+struct Point {
+    x: int
+    y: int
+    fn dist2(): int = this.x * this.x + this.y * this.y
+}
+
+class Tally {
+    var count: int = 0
+    var sum: float = 0
+    fn add(v: float) {
+        this.count += 1
+        this.sum += v
+    }
+    fn mean(): float = if (this.count == 0) 0.0 else this.sum / this.count
+}
+
+let tally = Tally { }
+for (i in 1..=4) {
+    let p = Point { x = i, y = i + 1 }
+    tally.add(p.dist2())
+}
+var label = "mean"
+label += " of squares"
+println(f"{label}: {tally.mean()} over {tally.count} points")
+println(if (tally.mean() > 20) "big" else "small")

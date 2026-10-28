@@ -1,0 +1,163 @@
+// The checker for the core: names in their scopes, the script's globals, types with int widened to
+// float, functions by name and count with named arguments and defaults, structs, classes and
+// enums, loops, and Lyric 5's codes for each fault.
+import std.collections { List };
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.parser { parse };
+import lyric_script.compiler.typed { Ty };
+
+/// The codes of the parse's and the check's errors, in that order.
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+/// The type of the script's global `name`.
+fn globalType(source: string, name: string): Ty {
+    for (g in checkModule(parse(source).module).program.globals) {
+        if (g.name == name) {
+            return g.ty;
+        }
+    }
+    return Ty.Unknown;
+}
+
+@Test
+fn anIntWidensToAFloatAndNoOtherWay(): void {
+    assertEq(errs("let x: float = 1\nprintln(x)"), []);
+    assertEq(globalType("let y = 1 + 2.5", "y"), Ty.Float);
+    assertEq(globalType("let y = 7 / 2", "y"), Ty.Int);
+    assertEq(errs("let y = 1.5\nlet z: int = y\nprintln(z)"), ["LYS-SEM0001"]);
+    assertEq(errs("var n = 1\nn += 0.5"), ["LYS-SEM0001"]);
+}
+
+@Test
+fn namesAreFoundInTheirScopes(): void {
+    assertEq(errs("println(nothing)"), ["LYS-SEM0002"]);
+    assertEq(errs("struct P {\n    x: int\n}\nprintln(P)"), ["LYS-SEM0052"]);
+    assertEq(errs("let a = 1\nlet a = 2\nprintln(a)"), ["LYS-SEM0176"]);
+    assertEq(errs("if (true) {\n    let inner = 1\n}\nprintln(inner)"), ["LYS-SEM0002"]);
+    // a block's binding shadows the script's
+    assertEq(errs("let a = 1\nif (true) {\n    let a = \"x\"\n    println(a)\n}"), []);
+}
+
+@Test
+fn operatorsTakeTheirOperands(): void {
+    assertEq(errs("println(\"a\" + \"b\")"), []);
+    assertEq(errs("println(\"a\" + 1)"), ["LYS-SEM0003"]);
+    assertEq(errs("println(!1)"), ["LYS-SEM0003"]);
+    assertEq(errs("println(true == 1)"), ["LYS-SEM0059"]);
+    assertEq(errs("println(\"a\" < \"b\")"), []);
+    assertEq(errs("println(1 & 2.0)"), ["LYS-SEM0003"]);
+    assertEq(errs("if (1) {\n    println(1)\n}"), ["LYS-SEM0004"]);
+}
+
+@Test
+fn aLetIsNeverWritten(): void {
+    assertEq(errs("var a = 1\na = 2\nprintln(a)"), []);
+    assertEq(errs("let a = 1\na = 2"), ["LYS-SEM0019"]);
+    assertEq(errs("println(1)\n1 + 2"), ["LYS-SEM0022"]);
+}
+
+@Test
+fn functionsReturnWhatTheySay(): void {
+    assertEq(errs("fn f(x: int): int {\n    return x\n}\nprintln(f(1))"), []);
+    assertEq(errs("fn g(): int {\n    println(1)\n}"), ["LYS-SEM0017"]);
+    assertEq(errs("fn h() {\n    return 1\n}"), ["LYS-SEM0001"]);
+    assertEq(errs("fn k(): int {\n    return\n}"), ["LYS-SEM0226"]);
+    // a loop without a break never ends: nothing follows it
+    assertEq(errs("fn forever(): int {\n    loop {\n        println(1)\n    }\n}"), []);
+    assertEq(errs("return"), ["LYS-SEM0102"]);
+}
+
+@Test
+fn anExpressionBodyGivesItsType(): void {
+    assertEq(errs("fn twice(x: int) = x * 2\nlet t: int = twice(2)\nprintln(t)"), []);
+    assertEq(globalType("fn half(x: int) = x / 2.0\nlet h = half(3)", "h"), Ty.Float);
+    assertEq(errs("fn half(x: int) = x / 2.0\nprintln(half(3))"), []);
+    assertEq(errs("fn loopy(x: int) = loopy(x)"), ["LYS-SEM0010"]);
+}
+
+@Test
+fn callsFitTheirParameters(): void {
+    let p = "fn p(a: int, b: int = 2) = a + b\n";
+    assertEq(errs(p + "println(p(1))"), []);
+    assertEq(errs(p + "println(p(1, b: 3))"), []);
+    assertEq(errs(p + "println(p())"), ["LYS-SEM0014"]);
+    assertEq(errs(p + "println(p(1, c: 3))"), ["LYS-SEM0119"]);
+    assertEq(errs(p + "println(p(b: 3, 1))"), ["LYS-SEM0119", "LYS-SEM0014"]);
+    // one name, several counts (Lyric 5 §8.1.2)
+    assertEq(
+        errs("fn of(a: int) = a\nfn of(a: int, b: int) = a + b\nprintln(of(1) + of(1, 2))"),
+        []
+    );
+    assertEq(errs("fn of(a: int) = a\nfn of(b: int) = b"), ["LYS-SEM0085"]);
+}
+
+@Test
+fn structsAreBuiltWhole(): void {
+    let p = "struct P {\n    x: int\n    y: int = 0\n}\n";
+    assertEq(errs(p + "let a = P { x = 1 }\nprintln(a.x + a.y)"), []);
+    assertEq(errs(p + "let a = P { x = 1 }\na.x = 2"), ["LYS-SEM0019"]);
+    assertEq(errs(p + "let a = P { }\nprintln(a.y)"), ["LYS-SEM0106"]);
+    assertEq(errs(p + "let a = P { x = 1, x = 2 }\nprintln(a.y)"), ["LYS-SEM0070"]);
+    assertEq(errs(p + "let a = P { z = 1 }\nprintln(a.y)"), ["LYS-SEM0015", "LYS-SEM0106"]);
+    assertEq(errs(p + "let a = P(1)\nprintln(a.y)"), ["LYS-SEM0012"]);
+    assertEq(errs("struct Q {\n    var x: int\n}"), ["LYS-SEM0101"]);
+    // `P(1)` is `P.new(1)` (05 D11)
+    assertEq(
+        errs(
+            "struct P {\n    x: int\n    static fn new(x: int): P = P { x = x }\n}\nprintln(P(3).x)"
+        ),
+        []
+    );
+}
+
+@Test
+fn aClassHasVarFieldsAndMethods(): void {
+    let c = "class C {\n    var n: int = 0\n    fn inc() {\n        this.n += 1\n    }\n}\n";
+    assertEq(errs(c + "let c = C { }\nc.inc()\nprintln(c.n)"), []);
+    assertEq(errs(c + "let c = C { }\nc.dec()"), ["LYS-SEM0012"]);
+    assertEq(errs(c + "C.inc()"), ["LYS-SEM0055"]);
+    assertEq(errs("fn f() {\n    println(this)\n}"), ["LYS-SEM0008"]);
+}
+
+@Test
+fn enumsAreTheirVariants(): void {
+    let e = "enum Color { Red, Green }\n";
+    assertEq(errs(e + "let c = Color.Red\nprintln(c == Color.Green)"), []);
+    assertEq(errs(e + "println(Color.Blue == Color.Red)"), ["LYS-SEM0012"]);
+}
+
+@Test
+fn loopsAndTheirBreaks(): void {
+    assertEq(errs("break"), ["LYS-SEM0147"]);
+    assertEq(errs("while (true) {\n    break 1\n}"), ["LYS-SEM0148"]);
+    assertEq(errs("let v = loop {\n    break 42\n}\nlet w: int = v\nprintln(w)"), []);
+    assertEq(errs("for (i in 0..3) {\n    println(i)\n}"), []);
+    assertEq(errs("for (i in 0..3) {\n    i = 1\n}"), ["LYS-SEM0019"]);
+}
+
+@Test
+fn valuesOfIfAndBlocks(): void {
+    assertEq(globalType("let x = if (true) 1 else 2.5", "x"), Ty.Float);
+    assertEq(errs("let x = if (true) 1 else 2.5\nprintln(x)"), []);
+    assertEq(errs("let y = if (true) 1 else \"a\"\nprintln(y)"), ["LYS-SEM0016"]);
+    assertEq(globalType("let b = {\n    let t = 2\n    t * 3\n}", "b"), Ty.Int);
+    assertEq(errs("let n = 3\nprintln(f\"n = {n}, half = {n / 2.0}\")"), []);
+}
+
+@Test
+fn whatLyricScriptHasNot(): void {
+    assertEq(errs("let a: int8 = 1\nprintln(a)"), ["LYS-SEM0100"]);
+    // what a later milestone builds is named as such
+    assertEq(errs("let xs = [1]\nprintln(1)"), ["LYS-NYI0001"]);
+}

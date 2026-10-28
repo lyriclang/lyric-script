@@ -1,0 +1,264 @@
+//! The syntax tree as S-expressions — `(+ 1 (* 2 3))` — for the parser's tests and for looking at
+//! what the parser made of a script. One line per item; no spans.
+import std.collections { List };
+import lyric_script.compiler.ast {
+    Block,
+    Decl,
+    Expr,
+    FnDecl,
+    Item,
+    Module,
+    Param,
+    Stmt,
+    TypeExpr,
+    binaryText,
+    unaryText,
+};
+
+fn showModule(m: Module): string {
+    let out = List<string>.new();
+    let fm = m.frontmatter;
+    if (fm != null) {
+        out.push("(frontmatter " + quoted(fm) + ")");
+    }
+    for (item in m.items) {
+        out.push(showItem(item));
+    }
+    return out.toArray().join("\n");
+}
+
+fn showItem(item: Item): string {
+    return match (item) {
+        .Decl(d) => showDecl(d),
+        .Stmt(s) => showStmt(s),
+    };
+}
+
+fn showDecl(d: Decl): string {
+    return match (d) {
+        .Fn(f) => showFn(f),
+        .Type(t) => {
+            let parts = List<string>.new();
+            parts.push(if (t.isClass) "class" else "struct");
+            parts.push(t.name);
+            for (f in t.fields) {
+                let dflt = f.default;
+                let kept = if (dflt != null) " = " + showExpr(dflt) else "";
+                let word = if (f.isVar) "var " else "";
+                parts.push("(" + word + f.name + ": " + showType(f.type) + kept + ")");
+            }
+            for (m in t.methods) {
+                parts.push(showFn(m));
+            }
+            "(" + parts.toArray().join(" ") + ")"
+        }
+        .Enum(e) => {
+            let parts = List<string>.new();
+            parts.push("enum");
+            parts.push(e.name);
+            for (v in e.variants) {
+                parts.push(v.name);
+            }
+            for (m in e.methods) {
+                parts.push(showFn(m));
+            }
+            "(" + parts.toArray().join(" ") + ")"
+        }
+        .Alias(a) => "(type " + a.name + " " + showType(a.type) + ")",
+    };
+}
+
+fn showFn(f: FnDecl): string {
+    let params = List<string>.new();
+    for (p in f.params) {
+        params.push(showParam(p));
+    }
+    let r = f.returns;
+    let returns = if (r != null) ": " + showType(r) + " " else "";
+    let body = match (f.body) {
+        .Block(b) => showBlock(b),
+        .Expr(e) => "= " + showExpr(e),
+    };
+    let words = if (f.isStatic) "static fn" else "fn";
+    return "("
+        + words
+        + " "
+        + f.name
+        + " ("
+        + params.toArray().join(" ")
+        + ") "
+        + returns
+        + body
+        + ")";
+}
+
+fn showParam(p: Param): string {
+    let dflt = p.default;
+    let given = if (dflt != null) " = " + showExpr(dflt) else "";
+    return p.name + ": " + showType(p.type) + given;
+}
+
+fn showBlock(b: Block): string {
+    let parts = List<string>.new();
+    for (s in b.stmts) {
+        parts.push(showStmt(s));
+    }
+    return "{" + parts.toArray().join("; ") + "}";
+}
+
+fn showStmt(s: Stmt): string {
+    return match (s) {
+        .Expr(e, _) => showExpr(e),
+        .Let(isVar, name, ty, value, _) => {
+            let word = if (isVar) "var" else "let";
+            let typed = if (ty != null) ": " + showType(ty) else "";
+            let given = if (value != null) " " + showExpr(value) else "";
+            "(" + word + " " + name + typed + given + ")"
+        }
+        .If(cond, then, otherwise, _) => {
+            let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";
+            "(if " + showExpr(cond) + " " + showBlock(then) + rest + ")"
+        }
+        .While(cond, body, _, _) => "(while " + showExpr(cond) + " " + showBlock(body) + ")",
+        .For(name, iterable, body, _, _) => "(for "
+            + name
+            + " "
+            + showExpr(iterable)
+            + " "
+            + showBlock(body)
+            + ")",
+        .Break(_, value, _) => if (value != null) "(break " + showExpr(value) + ")" else "(break)",
+        .Continue(_, _) => "(continue)",
+        .Return(value, _) => if (value != null) "(return " + showExpr(value) + ")" else "(return)",
+        .Block(b, _) => showBlock(b),
+    };
+}
+
+fn showExpr(e: Expr): string {
+    return match (e) {
+        .Int(n, _) => f"{n}",
+        .Float(x, _) => f"{x}",
+        .Bool(b, _) => if (b) "true" else "false",
+        .Char(c, _) => f"'{c}'",
+        .Str(s, _) => quoted(s),
+        .Bytes(bs, _) => {
+            let parts = List<string>.new();
+            for (b in bs) {
+                parts.push(f"{b}");
+            }
+            "b[" + parts.toArray().join(" ") + "]"
+        }
+        .Interpolated(segments, _) => {
+            let parts = List<string>.new();
+            for (seg in segments) {
+                parts.push(
+                    match (seg) {
+                        .Text(s) => quoted(s),
+                        .Hole(x, spec) => if (spec != null) showExpr(x) + ":" + spec
+                            else showExpr(x),
+                    }
+                );
+            }
+            "(f " + parts.toArray().join(" ") + ")"
+        }
+        .Null(_) => "null",
+        .Name(n, _) => n,
+        .This(_) => "this",
+        .Unary(op, x, _) => "(" + unaryText(op) + " " + showExpr(x.value) + ")",
+        .Binary(l, op, r, _) => "("
+            + binaryText(op)
+            + " "
+            + showExpr(l.value)
+            + " "
+            + showExpr(r.value)
+            + ")",
+        .Assign(target, op, value, _) => {
+            let word = if (op != null) binaryText(op) + "=" else "=";
+            "(" + word + " " + showExpr(target.value) + " " + showExpr(value.value) + ")"
+        }
+        .Range(a, b, inclusive, _) => {
+            let word = if (inclusive) "..=" else "..";
+            "(" + word + " " + showExpr(a.value) + " " + showExpr(b.value) + ")"
+        }
+        .Cast(x, ty, _) => "(as " + showExpr(x.value) + " " + showType(ty) + ")",
+        .Call(callee, args, _) => {
+            let parts = List<string>.new();
+            parts.push(showExpr(callee.value));
+            for (a in args) {
+                let n = a.name;
+                parts.push(if (n != null) n + ": " + showExpr(a.value) else showExpr(a.value));
+            }
+            "(call " + parts.toArray().join(" ") + ")"
+        }
+        .Index(x, i, _) => "(index " + showExpr(x.value) + " " + showExpr(i.value) + ")",
+        .Member(x, name, optional, _) => {
+            let word = if (optional) "?." else ".";
+            "(" + word + " " + showExpr(x.value) + " " + name + ")"
+        }
+        .List(items, _) => {
+            let parts = List<string>.new();
+            for (x in items) {
+                parts.push(showExpr(x));
+            }
+            "[" + parts.toArray().join(" ") + "]"
+        }
+        .Map(entries, _) => {
+            let parts = List<string>.new();
+            for (entry in entries) {
+                parts.push(showExpr(entry.key) + ": " + showExpr(entry.value));
+            }
+            if (parts.length() == 0) "[:]" else "[" + parts.toArray().join(", ") + "]"
+        }
+        .StructInit(name, fields, _) => {
+            let parts = List<string>.new();
+            parts.push(name);
+            for (field in fields) {
+                parts.push(field.name + "=" + showExpr(field.value));
+            }
+            "(init " + parts.toArray().join(" ") + ")"
+        }
+        .If(cond, then, otherwise, _) => "(if "
+            + showExpr(cond.value)
+            + " "
+            + showExpr(then.value)
+            + " "
+            + showExpr(otherwise.value)
+            + ")",
+        .Block(b, _) => showBlock(b),
+        .Loop(body, _, _) => "(loop " + showBlock(body) + ")",
+    };
+}
+
+fn showType(t: TypeExpr): string {
+    return match (t) {
+        .Named(name, args, _) => {
+            let parts = List<string>.new();
+            for (a in args) {
+                parts.push(showType(a));
+            }
+            if (parts.length() == 0) name else name + "<" + parts.toArray().join(", ") + ">"
+        }
+        .Optional(inner, _) => "?" + showType(inner.value),
+        .List(inner, _) => showType(inner.value) + "[]",
+        .Tuple(elements, _) => {
+            let parts = List<string>.new();
+            for (x in elements) {
+                parts.push(showType(x));
+            }
+            "(" + parts.toArray().join(", ") + ")"
+        }
+        .Fn(params, result, _) => {
+            let parts = List<string>.new();
+            for (x in params) {
+                parts.push(showType(x));
+            }
+            "fn(" + parts.toArray().join(", ") + ") -> " + showType(result.value)
+        }
+    };
+}
+
+/// A string in quotes, its quotes, backslashes and line ends escaped.
+fn quoted(s: string): string {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    return "\"" + escaped + "\"";
+}

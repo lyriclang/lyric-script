@@ -3,11 +3,17 @@
 A statically typed scripting language of the Lyric family: scripts for the terminal, extensions
 for hosts with a sandbox, an instruction budget and hot reload, and embedding in Lyric 5 programs.
 
-> **In development, nothing runs yet.** The design is complete
-> ([`design/v1/spec/`](design/v1/spec/)); the implementation follows the plan to
-> `lyric-script 1.0.0` (milestones S0–S15 in
+> **In development.** The design is complete ([`design/v1/spec/`](design/v1/spec/)); the
+> implementation follows the plan to `lyric-script 1.0.0` (milestones S0–S15 in
 > [`14-migration-und-umsetzungsplan.md`](design/v1/spec/14-migration-und-umsetzungsplan.md)).
-> Where it stands: [`STATUS.md`](STATUS.md).
+> The core of the language runs — functions, structs, classes, enums, loops, `int` and `float`,
+> strings and f-strings, `print`/`println` —; collections, generics, errors, modules and the
+> standard library follow. Where it stands: [`STATUS.md`](STATUS.md).
+
+```
+lyric-script run examples/scripts/tally.lyrs    # or: lyric-script examples/scripts/tally.lyrs
+lyric-script check --json script.lyrs           # diagnostics as JSON lines
+```
 
 ## The family
 

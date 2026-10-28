@@ -61,6 +61,12 @@ Regel, die der Lexer mit einem Token Vorausschau entscheidet, hält Formatter, T
 einfach und das Verhalten vorhersagbar; die eine bekannte Falle (unäres `+`/`-` am Zeilenanfang)
 fängt eine Warnung statt Kotlins Stille.
 
+*Präzisierung (S2b, 2026-10-28):* `>` und `>>` fallen aus Regel (2) heraus — sie schließen auch
+Typargumente (`let xs: List<int>` am Zeilenende), und der Lexer kann die beiden nicht
+unterscheiden. Ein Vergleich, der auf der nächsten Zeile weitergeht, stellt `>` an deren Anfang;
+das deckt Regel (3) schon ab. Ebenso: ein Zeilenende nach `;` zählt nicht (Regel 5), und
+Dokumentationskommentare tragen nichts zur Entscheidung bei.
+
 **Frontmatter (Hd).** Der Kopf soll etwas tun; Lyric 5 sagt „Kommentare tun nichts". Ein eigener,
 nur am Dateianfang gültiger Block ist ehrlicher als ein Kommentar mit Bedeutung, und Rust hat
 dieselbe Form gewählt.

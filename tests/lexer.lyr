@@ -1,0 +1,235 @@
+// The lexer: Lyric 5's tokens, the line end that ends a statement and each of its continuation
+// rules from both sides, the frontmatter, and the faults it names without stopping.
+import std.collections { List };
+import std.test { assertEq };
+import lyric_script.compiler.lexer { lex };
+import lyric_script.compiler.token { TokenKind };
+
+/// The tokens' texts, a kept line end as `NL`, the frontmatter as `FM`, `Eof` left out.
+fn render(source: string): string {
+    let out = List<string>.new();
+    for (t in lex(source).tokens) {
+        match (t.kind) {
+            .Eof => { }
+            .Newline => out.push("NL"),
+            .Frontmatter => out.push("FM"),
+            _ => out.push(source[t.start..t.end].toString()),
+        }
+    }
+    return out.toArray().join(" ");
+}
+
+fn kinds(source: string): TokenKind[] {
+    let out = List<TokenKind>.new();
+    for (t in lex(source).tokens) {
+        if (t.kind != .Eof) {
+            out.push(t.kind);
+        }
+    }
+    return out.toArray();
+}
+
+fn errorCodes(source: string): string[] {
+    let out = List<string>.new();
+    for (e in lex(source).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+@Test
+fn aLineEndEndsAStatement(): void {
+    assertEq(render("let a = 1\nlet b = 2\n"), "let a = 1 NL let b = 2 NL");
+    assertEq(render("a\nb"), "a NL b");
+}
+
+@Test
+fn insideParenthesesAndBracketsALineEndIsNone(): void {
+    assertEq(render("f(1,\n2\n)\n"), "f ( 1 , 2 ) NL");
+    assertEq(render("[1\n, 2\n]"), "[ 1 , 2 ]");
+    // a block in parentheses has statements again
+    assertEq(render("f({\na\nb\n})"), "f ( { a NL b NL } )");
+}
+
+@Test
+fn aLineEndAfterATokenThatAsksForMoreIsNone(): void {
+    assertEq(render("let a =\n1\n"), "let a = 1 NL");
+    assertEq(render("a +\nb"), "a + b");
+    assertEq(render("a &&\nb"), "a && b");
+    assertEq(render("xs.\nmap"), "xs . map");
+    assertEq(render("(x) =>\nx"), "( x ) => x");
+    assertEq(render("x +=\n1"), "x += 1");
+    assertEq(render("fn f() {\nreturn 1\n}"), "fn f ( ) { return 1 NL }");
+}
+
+@Test
+fn aLineEndAfterAClosingAngleIsKept(): void {
+    // `>` also closes type arguments
+    assertEq(render("let xs: List<int>\nf()"), "let xs : List < int > NL f ( )");
+    assertEq(
+        render("let m: Map<string, List<int>>\nf()"),
+        "let m : Map < string , List < int >> NL f ( )"
+    );
+}
+
+@Test
+fn aLineEndBeforeATokenNoStatementStartsWithIsNone(): void {
+    assertEq(render("xs\n.map(f)\n"), "xs . map ( f ) NL");
+    assertEq(render("a?\n?.b"), "a ? ?. b");
+    assertEq(render("if (a) {\n}\nelse {\n}"), "if ( a ) { } else { }");
+    assertEq(render("try f()\ncatch (e) {\n}"), "try f ( ) catch ( e ) { }");
+    assertEq(render("a\n&& b"), "a && b");
+    assertEq(render("a\n> b"), "a > b");
+    assertEq(render("a\n?? b"), "a ?? b");
+    // a word that starts a statement keeps the line end
+    assertEq(render("a\nelsewhere"), "a NL elsewhere");
+}
+
+@Test
+fn aSignAtTheStartOfALineStartsAStatementWithAWarning(): void {
+    let l = lex("a\n-b");
+    assertEq(render("a\n-b"), "a NL - b");
+    assertEq(l.warnings.length(), 1);
+    assertEq(l.warnings[0].code, "LYS-LEX0101");
+    assertEq(l.warnings[0].line, 2);
+    // the operator at the end of the line goes on, without a warning
+    assertEq(render("a -\nb"), "a - b");
+    assertEq(lex("a -\nb").warnings.length(), 0);
+}
+
+@Test
+fn lineEndsCollapseAndNoneStandsFirst(): void {
+    assertEq(render("\n\na\n\n\nb\n\n"), "a NL b NL");
+    assertEq(render("a;\nb;"), "a ; b ;");
+    assertEq(render("a // a comment\n\nb"), "a NL b");
+}
+
+@Test
+fn commentsAreNoTokens(): void {
+    assertEq(render("a /* x /* nested */ y */ b"), "a b");
+    assertEq(render("/// doc\nfn f() {\n}"), "fn f ( ) { }");
+    assertEq(render("//! module\n\nlet a = 1"), "let a = 1");
+    assertEq(render("a /* over\nlines */\nb"), "a NL b");
+}
+
+@Test
+fn numbers(): void {
+    assertEq(
+        kinds("1_000 0xff 0b1010 0o17 1.5 2e10 1.5e-3"),
+        [
+            TokenKind.Int,
+            TokenKind.Int,
+            TokenKind.Int,
+            TokenKind.Int,
+            TokenKind.Float,
+            TokenKind.Float,
+            TokenKind.Float,
+        ]
+    );
+    // a point belongs to a number before a digit; after an operand `.5` is a tuple's element
+    assertEq(
+        render("1..5 1..=5 x.0 t.0.1 3.show() x.5"),
+        "1 .. 5 1 ..= 5 x . 0 t . 0 . 1 3 . show ( ) x . 5"
+    );
+    assertEq(errorCodes("1..5 1..=5 x.0 t.0.1 3.show() x.5"), []);
+    // `1.` and `.5` are refused once and read as floats
+    assertEq(render("let a = 1.\nlet b = .5"), "let a = 1. NL let b = .5");
+    assertEq(errorCodes("let a = 1.\nlet b = .5"), ["LYS-LEX0016", "LYS-LEX0016"]);
+    assertEq(
+        kinds("1.5e3 f(.5)"),
+        [TokenKind.Float, TokenKind.Ident, TokenKind.LParen, TokenKind.Float, TokenKind.RParen]
+    );
+}
+
+@Test
+fn stringsAndCharacters(): void {
+    assertEq(render(r#""a\"b" 'c' '\'' x"#), r#""a\"b" 'c' '\'' x"#);
+    assertEq(render(r##"r"c\d" r#"say "hi""# x"##), r##"r"c\d" r#"say "hi""# x"##);
+    assertEq(render("\"\"\"over\nlines\"\"\" x"), "\"\"\"over\nlines\"\"\" x");
+    assertEq(
+        kinds(r#"f"a {m["k"]} {{" b"\x00" fr"\{x}""#),
+        [TokenKind.FormatStr, TokenKind.ByteStr, TokenKind.FormatStr]
+    );
+}
+
+@Test
+fn keywordsAreLyric5sAndTheContextualWordsAreNames(): void {
+    assertEq(
+        kinds("let fn macro params loop using type throws"),
+        [
+            TokenKind.Keyword,
+            TokenKind.Keyword,
+            TokenKind.Keyword,
+            TokenKind.Ident,
+            TokenKind.Ident,
+            TokenKind.Ident,
+            TokenKind.Ident,
+            TokenKind.Ident,
+        ]
+    );
+}
+
+@Test
+fn operatorsTakeTheLongestMatch(): void {
+    assertEq(
+        render("a !in b; !inner; f(xs...); x <<= 1; y ??= z; n +%= 1; a::b"),
+        "a !in b ; ! inner ; f ( xs ... ) ; x <<= 1 ; y ??= z ; n +%= 1 ; a :: b"
+    );
+    assertEq(kinds("->=>"), [TokenKind.Arrow, TokenKind.FatArrow]);
+}
+
+@Test
+fn aShebangAndTheFrontmatterOpenAScript(): void {
+    let source = "#!/usr/bin/env lyric-script\n---\n[dependencies]\ncsv = \"1\"\n---\nprintln(1)\n";
+    assertEq(render(source), "FM println ( 1 ) NL");
+    let fm = lex(source).tokens[0];
+    assertEq(source[fm.start..fm.end].toString(), "---\n[dependencies]\ncsv = \"1\"\n---\n");
+    assertEq(fm.line, 2);
+    // a `---` that is not the first line is two operators
+    assertEq(render("a\n---\n"), "a NL -- -");
+}
+
+@Test
+fn tokensKnowTheirLineAndColumn(): void {
+    // `=` starts no statement, but is not among the tokens of rule 3: the line end stays
+    let t = lex("let x\n  = 1").tokens;
+    assertEq(t[2].kind, TokenKind.Newline);
+    assertEq(t[3].kind, TokenKind.Assign);
+    assertEq(t[3].line, 2);
+    assertEq(t[3].column, 3);
+    assertEq(t[3].start, 8);
+    // a token over lines has the line it starts on
+    let s = lex("x\n\"\"\"a\nb\"\"\" y").tokens;
+    assertEq(s[2].kind, TokenKind.Str);
+    assertEq(s[2].line, 2);
+    assertEq(s[3].line, 3);
+    assertEq(s[3].column, 6);
+    // a column counts characters, as an editor does; the offsets stay bytes
+    let u = lex("\"ä\" x").tokens;
+    assertEq(u[1].column, 5);
+    assertEq(u[1].start, 5);
+}
+
+@Test
+fn faultsAreNamedAndTheLexerGoesOn(): void {
+    assertEq(errorCodes("a $ b"), ["LYS-LEX0001"]);
+    assertEq(render("a $ b"), "a b");
+    // a name beyond ASCII is refused once and read as that name
+    assertEq(errorCodes("let größe = 1"), ["LYS-LEX0001"]);
+    assertEq(render("let größe = 1"), "let größe = 1");
+    // a byte order mark is no part of the source
+    assertEq(render("\u{feff}a"), "a");
+    assertEq(errorCodes("\u{feff}a"), []);
+    assertEq(errorCodes("\"abc\nx"), ["LYS-LEX0009"]);
+    assertEq(render("\"abc\nx"), "\"abc NL x");
+    assertEq(errorCodes("'a"), ["LYS-LEX0010"]);
+    assertEq(errorCodes("a /* b"), ["LYS-LEX0002"]);
+    assertEq(errorCodes("1u8 2.0f32"), ["LYS-LEX0003", "LYS-LEX0003"]);
+    assertEq(errorCodes("0x 0x_1 1e+"), ["LYS-LEX0004", "LYS-LEX0005", "LYS-LEX0006"]);
+    assertEq(errorCodes("f\"a {b\""), ["LYS-LEX0011"]);
+    // Lyric-Script's own codes start at 0100
+    assertEq(errorCodes("---\nx = 1\n"), ["LYS-LEX0100"]);
+    let e = lex("a\n  $").errors[0];
+    assertEq(e.line, 2);
+    assertEq(e.column, 3);
+}

@@ -1,22 +1,35 @@
-//! The `lyric-script` command line (design/v1, 12). It knows `--version`, `help`, and, until
-//! `run` comes with the compiler (S2), `asm`, which runs bytecode in its text form.
+//! The `lyric-script` command line (design/v1, 12): `run` — also `lyric-script script.lyrs` —,
+//! `check`, `--version`, `help`, and, until the debugging tools come, `asm`, which runs bytecode in
+//! its text form.
 import std.fs { readText };
-import std.io { println, eprintln };
+import std.io { eprintln, println };
 import std.os { args };
 import lyric_script { version };
+import lyric_script.cache { clean, load, store };
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate, scriptEntry };
+import lyric_script.compiler.parser { parse };
+import lyric_script.compiler.render { SourceLines, renderJson, renderSummary, renderText };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
 import lyric_script.vm.heap { ScriptString };
-import lyric_script.vm.interp { execute };
-import lyric_script.vm.module { check };
+import lyric_script.vm.interp { Outcome, execute };
+import lyric_script.vm.module { Module, check };
 
 fn usage(): void {
-    println("usage: lyric-script <command>");
+    println("usage: lyric-script <command> | lyric-script SCRIPT.lyrs");
     println("");
     println("commands:");
+    println("  run FILE   run a script (also: lyric-script FILE.lyrs)");
+    println("  check FILE check a script without running it");
+    println("  clean      empty the bytecode cache");
+    println("");
+    println("options of run and check:");
+    println("  --json     the diagnostics as JSON lines on standard output");
     println("  version    print the version (also --version)");
     println("  help       print this text (also --help)");
-    println("  asm FILE   run a .lyrsasm file's 'main' (provisional, until 'run' in S2)");
+    println("  asm FILE   run a .lyrsasm file's 'main' (bytecode in its text form)");
 }
 
 fn main(): int {
@@ -34,26 +47,214 @@ fn main(): int {
         usage();
         return 0;
     }
-    if (command == "asm") {
-        if (given.length() != 3) {
-            eprintln("error[LYS-CLI0002]: 'asm' takes one file");
-            eprintln("  = help: lyric-script asm program.lyrsasm");
+    if (command == "clean" && given.length() == 2) {
+        let dir = clean();
+        if (dir != null) {
+            println(f"emptied {dir}");
+        }
+        return 0;
+    }
+    if (command == "run" || command == "check" || command == "asm") {
+        let o = options(given, 2, null);
+        if (o.fault != 0) {
+            return o.fault;
+        }
+        let file = o.file;
+        if (file == null || (command == "asm" && o.json)) {
+            let example = if (command == "asm") "program.lyrsasm" else "script.lyrs";
+            eprintln(f"error[LYS-CLI0002]: '{command}' takes one file");
+            eprintln(f"  = help: lyric-script {command} {example}");
             return 2;
         }
-        return runAsm(given[2]);
+        return match (command) {
+            "run" => runScript(file, o.json),
+            "check" => checkScript(file, o.json),
+            _ => runAsm(file),
+        };
+    }
+    // `lyric-script script.lyrs` runs it (12 CLI)
+    if (command.endsWith(".lyrs")) {
+        let o = options(given, 2, command);
+        if (o.fault != 0) {
+            return o.fault;
+        }
+        return runScript(command, o.json);
     }
     eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
     eprintln("  = help: lyric-script help lists the commands");
     return 2;
 }
 
+/// What follows a command: its one file and its options.
+struct Options {
+    file: ?string,
+    json: bool,
+    // the exit code of a fault in them, reported already; 0 for none
+    fault: int,
+}
+
+fn options(given: string[], from: int, file: ?string): Options {
+    var found = file;
+    var json = false;
+    var k = from;
+    while (k < given.length()) {
+        let a = given[k];
+        if (a == "--json") {
+            json = true;
+        } else if (a.startsWith("-")) {
+            eprintln(f"error[LYS-CLI0004]: unknown option '{a}'");
+            eprintln("  = help: lyric-script help lists the options");
+            return Options { file = null, json = json, fault = 2 };
+        } else if (found == null) {
+            found = a;
+        } else {
+            eprintln(f"error[LYS-CLI0002]: one file, not '{found}' and '{a}'");
+            return Options { file = null, json = json, fault = 2 };
+        }
+        k += 1;
+    }
+    return Options { file = found, json = json, fault = 0 };
+}
+
+fn readScript(path: string): ?string {
+    return try readText(path) catch (e) {
+        eprintln(f"error[LYS-CLI0003]: cannot read '{path}': {e.message()}");
+        return null;
+    };
+}
+
+/// Checks a script: 1 where it has errors, 0 where it has none; warnings are printed either way.
+fn checkScript(path: string, json: bool): int {
+    let text = readScript(path);
+    if (text == null) {
+        return 2;
+    }
+    return if (compile(text, path, json).module != null) 0 else 1;
+}
+
+/// Runs a script: 0 at its end, 1 where it does not compile, 101 for a panic.
+fn runScript(path: string, json: bool): int {
+    let text = readScript(path);
+    if (text == null) {
+        return 2;
+    }
+    // a script compiled before, without a warning, runs from its bytecode (11 Fmt)
+    let cached = load(text);
+    if (cached != null) {
+        if (json) {
+            println(renderSummary(0, 0));
+        }
+        return finish(execute(cached, scriptEntry, [], -1));
+    }
+    let compiled = compile(text, path, json);
+    let module = compiled.module;
+    if (module == null) {
+        return 1;
+    }
+    if (compiled.warnings == 0) {
+        store(text, module);
+    }
+    return finish(execute(module, scriptEntry, [], -1));
+}
+
+/// What compiling a script gave: its module, `null` where it has errors, and how many warnings
+/// it had — a script with warnings is not cached, so that they are said at every run.
+struct Compiled {
+    module: ?Module,
+    warnings: int,
+}
+
+/// The module of a script, its diagnostics reported — as text on standard error, or as JSON
+/// lines on standard output that a summary closes.
+fn compile(text: string, path: string, json: bool): Compiled {
+    let r = Reporter { path = path, lines = SourceLines.of(text), json = json };
+    let parsed = parse(text);
+    r.all(parsed.errors, parsed.warnings);
+    if (parsed.errors.length() > 0) {
+        r.summary();
+        return Compiled { module = null, warnings = r.warnings };
+    }
+    // the checker reads a tree without faults: a fault of the parse would only echo
+    let checked = checkModule(parsed.module);
+    r.all(checked.errors, checked.warnings);
+    r.summary();
+    if (checked.errors.length() > 0) {
+        return Compiled { module = null, warnings = r.warnings };
+    }
+    let module = generate(checked.program, path);
+    let faults = check(module);
+    if (faults.length() > 0) {
+        // the compiler's fault, not the script's
+        for (fault in faults) {
+            eprintln(
+                f"error[LYS-ICE0002]: {path}: the compiler made faulty bytecode: {fault.function} at {fault.pc}: {fault.message}"
+            );
+        }
+        return Compiled { module = null, warnings = r.warnings };
+    }
+    return Compiled { module = module, warnings = r.warnings };
+}
+
+/// Says a script's diagnostics, in the form asked for, and counts them.
+class Reporter {
+    path: string,
+    lines: SourceLines,
+    json: bool,
+    var errors: int = 0,
+    var warnings: int = 0,
+
+    mut fn all(errors: Diagnostic[], warnings: Diagnostic[]): void {
+        for (d in errors) {
+            this.say("error", d);
+            this.errors += 1;
+        }
+        for (d in warnings) {
+            this.say("warning", d);
+            this.warnings += 1;
+        }
+    }
+
+    mut fn say(severity: string, d: Diagnostic): void {
+        if (this.json) {
+            println(renderJson(d, severity, this.path, this.lines));
+        } else {
+            eprintln(renderText(d, severity, this.path, this.lines));
+        }
+    }
+
+    /// The JSON form's last line: the counts; the text form says nothing more.
+    mut fn summary(): void {
+        if (this.json) {
+            println(renderSummary(this.errors, this.warnings));
+        }
+    }
+}
+
+/// The exit code of a run: 0 at its end, 101 for a panic (reported with its frames).
+fn finish(outcome: Outcome): int {
+    return match (outcome) {
+        .Void | .Scalar(_) | .Ref(_) => 0,
+        .Panic(p) => {
+            eprintln(f"panic [{p.code}]: {p.message}");
+            for (frame in p.trace) {
+                eprintln(f"    {frame}");
+            }
+            101
+        }
+        .Suspended => {
+            eprintln("error: the run was suspended");
+            1
+        }
+    };
+}
+
 /// Runs the file's `main`: its result is printed; a panic is reported with its frames and
 /// ends with 101.
 fn runAsm(path: string): int {
-    let text = try readText(path) catch (e) {
-        eprintln(f"error[LYS-CLI0003]: cannot read '{path}': {e.message()}");
+    let text = readScript(path);
+    if (text == null) {
         return 2;
-    };
+    }
     let module = try assemble(text, path) catch (e: AsmError) {
         eprintln(f"error[LYS-ASM0001]: {path}: {e.message()}");
         return 1;
@@ -67,28 +268,15 @@ fn runAsm(path: string): int {
         }
         return 1;
     }
-    return match (execute(module, "main", [], -1)) {
-        .Void => 0,
-        .Scalar(bits) => {
-            println(bits as int);
-            0
-        }
+    let outcome = execute(module, "main", [], -1);
+    match (outcome) {
+        .Scalar(bits) => println(bits as int),
         .Ref(v) => {
             if (v is ScriptString) {
                 println(v.text);
             }
-            0
         }
-        .Panic(p) => {
-            eprintln(f"panic [{p.code}]: {p.message}");
-            for (frame in p.trace) {
-                eprintln(f"    {frame}");
-            }
-            101
-        }
-        .Suspended => {
-            eprintln("error: the run was suspended");
-            1
-        }
-    };
+        _ => { }
+    }
+    return finish(outcome);
 }

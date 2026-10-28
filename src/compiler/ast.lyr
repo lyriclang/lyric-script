@@ -1,0 +1,269 @@
+//! The syntax tree (spec chapter 2): what the parser reads, before names and types. Its shape is
+//! Lyric 5's `std.syntax` — enums whose children are boxed — with Lyric-Script's forms: a module
+//! of declarations and statements, map literals, expression bodies. The checker reads it into
+//! a tree of its own, with types (S2d); nothing here is changed after the parse.
+
+/// Where a node stands: byte offsets into the source, and the line and column (from 1) of its
+/// start.
+struct Span :: [Equatable, Debug] {
+    start: int,
+    end: int,
+    line: int,
+    column: int,
+}
+
+extend Span {
+    /// Returns the span from this one's start to `other`'s end.
+    fn to(other: Span): Span {
+        return Span { start = this.start, end = other.end, line = this.line, column = this.column };
+    }
+}
+
+enum UnaryOp :: [Equatable, Debug] {
+    Neg,
+    Not,
+    BitNot,
+}
+
+enum BinaryOp :: [Equatable, Debug] {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    AddWrap,
+    SubWrap,
+    MulWrap,
+    Shl,
+    Shr,
+    BitAnd,
+    BitXor,
+    BitOr,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Eq,
+    Ne,
+    In,
+    NotIn,
+    And,
+    Or,
+    Coalesce,
+}
+
+/// A written type: a name with its arguments (`int`, `Point`, `Map<string, int>`), `?T`, `T[]`,
+/// a tuple, a function type.
+enum TypeExpr :: [Debug] {
+    Named(string, TypeExpr[], Span),
+    Optional(Box<TypeExpr>, Span),
+    List(Box<TypeExpr>, Span),
+    Tuple(TypeExpr[], Span),
+    Fn(TypeExpr[], Box<TypeExpr>, Span),
+}
+
+/// An argument of a call: its name, if written with one, and its value.
+struct Arg :: [Debug] {
+    name: ?string,
+    value: Expr,
+}
+
+/// A field of an initializer, `name = value`; `name` alone reads the binding of that name.
+struct FieldInit :: [Debug] {
+    name: string,
+    value: Expr,
+    span: Span,
+}
+
+/// An entry of a map literal, `key: value`.
+struct MapEntry :: [Debug] {
+    key: Expr,
+    value: Expr,
+}
+
+/// A piece of an f-string: text, its escapes resolved, or a hole with its expression and its
+/// format spec.
+enum Segment :: [Debug] {
+    Text(string),
+    Hole(Expr, ?string),
+}
+
+/// An expression, each form a variant; the span is the whole expression's.
+enum Expr :: [Debug] {
+    Int(int, Span),
+    Float(float, Span),
+    Bool(bool, Span),
+    Char(char, Span),
+    Str(string, Span),
+    /// `b"…"`: its bytes.
+    Bytes(uint8[], Span),
+    Interpolated(Segment[], Span),
+    Null(Span),
+    Name(string, Span),
+    This(Span),
+    Unary(UnaryOp, Box<Expr>, Span),
+    Binary(Box<Expr>, BinaryOp, Box<Expr>, Span),
+    /// `target = value`, or `target op= value` with the operator.
+    Assign(Box<Expr>, ?BinaryOp, Box<Expr>, Span),
+    /// `a..b`, or `a..=b` when the flag is set.
+    Range(Box<Expr>, Box<Expr>, bool, Span),
+    Cast(Box<Expr>, TypeExpr, Span),
+    Call(Box<Expr>, Arg[], Span),
+    Index(Box<Expr>, Box<Expr>, Span),
+    /// `x.name`, or `x?.name` when the flag is set.
+    Member(Box<Expr>, string, bool, Span),
+    List(Expr[], Span),
+    /// `["a": 1]`, and `[:]` with no entry.
+    Map(MapEntry[], Span),
+    StructInit(string, FieldInit[], Span),
+    /// `if (c) a else b` where a value stands: each branch an expression or a value block.
+    If(Box<Expr>, Box<Expr>, Box<Expr>, Span),
+    Block(Block, Span),
+    Loop(Block, ?string, Span),
+}
+
+/// A statement, each form a variant.
+enum Stmt :: [Debug] {
+    Expr(Expr, Span),
+    /// `let` or, with the flag, `var`: the name, its type if written, its value if given.
+    Let(bool, string, ?TypeExpr, ?Expr, Span),
+    /// `if` as a statement: the `else` is a block's statement or another `if`, or none.
+    If(Expr, Block, ?Box<Stmt>, Span),
+    While(Expr, Block, ?string, Span),
+    /// `for (name in iterable)`.
+    For(string, Expr, Block, ?string, Span),
+    Break(?string, ?Expr, Span),
+    Continue(?string, Span),
+    Return(?Expr, Span),
+    Block(Block, Span),
+}
+
+/// A block: its statements, in order. Where a block gives a value, its last statement does,
+/// when it is an expression (09 NL rule 6).
+struct Block :: [Debug] {
+    stmts: Stmt[],
+    span: Span,
+}
+
+/// A parameter: its name, its type, its default.
+struct Param :: [Debug] {
+    name: string,
+    type: TypeExpr,
+    default: ?Expr,
+    span: Span,
+}
+
+/// A function's body: a block, or `= expr` (09 Ret).
+enum FnBody :: [Debug] {
+    Block(Block),
+    Expr(Expr),
+}
+
+struct FnDecl :: [Debug] {
+    name: string,
+    params: Param[],
+    returns: ?TypeExpr,
+    body: FnBody,
+    isPub: bool,
+    isStatic: bool,
+    span: Span,
+}
+
+/// A field of a struct or a class: `var` only in a class.
+struct FieldDecl :: [Debug] {
+    name: string,
+    type: TypeExpr,
+    default: ?Expr,
+    isVar: bool,
+    isPub: bool,
+    span: Span,
+}
+
+/// A struct or, with the flag, a class: its fields and its methods.
+struct TypeDecl :: [Debug] {
+    name: string,
+    isClass: bool,
+    fields: FieldDecl[],
+    methods: FnDecl[],
+    isPub: bool,
+    span: Span,
+}
+
+struct Variant :: [Debug] {
+    name: string,
+    span: Span,
+}
+
+struct EnumDecl :: [Debug] {
+    name: string,
+    variants: Variant[],
+    methods: FnDecl[],
+    isPub: bool,
+    span: Span,
+}
+
+/// `type Name = T`.
+struct AliasDecl :: [Debug] {
+    name: string,
+    type: TypeExpr,
+    isPub: bool,
+    span: Span,
+}
+
+enum Decl :: [Debug] {
+    Fn(FnDecl),
+    Type(TypeDecl),
+    Enum(EnumDecl),
+    Alias(AliasDecl),
+}
+
+/// What stands at the top of a module: a declaration, or a statement of the script (07 Top).
+enum Item :: [Debug] {
+    Decl(Decl),
+    Stmt(Stmt),
+}
+
+/// A module as read: its frontmatter's TOML, if it has one, and its items in order.
+struct Module :: [Debug] {
+    frontmatter: ?string,
+    items: Item[],
+}
+
+/// How a prefix operator is written.
+fn unaryText(op: UnaryOp): string {
+    return match (op) {
+        .Neg => "-",
+        .Not => "!",
+        .BitNot => "~",
+    };
+}
+
+/// How an infix operator is written.
+fn binaryText(op: BinaryOp): string {
+    return match (op) {
+        .Add => "+",
+        .Sub => "-",
+        .Mul => "*",
+        .Div => "/",
+        .Rem => "%",
+        .AddWrap => "+%",
+        .SubWrap => "-%",
+        .MulWrap => "*%",
+        .Shl => "<<",
+        .Shr => ">>",
+        .BitAnd => "&",
+        .BitXor => "^",
+        .BitOr => "|",
+        .Lt => "<",
+        .Le => "<=",
+        .Gt => ">",
+        .Ge => ">=",
+        .Eq => "==",
+        .Ne => "!=",
+        .In => "in",
+        .NotIn => "!in",
+        .And => "&&",
+        .Or => "||",
+        .Coalesce => "??",
+    };
+}

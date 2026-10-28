@@ -1,0 +1,12 @@
+# A division by zero two calls deep: the panic names both frames and the run ends with 101.
+fn div(s, s) -> s regs 2 0
+    div.i s0, s0, s1
+    ret.s s0
+end
+
+fn main() -> s regs 2 0
+    load.i s0, 7
+    load.i s1, 0
+    call div, s0, r0
+    ret.s s0
+end

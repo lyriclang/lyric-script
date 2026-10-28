@@ -1,8 +1,14 @@
-//! The `lyric-script` command line (design/v1, 12). In S0 it knows `--version` and `help`.
+//! The `lyric-script` command line (design/v1, 12). It knows `--version`, `help`, and, until
+//! `run` comes with the compiler (S2), `asm`, which runs bytecode in its text form.
+import std.fs { readText };
 import std.io { println, eprintln };
 import std.os { args };
 import lyric_script { version };
 import lyric_script.vm { bytecodeFormat };
+import lyric_script.vm.asm { AsmError, assemble };
+import lyric_script.vm.heap { ScriptString };
+import lyric_script.vm.interp { execute };
+import lyric_script.vm.module { check };
 
 fn usage(): void {
     println("usage: lyric-script <command>");
@@ -10,6 +16,7 @@ fn usage(): void {
     println("commands:");
     println("  version    print the version (also --version)");
     println("  help       print this text (also --help)");
+    println("  asm FILE   run a .lyrsasm file's 'main' (provisional, until 'run' in S2)");
 }
 
 fn main(): int {
@@ -27,7 +34,61 @@ fn main(): int {
         usage();
         return 0;
     }
+    if (command == "asm") {
+        if (given.length() != 3) {
+            eprintln("error[LYS-CLI0002]: 'asm' takes one file");
+            eprintln("  = help: lyric-script asm program.lyrsasm");
+            return 2;
+        }
+        return runAsm(given[2]);
+    }
     eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
     eprintln("  = help: lyric-script help lists the commands");
     return 2;
+}
+
+/// Runs the file's `main`: its result is printed; a panic is reported with its frames and
+/// ends with 101.
+fn runAsm(path: string): int {
+    let text = try readText(path) catch (e) {
+        eprintln(f"error[LYS-CLI0003]: cannot read '{path}': {e.message()}");
+        return 2;
+    };
+    let module = try assemble(text, path) catch (e: AsmError) {
+        eprintln(f"error[LYS-ASM0001]: {path}: {e.message()}");
+        return 1;
+    };
+    let faults = check(module);
+    if (faults.length() > 0) {
+        for (fault in faults) {
+            eprintln(
+                f"error[LYS-ASM0002]: {path}: {fault.function} at {fault.pc}: {fault.message}"
+            );
+        }
+        return 1;
+    }
+    return match (execute(module, "main", [], -1)) {
+        .Void => 0,
+        .Scalar(bits) => {
+            println(bits as int);
+            0
+        }
+        .Ref(v) => {
+            if (v is ScriptString) {
+                println(v.text);
+            }
+            0
+        }
+        .Panic(p) => {
+            eprintln(f"panic [{p.code}]: {p.message}");
+            for (frame in p.trace) {
+                eprintln(f"    {frame}");
+            }
+            101
+        }
+        .Suspended => {
+            eprintln("error: the run was suspended");
+            1
+        }
+    };
 }

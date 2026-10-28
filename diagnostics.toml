@@ -54,3 +54,27 @@ title = "panic called by the script"
 severity = "panic"
 area = "06-errors"
 summary = "The script called `panic` with a message. The code and its meaning are Lyric 5's LYR-RT0008."
+
+[LYS-ASM0001]
+title = "a line of assembly text that cannot be read"
+severity = "error"
+area = "14-cli"
+summary = "Reported by `lyric-script asm` for a .lyrsasm file with a faulty line: an unknown operation, a wrong number of operands, a missing label or function, a function without `end`. The message names the line. The exit code is 1."
+
+[LYS-ASM0002]
+title = "assembled code with a fault in its structure"
+severity = "error"
+area = "14-cli"
+summary = "Reported by `lyric-script asm` when the assembled module fails the structure check: a register outside its file, a jump past the code, a call past the registers, a return of the wrong kind. The message names the function and the instruction. The exit code is 1."
+
+[LYS-CLI0002]
+title = "a command with the wrong arguments"
+severity = "error"
+area = "14-cli"
+summary = "Reported when a command gets more or fewer arguments than it takes. The exit code is 2."
+
+[LYS-CLI0003]
+title = "a file that cannot be read"
+severity = "error"
+area = "14-cli"
+summary = "Reported when a command cannot read the file it is given. The exit code is 2."

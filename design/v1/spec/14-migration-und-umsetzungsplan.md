@@ -250,3 +250,7 @@ einer Seite wird zu `?T`).
   Funktionen, deren Ergebnistyp erst ihr Rumpf festlegt, prüft der stille Lauf nicht mit. Ein
   `let x = null` bleibt `LYS-SEM0010` (ein `let` bekommt nie einen zweiten Wert).
 - Leere Sammlungsliterale `[]` und `[:]` gehen mit den Literalen in S7 denselben Weg.
+
+**S3b, Ergebnis.** Wie präzisiert; die Definite-Assignment-Menge wird nie an Ort verändert
+(jeder gespeicherte Stand bleibt gültig), ein Lauf über die Kinder einer Anweisung (`stmtAny`)
+ersetzt den Schreib-Lauf von S3a. 115 Tests, 55 Konformanzfälle.

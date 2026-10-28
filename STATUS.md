@@ -82,7 +82,7 @@ Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; meas
 | Slice | State |
 |---|---|
 | S3a optionals | done — Lyric 5 §3.1–3.3 with its codes; every value has a slot shape (11 V2: `?int` two scalar slots, `??int` three, a `?T` of a reference the reference with `nil`); results of several slots; narrowing ends at a write; ten cases in the delta's 03 |
-| S3b definite assignment, empty literals | — |
+| S3b definite assignment, empty literals | done — Lyric 5's definite assignment (`SEM0018`), a global takes its value where declared (`SEM0903`); `var x = null` takes the type of the first use that fixes one (two passes, the first quiet); `[]` and `[:]` take the same way with S7. Follow-ups of S3a: narrowing behind `break`/`continue` and in a value `if`, `==` on optionals. Own codes moved to 0900 (P9) |
 | S3c tuples | — |
 | S3d enums with values, `match`, patterns | — |
 | S3e function values | — |
@@ -134,4 +134,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P5 | A parameter's default is filled in where the call stands, so it cannot read the parameters before it (Lyric 5 §8.1.1 rule 2 lets it). Evaluate defaults in the callee (S3), or keep the narrower rule? | S2d |
 | P6 | After a lexical or syntax error the checker does not run, so a file reports its first kind of fault only. Check the parts that parsed? | S2f |
 | P7 | An unclosed `(` or `[` swallows the line ends after it (09 NL rule 1), so the parser's recovery skips the rest of the file. | S2c |
+| P8 | A global of the script takes its value where it is declared (`SEM0903`): definite assignment cannot follow a function that reads it. Allow `var g: T` at the top where no function reads `g`? | S3b |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

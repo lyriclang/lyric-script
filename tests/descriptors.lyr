@@ -1,0 +1,81 @@
+// Descriptors as values (S3i, design/v1 11 Gen): a shared copy of a generic builds its objects
+// with the exact type its arguments make, reads a generic type's arguments from its receiver,
+// and tests `x is T`; the links survive the bytecode cache.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.bytecode { decode, encode };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn valueOf(module: Module, entry: string): int {
+    return match (run(module, entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn value(source: string, entry: string): int {
+    return valueOf(compiled(source), entry);
+}
+
+let types = "interface Nests {\n    fn nested(): Any\n}\nstruct Pair<T> :: Nests {\n    a: T\n\n    fn nest(): Pair<Pair<T>> = Pair { a = this }\n    fn nested(): Any = Pair { a = this }\n}\nenum Maybe<T> {\n    Some(T)\n    None\n}\nclass Foo {\n    var n: int = 1\n}\nclass Bar {\n    var n: int = 2\n}\nclass Baz {\n    var n: int = 3\n}\nfn inner<T>(x: T): Pair<T> = Pair { a = x }\nfn outer<T>(x: T): Pair<T> = inner(x)\nfn some<T>(x: T): Maybe<T> = Maybe.Some(x)\nfn isA<T>(x: Any): bool = x is T\nfn hide(x: Any): Any = x\nfn wrapsAs<T, U>(x: T, y: U): bool {\n    let w = hide(Pair { a = x })\n    let other = w is Pair<U>\n    return (w is Pair<T>) && !other\n}\n";
+
+@Test
+fn aSharedCopyBuildsTheExactType(): void {
+    // `outer` hands its descriptor on to `inner`
+    let e = "fn e(): int {\n    var n = 0\n    let v = hide(inner(Foo { }))\n    if (v is Pair<Foo>) {\n        n += 1\n    }\n    if (v is Pair<Bar>) {\n        n += 2\n    }\n    let p = hide(outer(Bar { }))\n    if (p is Pair<Bar>) {\n        n += 4\n    }\n    if (p is Pair<Foo>) {\n        n += 8\n    }\n    return n\n}";
+    assertEq(value(types + e, "e"), 5);
+}
+
+@Test
+fn aMethodReadsItsArgumentsFromItsReceiver(): void {
+    // directly, and through an interface value, whose caller knows no `T`
+    let e = "fn e(): int {\n    var n = 0\n    let x = hide(Pair { a = Foo { } }.nest())\n    if (x is Pair<Pair<Foo>>) {\n        n += 1\n    }\n    if (x is Pair<Foo>) {\n        n += 2\n    }\n    let s: Nests = Pair { a = Bar { } }\n    let y = s.nested()\n    if (y is Pair<Pair<Bar>>) {\n        n += 4\n    }\n    if (y is Pair<Pair<Foo>>) {\n        n += 8\n    }\n    return n\n}";
+    assertEq(value(types + e, "e"), 5);
+}
+
+@Test
+fn aGenericEnumKnowsItsArguments(): void {
+    let e = "fn e(): int {\n    var n = 0\n    let m = hide(some(Foo { }))\n    if (m is Maybe<Foo>) {\n        n += 1\n    }\n    if (m is Maybe<Bar>) {\n        n += 2\n    }\n    return n\n}";
+    assertEq(value(types + e, "e"), 1);
+}
+
+@Test
+fn isTestsATypeParameter(): void {
+    // a shared copy by the descriptor, a copy for `int` by the type itself
+    let e = "fn e(): int {\n    var n = 0\n    let f = hide(Foo { })\n    if (isA<Foo>(f)) {\n        n += 1\n    }\n    if (isA<Bar>(f)) {\n        n += 2\n    }\n    let i = hide(7)\n    if (isA<int>(i)) {\n        n += 4\n    }\n    if (isA<string>(i)) {\n        n += 8\n    }\n    return n\n}";
+    assertEq(value(types + e, "e"), 5);
+}
+
+@Test
+fn aTypeMadeAtRunTimeIsOneType(): void {
+    // `Pair<Baz>` is written nowhere: the copy makes its descriptor, once
+    let e = "fn e(): int = if (wrapsAs(Baz { }, Foo { })) 1 else 0";
+    assertEq(value(types + e, "e"), 1);
+}
+
+@Test
+fn theDescriptorsSurviveTheCache(): void {
+    let e = "fn e(): int {\n    var n = 0\n    let v = hide(outer(Foo { }))\n    if (v is Pair<Foo>) {\n        n += 1\n    }\n    let m = hide(some(Bar { }))\n    if (m is Maybe<Bar>) {\n        n += 2\n    }\n    if (wrapsAs(Baz { }, Foo { })) {\n        n += 4\n    }\n    return n\n}";
+    let bytes = encode(compiled(types + e), 3, "1.0.0-test", "abc");
+    let back = try! decode(bytes, 3, "1.0.0-test", "abc");
+    assertEq(valueOf(back, "e"), 7);
+}

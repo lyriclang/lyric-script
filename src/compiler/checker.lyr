@@ -212,6 +212,9 @@ class Checker {
     instances: Map<string, int>,
     // the type arguments a method's receiver binds before its call is checked
     var presetBinds: Ty[] = [],
+    // while a copy is made: where each type parameter's descriptor comes from at run time, null
+    // where the copy knows its argument (S3i)
+    var specDescs: (?TExpr)[] = [],
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -1606,8 +1609,137 @@ class Checker {
             caps.push(CaptureInfo { ty = this.subst(c.ty, a), isCell = c.isCell });
         }
         info.captures = caps.toArray();
+        // the descriptors of its type arguments (S3i, 11 Gen): a method of a generic type reads
+        // them from its receiver's; any other copy gets one hidden parameter for each argument
+        // it shares. A lambda's copy knows none (S3i i4).
+        let anyTy = Ty.Named(this.anyIndex);
+        let sources = List<?TExpr>.new();
+        let hidden = this.hiddenOf(fi, args);
+        let fromThis = this.descsFromThis(fi);
+        var k = 0;
+        for (x in args) {
+            if (generic.templateOf >= 0 || !this.sharedShape(x)) {
+                sources.push(null);
+            } else if (fromThis) {
+                let own = TExpr.DescOfValue(boxE(TExpr.Local(0, anyTy)), anyTy);
+                sources.push(TExpr.DescArg(boxE(own), k, anyTy));
+            } else {
+                let id = locals.length();
+                locals.push(anyTy);
+                sources.push(TExpr.Local(id, anyTy));
+            }
+            k += 1;
+        }
+        if (hidden.length() > 0) {
+            info.locals = locals.toArray();
+            let ids = List<int>.new();
+            var j = 0;
+            while (j < hidden.length()) {
+                ids.push(generic.locals.length() + j);
+                j += 1;
+            }
+            info.descParams = ids.toArray();
+        }
+        let savedDescs = this.specDescs;
+        this.specDescs = sources.toArray();
         info.body = this.specStmts(generic.template, a);
+        this.specDescs = savedDescs;
         return index;
+    }
+
+    /// Whether a copy of `fi` reads its type arguments' descriptors from its receiver's: a method
+    /// of a generic type, which a call through an interface reaches without them.
+    mut fn descsFromThis(fi: int): bool {
+        let g = this.functions[fi];
+        return g.owner >= 0 && !g.isStatic && this.types[g.owner].typeParams.length() > 0;
+    }
+
+    /// The type parameters of `fi` whose descriptors a copy for `bound` takes as hidden
+    /// parameters, in order: those it shares, where it does not read them from its receiver.
+    mut fn hiddenOf(fi: int, bound: Ty[]): int[] {
+        let out = List<int>.new();
+        if (this.functions[fi].templateOf >= 0 || this.descsFromThis(fi)) {
+            return out.toArray();
+        }
+        var k = 0;
+        for (x in bound) {
+            if (this.sharedShape(x)) {
+                out.push(k);
+            }
+            k += 1;
+        }
+        return out.toArray();
+    }
+
+    /// Whether `t` names a type parameter whose descriptor the copy being made gets at run time.
+    mut fn dynamic(t: Ty): bool {
+        return match (t) {
+            .Param(k) => k < this.specDescs.length() && this.specDescs[k] != null,
+            .Named(i) => {
+                var found = false;
+                if (this.types[i].template >= 0) {
+                    for (x in this.types[i].args) {
+                        found = found || this.dynamic(x);
+                    }
+                }
+                found
+            }
+            .Optional(inner) => this.dynamic(inner.value),
+            .List(inner) => this.dynamic(inner.value),
+            .Map(x, y) => this.dynamic(x.value) || this.dynamic(y.value),
+            .Tuple(tt) => {
+                var found = false;
+                for (x in tt.elements) {
+                    found = found || this.dynamic(x);
+                }
+                found
+            }
+            .Fn(ft) => {
+                var found = this.dynamic(ft.result.value);
+                for (x in ft.params) {
+                    found = found || this.dynamic(x);
+                }
+                found
+            }
+            _ => false,
+        };
+    }
+
+    /// The descriptor of `t`, a type of the generic being copied, in the copy for `a`: the
+    /// compiler's where the copy knows the type, else built at run time from the parts it gets.
+    mut fn descExpr(t: Ty, a: Ty[]): TExpr {
+        let anyTy = Ty.Named(this.anyIndex);
+        if (!this.dynamic(t)) {
+            return TExpr.DescOfType(this.subst(t, a), anyTy);
+        }
+        let parts = List<TExpr>.new();
+        match (t) {
+            .Param(k) => {
+                let src = this.specDescs[k];
+                if (src != null) {
+                    return src;
+                }
+            }
+            .Named(i) => {
+                for (x in this.types[i].args) {
+                    parts.push(this.descExpr(x, a));
+                }
+            }
+            .Optional(inner) => parts.push(this.descExpr(inner.value, a)),
+            .Tuple(tt) => {
+                for (x in tt.elements) {
+                    parts.push(this.descExpr(x, a));
+                }
+            }
+            .Fn(ft) => {
+                for (x in ft.params) {
+                    parts.push(this.descExpr(x, a));
+                }
+                parts.push(this.descExpr(ft.result.value, a));
+            }
+            _ => { }
+        }
+        return TExpr.InstDesc(this.subst(t, a), parts.toArray(), anyTy);
     }
 
     /// Type `ti` with the arguments in place: an instance's.
@@ -1691,8 +1823,16 @@ class Checker {
             .Cast(x, t) => TExpr.Cast(this.specBox(x, a), this.subst(t, a)),
             .Call(fi, xs, t) => TExpr.Call(fi, this.specAll(xs, a), this.subst(t, a)),
             .Native(n, xs, t) => TExpr.Native(n, this.specAll(xs, a), this.subst(t, a)),
-            // a generic type's instance with the arguments in place
-            .New(ti, xs) => TExpr.New(this.specType(ti, a), this.specAll(xs, a)),
+            // a generic type's instance with the arguments in place; in a shared copy built
+            // with the descriptor of the type the arguments make (S3i)
+            .New(ti, xs) => if (this.dynamic(Ty.Named(ti))) TExpr.NewD(
+                boxE(this.descExpr(Ty.Named(ti), a)),
+                this.specType(ti, a),
+                -1,
+                this.specAll(xs, a),
+                Ty.Named(this.specType(ti, a))
+            )
+                else TExpr.New(this.specType(ti, a), this.specAll(xs, a)),
             .Field(x, k, t) => TExpr.Field(this.specBox(x, a), k, this.subst(t, a)),
             .Assign(place, op, v, t) => {
                 let p = match (place) {
@@ -1715,7 +1855,15 @@ class Checker {
             .Loop(b, t) => TExpr.Loop(this.specStmts(b, a), this.subst(t, a)),
             .Null(t) => TExpr.Null(this.subst(t, a)),
             .Wrap(x, t) => TExpr.Wrap(this.specBox(x, a), this.subst(t, a)),
-            .Narrow(x, t) => TExpr.Narrow(this.specBox(x, a), this.subst(t, a)),
+            // a value narrowed to a type parameter: in a copy for a scalar, out of its box
+            .Narrow(x, t) => match (t) {
+                .Param(_) => if (this.isIfaceTy(typeOf(x.value))) this.heldAs(
+                    this.specExpr(x.value, a),
+                    this.subst(t, a)
+                )
+                    else TExpr.Narrow(this.specBox(x, a), this.subst(t, a)),
+                _ => TExpr.Narrow(this.specBox(x, a), this.subst(t, a)),
+            },
             .Unwrap(x, t) => TExpr.Unwrap(this.specBox(x, a), this.subst(t, a)),
             .IsNull(x) => TExpr.IsNull(this.specBox(x, a)),
             .Coalesce(x, y, t) => TExpr.Coalesce(
@@ -1725,11 +1873,20 @@ class Checker {
             ),
             .Tuple(xs, t) => TExpr.Tuple(this.specAll(xs, a), this.subst(t, a)),
             .Elem(x, k, t) => TExpr.Elem(this.specBox(x, a), k, this.subst(t, a)),
-            .MakeVariant(ti, k, xs) => TExpr.MakeVariant(
+            .MakeVariant(ti, k, xs) => if (this.dynamic(Ty.Named(ti))) TExpr.NewD(
+                boxE(
+                    TExpr.DescVariant(
+                        boxE(this.descExpr(Ty.Named(ti), a)),
+                        k,
+                        Ty.Named(this.anyIndex)
+                    )
+                ),
                 this.specType(ti, a),
                 k,
-                this.specAll(xs, a)
-            ),
+                this.specAll(xs, a),
+                Ty.Named(this.specType(ti, a))
+            )
+                else TExpr.MakeVariant(this.specType(ti, a), k, this.specAll(xs, a)),
             .Tag(x) => TExpr.Tag(this.specBox(x, a)),
             .Payload(x, ti, k, j, t) => TExpr.Payload(
                 this.specBox(x, a),
@@ -1756,7 +1913,24 @@ class Checker {
             .CallIface(slot, xs, t) => TExpr.CallIface(slot, this.specAll(xs, a), this.subst(t, a)),
             .BoxOf(x, k, t) => TExpr.BoxOf(this.specBox(x, a), k, this.subst(t, a)),
             .Unbox(x, t) => TExpr.Unbox(this.specBox(x, a), this.subst(t, a)),
-            .IsType(x, k, t) => TExpr.IsType(this.specBox(x, a), k, this.subst(t, a)),
+            .IsType(x, k, t) => if (this.dynamic(Ty.Named(k))) TExpr.IsDesc(
+                this.specBox(x, a),
+                boxE(this.descExpr(Ty.Named(k), a))
+            )
+                else TExpr.IsType(this.specBox(x, a), this.specType(k, a), this.subst(t, a)),
+            .IsParam(x, k, t) => {
+                let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
+                if (src != null) {
+                    TExpr.IsDesc(this.specBox(x, a), boxE(src))
+                } else if (k < a.length()) {
+                    this.typeTest(this.specExpr(x.value, a), a[k], nowhereSpan) ?? TExpr.Bool(false)
+                } else {
+                    TExpr.IsParam(this.specBox(x, a), k, t)
+                }
+            }
+            .IsDesc(x, d) => TExpr.IsDesc(this.specBox(x, a), this.specBox(d, a)),
+            .DescOfType(_, _) | .InstDesc(_, _, _) | .DescOfValue(_, _) | .DescArg(_, _, _) => e,
+            .DescVariant(_, _, _) | .NewD(_, _, _, _, _) => e,
             .SameRef(x, y) => TExpr.SameRef(this.specBox(x, a), this.specBox(y, a)),
             .IsIface(x, k, t) => TExpr.IsIface(this.specBox(x, a), k, this.subst(t, a)),
             .CallGeneric(fi, targs, xs, t) => {
@@ -1764,11 +1938,17 @@ class Checker {
                 for (x in targs) {
                     bound.push(this.subst(x, a));
                 }
-                TExpr.Call(
-                    this.instanceOf(fi, bound.toArray()),
-                    this.specAll(xs, a),
-                    this.subst(t, a)
-                )
+                let b = bound.toArray();
+                let inst = this.instanceOf(fi, b);
+                // after the arguments, the descriptors the copy takes hidden (S3i)
+                let all = List<TExpr>.new();
+                for (x in this.specAll(xs, a)) {
+                    all.push(x);
+                }
+                for (k in this.hiddenOf(fi, b)) {
+                    all.push(this.descExpr(targs[k], a));
+                }
+                TExpr.Call(inst, all.toArray(), this.subst(t, a))
             }
             .CallConstraint(k, ii, member, slot, xs, t) => {
                 let all = this.specAll(xs, a);
@@ -3163,6 +3343,8 @@ class Checker {
                 this.builtinOf(target),
                 target
             ),
+            // a type parameter: the argument's type, tested in each copy (S3i)
+            .Param(k) => TExpr.IsParam(boxE(x), k, Ty.Bool),
             .Unknown => null,
             _ => {
                 this.error("LYS-SEM0131", f"no interface value holds a {this.tyName(target)}", at);
@@ -7214,6 +7396,9 @@ struct WithUpdate {
     from: int,
     value: TExpr,
 }
+
+/// The place of what the compiler makes without a source of its own.
+let nowhereSpan: Span = Span { start = 0, end = 0, line = 1, column = 1 };
 
 /// The strings `parts` joined, left to right.
 fn concatAll(parts: TExpr[]): TExpr {

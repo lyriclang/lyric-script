@@ -187,6 +187,9 @@ class FnInfo {
     var template: TStmt[] = [],
     // a lambda made in a generic's body: the generic whose type parameters it uses
     var templateOf: int = -1,
+    // a shared copy's hidden parameters (S3i): the locals that receive the descriptors of its
+    // type arguments, after the parameters
+    var descParams: int[] = [],
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).
@@ -258,6 +261,13 @@ fn typeOf(e: TExpr): Ty {
         .CallGeneric(_, _, _, t) => t,
         .CallConstraint(_, _, _, _, _, t) => t,
         .CallIface(_, _, t) => t,
+        .IsParam(_, _, _) | .IsDesc(_, _) => Ty.Bool,
+        .DescOfType(_, t) => t,
+        .InstDesc(_, _, t) => t,
+        .DescOfValue(_, t) => t,
+        .DescArg(_, _, t) => t,
+        .DescVariant(_, _, t) => t,
+        .NewD(_, _, _, _, t) => t,
         .Unknown => Ty.Unknown,
     };
 }
@@ -360,6 +370,26 @@ enum TExpr :: [Debug] {
     /// A member of a constraint of type parameter `k` called on a value of it: the interface, the
     /// member, its slot, the receiver first among the arguments.
     CallConstraint(int, int, string, int, TExpr[], Ty),
+    /// `x is T` for type parameter `k` of the generic being checked; a test of the argument's
+    /// type in each copy (S3i).
+    IsParam(Box<TExpr>, int, Ty),
+    /// S3i, descriptors (11 Gen), each a reference of the type given last: the descriptor of a
+    /// type known where it stands.
+    DescOfType(Ty, Ty),
+    /// The descriptor of the template of shape `t` at the descriptors given: a type whose
+    /// arguments a shared copy knows at run time only.
+    InstDesc(Ty, TExpr[], Ty),
+    /// The descriptor of the object's type; a variant's is its enum's.
+    DescOfValue(Box<TExpr>, Ty),
+    /// Type argument `k` of a descriptor; variant `k` of an enum's.
+    DescArg(Box<TExpr>, int, Ty),
+    DescVariant(Box<TExpr>, int, Ty),
+    /// An object with the layout of program type `k` (variant `v`, -1 for a struct or a class)
+    /// whose descriptor is the one given: what a shared copy builds of a type it knows at run
+    /// time only.
+    NewD(Box<TExpr>, int, int, TExpr[], Ty),
+    /// Whether the value is one of the type the descriptor names.
+    IsDesc(Box<TExpr>, Box<TExpr>),
     Unknown,
 }
 

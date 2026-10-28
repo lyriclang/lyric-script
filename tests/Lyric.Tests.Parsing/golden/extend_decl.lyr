@@ -1,5 +1,0 @@
-extend Player :: [Logger] {
-    fn log(): string {
-        return this.name;
-    }
-}

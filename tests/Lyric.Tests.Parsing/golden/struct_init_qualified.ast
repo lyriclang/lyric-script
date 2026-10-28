@@ -1,3 +1,0 @@
-StructInit game.Player [0..24)
-  InitField hp [14..22)
-    Int 100 [19..22)

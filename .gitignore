@@ -1,108 +1,12 @@
-# =============================================================================
-# .NET / C# build artifacts
-# =============================================================================
-bin/
-obj/
+# Build output of lyric5 (out/<profile>/<target>/) and of lyric-script
 out/
-publish/
-artifacts/
 
-# 'build/' is tracked: it holds publish.proj, not build output.
-
-# Build configuration outputs
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
-*.userprefs
-
-# Test results
-TestResults/
-[Tt]est[Rr]esults/
-*.trx
-*.coverage
-*.coveragexml
-coverage*.json
-coverage*.xml
-coverage*.info
-
-# NuGet
-*.nupkg
-*.snupkg
-.nuget/
-packages/
-!**/packages/build/
-*.nuget.props
-*.nuget.targets
-
-# Roslyn / source generator outputs
-GeneratedFiles/
+# Editors
 .vs/
-
-# =============================================================================
-# IDE-specific
-# =============================================================================
-# Visual Studio
-.vs/
-*.opendb
-*.VC.db
-*.VC.VC.opendb
-
-# Rider / JetBrains
+.vscode/
 .idea/
-*.iml
-*.ipr
-*.iws
-
-# Visual Studio Code (allow shared settings, ignore personal)
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/*.code-snippets
-
-# =============================================================================
-# OS-specific
-# =============================================================================
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-
-# macOS
+*.swp
 .DS_Store
-.AppleDouble
-.LSOverride
 
-# Linux
-*~
-.directory
-.Trash-*
-
-# =============================================================================
-# Lyric-specific
-# =============================================================================
-# Compiled bytecode (regenerate via lyric build)
-*.lyrbc
-
-# Local dev playgrounds
-scratch/
-playground/
-
-# Local config overrides
-*.local.json
-.env
-.env.local
-
-# Generated documentation site
-docs/_site/
-
-# Publish output (build/publish.proj)
-artifacts/
-
-# =============================================================================
-# Agent instructions (local, not part of the repository)
-# =============================================================================
-CLAUDE.md
+# Probe build directories that stay outside the measured sources
+design/v1/probes/*/results/emit/

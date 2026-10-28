@@ -1049,6 +1049,9 @@ class Parser {
         };
     }
 
+    /// Operators by their binding powers. Each nesting level of an expression holds this frame,
+    /// `parseUnary`'s and `parsePrimary`'s: what an operator builds is in methods of its own, so
+    /// that the frames on the way down stay small (at -O0 every temporary has its own slot).
     mut fn parseBinary(min: int): Expr throws SyntaxError {
         let first = this.current();
         var left = try this.parseUnary();
@@ -1059,54 +1062,62 @@ class Parser {
                 break;
             }
             this.advance();
-            if (this.isWord(t, "as")) {
-                let ty = try this.parseType();
-                left = Expr.Cast(boxed(left), ty, this.since(first));
-                continue;
-            }
-            // `x is T` stands at the comparisons' level and does not chain
-            if (this.isWord(t, "is")) {
-                let ty = try this.parseType();
-                left = Expr.Is(boxed(left), ty, this.since(first));
-                if (this.power(this.current()).0 == 11) {
-                    throw this.failure(
-                        "LYS-PAR0059",
-                        "comparisons chained: write each on its own and join them with '&&'",
-                        this.current()
-                    );
-                }
+            if (this.isWord(t, "as") || this.isWord(t, "is")) {
+                left = try this.typeOperator(left, t, first);
                 continue;
             }
             let right = try this.parseBinary(r);
-            let span = this.since(first);
-            let compound = assignmentOp(t.kind);
-            if (t.kind == .Assign) {
-                left = Expr.Assign(boxed(left), null, boxed(right), span);
-            } else if (compound != null) {
-                left = Expr.Assign(boxed(left), compound, boxed(right), span);
-            } else if (t.kind == .DotDot || t.kind == .DotDotEq) {
-                left = Expr.Range(boxed(left), boxed(right), t.kind == .DotDotEq, span);
-                if (this.at(.DotDot) || this.at(.DotDotEq)) {
-                    throw this.failure(
-                        "LYS-PAR0005",
-                        "ranges chained: a range has two ends",
-                        this.current()
-                    );
-                }
-            } else {
-                let op = if (t.kind == .Keyword) BinaryOp.In else binaryOp(t.kind);
-                left = Expr.Binary(boxed(left), op, boxed(right), span);
-                // `a < b < c` and `a == b == c` are refused, not read left to right (08 Y4)
-                if ((l == 11 || l == 9) && this.power(this.current()).0 == l) {
-                    throw this.failure(
-                        "LYS-PAR0059",
-                        "comparisons chained: write each comparison on its own and join them with '&&'",
-                        this.current()
-                    );
-                }
-            }
+            left = try this.infix(left, t, l, right, first);
         }
         return left;
+    }
+
+    /// `x as T`, and `x is T`, which stands at the comparisons' level and does not chain.
+    mut fn typeOperator(left: Expr, t: Token, first: Token): Expr throws SyntaxError {
+        let ty = try this.parseType();
+        if (this.isWord(t, "as")) {
+            return Expr.Cast(boxed(left), ty, this.since(first));
+        }
+        if (this.power(this.current()).0 == 11) {
+            throw this.failure(
+                "LYS-PAR0059",
+                "comparisons chained: write each on its own and join them with '&&'",
+                this.current()
+            );
+        }
+        return Expr.Is(boxed(left), ty, this.since(first));
+    }
+
+    /// `left t right`: an assignment, a range or a binary operation.
+    mut fn infix(left: Expr, t: Token, l: int, right: Expr, first: Token): Expr throws SyntaxError {
+        let span = this.since(first);
+        let compound = assignmentOp(t.kind);
+        if (t.kind == .Assign) {
+            return Expr.Assign(boxed(left), null, boxed(right), span);
+        }
+        if (compound != null) {
+            return Expr.Assign(boxed(left), compound, boxed(right), span);
+        }
+        if (t.kind == .DotDot || t.kind == .DotDotEq) {
+            if (this.at(.DotDot) || this.at(.DotDotEq)) {
+                throw this.failure(
+                    "LYS-PAR0005",
+                    "ranges chained: a range has two ends",
+                    this.current()
+                );
+            }
+            return Expr.Range(boxed(left), boxed(right), t.kind == .DotDotEq, span);
+        }
+        // `a < b < c` and `a == b == c` are refused, not read left to right (08 Y4)
+        if ((l == 11 || l == 9) && this.power(this.current()).0 == l) {
+            throw this.failure(
+                "LYS-PAR0059",
+                "comparisons chained: write each comparison on its own and join them with '&&'",
+                this.current()
+            );
+        }
+        let op = if (t.kind == .Keyword) BinaryOp.In else binaryOp(t.kind);
+        return Expr.Binary(boxed(left), op, boxed(right), span);
     }
 
     mut fn parseUnary(): Expr throws SyntaxError {
@@ -1114,117 +1125,145 @@ class Parser {
         let next = this.peek(1);
         // a `-` right before a number belongs to it: `-9223372036854775808` is int's least value
         if (t.kind == .Minus && t.end == next.start && (next.kind == .Int || next.kind == .Float)) {
-            this.advance();
-            this.advance();
-            let text = this.text(next);
-            let literal = if (next.kind == .Int) Expr.Int(
-                intValue(text, true, next, this.errors),
-                this.since(t)
-            )
-                else Expr.Float(floatValue(text, true), this.since(t));
-            return try this.parsePostfix(literal, t);
+            return try this.parsePostfix(this.negativeLiteral(t, next), t);
         }
-        let op: ?UnaryOp = match (t.kind) {
-            .Minus => UnaryOp.Neg,
-            .Bang => UnaryOp.Not,
-            .Tilde => UnaryOp.BitNot,
-            _ => null,
-        };
-        if (op != null) {
-            this.advance();
-            try this.enter(t);
-            defer {
-                this.depth -= 1;
-            }
-            let operand = try this.parseUnary();
-            return Expr.Unary(op, boxed(operand), this.since(t));
+        if (t.kind == .Minus || t.kind == .Bang || t.kind == .Tilde) {
+            return try this.prefixed(t);
         }
         return try this.parsePostfix(this.parsePrimary(), t);
     }
 
-    /// Calls, indices and members after an operand.
+    /// `-1`, `-2.5`: the sign and the number, one literal.
+    mut fn negativeLiteral(t: Token, next: Token): Expr {
+        this.advance();
+        this.advance();
+        let text = this.text(next);
+        return if (next.kind == .Int) Expr.Int(
+            intValue(text, true, next, this.errors),
+            this.since(t)
+        )
+            else Expr.Float(floatValue(text, true), this.since(t));
+    }
+
+    /// `-x`, `!x`, `~x`: the operator before its operand.
+    mut fn prefixed(t: Token): Expr throws SyntaxError {
+        let op = match (t.kind) {
+            .Minus => UnaryOp.Neg,
+            .Bang => UnaryOp.Not,
+            _ => UnaryOp.BitNot,
+        };
+        this.advance();
+        try this.enter(t);
+        defer {
+            this.depth -= 1;
+        }
+        let operand = try this.parseUnary();
+        return Expr.Unary(op, boxed(operand), this.since(t));
+    }
+
+    /// Calls, indices and members after an operand; each form built in a method of its own, so
+    /// that a call nested in an argument holds a small frame here.
     mut fn parsePostfix(base: Expr, first: Token): Expr throws SyntaxError {
         var e = base;
         loop {
             if (this.at(.LParen)) {
-                let args = try this.parseArgs();
-                e = Expr.Call(boxed(e), args, this.since(first));
+                e = try this.callAfter(e, first);
             } else if (this.at(.Lt) && takesTypeArgs(e) && this.typeArgsAhead()) {
-                // `f<int>(x)`: type arguments written, a call after them
-                this.advance();
-                let args = List<TypeExpr>.new();
-                while (!this.at(.Gt)) {
-                    args.push(try this.parseType());
-                    if (!this.at(.Comma)) {
-                        break;
-                    }
-                    this.advance();
-                }
-                try this.expect(.Gt, "LYS-PAR0004", "'>' after the type arguments");
-                e = Expr.Instance(boxed(e), args.toArray(), this.since(first));
+                e = try this.typeArgsAfter(e, first);
             } else if (this.at(.LBrace) && takesTrailing(e)) {
-                // `xs.map { it * 2 }`, `run { … }`: the call's last argument (Lyric 5 03 §8.2)
-                let block = try this.parseTrailing();
-                e = match (e) {
-                    .Call(callee, args, _) => {
-                        let all = List<Arg>.new();
-                        for (a in args) {
-                            all.push(a);
-                        }
-                        all.push(Arg { name = null, value = block });
-                        Expr.Call(callee, all.toArray(), this.since(first))
-                    }
-                    _ => Expr.Call(
-                        boxed(e),
-                        [Arg { name = null, value = block }],
-                        this.since(first)
-                    ),
-                };
+                e = try this.trailingAfter(e, first);
             } else if (this.at(.LBracket)) {
-                this.advance();
-                let index = try this.parseExpr();
-                try this.expect(.RBracket, "LYS-PAR0004", "']' after the index");
-                e = Expr.Index(boxed(e), boxed(index), this.since(first));
+                e = try this.indexAfter(e, first);
             } else if (this.atWord("with") && this.peek(1).kind == .LBrace) {
-                // `p with { x = 1 }` (Lyric 5 02 M6): a postfix, `with` contextual
-                this.advance();
-                let fields = try this.parseWithFields();
-                e = Expr.With(boxed(e), fields, this.since(first));
+                e = try this.withAfter(e, first);
             } else if (this.at(.Bang)) {
                 // `x!`: a `!` after an operand is the unwrap; before one it is `not`
                 this.advance();
                 e = Expr.Unwrap(boxed(e), this.since(first));
             } else if (this.at(.Dot) || this.at(.QuestionDot)) {
-                let optional = this.at(.QuestionDot);
-                this.advance();
-                let name = this.current();
-                if (name.kind != .Ident && name.kind != .Keyword && name.kind != .Int) {
-                    throw this.failure(
-                        "LYS-PAR0003",
-                        f"a member's name is missing: found {this.shown(name)}",
-                        name
-                    );
-                }
-                this.advance();
-                let member = this.text(name);
-                // `Shape.Rect { w = 1 }`: a struct variant built
-                if (!optional && this.at(.LBrace) && isTypeName(member)) {
-                    let enumName = match (e) {
-                        .Name(n, _) => if (isTypeName(n)) n else "",
-                        _ => "",
-                    };
-                    if (enumName != "") {
-                        let fields = try this.parseFieldInits();
-                        e = Expr.VariantInit(enumName, member, fields, this.since(first));
-                        continue;
-                    }
-                }
-                e = Expr.Member(boxed(e), member, optional, this.since(first));
+                e = try this.memberAfter(e, first);
             } else {
                 break;
             }
         }
         return e;
+    }
+
+    mut fn callAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        let args = try this.parseArgs();
+        return Expr.Call(boxed(e), args, this.since(first));
+    }
+
+    /// `f<int>(x)`: type arguments written, a call after them.
+    mut fn typeArgsAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        this.advance();
+        let args = List<TypeExpr>.new();
+        while (!this.at(.Gt)) {
+            args.push(try this.parseType());
+            if (!this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        try this.expect(.Gt, "LYS-PAR0004", "'>' after the type arguments");
+        return Expr.Instance(boxed(e), args.toArray(), this.since(first));
+    }
+
+    /// `xs.map { it * 2 }`, `run { … }`: the call's last argument (Lyric 5 03 §8.2).
+    mut fn trailingAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        let block = try this.parseTrailing();
+        return match (e) {
+            .Call(callee, args, _) => {
+                let all = List<Arg>.new();
+                for (a in args) {
+                    all.push(a);
+                }
+                all.push(Arg { name = null, value = block });
+                Expr.Call(callee, all.toArray(), this.since(first))
+            }
+            _ => Expr.Call(boxed(e), [Arg { name = null, value = block }], this.since(first)),
+        };
+    }
+
+    mut fn indexAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        this.advance();
+        let index = try this.parseExpr();
+        try this.expect(.RBracket, "LYS-PAR0004", "']' after the index");
+        return Expr.Index(boxed(e), boxed(index), this.since(first));
+    }
+
+    /// `p with { x = 1 }` (Lyric 5 02 M6): a postfix, `with` contextual.
+    mut fn withAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        this.advance();
+        let fields = try this.parseWithFields();
+        return Expr.With(boxed(e), fields, this.since(first));
+    }
+
+    /// `x.name`, `x?.name`, and `Shape.Rect { w = 1 }`, a struct variant built.
+    mut fn memberAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        let optional = this.at(.QuestionDot);
+        this.advance();
+        let name = this.current();
+        if (name.kind != .Ident && name.kind != .Keyword && name.kind != .Int) {
+            throw this.failure(
+                "LYS-PAR0003",
+                f"a member's name is missing: found {this.shown(name)}",
+                name
+            );
+        }
+        this.advance();
+        let member = this.text(name);
+        if (!optional && this.at(.LBrace) && isTypeName(member)) {
+            let enumName = match (e) {
+                .Name(n, _) => if (isTypeName(n)) n else "",
+                _ => "",
+            };
+            if (enumName != "") {
+                let fields = try this.parseFieldInits();
+                return Expr.VariantInit(enumName, member, fields, this.since(first));
+            }
+        }
+        return Expr.Member(boxed(e), member, optional, this.since(first));
     }
 
     /// `(a, b, name: c)`: positional arguments first, named ones after them (Lyric 5 §8.1.1).
@@ -1248,128 +1287,143 @@ class Parser {
         return args.toArray();
     }
 
+    /// An operand, by its first token; each form read in a method of its own (see `parseBinary`).
     mut fn parsePrimary(): Expr throws SyntaxError {
         let t = this.current();
-        let span = this.spanOf(t);
-        match (t.kind) {
-            .Int => {
-                this.advance();
-                return Expr.Int(intValue(this.text(t), false, t, this.errors), span);
-            }
-            .Float => {
-                this.advance();
-                return Expr.Float(floatValue(this.text(t), false), span);
-            }
-            .Str => {
-                this.advance();
-                return Expr.Str(stringValue(this.text(t), t, this.errors), span);
-            }
-            .ByteStr => {
-                this.advance();
-                return Expr.Bytes(bytesValue(this.text(t), t, this.errors), span);
-            }
-            .Char => {
-                this.advance();
-                return Expr.Char(charValue(this.text(t), t, this.errors), span);
-            }
-            .FormatStr => {
-                this.advance();
-                return this.interpolated(t);
-            }
-            .LParen => {
-                if (!this.inGuard && this.lambdaAhead()) {
-                    return try this.parseLambda();
-                }
-                this.advance();
-                let inner = try this.parseExpr();
-                if (!this.at(.Comma)) {
-                    try this.expect(.RParen, "LYS-PAR0008", "')'");
-                    return inner;
-                }
-                // `(a, b)`: a tuple
-                let items = List<Expr>.new();
-                items.push(inner);
-                while (this.at(.Comma)) {
-                    this.advance();
-                    if (this.at(.RParen)) {
-                        break;
-                    }
-                    items.push(try this.parseExpr());
-                }
-                try this.expect(.RParen, "LYS-PAR0008", "')' to close the tuple");
-                if (items.length() < 2) {
-                    throw this.failure(
-                        "LYS-PAR0010",
-                        "a tuple has two elements or more: one in parentheses is a grouping",
-                        t
-                    );
-                }
-                return Expr.Tuple(items.toArray(), this.since(t));
-            }
-            .LBracket => {
-                return try this.parseCollection();
-            }
-            .LBrace => {
-                let b = try this.parseBlock();
-                return Expr.Block(b, b.span);
-            }
-            // `.Red`, `.Num(3)`, `.Rect { w = 1 }`: a member of the enum the position expects
-            .Dot => {
-                if (this.peek(1).kind == .Ident) {
-                    this.advance();
-                    let name = this.text(this.advance());
-                    if (this.at(.LBrace) && isTypeName(name)) {
-                        let fields = try this.parseFieldInits();
-                        return Expr.VariantInit(null, name, fields, this.since(t));
-                    }
-                    return Expr.Implicit(name, this.since(t));
-                }
-            }
-            .Keyword => {
-                let w = this.text(t);
-                if (w == "true" || w == "false") {
-                    this.advance();
-                    return Expr.Bool(w == "true", span);
-                }
-                if (w == "null") {
-                    this.advance();
-                    return Expr.Null(span);
-                }
-                if (w == "this") {
-                    this.advance();
-                    return Expr.This(span);
-                }
-                if (w == "if") {
-                    return try this.parseIfExpr();
-                }
-                if (w == "match") {
-                    return try this.parseMatch();
-                }
-            }
-            .Ident => {
-                if (this.atWord("loop") && this.peek(1).kind == .LBrace) {
-                    this.advance();
-                    let body = try this.parseBlock();
-                    return Expr.Loop(body, null, this.since(t));
-                }
-                let name = this.text(t);
-                // `x => x * 3`: a lambda of one parameter, its type from the position
-                if (this.peek(1).kind == .FatArrow && !this.inGuard) {
-                    this.advance();
-                    this.advance();
-                    let body = try this.lambdaBody();
-                    let param = LambdaParam { name = name, type = null, span = span };
-                    return Expr.Lambda([param], null, boxed(body), false, this.since(t));
-                }
-                this.advance();
-                if (this.at(.LBrace) && isTypeName(name)) {
-                    return try this.parseStructInit(name, t);
-                }
-                return Expr.Name(name, span);
-            }
-            _ => { }
+        let e: ?Expr = match (t.kind) {
+            .Int | .Float | .Str | .ByteStr | .Char | .FormatStr => this.literal(t),
+            .LParen => try this.parseParen(t),
+            .LBracket => try this.parseCollection(),
+            .LBrace => try this.blockValue(),
+            .Dot => try this.implicitMember(t),
+            .Keyword => try this.keywordValue(t),
+            .Ident => try this.nameValue(t),
+            _ => null,
+        };
+        if (e != null) {
+            return e;
         }
-        throw this.failure("LYS-PAR0002", f"an expression is missing: found {this.shown(t)}", t);
+        throw this.missingExpr(t);
+    }
+
+    mut fn missingExpr(t: Token): SyntaxError {
+        return this.failure("LYS-PAR0002", f"an expression is missing: found {this.shown(t)}", t);
+    }
+
+    /// A literal token's value.
+    mut fn literal(t: Token): Expr {
+        this.advance();
+        let span = this.spanOf(t);
+        return match (t.kind) {
+            .Int => Expr.Int(intValue(this.text(t), false, t, this.errors), span),
+            .Float => Expr.Float(floatValue(this.text(t), false), span),
+            .Str => Expr.Str(stringValue(this.text(t), t, this.errors), span),
+            .ByteStr => Expr.Bytes(bytesValue(this.text(t), t, this.errors), span),
+            .Char => Expr.Char(charValue(this.text(t), t, this.errors), span),
+            _ => this.interpolated(t),
+        };
+    }
+
+    /// `(e)`, a grouping; `(a, b)`, a tuple; `(a: int) => …`, a lambda.
+    mut fn parseParen(t: Token): Expr throws SyntaxError {
+        if (!this.inGuard && this.lambdaAhead()) {
+            return try this.parseLambda();
+        }
+        this.advance();
+        let inner = try this.parseExpr();
+        if (!this.at(.Comma)) {
+            try this.expect(.RParen, "LYS-PAR0008", "')'");
+            return inner;
+        }
+        let items = List<Expr>.new();
+        items.push(inner);
+        while (this.at(.Comma)) {
+            this.advance();
+            if (this.at(.RParen)) {
+                break;
+            }
+            items.push(try this.parseExpr());
+        }
+        try this.expect(.RParen, "LYS-PAR0008", "')' to close the tuple");
+        if (items.length() < 2) {
+            throw this.failure(
+                "LYS-PAR0010",
+                "a tuple has two elements or more: one in parentheses is a grouping",
+                t
+            );
+        }
+        return Expr.Tuple(items.toArray(), this.since(t));
+    }
+
+    /// A value block.
+    mut fn blockValue(): Expr throws SyntaxError {
+        let b = try this.parseBlock();
+        return Expr.Block(b, b.span);
+    }
+
+    /// `.Red`, `.Num(3)`, `.Rect { w = 1 }`: a member of the enum the position expects; `null`
+    /// where no name follows the `.`.
+    mut fn implicitMember(t: Token): ?Expr throws SyntaxError {
+        if (this.peek(1).kind != .Ident) {
+            return null;
+        }
+        this.advance();
+        let name = this.text(this.advance());
+        if (this.at(.LBrace) && isTypeName(name)) {
+            let fields = try this.parseFieldInits();
+            return Expr.VariantInit(null, name, fields, this.since(t));
+        }
+        return Expr.Implicit(name, this.since(t));
+    }
+
+    /// `true`, `false`, `null`, `this`, an `if` or a `match` where a value stands; `null` for any
+    /// other word.
+    mut fn keywordValue(t: Token): ?Expr throws SyntaxError {
+        let w = this.text(t);
+        let span = this.spanOf(t);
+        if (w == "true" || w == "false") {
+            this.advance();
+            return Expr.Bool(w == "true", span);
+        }
+        if (w == "null") {
+            this.advance();
+            return Expr.Null(span);
+        }
+        if (w == "this") {
+            this.advance();
+            return Expr.This(span);
+        }
+        if (w == "if") {
+            return try this.parseIfExpr();
+        }
+        if (w == "match") {
+            return try this.parseMatch();
+        }
+        return null;
+    }
+
+    /// A name, `loop { … }`, `x => …` (a lambda of one parameter, its type from the position), or
+    /// `Name { … }`, an initializer.
+    mut fn nameValue(t: Token): Expr throws SyntaxError {
+        if (this.atWord("loop") && this.peek(1).kind == .LBrace) {
+            this.advance();
+            let body = try this.parseBlock();
+            return Expr.Loop(body, null, this.since(t));
+        }
+        let name = this.text(t);
+        let span = this.spanOf(t);
+        if (this.peek(1).kind == .FatArrow && !this.inGuard) {
+            this.advance();
+            this.advance();
+            let body = try this.lambdaBody();
+            let param = LambdaParam { name = name, type = null, span = span };
+            return Expr.Lambda([param], null, boxed(body), false, this.since(t));
+        }
+        this.advance();
+        if (this.at(.LBrace) && isTypeName(name)) {
+            return try this.parseStructInit(name, t);
+        }
+        return Expr.Name(name, span);
     }
 
     /// Whether the `(` here opens a lambda: its `)` is followed by `=>`, or by `:` and a result

@@ -8,7 +8,7 @@ import lyric_script.compiler.token { Token };
 
 /// A piece of a string's text: text with its escapes resolved, or an f-string's hole — the source
 /// range of its expression, the line and column it starts at, and its format spec.
-pub enum Piece :: [Debug] {
+enum Piece :: [Debug] {
     Text(string),
     Hole(int, int, int, int, ?string),
 }
@@ -27,7 +27,7 @@ fn report(errors: List<Diagnostic>, code: string, message: string, t: Token): vo
 }
 
 /// An integer literal's value; `negative` where a `-` stands right before it (Lyric 5 §4.1 rule 2).
-pub fn intValue(text: string, negative: bool, t: Token, errors: List<Diagnostic>): int {
+fn intValue(text: string, negative: bool, t: Token, errors: List<Diagnostic>): int {
     var radix = 10;
     var from = 0;
     if (text.startsWith("0x")) {
@@ -68,7 +68,7 @@ pub fn intValue(text: string, negative: bool, t: Token, errors: List<Diagnostic>
 
 /// A float literal's value; `1.` and `.5` read as `1.0` and `0.5`. Its faults are the lexer's
 /// to report (LEX0006, LEX0016).
-pub fn floatValue(text: string, negative: bool): float {
+fn floatValue(text: string, negative: bool): float {
     var clean = text.replace('_', "");
     if (clean.startsWith(".")) {
         clean = f"0{clean}";
@@ -86,7 +86,7 @@ pub fn floatValue(text: string, negative: bool): float {
 }
 
 /// A string literal's text, escapes resolved: `"…"`, `r"…"`, `r#"…"#`, `"""…"""`, `r"""…"""`.
-pub fn stringValue(text: string, t: Token, errors: List<Diagnostic>): string {
+fn stringValue(text: string, t: Token, errors: List<Diagnostic>): string {
     let out = StringBuilder.new();
     for (piece in stringPieces(text, t, errors)) {
         match (piece) {
@@ -99,19 +99,19 @@ pub fn stringValue(text: string, t: Token, errors: List<Diagnostic>): string {
 
 /// The pieces of a string or an f-string: `f"…"`, `fr"…"`, `f"""…"""` and the forms of
 /// `stringValue`.
-pub fn stringPieces(text: string, t: Token, errors: List<Diagnostic>): Piece[] {
+fn stringPieces(text: string, t: Token, errors: List<Diagnostic>): Piece[] {
     let r = TextReader.new(text, t, errors);
     return r.pieces();
 }
 
 /// A byte string's bytes: ASCII text, the escapes, `\xNN` (Lyric 5 §4.5).
-pub fn bytesValue(text: string, t: Token, errors: List<Diagnostic>): uint8[] {
+fn bytesValue(text: string, t: Token, errors: List<Diagnostic>): uint8[] {
     let r = TextReader.new(text, t, errors);
     return r.bytes();
 }
 
 /// A character literal's character: exactly one, written or escaped (Lyric 5 §4.3).
-pub fn charValue(text: string, t: Token, errors: List<Diagnostic>): char {
+fn charValue(text: string, t: Token, errors: List<Diagnostic>): char {
     let r = TextReader.new(text, t, errors);
     return r.character();
 }

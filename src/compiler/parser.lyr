@@ -45,20 +45,20 @@ import lyric_script.compiler.token { Token, TokenKind };
 
 /// What the parser made of a source: the module, and the lexer's and the parser's errors and
 /// warnings.
-pub struct Parsed {
-    pub module: Module,
-    pub errors: Diagnostic[],
-    pub warnings: Diagnostic[],
+struct Parsed {
+    module: Module,
+    errors: Diagnostic[],
+    warnings: Diagnostic[],
 }
 
 /// How deeply expressions, blocks and prefix operators may nest before the parse refuses
 /// (`LYS-PAR0045`). The parser recurses on whatever stack its caller has, a task's among them; on
 /// a test's task it reached 90 levels of parentheses and overflowed at 95 (S2c, measured), so 64
 /// leaves room (Lyric 5's floor of 128 is a thread's).
-pub let maxNesting: int = 64;
+let maxNesting: int = 64;
 
 /// Reads `source` into its syntax tree.
-pub fn parse(source: string): Parsed {
+fn parse(source: string): Parsed {
     let lexed = lex(source);
     let p = Parser.new(source, lexed.tokens);
     let module = p.parseModule();
@@ -81,6 +81,7 @@ pub fn parse(source: string): Parsed {
 
 /// Gives up the statement at hand; its fault is reported already.
 pub struct SyntaxError :: [Error] {
+    /// The same text for every fault: each is reported where it stands, before this is thrown.
     pub fn message(): string {
         return "a syntax error";
     }

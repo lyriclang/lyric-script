@@ -19,14 +19,14 @@ import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.token { Token, TokenKind, keywords };
 
 /// What the lexer made of a source: its tokens, ending in `Eof`, and its errors and warnings.
-pub struct Lexed {
-    pub tokens: Token[],
-    pub errors: Diagnostic[],
-    pub warnings: Diagnostic[],
+struct Lexed {
+    tokens: Token[],
+    errors: Diagnostic[],
+    warnings: Diagnostic[],
 }
 
 /// Reads `source` into tokens.
-pub fn lex(source: string): Lexed {
+fn lex(source: string): Lexed {
     let s = Scanner.new(source);
     s.scan();
     let warnings = List<Diagnostic>.new();
@@ -36,7 +36,7 @@ pub fn lex(source: string): Lexed {
 
 /// Reads the tokens of `source[start..end]`, one line — an f-string's hole — where they stand in
 /// `source`: its first character at `line` and `column`.
-pub fn lexRange(source: string, start: int, end: int, line: int, column: int): Lexed {
+fn lexRange(source: string, start: int, end: int, line: int, column: int): Lexed {
     let inner = lex(source[start..end].toString());
     let tokens = List<Token>.new();
     for (t in inner.tokens) {

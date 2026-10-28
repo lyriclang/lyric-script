@@ -1,0 +1,1640 @@
+//! The checker (S2d; spec chapters 3, 7, 8 for the core): the syntax tree to the checked program.
+//! It resolves names — locals in their scopes, the script's top-level bindings (07 Top), functions
+//! by name and number of arguments (Lyric 5 §8.1.2), types —, gives every expression its type and
+//! writes out the conversions the language makes on its own (`int` to `float`, 03 Mix).
+//!
+//! Two passes: the declarations first (types, then fields and signatures), then the bodies. A
+//! function whose body is `= expr` without a written type gets the type of `expr` (09 Ret),
+//! checked when it is first needed.
+//!
+//! The codes below `LYS-SEM0100` mean what Lyric 5's `LYR-SEM` code of the same number means;
+//! from 0100 on they are Lyric-Script's own. `LYS-NYI0001` names what the plan builds later: it
+//! leaves the toolchain before 1.0.
+import std.collections { List, Map };
+import lyric_script.compiler.ast {
+    AliasDecl,
+    Arg,
+    BinaryOp,
+    Block,
+    EnumDecl,
+    Expr,
+    FieldInit,
+    FnDecl,
+    Item,
+    Module,
+    Segment,
+    Span,
+    Stmt,
+    TypeDecl,
+    TypeExpr,
+    UnaryOp,
+    binaryText,
+    unaryText,
+};
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.typed {
+    FieldInfo,
+    FnInfo,
+    GlobalInfo,
+    Native,
+    ParamInfo,
+    Place,
+    Program,
+    TExpr,
+    TStmt,
+    Ty,
+    TypeInfo,
+    TypeKind,
+    typeOf,
+};
+
+/// What the checker made of a module: the program, and its errors and warnings.
+struct Checked {
+    program: Program,
+    errors: Diagnostic[],
+    warnings: Diagnostic[],
+}
+
+/// Checks a parsed module.
+fn checkModule(module: Module): Checked {
+    let c = Checker.new();
+    c.declare(module);
+    c.checkMain(module);
+    c.checkBodies();
+    return Checked { program = c.program(), errors = c.errors.toArray(), warnings = c.warnings.toArray() };
+}
+
+/// A loop being checked: `loop` gives the value of its breaks, `while` and `for` give none.
+class LoopCtx {
+    isLoop: bool,
+    var breakTy: ?Ty = null,
+    var breaks: int = 0,
+}
+
+/// A scope's locals by name. A class of its own: a field of type `List<Map<…>>` does not lower
+/// yet (lyriclang/lyric#612).
+class Scope {
+    names: Map<string, int>,
+}
+
+/// The function being checked: its scopes of locals and its loops.
+class FnCtx {
+    fnIndex: int,
+    scopes: List<Scope>,
+    locals: List<Ty>,
+    localIsVar: List<bool>,
+    loops: List<LoopCtx>,
+    returns: Ty,
+    // whether `let` and `var` at the outermost scope are the script's globals (main's code)
+    isMain: bool,
+
+    static fn new(fnIndex: int, returns: Ty, isMain: bool): FnCtx {
+        let scopes = List<Scope>.new();
+        scopes.push(Scope { names = Map<string, int>.new() });
+        return FnCtx {
+            fnIndex = fnIndex,
+            scopes = scopes,
+            locals = List<Ty>.new(),
+            localIsVar = List<bool>.new(),
+            loops = List<LoopCtx>.new(),
+            returns = returns,
+            isMain = isMain,
+        };
+    }
+}
+
+/// The state of a function's signature: an expression body without a written type is inferred
+/// when first needed.
+enum FnState :: [Equatable] {
+    Declared,
+    Inferring,
+    Done,
+}
+
+class Checker {
+    errors: List<Diagnostic>,
+    warnings: List<Diagnostic>,
+    types: List<TypeInfo>,
+    typeIndex: Map<string, int>,
+    aliases: Map<string, AliasDecl>,
+    resolvingAliases: List<string>,
+    functions: List<FnInfo>,
+    // top-level functions by name: the indices of those of that name
+    fnByName: Map<string, List<int>>,
+    fnDecls: List<?FnDecl>,
+    fnStates: List<FnState>,
+    globals: List<GlobalInfo>,
+    globalIndex: Map<string, int>,
+    var ctx: FnCtx,
+    var mainIndex: int = -1,
+
+    static fn new(): Checker {
+        return Checker {
+            errors = List<Diagnostic>.new(),
+            warnings = List<Diagnostic>.new(),
+            types = List<TypeInfo>.new(),
+            typeIndex = Map<string, int>.new(),
+            aliases = Map<string, AliasDecl>.new(),
+            resolvingAliases = List<string>.new(),
+            functions = List<FnInfo>.new(),
+            fnByName = Map<string, List<int>>.new(),
+            fnDecls = List<?FnDecl>.new(),
+            fnStates = List<FnState>.new(),
+            globals = List<GlobalInfo>.new(),
+            globalIndex = Map<string, int>.new(),
+            ctx = FnCtx.new(-1, Ty.Void, false),
+        };
+    }
+
+    mut fn program(): Program {
+        return Program {
+            types = this.types.toArray(),
+            functions = this.functions.toArray(),
+            globals = this.globals.toArray(),
+            main = this.mainIndex,
+        };
+    }
+
+    // --- reports ---------------------------------------------------------------------------------
+
+    mut fn error(code: string, message: string, at: Span): void {
+        this.errors.push(
+            Diagnostic {
+                code = code,
+                message = message,
+                start = at.start,
+                end = at.end,
+                line = at.line,
+                column = at.column,
+            }
+        );
+    }
+
+    /// What a later milestone builds: reported, and the expression read as unknown.
+    mut fn notYet(what: string, milestone: string, at: Span): TExpr {
+        this.error("LYS-NYI0001", f"{what} comes with {milestone} of the plan to 1.0", at);
+        return TExpr.Unknown;
+    }
+
+    // --- declarations ----------------------------------------------------------------------------
+
+    mut fn declare(module: Module): void {
+        // the names of the types first: fields and signatures may name any of them
+        for (item in module.items) {
+            match (item) {
+                .Decl(d) => {
+                    match (d) {
+                        .Type(t) => this.declareTypeName(t.name, if (t.isClass) TypeKind.Class else TypeKind.Struct, t.span),
+                        .Enum(e) => this.declareTypeName(e.name, TypeKind.Enum, e.span),
+                        .Alias(a) => {
+                            if (this.typeIndex.containsKey(a.name) || this.aliases.containsKey(a.name)) {
+                                this.error("LYS-SEM0176", f"'{a.name}' is declared twice", a.span);
+                            } else {
+                                this.aliases.insert(a.name, a);
+                            }
+                        }
+                        .Fn(_) => {}
+                    }
+                }
+                .Stmt(_) => {}
+            }
+        }
+        // then what they hold, and the functions' signatures
+        for (item in module.items) {
+            match (item) {
+                .Decl(d) => {
+                    match (d) {
+                        .Type(t) => this.declareMembers(t),
+                        .Enum(e) => this.declareEnum(e),
+                        .Alias(a) => {
+                            this.resolveAlias(a);
+                        }
+                        .Fn(f) => {
+                            this.declareFn(f, -1);
+                        }
+                    }
+                }
+                .Stmt(_) => {}
+            }
+        }
+        // the fields' defaults, now that every type is known
+        for (item in module.items) {
+            match (item) {
+                .Decl(d) => {
+                    match (d) {
+                        .Type(t) => this.checkFieldDefaults(t),
+                        _ => {}
+                    }
+                }
+                .Stmt(_) => {}
+            }
+        }
+        // the parameters' defaults: a call that leaves a parameter out gets its default where it
+        // stands, so a default sees no parameter (Lyric 5 lets it read those before it)
+        var k = 0;
+        while (k < this.functions.length()) {
+            let decl = this.fnDecls[k];
+            if (decl != null) {
+                this.checkParamDefaults(k, decl);
+            }
+            k += 1;
+        }
+    }
+
+    mut fn checkParamDefaults(k: int, decl: FnDecl): void {
+        let info = this.functions[k];
+        let params = List<ParamInfo>.new();
+        var j = 0;
+        for (p in decl.params) {
+            let t = info.params[j].ty;
+            var dflt: ?TExpr = null;
+            let written = p.default;
+            if (written != null) {
+                let saved = this.ctx;
+                this.ctx = FnCtx.new(-1, Ty.Void, false);
+                dflt = this.coerce(this.expr(written, t), t, spanOf(written));
+                this.ctx = saved;
+            }
+            params.push(ParamInfo { name = p.name, ty = t, default = dflt });
+            j += 1;
+        }
+        info.params = params.toArray();
+    }
+
+    mut fn declareTypeName(name: string, kind: TypeKind, at: Span): void {
+        if (this.typeIndex.containsKey(name) || this.aliases.containsKey(name) || isBuiltinType(name)) {
+            this.error("LYS-SEM0176", f"'{name}' is declared twice", at);
+            return;
+        }
+        this.typeIndex.insert(name, this.types.length());
+        this.types.push(TypeInfo { name = name, kind = kind, methods = Map<string, int>.new() });
+    }
+
+    mut fn declareMembers(t: TypeDecl): void {
+        let index = this.typeIndex.get(t.name);
+        if (index == null) {
+            return;
+        }
+        let info = this.types[index];
+        if (info.kind == .Enum || info.name != t.name) {
+            return;
+        }
+        let fields = List<FieldInfo>.new();
+        let seen = Map<string, bool>.new();
+        for (f in t.fields) {
+            if (seen.containsKey(f.name)) {
+                this.error("LYS-SEM0121", f"'{t.name}' has a second member '{f.name}'", f.span);
+                continue;
+            }
+            seen.insert(f.name, true);
+            if (f.isVar && !t.isClass) {
+                this.error(
+                    "LYS-SEM0101",
+                    f"a struct's fields are never written: '{f.name}' takes no 'var' (a class's may)",
+                    f.span
+                );
+            }
+            fields.push(FieldInfo { name = f.name, ty = this.resolveType(f.type), isVar = f.isVar, default = null });
+        }
+        info.fields = fields.toArray();
+        for (m in t.methods) {
+            if (seen.containsKey(m.name)) {
+                this.error("LYS-SEM0121", f"'{t.name}' has a second member '{m.name}'", m.span);
+                continue;
+            }
+            seen.insert(m.name, true);
+            info.methods.insert(m.name, this.declareFn(m, index));
+        }
+    }
+
+    mut fn declareEnum(e: EnumDecl): void {
+        let index = this.typeIndex.get(e.name);
+        if (index == null) {
+            return;
+        }
+        let info = this.types[index];
+        if (info.kind != .Enum) {
+            return;
+        }
+        let variants = List<string>.new();
+        let seen = Map<string, bool>.new();
+        for (v in e.variants) {
+            if (seen.containsKey(v.name)) {
+                this.error("LYS-SEM0121", f"'{e.name}' has a second member '{v.name}'", v.span);
+                continue;
+            }
+            seen.insert(v.name, true);
+            variants.push(v.name);
+        }
+        info.variants = variants.toArray();
+        for (m in e.methods) {
+            if (seen.containsKey(m.name)) {
+                this.error("LYS-SEM0121", f"'{e.name}' has a second member '{m.name}'", m.span);
+                continue;
+            }
+            seen.insert(m.name, true);
+            info.methods.insert(m.name, this.declareFn(m, index));
+        }
+    }
+
+    /// Registers a function or a method and its signature; returns its index.
+    mut fn declareFn(f: FnDecl, owner: int): int {
+        let index = this.functions.length();
+        let info = FnInfo { name = f.name, owner = owner, isStatic = f.isStatic || owner < 0, line = f.span.line };
+        let params = List<ParamInfo>.new();
+        for (p in f.params) {
+            params.push(ParamInfo { name = p.name, ty = this.resolveType(p.type), default = null });
+        }
+        info.params = params.toArray();
+        var state = FnState.Done;
+        let written = f.returns;
+        if (written != null) {
+            info.returns = this.resolveType(written);
+        } else {
+            match (f.body) {
+                // Kotlin's rule (09 Ret): a block without a written type gives nothing
+                .Block(_) => info.returns = Ty.Void,
+                .Expr(_) => {
+                    info.returns = Ty.Unknown;
+                    state = FnState.Declared;
+                }
+            }
+        }
+        this.functions.push(info);
+        this.fnDecls.push(f);
+        this.fnStates.push(state);
+        if (owner < 0) {
+            let same = this.fnByName.get(f.name);
+            if (same != null) {
+                for (other in same) {
+                    if (this.functions[other].params.length() == params.length()) {
+                        this.error(
+                            "LYS-SEM0085",
+                            f"two functions '{f.name}' take {params.length()} arguments",
+                            f.span
+                        );
+                    }
+                }
+                same.push(index);
+            } else {
+                let list = List<int>.new();
+                list.push(index);
+                this.fnByName.insert(f.name, list);
+            }
+        }
+        return index;
+    }
+
+    mut fn checkFieldDefaults(t: TypeDecl): void {
+        let index = this.typeIndex.get(t.name);
+        if (index == null) {
+            return;
+        }
+        let info = this.types[index];
+        let fields = List<FieldInfo>.new();
+        for (f in info.fields) {
+            var dflt: ?TExpr = null;
+            for (d in t.fields) {
+                let written = d.default;
+                if (d.name == f.name && written != null) {
+                    let saved = this.ctx;
+                    this.ctx = FnCtx.new(-1, Ty.Void, false);
+                    dflt = this.coerce(this.expr(written, f.ty), f.ty, spanOf(written));
+                    this.ctx = saved;
+                }
+            }
+            fields.push(FieldInfo { name = f.name, ty = f.ty, isVar = f.isVar, default = dflt });
+        }
+        info.fields = fields.toArray();
+    }
+
+    // --- types -----------------------------------------------------------------------------------
+
+    mut fn resolveType(t: TypeExpr): Ty {
+        return match (t) {
+            .Named(name, args, at) => this.resolveNamed(name, args, at),
+            .Optional(inner, _) => Ty.Optional(boxTy(this.resolveType(inner.value))),
+            .List(inner, _) => Ty.List(boxTy(this.resolveType(inner.value))),
+            .Tuple(_, at) => {
+                this.notYet("a tuple type", "S3", at);
+                Ty.Unknown
+            }
+            .Fn(_, _, at) => {
+                this.notYet("a function type", "S3", at);
+                Ty.Unknown
+            }
+        };
+    }
+
+    mut fn resolveNamed(name: string, args: TypeExpr[], at: Span): Ty {
+        let arity = match (name) {
+            "List" => 1,
+            "Map" => 2,
+            _ => 0,
+        };
+        if (args.length() != arity) {
+            this.error("LYS-SEM0026", f"'{name}' takes {arity} type arguments, not {args.length()}", at);
+            return Ty.Unknown;
+        }
+        match (name) {
+            "int" => {
+                return Ty.Int;
+            }
+            "float" => {
+                return Ty.Float;
+            }
+            "bool" => {
+                return Ty.Bool;
+            }
+            "char" => {
+                return Ty.Char;
+            }
+            "string" => {
+                return Ty.Str;
+            }
+            "void" => {
+                return Ty.Void;
+            }
+            "never" => {
+                return Ty.Never;
+            }
+            "List" => {
+                return Ty.List(boxTy(this.resolveType(args[0])));
+            }
+            "Map" => {
+                return Ty.Map(boxTy(this.resolveType(args[0])), boxTy(this.resolveType(args[1])));
+            }
+            _ => {}
+        }
+        if (isWidthType(name)) {
+            this.error(
+                "LYS-SEM0100",
+                f"'{name}' is a width type of Lyric 5: Lyric-Script has one integer type, int, and one float type, float",
+                at
+            );
+            return Ty.Unknown;
+        }
+        let index = this.typeIndex.get(name);
+        if (index != null) {
+            return Ty.Named(index);
+        }
+        let alias = this.aliases.get(name);
+        if (alias != null) {
+            return this.resolveAlias(alias);
+        }
+        this.error("LYS-SEM0011", f"'{name}' names no type", at);
+        return Ty.Unknown;
+    }
+
+    mut fn resolveAlias(a: AliasDecl): Ty {
+        for (n in this.resolvingAliases) {
+            if (n == a.name) {
+                this.error("LYS-SEM0064", f"the alias '{a.name}' expands to itself", a.span);
+                return Ty.Unknown;
+            }
+        }
+        this.resolvingAliases.push(a.name);
+        let t = this.resolveType(a.type);
+        this.resolvingAliases.pop();
+        return t;
+    }
+
+    mut fn tyName(t: Ty): string {
+        return match (t) {
+            .Int => "int",
+            .Float => "float",
+            .Bool => "bool",
+            .Char => "char",
+            .Str => "string",
+            .Void => "void",
+            .Never => "never",
+            .Unknown => "?",
+            .Named(i) => this.types[i].name,
+            .List(e) => f"{this.tyName(e.value)}[]",
+            .Map(k, v) => f"Map<{this.tyName(k.value)}, {this.tyName(v.value)}>",
+            .Optional(e) => f"?{this.tyName(e.value)}",
+        };
+    }
+
+    /// `e` where a value of type `target` stands: the same type, `int` widened to `float`, or a
+    /// fault (`LYS-SEM0001`).
+    mut fn coerce(e: TExpr, target: Ty, at: Span): TExpr {
+        let actual = typeOf(e);
+        if (actual == target || actual == .Unknown || target == .Unknown || actual == .Never) {
+            return e;
+        }
+        if (actual == .Int && target == .Float) {
+            return match (e) {
+                .Int(n) => TExpr.Float(n as float),
+                _ => TExpr.ToFloat(boxE(e)),
+            };
+        }
+        this.error("LYS-SEM0001", f"expected {this.tyName(target)}, found {this.tyName(actual)}", at);
+        return TExpr.Unknown;
+    }
+
+    // --- bodies ----------------------------------------------------------------------------------
+
+    /// The script's top-level statements: the function `main`, whose outermost `let`s and `var`s
+    /// are the script's globals (07 Top).
+    mut fn checkMain(module: Module): void {
+        let index = this.functions.length();
+        this.mainIndex = index;
+        let line = if (module.items.length() > 0) itemLine(module.items[0]) else 1;
+        this.functions.push(FnInfo { name = "main", owner = -1, isStatic = true, line = line });
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        this.ctx = FnCtx.new(index, Ty.Void, true);
+        let body = List<TStmt>.new();
+        for (item in module.items) {
+            match (item) {
+                .Stmt(s) => body.push(this.stmt(s)),
+                .Decl(_) => {}
+            }
+        }
+        let info = this.functions[index];
+        info.body = body.toArray();
+        info.locals = this.ctx.locals.toArray();
+    }
+
+    mut fn checkBodies(): void {
+        var k = 0;
+        while (k < this.functions.length()) {
+            if (this.fnStates[k] != .Done || this.functions[k].body.length() == 0) {
+                let decl = this.fnDecls[k];
+                if (decl != null) {
+                    this.checkFn(k, decl);
+                }
+            }
+            k += 1;
+        }
+    }
+
+    /// The return type of function `k`, checking its body first when it is to be inferred.
+    mut fn returnsOf(k: int, at: Span): Ty {
+        let state = this.fnStates[k];
+        if (state == .Declared) {
+            let decl = this.fnDecls[k];
+            if (decl != null) {
+                this.checkFn(k, decl);
+            }
+        } else if (state == .Inferring) {
+            this.error(
+                "LYS-SEM0010",
+                f"'{this.functions[k].name}' calls itself before its type is known: write its result type",
+                at
+            );
+            return Ty.Unknown;
+        }
+        return this.functions[k].returns;
+    }
+
+    mut fn checkFn(k: int, decl: FnDecl): void {
+        let info = this.functions[k];
+        if (this.fnStates[k] == .Declared) {
+            this.fnStates[k] = FnState.Inferring;
+        }
+        let saved = this.ctx;
+        this.ctx = FnCtx.new(k, info.returns, false);
+        if (info.owner >= 0 && !info.isStatic) {
+            this.declareLocal("this", Ty.Named(info.owner), false, decl.span);
+        }
+        for (p in info.params) {
+            this.declareLocal(p.name, p.ty, false, decl.span);
+        }
+        let body = List<TStmt>.new();
+        match (decl.body) {
+            .Block(b) => {
+                for (s in b.stmts) {
+                    body.push(this.stmt(s));
+                }
+                if (info.returns != .Void && info.returns != .Unknown && !endsAll(body.toArray())) {
+                    this.error(
+                        "LYS-SEM0017",
+                        f"'{info.name}' can reach its end without returning its {this.tyName(info.returns)}",
+                        decl.span
+                    );
+                }
+            }
+            .Expr(e) => {
+                let value = if (this.fnStates[k] == .Inferring) this.expr(e, null) else this.coerce(this.expr(e, info.returns), info.returns, spanOf(e));
+                if (this.fnStates[k] == .Inferring) {
+                    info.returns = typeOf(value);
+                }
+                body.push(TStmt.Return(if (typeOf(value) == .Void) null else value, decl.span.line));
+            }
+        }
+        info.body = body.toArray();
+        info.locals = this.ctx.locals.toArray();
+        this.fnStates[k] = FnState.Done;
+        this.ctx = saved;
+    }
+
+    mut fn declareLocal(name: string, t: Ty, isVar: bool, at: Span): int {
+        let scope = this.ctx.scopes[this.ctx.scopes.length() - 1].names;
+        if (scope.containsKey(name)) {
+            this.error("LYS-SEM0176", f"'{name}' is bound twice in one scope", at);
+        }
+        let id = this.ctx.locals.length();
+        this.ctx.locals.push(t);
+        this.ctx.localIsVar.push(isVar);
+        scope.insert(name, id);
+        return id;
+    }
+
+    mut fn lookupLocal(name: string): ?int {
+        var k = this.ctx.scopes.length() - 1;
+        while (k >= 0) {
+            let id = this.ctx.scopes[k].names.get(name);
+            if (id != null) {
+                return id;
+            }
+            k -= 1;
+        }
+        return null;
+    }
+
+    mut fn pushScope(): void {
+        this.ctx.scopes.push(Scope { names = Map<string, int>.new() });
+    }
+
+    mut fn popScope(): void {
+        this.ctx.scopes.pop();
+    }
+
+    mut fn block(b: Block): TStmt[] {
+        this.pushScope();
+        let out = List<TStmt>.new();
+        for (s in b.stmts) {
+            out.push(this.stmt(s));
+        }
+        this.popScope();
+        return out.toArray();
+    }
+
+    // --- statements ------------------------------------------------------------------------------
+
+    mut fn stmt(s: Stmt): TStmt {
+        return match (s) {
+            .Expr(e, at) => this.exprStmt(e, at),
+            .Let(isVar, name, written, value, at) => this.letStmt(isVar, name, written, value, at),
+            .If(cond, then, otherwise, at) => {
+                let c = this.condition(cond);
+                let t = this.block(then);
+                var o: TStmt[] = [];
+                if (otherwise != null) {
+                    this.pushScope();
+                    o = [this.stmt(otherwise.value)];
+                    this.popScope();
+                }
+                TStmt.If(c, t, o, at.line)
+            }
+            .While(cond, body, _, at) => {
+                let c = this.condition(cond);
+                this.ctx.loops.push(LoopCtx { isLoop = false });
+                let b = this.block(body);
+                this.ctx.loops.pop();
+                TStmt.While(c, b, at.line)
+            }
+            .For(name, iterable, body, _, at) => this.forStmt(name, iterable, body, at),
+            .Break(_, value, at) => this.breakStmt(value, at),
+            .Continue(_, at) => {
+                if (this.ctx.loops.length() == 0) {
+                    this.error("LYS-SEM0147", "'continue' outside a loop", at);
+                }
+                TStmt.Continue(at.line)
+            }
+            .Return(value, at) => this.returnStmt(value, at),
+            .Block(b, at) => TStmt.Block(this.block(b), at.line),
+        };
+    }
+
+    /// An expression as a statement: a call, an assignment or a loop; anything else would be
+    /// computed only to be thrown away (`LYS-SEM0022`).
+    mut fn exprStmt(e: Expr, at: Span): TStmt {
+        let checked = this.expr(e, null);
+        let effect = match (e) {
+            .Call(_, _, _) | .Assign(_, _, _, _) | .Loop(_, _, _) => true,
+            _ => false,
+        };
+        if (!effect && typeOf(checked) != .Unknown) {
+            this.error("LYS-SEM0022", "this computes a value and throws it away: only calls, assignments and loops stand alone", at);
+        }
+        return TStmt.Expr(checked, at.line);
+    }
+
+    mut fn letStmt(isVar: bool, name: string, written: ?TypeExpr, value: ?Expr, at: Span): TStmt {
+        var t = Ty.Unknown;
+        if (written != null) {
+            t = this.resolveType(written);
+        }
+        if (value == null) {
+            this.notYet("a binding without a value", "S3 (definite assignment)", at);
+            this.declareLocal(name, t, isVar, at);
+            return TStmt.Expr(TExpr.Unit, at.line);
+        }
+        var v = this.expr(value, if (written != null) t else null);
+        if (written != null) {
+            v = this.coerce(v, t, spanOf(value));
+        } else {
+            t = typeOf(v);
+            if (t == .Void || t == .Never) {
+                this.error("LYS-SEM0010", f"'{name}' takes the value of something that gives none", at);
+                t = Ty.Unknown;
+            }
+        }
+        // the outermost scope of the script's code: a global of the script (07 Top)
+        if (this.ctx.isMain && this.ctx.scopes.length() == 1) {
+            if (this.globalIndex.containsKey(name)) {
+                this.error("LYS-SEM0176", f"'{name}' is bound twice in one scope", at);
+            }
+            let g = this.globals.length();
+            this.globals.push(GlobalInfo { name = name, ty = t, isVar = isVar });
+            this.globalIndex.insert(name, g);
+            return TStmt.SetGlobal(g, v, at.line);
+        }
+        let id = this.declareLocal(name, t, isVar, at);
+        return TStmt.SetLocal(id, v, at.line);
+    }
+
+    mut fn condition(e: Expr): TExpr {
+        let c = this.expr(e, Ty.Bool);
+        let t = typeOf(c);
+        if (t != .Bool && t != .Unknown && t != .Never) {
+            this.error("LYS-SEM0004", f"a condition is a bool, not {this.tyName(t)}", spanOf(e));
+            return TExpr.Unknown;
+        }
+        return c;
+    }
+
+    /// `for (x in a..b)`: over a range of ints; other iterables come with the collections (S7).
+    mut fn forStmt(name: string, iterable: Expr, body: Block, at: Span): TStmt {
+        match (iterable) {
+            .Range(from, to, inclusive, _) => {
+                let a = this.coerce(this.expr(from.value, Ty.Int), Ty.Int, spanOf(from.value));
+                let b = this.coerce(this.expr(to.value, Ty.Int), Ty.Int, spanOf(to.value));
+                this.pushScope();
+                let id = this.declareLocal(name, Ty.Int, false, at);
+                this.ctx.loops.push(LoopCtx { isLoop = false });
+                let stmts = this.block(body);
+                this.ctx.loops.pop();
+                this.popScope();
+                return TStmt.ForRange(id, a, b, inclusive, stmts, at.line);
+            }
+            _ => {}
+        }
+        this.notYet("a loop over anything but a range of ints", "S7 (the core collections)", spanOf(iterable));
+        return TStmt.Expr(TExpr.Unknown, at.line);
+    }
+
+    mut fn breakStmt(value: ?Expr, at: Span): TStmt {
+        if (this.ctx.loops.length() == 0) {
+            this.error("LYS-SEM0147", "'break' outside a loop", at);
+            return TStmt.Break(null, at.line);
+        }
+        let loop = this.ctx.loops[this.ctx.loops.length() - 1];
+        loop.breaks += 1;
+        if (value == null) {
+            if (loop.isLoop && loop.breakTy != null) {
+                this.error("LYS-SEM0149", "this 'loop' gives a value at some breaks and none at this one", at);
+            }
+            return TStmt.Break(null, at.line);
+        }
+        if (!loop.isLoop) {
+            this.error("LYS-SEM0148", "a 'while' or 'for' gives no value: its 'break' takes none", at);
+            return TStmt.Break(null, at.line);
+        }
+        let given = loop.breakTy;
+        let v = this.expr(value, given);
+        if (given == null) {
+            if (loop.breaks > 1) {
+                this.error("LYS-SEM0149", "this 'loop' gives a value at this break and none at another", at);
+            }
+            loop.breakTy = typeOf(v);
+            return TStmt.Break(v, at.line);
+        }
+        return TStmt.Break(this.coerce(v, given, spanOf(value)), at.line);
+    }
+
+    mut fn returnStmt(value: ?Expr, at: Span): TStmt {
+        if (this.ctx.isMain) {
+            this.error(
+                "LYS-SEM0102",
+                "'return' outside a function: a script ends at its end, or with exit(n)",
+                at
+            );
+            return TStmt.Return(null, at.line);
+        }
+        let expected = this.ctx.returns;
+        if (value == null) {
+            if (expected != .Void && expected != .Unknown) {
+                this.error("LYS-SEM0226", f"this 'return' gives no value; the function returns {this.tyName(expected)}", at);
+            }
+            return TStmt.Return(null, at.line);
+        }
+        if (expected == .Void) {
+            this.error("LYS-SEM0001", "the function returns nothing, so its 'return' takes no value", at);
+            return TStmt.Return(null, at.line);
+        }
+        return TStmt.Return(this.coerce(this.expr(value, expected), expected, spanOf(value)), at.line);
+    }
+
+    // --- expressions -----------------------------------------------------------------------------
+
+    /// Checks an expression; `expected` is the type its place takes, where one is known.
+    mut fn expr(e: Expr, expected: ?Ty): TExpr {
+        return match (e) {
+            .Int(n, _) => TExpr.Int(n),
+            .Float(x, _) => TExpr.Float(x),
+            .Bool(b, _) => TExpr.Bool(b),
+            .Char(c, _) => TExpr.Char(c),
+            .Str(s, _) => TExpr.Str(s),
+            .Bytes(_, at) => this.notYet("a byte string", "S7 (Bytes)", at),
+            .Interpolated(segments, at) => this.interpolated(segments, at),
+            .Null(at) => this.notYet("null", "S3 (optionals)", at),
+            .Name(name, at) => this.name(name, at),
+            .This(at) => {
+                let fnIndex = this.ctx.fnIndex;
+                if (fnIndex >= 0 && this.functions[fnIndex].owner >= 0 && !this.functions[fnIndex].isStatic) {
+                    TExpr.Local(0, Ty.Named(this.functions[fnIndex].owner))
+                } else {
+                    this.error("LYS-SEM0008", "'this' outside a method", at);
+                    TExpr.Unknown
+                }
+            }
+            .Unary(op, x, at) => this.unary(op, x.value, at),
+            .Binary(l, op, r, at) => this.binary(l.value, op, r.value, at),
+            .Assign(target, op, value, at) => this.assign(target.value, op, value.value, at),
+            .Range(_, _, _, at) => this.notYet("a range as a value", "S3", at),
+            .Cast(x, written, at) => this.cast(x.value, written, at),
+            .Call(callee, args, at) => this.call(callee.value, args, at),
+            .Index(_, _, at) => this.notYet("indexing", "S7 (the core collections)", at),
+            .Member(x, name, optional, at) => this.member(x.value, name, optional, at),
+            .List(_, at) => this.notYet("a list literal", "S7 (the core collections)", at),
+            .Map(_, at) => this.notYet("a map literal", "S7 (the core collections)", at),
+            .StructInit(name, fields, at) => this.init(name, fields, at),
+            .If(cond, then, otherwise, at) => this.ifExpr(cond.value, then.value, otherwise.value, expected, at),
+            .Block(b, _) => this.valueBlock(b, expected),
+            .Loop(body, _, _) => {
+                let ctx = LoopCtx { isLoop = true };
+                this.ctx.loops.push(ctx);
+                let stmts = this.block(body);
+                this.ctx.loops.pop();
+                let given = ctx.breakTy;
+                let t = if (given != null) given else if (ctx.breaks > 0) Ty.Void else Ty.Never;
+                TExpr.Loop(stmts, t)
+            }
+        };
+    }
+
+    mut fn name(name: string, at: Span): TExpr {
+        let local = this.lookupLocal(name);
+        if (local != null) {
+            return TExpr.Local(local, this.ctx.locals[local]);
+        }
+        let global = this.globalIndex.get(name);
+        if (global != null) {
+            return TExpr.Global(global, this.globals[global].ty);
+        }
+        if (this.fnByName.containsKey(name)) {
+            return this.notYet("a function as a value", "S3 (function values)", at);
+        }
+        if (this.typeIndex.containsKey(name) || this.aliases.containsKey(name) || isBuiltinType(name)) {
+            this.error("LYS-SEM0052", f"'{name}' is a type, not a value", at);
+            return TExpr.Unknown;
+        }
+        this.error("LYS-SEM0002", f"nothing in scope is named '{name}'", at);
+        return TExpr.Unknown;
+    }
+
+    mut fn unary(op: UnaryOp, x: Expr, at: Span): TExpr {
+        let v = this.expr(x, null);
+        let t = typeOf(v);
+        if (t == .Unknown) {
+            return TExpr.Unknown;
+        }
+        let fits = match (op) {
+            .Neg => t == .Int || t == .Float,
+            .Not => t == .Bool,
+            .BitNot => t == .Int,
+        };
+        if (!fits) {
+            this.error("LYS-SEM0003", f"'{unaryText(op)}' does not take {this.tyName(t)}", at);
+            return TExpr.Unknown;
+        }
+        return TExpr.Unary(op, boxE(v), t);
+    }
+
+    mut fn binary(l: Expr, op: BinaryOp, r: Expr, at: Span): TExpr {
+        match (op) {
+            .Coalesce => {
+                return this.notYet("'??'", "S3 (optionals)", at);
+            }
+            .In | .NotIn => {
+                return this.notYet(f"'{binaryText(op)}'", "S7 (the core collections)", at);
+            }
+            _ => {}
+        }
+        let a = this.expr(l, null);
+        let b = this.expr(r, null);
+        let ta = typeOf(a);
+        let tb = typeOf(b);
+        if (ta == .Unknown || tb == .Unknown) {
+            return TExpr.Unknown;
+        }
+        let numeric = (ta == .Int || ta == .Float) && (tb == .Int || tb == .Float);
+        let wide = if (ta == .Float || tb == .Float) Ty.Float else Ty.Int;
+        match (op) {
+            .And | .Or => {
+                if (ta == .Bool && tb == .Bool) {
+                    return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
+                }
+            }
+            .Add | .Sub | .Mul | .Div | .Rem => {
+                if (numeric) {
+                    return TExpr.Binary(boxE(this.coerce(a, wide, at)), op, boxE(this.coerce(b, wide, at)), wide);
+                }
+                if (op == .Add && ta == .Str && tb == .Str) {
+                    return TExpr.Native(Native.Concat, [a, b], Ty.Str);
+                }
+            }
+            .AddWrap | .SubWrap | .MulWrap | .Shl | .Shr | .BitAnd | .BitOr | .BitXor => {
+                if (ta == .Int && tb == .Int) {
+                    return TExpr.Binary(boxE(a), op, boxE(b), Ty.Int);
+                }
+            }
+            .Lt | .Le | .Gt | .Ge => {
+                if (numeric) {
+                    return TExpr.Binary(boxE(this.coerce(a, wide, at)), op, boxE(this.coerce(b, wide, at)), Ty.Bool);
+                }
+                if (ta == .Char && tb == .Char) {
+                    return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
+                }
+                if (ta == .Str && tb == .Str) {
+                    let cmp = TExpr.Native(Native.StrCmp, [a, b], Ty.Int);
+                    return TExpr.Binary(boxE(cmp), op, boxE(TExpr.Int(0)), Ty.Bool);
+                }
+            }
+            .Eq | .Ne => {
+                if (numeric) {
+                    return TExpr.Binary(boxE(this.coerce(a, wide, at)), op, boxE(this.coerce(b, wide, at)), Ty.Bool);
+                }
+                if (ta == tb && (ta == .Bool || ta == .Char || this.isEnum(ta))) {
+                    return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
+                }
+                if (ta == .Str && tb == .Str) {
+                    let eq = TExpr.Native(Native.StrEq, [a, b], Ty.Bool);
+                    return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
+                }
+                if (ta == tb) {
+                    return this.notYet(f"'{binaryText(op)}' on {this.tyName(ta)}", "S3 (synthesized equality)", at);
+                }
+                this.error("LYS-SEM0059", f"'{binaryText(op)}' compares values of one type: {this.tyName(ta)} and {this.tyName(tb)}", at);
+                return TExpr.Unknown;
+            }
+            _ => {}
+        }
+        this.error("LYS-SEM0003", f"'{binaryText(op)}' does not take {this.tyName(ta)} and {this.tyName(tb)}", at);
+        return TExpr.Unknown;
+    }
+
+    mut fn isEnum(t: Ty): bool {
+        return match (t) {
+            .Named(i) => this.types[i].kind == .Enum,
+            _ => false,
+        };
+    }
+
+    mut fn assign(target: Expr, op: ?BinaryOp, value: Expr, at: Span): TExpr {
+        var place = Place.Local(0);
+        var t = Ty.Unknown;
+        var current = TExpr.Unknown;
+        match (target) {
+            .Name(name, nameAt) => {
+                let local = this.lookupLocal(name);
+                let global = this.globalIndex.get(name);
+                if (local != null) {
+                    if (!this.ctx.localIsVar[local]) {
+                        this.error("LYS-SEM0019", f"'{name}' is a let: declare it with var to write it", nameAt);
+                    }
+                    place = Place.Local(local);
+                    t = this.ctx.locals[local];
+                    current = TExpr.Local(local, t);
+                } else if (global != null) {
+                    if (!this.globals[global].isVar) {
+                        this.error("LYS-SEM0019", f"'{name}' is a let: declare it with var to write it", nameAt);
+                    }
+                    place = Place.Global(global);
+                    t = this.globals[global].ty;
+                    current = TExpr.Global(global, t);
+                } else {
+                    this.name(name, nameAt);
+                    return TExpr.Unknown;
+                }
+            }
+            .Member(object, field, optional, memberAt) => {
+                if (optional) {
+                    return this.notYet("'?.' as a target", "S3 (optionals)", memberAt);
+                }
+                let o = this.expr(object.value, null);
+                let found = this.fieldOf(o, field, memberAt);
+                if (found == null) {
+                    return TExpr.Unknown;
+                }
+                let (owner, index) = found;
+                let info = this.types[owner];
+                if (info.kind == .Struct) {
+                    this.error("LYS-SEM0019", f"a struct's fields are never written: build a new {info.name}", memberAt);
+                } else if (!info.fields[index].isVar) {
+                    this.error("LYS-SEM0019", f"'{field}' is no var field of {info.name}", memberAt);
+                }
+                place = Place.Field(boxE(o), index);
+                t = info.fields[index].ty;
+                current = TExpr.Field(boxE(o), index, t);
+            }
+            .Index(_, _, indexAt) => {
+                return this.notYet("indexing", "S7 (the core collections)", indexAt);
+            }
+            _ => {
+                this.error("LYS-SEM0019", "this cannot be written: a variable or a field can", spanOf(target));
+                return TExpr.Unknown;
+            }
+        }
+        if (op != null) {
+            // `x op= v` is `x = x op v`, with the place evaluated once
+            let combined = this.binaryChecked(current, op, this.expr(value, t), at);
+            return TExpr.Assign(place, op, boxE(this.coerceOperand(combined, t, at)), t);
+        }
+        let v = this.coerce(this.expr(value, t), t, spanOf(value));
+        return TExpr.Assign(place, null, boxE(v), t);
+    }
+
+    /// The right side of `x op= v` as the operation gives it: only its value's type is kept, the
+    /// generator applies `op` to the place it reads once.
+    mut fn binaryChecked(current: TExpr, op: BinaryOp, v: TExpr, at: Span): TExpr {
+        let tc = typeOf(current);
+        let tv = typeOf(v);
+        if (tc == .Unknown || tv == .Unknown) {
+            return TExpr.Unknown;
+        }
+        let numeric = (tc == .Int || tc == .Float) && (tv == .Int || tv == .Float);
+        let fits = match (op) {
+            .Add => numeric || (tc == .Str && tv == .Str),
+            .Sub | .Mul | .Div | .Rem => numeric,
+            .AddWrap | .SubWrap | .MulWrap | .Shl | .Shr | .BitAnd | .BitOr | .BitXor => tc == .Int && tv == .Int,
+            .And | .Or => tc == .Bool && tv == .Bool,
+            _ => false,
+        };
+        if (!fits) {
+            if (op == .Coalesce) {
+                return this.notYet("'??='", "S3 (optionals)", at);
+            }
+            this.error("LYS-SEM0003", f"'{binaryText(op)}=' does not take {this.tyName(tc)} and {this.tyName(tv)}", at);
+            return TExpr.Unknown;
+        }
+        if (tc == .Int && tv == .Float) {
+            this.error("LYS-SEM0001", f"expected int, found float: '{binaryText(op)}=' keeps the type of its target", at);
+            return TExpr.Unknown;
+        }
+        return v;
+    }
+
+    mut fn coerceOperand(v: TExpr, t: Ty, at: Span): TExpr {
+        return this.coerce(v, t, at);
+    }
+
+    mut fn cast(x: Expr, written: TypeExpr, at: Span): TExpr {
+        let v = this.expr(x, null);
+        let from = typeOf(v);
+        let to = this.resolveType(written);
+        if (from == .Unknown || to == .Unknown) {
+            return TExpr.Unknown;
+        }
+        let scalar = (from == .Int || from == .Float || from == .Char) && (to == .Int || to == .Float || to == .Char);
+        if (!scalar || (from == .Float && to == .Char) || (from == .Char && to == .Float)) {
+            this.error("LYS-SEM0006", f"'as' converts between int, float and char: not {this.tyName(from)} to {this.tyName(to)}", at);
+            return TExpr.Unknown;
+        }
+        return TExpr.Cast(boxE(v), to);
+    }
+
+    /// The type and index of a struct's or class's field, reported when it has none.
+    mut fn fieldOf(o: TExpr, field: string, at: Span): ?(int, int) {
+        let t = typeOf(o);
+        match (t) {
+            .Unknown => {
+                return null;
+            }
+            .Named(i) => {
+                var k = 0;
+                for (f in this.types[i].fields) {
+                    if (f.name == field) {
+                        return (i, k);
+                    }
+                    k += 1;
+                }
+                this.error("LYS-SEM0012", f"'{this.types[i].name}' has no field '{field}'", at);
+                return null;
+            }
+            .Str | .List(_) | .Map(_, _) => {
+                this.notYet(f"the members of {this.tyName(t)}", "S7 (the core library)", at);
+                return null;
+            }
+            _ => {}
+        }
+        this.error("LYS-SEM0012", f"{this.tyName(t)} has no field '{field}'", at);
+        return null;
+    }
+
+    mut fn member(x: Expr, name: string, optional: bool, at: Span): TExpr {
+        if (optional) {
+            return this.notYet("'?.'", "S3 (optionals)", at);
+        }
+        // `Color.Red`: a variant of an enum
+        match (x) {
+            .Name(typeName, _) => {
+                if (this.lookupLocal(typeName) == null && !this.globalIndex.containsKey(typeName)) {
+                    let index = this.typeIndex.get(typeName);
+                    if (index != null) {
+                        let info = this.types[index];
+                        var k = 0;
+                        for (v in info.variants) {
+                            if (v == name) {
+                                return TExpr.Variant(index, k);
+                            }
+                            k += 1;
+                        }
+                        this.error("LYS-SEM0012", f"'{typeName}' has no member '{name}'", at);
+                        return TExpr.Unknown;
+                    }
+                }
+            }
+            _ => {}
+        }
+        let o = this.expr(x, null);
+        let found = this.fieldOf(o, name, at);
+        if (found == null) {
+            return TExpr.Unknown;
+        }
+        let (owner, index) = found;
+        return TExpr.Field(boxE(o), index, this.types[owner].fields[index].ty);
+    }
+
+    mut fn init(name: string, fields: FieldInit[], at: Span): TExpr {
+        let index = this.typeIndex.get(name);
+        if (index == null) {
+            this.resolveNamed(name, [], at);
+            return TExpr.Unknown;
+        }
+        let info = this.types[index];
+        if (info.kind == .Enum) {
+            this.error("LYS-SEM0031", f"'{name}' is an enum: its values are its variants, written '{name}.Variant'", at);
+            return TExpr.Unknown;
+        }
+        let values = List<?TExpr>.new();
+        for (_ in info.fields) {
+            values.push(null);
+        }
+        for (f in fields) {
+            var k = 0;
+            var found = -1;
+            for (decl in info.fields) {
+                if (decl.name == f.name) {
+                    found = k;
+                }
+                k += 1;
+            }
+            if (found < 0) {
+                this.error("LYS-SEM0015", f"'{name}' declares no field '{f.name}'", f.span);
+                continue;
+            }
+            if (values[found] != null) {
+                this.error("LYS-SEM0070", f"'{f.name}' is given twice", f.span);
+                continue;
+            }
+            let t = info.fields[found].ty;
+            values[found] = this.coerce(this.expr(f.value, t), t, spanOf(f.value));
+        }
+        let out = List<TExpr>.new();
+        let missing = List<string>.new();
+        var k = 0;
+        for (decl in info.fields) {
+            let given = values[k];
+            let dflt = decl.default;
+            if (given != null) {
+                out.push(given);
+            } else if (dflt != null) {
+                out.push(dflt);
+            } else {
+                missing.push(decl.name);
+                out.push(TExpr.Unknown);
+            }
+            k += 1;
+        }
+        if (missing.length() > 0) {
+            this.error("LYS-SEM0106", f"'{name}' needs {missing.toArray().join(", ")}: no default gives them", at);
+        }
+        return TExpr.New(index, out.toArray());
+    }
+
+    mut fn ifExpr(cond: Expr, then: Expr, otherwise: Expr, expected: ?Ty, at: Span): TExpr {
+        let c = this.condition(cond);
+        let a = this.expr(then, expected);
+        let b = this.expr(otherwise, expected);
+        let t = this.unify(typeOf(a), typeOf(b), at);
+        return TExpr.If(boxE(c), boxE(this.coerce(a, t, at)), boxE(this.coerce(b, t, at)), t);
+    }
+
+    /// The type both branches give: the same one, `float` where one is `int`, the other where one
+    /// never ends (`LYS-SEM0016` otherwise).
+    mut fn unify(a: Ty, b: Ty, at: Span): Ty {
+        if (a == b || b == .Never || b == .Unknown) {
+            return a;
+        }
+        if (a == .Never || a == .Unknown) {
+            return b;
+        }
+        if ((a == .Int && b == .Float) || (a == .Float && b == .Int)) {
+            return Ty.Float;
+        }
+        this.error("LYS-SEM0016", f"the branches give {this.tyName(a)} and {this.tyName(b)}", at);
+        return Ty.Unknown;
+    }
+
+    /// A block where a value stands: its last statement gives the value when it is an
+    /// expression, or an `if` with an `else` (09 NL rule 6).
+    mut fn valueBlock(b: Block, expected: ?Ty): TExpr {
+        this.pushScope();
+        let out = List<TStmt>.new();
+        var value = TExpr.Unit;
+        var k = 0;
+        for (s in b.stmts) {
+            let last = k == b.stmts.length() - 1;
+            k += 1;
+            if (last) {
+                match (s) {
+                    .Expr(e, _) => {
+                        value = this.expr(e, expected);
+                        continue;
+                    }
+                    .If(cond, then, otherwise, at) => {
+                        if (otherwise != null) {
+                            value = this.ifStmtValue(cond, then, otherwise.value, expected, at);
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out.push(this.stmt(s));
+        }
+        this.popScope();
+        return TExpr.Block(out.toArray(), boxE(value), typeOf(value));
+    }
+
+    mut fn ifStmtValue(cond: Expr, then: Block, otherwise: Stmt, expected: ?Ty, at: Span): TExpr {
+        let c = this.condition(cond);
+        let a = this.valueBlock(then, expected);
+        let b = match (otherwise) {
+            .Block(ob, _) => this.valueBlock(ob, expected),
+            .If(c2, t2, o2, at2) => {
+                if (o2 != null) this.ifStmtValue(c2, t2, o2.value, expected, at2) else TExpr.Unit
+            }
+            _ => TExpr.Unit,
+        };
+        let t = this.unify(typeOf(a), typeOf(b), at);
+        return TExpr.If(boxE(c), boxE(this.coerce(a, t, at)), boxE(this.coerce(b, t, at)), t);
+    }
+
+    /// `f"…"`: its text and its holes as strings, joined.
+    mut fn interpolated(segments: Segment[], at: Span): TExpr {
+        let parts = List<TExpr>.new();
+        for (seg in segments) {
+            match (seg) {
+                .Text(s) => {
+                    if (s.length() > 0) {
+                        parts.push(TExpr.Str(s));
+                    }
+                }
+                .Hole(x, spec) => {
+                    if (spec != null) {
+                        parts.push(this.notYet("a format spec", "S7 (std.fmt)", at));
+                    } else {
+                        parts.push(this.stringOf(this.expr(x, null), spanOf(x)));
+                    }
+                }
+            }
+        }
+        if (parts.length() == 0) {
+            return TExpr.Str("");
+        }
+        if (parts.length() == 1 && typeOf(parts[0]) == .Str) {
+            return parts[0];
+        }
+        return TExpr.Native(Native.Concat, parts.toArray(), Ty.Str);
+    }
+
+    /// A value as text, for `print`, `println` and the holes of an f-string.
+    mut fn stringOf(v: TExpr, at: Span): TExpr {
+        let t = typeOf(v);
+        if (t == .Str || t == .Unknown) {
+            return v;
+        }
+        let native: ?Native = match (t) {
+            .Int => Native.IntToStr,
+            .Float => Native.FloatToStr,
+            .Bool => Native.BoolToStr,
+            .Char => Native.CharToStr,
+            _ => null,
+        };
+        if (native == null) {
+            return this.notYet(f"text of a {this.tyName(t)}", "S3 (Display)", at);
+        }
+        return TExpr.Native(native, [v], Ty.Str);
+    }
+
+    // --- calls -----------------------------------------------------------------------------------
+
+    mut fn call(callee: Expr, args: Arg[], at: Span): TExpr {
+        match (callee) {
+            .Name(name, nameAt) => {
+                if (this.lookupLocal(name) != null || this.globalIndex.containsKey(name)) {
+                    return this.notYet("a call through a value", "S3 (function values)", nameAt);
+                }
+                let candidates = this.fnByName.get(name);
+                if (candidates != null) {
+                    return this.callAmong(name, candidates.toArray(), null, args, at);
+                }
+                if (name == "print" || name == "println") {
+                    return this.prelude(name, args, at);
+                }
+                let index = this.typeIndex.get(name);
+                if (index != null) {
+                    // `Point(1, 2)` is `Point.new(1, 2)` (05 D11)
+                    return this.staticCall(index, "new", args, at);
+                }
+                return this.name(name, nameAt);
+            }
+            .Member(object, method, optional, memberAt) => {
+                if (optional) {
+                    return this.notYet("'?.'", "S3 (optionals)", memberAt);
+                }
+                match (object.value) {
+                    .Name(typeName, _) => {
+                        if (this.lookupLocal(typeName) == null && !this.globalIndex.containsKey(typeName)) {
+                            let index = this.typeIndex.get(typeName);
+                            if (index != null) {
+                                return this.staticCall(index, method, args, at);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                let receiver = this.expr(object.value, null);
+                let t = typeOf(receiver);
+                match (t) {
+                    .Unknown => {
+                        return TExpr.Unknown;
+                    }
+                    .Named(i) => {
+                        let m = this.types[i].methods.get(method);
+                        if (m == null) {
+                            this.error("LYS-SEM0012", f"'{this.types[i].name}' has no method '{method}'", memberAt);
+                            return TExpr.Unknown;
+                        }
+                        if (this.functions[m].isStatic) {
+                            this.error("LYS-SEM0074", f"'{method}' is static: call it as {this.types[i].name}.{method}(…)", memberAt);
+                            return TExpr.Unknown;
+                        }
+                        return this.callAmong(method, [m], receiver, args, at);
+                    }
+                    _ => {
+                        return this.notYet(f"the methods of {this.tyName(t)}", "S7 (the core library)", memberAt);
+                    }
+                }
+            }
+            _ => {}
+        }
+        this.expr(callee, null);
+        return this.notYet("a call through a value", "S3 (function values)", at);
+    }
+
+    mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
+        let info = this.types[typeIndex];
+        let m = info.methods.get(method);
+        if (m == null) {
+            if (method == "new") {
+                this.error(
+                    "LYS-SEM0012",
+                    f"'{info.name}' has no 'new': write {info.name} {{ … }}, or declare static fn new",
+                    at
+                );
+            } else {
+                this.error("LYS-SEM0012", f"'{info.name}' has no member '{method}'", at);
+            }
+            return TExpr.Unknown;
+        }
+        if (!this.functions[m].isStatic) {
+            this.error("LYS-SEM0055", f"'{method}' needs a {info.name} to call it on", at);
+            return TExpr.Unknown;
+        }
+        return this.callAmong(method, [m], null, args, at);
+    }
+
+    /// Picks the function of `candidates` that takes as many arguments as the call gives (Lyric 5
+    /// §8.1.2) and checks the arguments against its parameters.
+    mut fn callAmong(name: string, candidates: int[], receiver: ?TExpr, args: Arg[], at: Span): TExpr {
+        var chosen = -1;
+        for (c in candidates) {
+            let params = this.functions[c].params;
+            var required = 0;
+            for (p in params) {
+                if (p.default == null) {
+                    required += 1;
+                }
+            }
+            if (args.length() >= required && args.length() <= params.length()) {
+                chosen = c;
+            }
+        }
+        if (chosen < 0) {
+            if (candidates.length() == 1) {
+                let n = this.functions[candidates[0]].params.length();
+                this.error("LYS-SEM0014", f"'{name}' takes {n} arguments, not {args.length()}", at);
+            } else {
+                this.error("LYS-SEM0087", f"no function '{name}' takes {args.length()} arguments", at);
+            }
+            for (a in args) {
+                this.expr(a.value, null);
+            }
+            return TExpr.Unknown;
+        }
+        let params = this.functions[chosen].params;
+        let given = List<?TExpr>.new();
+        for (_ in params) {
+            given.push(null);
+        }
+        var position = 0;
+        var named = false;
+        for (a in args) {
+            let argName = a.name;
+            var k = position;
+            if (argName != null) {
+                named = true;
+                k = -1;
+                var j = 0;
+                for (p in params) {
+                    if (p.name == argName) {
+                        k = j;
+                    }
+                    j += 1;
+                }
+                if (k < 0) {
+                    this.error("LYS-SEM0119", f"'{name}' has no parameter '{argName}'", spanOf(a.value));
+                    continue;
+                }
+            } else {
+                if (named) {
+                    this.error("LYS-SEM0119", "a positional argument after a named one", spanOf(a.value));
+                    continue;
+                }
+                position += 1;
+            }
+            if (given[k] != null) {
+                this.error("LYS-SEM0119", f"'{params[k].name}' is given twice", spanOf(a.value));
+                continue;
+            }
+            given[k] = this.coerce(this.expr(a.value, params[k].ty), params[k].ty, spanOf(a.value));
+        }
+        let out = List<TExpr>.new();
+        if (receiver != null) {
+            out.push(receiver);
+        }
+        var k = 0;
+        for (p in params) {
+            let v = given[k];
+            let dflt = p.default;
+            if (v != null) {
+                out.push(v);
+            } else if (dflt != null) {
+                out.push(dflt);
+            } else {
+                this.error("LYS-SEM0014", f"'{name}' needs its argument '{p.name}'", at);
+                out.push(TExpr.Unknown);
+            }
+            k += 1;
+        }
+        return TExpr.Call(chosen, out.toArray(), this.returnsOf(chosen, at));
+    }
+
+    /// `print(x)` and `println(x)`, `println()`: the prelude's output, any core value as text.
+    mut fn prelude(name: string, args: Arg[], at: Span): TExpr {
+        let native = if (name == "print") Native.Print else Native.Println;
+        if (args.length() > 1 || (args.length() == 1 && args[0].name != null)) {
+            this.error("LYS-SEM0014", f"'{name}' takes one value, or none", at);
+            return TExpr.Unknown;
+        }
+        if (args.length() == 0) {
+            return TExpr.Native(native, [TExpr.Str("")], Ty.Void);
+        }
+        let v = this.expr(args[0].value, null);
+        return TExpr.Native(native, [this.stringOf(v, spanOf(args[0].value))], Ty.Void);
+    }
+}
+
+fn boxE(e: TExpr): Box<TExpr> {
+    return Box<TExpr> { value = e };
+}
+
+fn boxTy(t: Ty): Box<Ty> {
+    return Box<Ty> { value = t };
+}
+
+/// Whether every path through the statements ends: in a `return`, or a `loop` without a break.
+fn endsAll(stmts: TStmt[]): bool {
+    if (stmts.length() == 0) {
+        return false;
+    }
+    return ends(stmts[stmts.length() - 1]);
+}
+
+fn ends(s: TStmt): bool {
+    return match (s) {
+        .Return(_, _) => true,
+        .If(_, then, otherwise, _) => endsAll(then) && endsAll(otherwise),
+        .Block(stmts, _) => endsAll(stmts),
+        .Expr(e, _) => typeOf(e) == .Never,
+        _ => false,
+    };
+}
+
+fn isBuiltinType(name: string): bool {
+    return match (name) {
+        "int" | "float" | "bool" | "char" | "string" | "void" | "never" | "List" | "Map" => true,
+        _ => isWidthType(name),
+    };
+}
+
+fn isWidthType(name: string): bool {
+    return match (name) {
+        "int8" | "int16" | "int32" | "int64" | "uint" | "uint8" | "uint16" | "uint32" | "uint64" => true,
+        "float32" | "float64" => true,
+        _ => false,
+    };
+}
+
+fn itemLine(item: Item): int {
+    return match (item) {
+        .Stmt(s) => stmtSpan(s).line,
+        .Decl(d) => match (d) {
+            .Fn(f) => f.span.line,
+            .Type(t) => t.span.line,
+            .Enum(e) => e.span.line,
+            .Alias(a) => a.span.line,
+        },
+    };
+}
+
+fn stmtSpan(s: Stmt): Span {
+    return match (s) {
+        .Expr(_, at) => at,
+        .Let(_, _, _, _, at) => at,
+        .If(_, _, _, at) => at,
+        .While(_, _, _, at) => at,
+        .For(_, _, _, _, at) => at,
+        .Break(_, _, at) => at,
+        .Continue(_, at) => at,
+        .Return(_, at) => at,
+        .Block(_, at) => at,
+    };
+}
+
+/// Where an expression stands.
+fn spanOf(e: Expr): Span {
+    return match (e) {
+        .Int(_, at) => at,
+        .Float(_, at) => at,
+        .Bool(_, at) => at,
+        .Char(_, at) => at,
+        .Str(_, at) => at,
+        .Bytes(_, at) => at,
+        .Interpolated(_, at) => at,
+        .Null(at) => at,
+        .Name(_, at) => at,
+        .This(at) => at,
+        .Unary(_, _, at) => at,
+        .Binary(_, _, _, at) => at,
+        .Assign(_, _, _, at) => at,
+        .Range(_, _, _, at) => at,
+        .Cast(_, _, at) => at,
+        .Call(_, _, at) => at,
+        .Index(_, _, at) => at,
+        .Member(_, _, _, at) => at,
+        .List(_, at) => at,
+        .Map(_, at) => at,
+        .StructInit(_, _, at) => at,
+        .If(_, _, _, at) => at,
+        .Block(_, at) => at,
+        .Loop(_, _, at) => at,
+    };
+}

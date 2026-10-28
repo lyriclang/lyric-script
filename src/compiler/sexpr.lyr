@@ -2,7 +2,6 @@
 //! what the parser made of a script. One line per item; no spans.
 import std.collections { List };
 import lyric_script.compiler.ast {
-    BinaryOp,
     Block,
     Decl,
     Expr,
@@ -12,10 +11,11 @@ import lyric_script.compiler.ast {
     Param,
     Stmt,
     TypeExpr,
-    UnaryOp,
+    binaryText,
+    unaryText,
 };
 
-pub fn showModule(m: Module): string {
+fn showModule(m: Module): string {
     let out = List<string>.new();
     let fm = m.frontmatter;
     if (fm != null) {
@@ -27,14 +27,14 @@ pub fn showModule(m: Module): string {
     return out.toArray().join("\n");
 }
 
-pub fn showItem(item: Item): string {
+fn showItem(item: Item): string {
     return match (item) {
         .Decl(d) => showDecl(d),
         .Stmt(s) => showStmt(s),
     };
 }
 
-pub fn showDecl(d: Decl): string {
+fn showDecl(d: Decl): string {
     return match (d) {
         .Fn(f) => showFn(f),
         .Type(t) => {
@@ -98,7 +98,7 @@ fn showParam(p: Param): string {
     return p.name + ": " + showType(p.type) + given;
 }
 
-pub fn showBlock(b: Block): string {
+fn showBlock(b: Block): string {
     let parts = List<string>.new();
     for (s in b.stmts) {
         parts.push(showStmt(s));
@@ -106,7 +106,7 @@ pub fn showBlock(b: Block): string {
     return "{" + parts.toArray().join("; ") + "}";
 }
 
-pub fn showStmt(s: Stmt): string {
+fn showStmt(s: Stmt): string {
     return match (s) {
         .Expr(e, _) => showExpr(e),
         .Let(isVar, name, ty, value, _) => {
@@ -134,7 +134,7 @@ pub fn showStmt(s: Stmt): string {
     };
 }
 
-pub fn showExpr(e: Expr): string {
+fn showExpr(e: Expr): string {
     return match (e) {
         .Int(n, _) => f"{n}",
         .Float(x, _) => f"{x}",
@@ -229,7 +229,7 @@ pub fn showExpr(e: Expr): string {
     };
 }
 
-pub fn showType(t: TypeExpr): string {
+fn showType(t: TypeExpr): string {
     return match (t) {
         .Named(name, args, _) => {
             let parts = List<string>.new();
@@ -254,43 +254,6 @@ pub fn showType(t: TypeExpr): string {
             }
             "fn(" + parts.toArray().join(", ") + ") -> " + showType(result.value)
         }
-    };
-}
-
-fn unaryText(op: UnaryOp): string {
-    return match (op) {
-        .Neg => "-",
-        .Not => "!",
-        .BitNot => "~",
-    };
-}
-
-fn binaryText(op: BinaryOp): string {
-    return match (op) {
-        .Add => "+",
-        .Sub => "-",
-        .Mul => "*",
-        .Div => "/",
-        .Rem => "%",
-        .AddWrap => "+%",
-        .SubWrap => "-%",
-        .MulWrap => "*%",
-        .Shl => "<<",
-        .Shr => ">>",
-        .BitAnd => "&",
-        .BitXor => "^",
-        .BitOr => "|",
-        .Lt => "<",
-        .Le => "<=",
-        .Gt => ">",
-        .Ge => ">=",
-        .Eq => "==",
-        .Ne => "!=",
-        .In => "in",
-        .NotIn => "!in",
-        .And => "&&",
-        .Or => "||",
-        .Coalesce => "??",
     };
 }
 

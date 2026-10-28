@@ -5,27 +5,27 @@
 
 /// Where a node stands: byte offsets into the source, and the line and column (from 1) of its
 /// start.
-pub struct Span :: [Equatable, Debug] {
-    pub start: int,
-    pub end: int,
-    pub line: int,
-    pub column: int,
+struct Span :: [Equatable, Debug] {
+    start: int,
+    end: int,
+    line: int,
+    column: int,
 }
 
 extend Span {
     /// Returns the span from this one's start to `other`'s end.
-    pub fn to(other: Span): Span {
+    fn to(other: Span): Span {
         return Span { start = this.start, end = other.end, line = this.line, column = this.column };
     }
 }
 
-pub enum UnaryOp :: [Equatable, Debug] {
+enum UnaryOp :: [Equatable, Debug] {
     Neg,
     Not,
     BitNot,
 }
 
-pub enum BinaryOp :: [Equatable, Debug] {
+enum BinaryOp :: [Equatable, Debug] {
     Add,
     Sub,
     Mul,
@@ -54,7 +54,7 @@ pub enum BinaryOp :: [Equatable, Debug] {
 
 /// A written type: a name with its arguments (`int`, `Point`, `Map<string, int>`), `?T`, `T[]`,
 /// a tuple, a function type.
-pub enum TypeExpr :: [Debug] {
+enum TypeExpr :: [Debug] {
     Named(string, TypeExpr[], Span),
     Optional(Box<TypeExpr>, Span),
     List(Box<TypeExpr>, Span),
@@ -63,33 +63,33 @@ pub enum TypeExpr :: [Debug] {
 }
 
 /// An argument of a call: its name, if written with one, and its value.
-pub struct Arg :: [Debug] {
-    pub name: ?string,
-    pub value: Expr,
+struct Arg :: [Debug] {
+    name: ?string,
+    value: Expr,
 }
 
 /// A field of an initializer, `name = value`; `name` alone reads the binding of that name.
-pub struct FieldInit :: [Debug] {
-    pub name: string,
-    pub value: Expr,
-    pub span: Span,
+struct FieldInit :: [Debug] {
+    name: string,
+    value: Expr,
+    span: Span,
 }
 
 /// An entry of a map literal, `key: value`.
-pub struct MapEntry :: [Debug] {
-    pub key: Expr,
-    pub value: Expr,
+struct MapEntry :: [Debug] {
+    key: Expr,
+    value: Expr,
 }
 
 /// A piece of an f-string: text, its escapes resolved, or a hole with its expression and its
 /// format spec.
-pub enum Segment :: [Debug] {
+enum Segment :: [Debug] {
     Text(string),
     Hole(Expr, ?string),
 }
 
 /// An expression, each form a variant; the span is the whole expression's.
-pub enum Expr :: [Debug] {
+enum Expr :: [Debug] {
     Int(int, Span),
     Float(float, Span),
     Bool(bool, Span),
@@ -123,7 +123,7 @@ pub enum Expr :: [Debug] {
 }
 
 /// A statement, each form a variant.
-pub enum Stmt :: [Debug] {
+enum Stmt :: [Debug] {
     Expr(Expr, Span),
     /// `let` or, with the flag, `var`: the name, its type if written, its value if given.
     Let(bool, string, ?TypeExpr, ?Expr, Span),
@@ -140,77 +140,77 @@ pub enum Stmt :: [Debug] {
 
 /// A block: its statements, in order. Where a block gives a value, its last statement does,
 /// when it is an expression (09 NL rule 6).
-pub struct Block :: [Debug] {
-    pub stmts: Stmt[],
-    pub span: Span,
+struct Block :: [Debug] {
+    stmts: Stmt[],
+    span: Span,
 }
 
 /// A parameter: its name, its type, its default.
-pub struct Param :: [Debug] {
-    pub name: string,
-    pub type: TypeExpr,
-    pub default: ?Expr,
-    pub span: Span,
+struct Param :: [Debug] {
+    name: string,
+    type: TypeExpr,
+    default: ?Expr,
+    span: Span,
 }
 
 /// A function's body: a block, or `= expr` (09 Ret).
-pub enum FnBody :: [Debug] {
+enum FnBody :: [Debug] {
     Block(Block),
     Expr(Expr),
 }
 
-pub struct FnDecl :: [Debug] {
-    pub name: string,
-    pub params: Param[],
-    pub returns: ?TypeExpr,
-    pub body: FnBody,
-    pub isPub: bool,
-    pub isStatic: bool,
-    pub span: Span,
+struct FnDecl :: [Debug] {
+    name: string,
+    params: Param[],
+    returns: ?TypeExpr,
+    body: FnBody,
+    isPub: bool,
+    isStatic: bool,
+    span: Span,
 }
 
 /// A field of a struct or a class: `var` only in a class.
-pub struct FieldDecl :: [Debug] {
-    pub name: string,
-    pub type: TypeExpr,
-    pub default: ?Expr,
-    pub isVar: bool,
-    pub isPub: bool,
-    pub span: Span,
+struct FieldDecl :: [Debug] {
+    name: string,
+    type: TypeExpr,
+    default: ?Expr,
+    isVar: bool,
+    isPub: bool,
+    span: Span,
 }
 
 /// A struct or, with the flag, a class: its fields and its methods.
-pub struct TypeDecl :: [Debug] {
-    pub name: string,
-    pub isClass: bool,
-    pub fields: FieldDecl[],
-    pub methods: FnDecl[],
-    pub isPub: bool,
-    pub span: Span,
+struct TypeDecl :: [Debug] {
+    name: string,
+    isClass: bool,
+    fields: FieldDecl[],
+    methods: FnDecl[],
+    isPub: bool,
+    span: Span,
 }
 
-pub struct Variant :: [Debug] {
-    pub name: string,
-    pub span: Span,
+struct Variant :: [Debug] {
+    name: string,
+    span: Span,
 }
 
-pub struct EnumDecl :: [Debug] {
-    pub name: string,
-    pub variants: Variant[],
-    pub methods: FnDecl[],
-    pub isPub: bool,
-    pub span: Span,
+struct EnumDecl :: [Debug] {
+    name: string,
+    variants: Variant[],
+    methods: FnDecl[],
+    isPub: bool,
+    span: Span,
 }
 
 /// `type Name = T`.
-pub struct AliasDecl :: [Debug] {
-    pub name: string,
-    pub type: TypeExpr,
-    pub isPub: bool,
-    pub span: Span,
+struct AliasDecl :: [Debug] {
+    name: string,
+    type: TypeExpr,
+    isPub: bool,
+    span: Span,
 }
 
-pub enum Decl :: [Debug] {
+enum Decl :: [Debug] {
     Fn(FnDecl),
     Type(TypeDecl),
     Enum(EnumDecl),
@@ -218,13 +218,52 @@ pub enum Decl :: [Debug] {
 }
 
 /// What stands at the top of a module: a declaration, or a statement of the script (07 Top).
-pub enum Item :: [Debug] {
+enum Item :: [Debug] {
     Decl(Decl),
     Stmt(Stmt),
 }
 
 /// A module as read: its frontmatter's TOML, if it has one, and its items in order.
-pub struct Module :: [Debug] {
-    pub frontmatter: ?string,
-    pub items: Item[],
+struct Module :: [Debug] {
+    frontmatter: ?string,
+    items: Item[],
+}
+
+/// How a prefix operator is written.
+fn unaryText(op: UnaryOp): string {
+    return match (op) {
+        .Neg => "-",
+        .Not => "!",
+        .BitNot => "~",
+    };
+}
+
+/// How an infix operator is written.
+fn binaryText(op: BinaryOp): string {
+    return match (op) {
+        .Add => "+",
+        .Sub => "-",
+        .Mul => "*",
+        .Div => "/",
+        .Rem => "%",
+        .AddWrap => "+%",
+        .SubWrap => "-%",
+        .MulWrap => "*%",
+        .Shl => "<<",
+        .Shr => ">>",
+        .BitAnd => "&",
+        .BitXor => "^",
+        .BitOr => "|",
+        .Lt => "<",
+        .Le => "<=",
+        .Gt => ">",
+        .Ge => ">=",
+        .Eq => "==",
+        .Ne => "!=",
+        .In => "in",
+        .NotIn => "!in",
+        .And => "&&",
+        .Or => "||",
+        .Coalesce => "??",
+    };
 }

@@ -1,0 +1,191 @@
+//! The checked program (S2d): what the checker gives the code generator. Every name is resolved
+//! to a local, a global, a field, a function or a native; every expression carries its type;
+//! every conversion the language makes on its own (`int` to `float`, 03 Mix) is written out.
+import std.collections { Map };
+import lyric_script.compiler.ast { BinaryOp, UnaryOp };
+
+/// A type as the checker knows it.
+enum Ty :: [Equatable, Debug] {
+    Int,
+    Float,
+    Bool,
+    Char,
+    Str,
+    Void,
+    Never,
+    /// After a fault: fits every place, so one fault is reported once.
+    Unknown,
+    /// A struct, class or enum of the program, by its index in `Program.types`.
+    Named(int),
+    List(Box<Ty>),
+    Map(Box<Ty>, Box<Ty>),
+    Optional(Box<Ty>),
+}
+
+enum TypeKind :: [Equatable, Debug] {
+    Struct,
+    Class,
+    Enum,
+}
+
+struct FieldInfo :: [Debug] {
+    name: string,
+    ty: Ty,
+    isVar: bool,
+    default: ?TExpr,
+}
+
+/// A struct, class or enum: its fields or variants, and its methods by name. The checker fills
+/// it in two passes: the names first, then what they hold.
+class TypeInfo {
+    name: string,
+    kind: TypeKind,
+    var fields: FieldInfo[] = [],
+    var variants: string[] = [],
+    methods: Map<string, int>,
+}
+
+struct ParamInfo :: [Debug] {
+    name: string,
+    ty: Ty,
+    default: ?TExpr,
+}
+
+/// A function as checked: its signature, its locals by id (a method's receiver is local 0, the
+/// parameters follow), its body. `main` is the script's top-level code; `owner` is the type of a
+/// method, -1 for a function.
+class FnInfo {
+    name: string,
+    owner: int,
+    isStatic: bool,
+    line: int,
+    var params: ParamInfo[] = [],
+    var returns: Ty = Ty.Void,
+    var locals: Ty[] = [],
+    var body: TStmt[] = [],
+}
+
+/// A binding of the module: a top-level `let` or `var` of the script (07 Top).
+struct GlobalInfo :: [Debug] {
+    name: string,
+    ty: Ty,
+    isVar: bool,
+}
+
+/// What the VM does natively for the core: the prelude's output and the operations on strings.
+enum Native :: [Equatable, Debug] {
+    Print,
+    Println,
+    Concat,
+    IntToStr,
+    FloatToStr,
+    BoolToStr,
+    CharToStr,
+    StrEq,
+    /// -1, 0 or 1, by bytes.
+    StrCmp,
+}
+
+/// The type of a checked expression.
+fn typeOf(e: TExpr): Ty {
+    return match (e) {
+        .Int(_) => Ty.Int,
+        .Float(_) => Ty.Float,
+        .Bool(_) => Ty.Bool,
+        .Char(_) => Ty.Char,
+        .Str(_) => Ty.Str,
+        .Local(_, t) => t,
+        .Global(_, t) => t,
+        .Variant(i, _) => Ty.Named(i),
+        .Unary(_, _, t) => t,
+        .Binary(_, _, _, t) => t,
+        .ToFloat(_) => Ty.Float,
+        .Cast(_, t) => t,
+        .Call(_, _, t) => t,
+        .Native(_, _, t) => t,
+        .New(i, _) => Ty.Named(i),
+        .Field(_, _, t) => t,
+        .Assign(_, _, _, t) => t,
+        .If(_, _, _, t) => t,
+        .Block(_, _, t) => t,
+        .Loop(_, t) => t,
+        .Unit => Ty.Void,
+        .Unknown => Ty.Unknown,
+    };
+}
+
+/// Where an assignment writes.
+enum Place :: [Debug] {
+    Local(int),
+    Global(int),
+    /// A field of an object, by index; the object is evaluated once.
+    Field(Box<TExpr>, int),
+}
+
+enum TExpr :: [Debug] {
+    Int(int),
+    Float(float),
+    Bool(bool),
+    Char(char),
+    Str(string),
+    Local(int, Ty),
+    Global(int, Ty),
+    /// A variant of an enum without values: its type and its index, an `int` at run time.
+    Variant(int, int),
+    Unary(UnaryOp, Box<TExpr>, Ty),
+    /// The operands have the operation's type already: both `int`, both `float`, both `bool`,
+    /// both `char`; `Ty` is the result's. `&&` and `||` short-circuit.
+    Binary(Box<TExpr>, BinaryOp, Box<TExpr>, Ty),
+    ToFloat(Box<TExpr>),
+    /// `as` between `int`, `float` and `char`: to the type given.
+    Cast(Box<TExpr>, Ty),
+    /// A function by index; a method's receiver is its first argument, the defaults are filled.
+    Call(int, TExpr[], Ty),
+    Native(Native, TExpr[], Ty),
+    /// A struct or class by index, its field values in declaration order.
+    New(int, TExpr[]),
+    Field(Box<TExpr>, int, Ty),
+    /// `place = value`, or `place op= value`; its value is the value stored.
+    Assign(Place, ?BinaryOp, Box<TExpr>, Ty),
+    If(Box<TExpr>, Box<TExpr>, Box<TExpr>, Ty),
+    /// Statements, then the block's value.
+    Block(TStmt[], Box<TExpr>, Ty),
+    /// A `loop`: its body; its value is what a `break` gives.
+    Loop(TStmt[], Ty),
+    /// The value of what gives none: a `void` call's, a block's without a value.
+    Unit,
+    /// After a fault.
+    Unknown,
+}
+
+/// A statement with the line it starts on (the VM's line table).
+enum TStmt :: [Debug] {
+    Expr(TExpr, int),
+    SetLocal(int, TExpr, int),
+    SetGlobal(int, TExpr, int),
+    If(TExpr, TStmt[], TStmt[], int),
+    While(TExpr, TStmt[], int),
+    /// `for (local in from..to)`, `..=` when the flag is set.
+    ForRange(int, TExpr, TExpr, bool, TStmt[], int),
+    Break(?TExpr, int),
+    Continue(int),
+    Return(?TExpr, int),
+    Block(TStmt[], int),
+}
+
+/// The checked program: its types, its functions (one of them `main`), its globals.
+struct Program {
+    types: TypeInfo[],
+    functions: FnInfo[],
+    globals: GlobalInfo[],
+    main: int,
+}
+
+/// Whether a value of this type lives in the scalar file (true) or the reference file of the VM.
+fn isScalar(t: Ty, types: TypeInfo[]): bool {
+    return match (t) {
+        .Int | .Float | .Bool | .Char => true,
+        .Named(i) => types[i].kind == .Enum,
+        _ => false,
+    };
+}

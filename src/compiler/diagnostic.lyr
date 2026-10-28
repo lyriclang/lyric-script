@@ -3,11 +3,11 @@
 
 /// One finding: its code, its message, and its place as byte offsets into the source and the
 /// line and column (from 1) of its start.
-pub struct Diagnostic :: [Debug] {
-    pub code: string,
-    pub message: string,
-    pub start: int,
-    pub end: int,
-    pub line: int,
-    pub column: int,
+struct Diagnostic :: [Debug] {
+    code: string,
+    message: string,
+    start: int,
+    end: int,
+    line: int,
+    column: int,
 }

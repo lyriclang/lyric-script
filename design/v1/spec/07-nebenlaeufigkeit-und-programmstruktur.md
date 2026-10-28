@@ -25,7 +25,7 @@ im Code; andere Tasks laufen weiter.
 | Wait | Warten im eingebetteten Aufruf | **Beides**: `inst.call(f, …)` ist synchron und pumpt, bis der Aufruf fertig ist (Lyric 5 11 H2); `inst.start(f, …)` liefert ein Handle, der Host pumpt mit `inst.step()` (Lyric 5 06 S5). Dieselbe Mechanik wie `.Suspended` beim Budget (01 S5b). |
 | Top | Top-Level-Code in Modulen | **Die Anweisungen eines Moduls sind sein `main`**: nur das Einstiegsmodul führt sie aus; ein Import initialisiert nur die Globalen (Abhängigkeitsreihenfolge, Lyric 5 07 V5). Hat ein Modul keine Anweisungen, aber `fn main`, ist `main` der Einstieg (übernommener Lyric-5-Code); beides ist ein Fehler („zwei Einstiege"). Eingebettet ist das instanziierte Modul der Einstieg (01 S7d). Anweisungen in einem nur importierten Modul: Lint. |
 | Path | Modulpfade | **Ohne Manifest ist der Ordner des Einstiegsskripts die Wurzel, ohne Präfix** (`import helper`, `import lib.util`); **mit Manifest gilt Lyric 5** (Paketname als erstes Segment, 07 V1 M1). Eine Regel: Pfad relativ zur Wurzel, Präfix = Paketname, falls es eines gibt. `std` und Abhängigkeitsnamen sind reserviert. |
-| Dep | Abhängigkeiten eines Einzelskripts | **Kopf im Skript** (Python PEP 723 / `uv`, Rust `cargo-script`): `//! [dependencies]` mit derselben Teilmenge wie das Manifest; beim ersten Lauf aufgelöst und gecacht (Schlüssel: Hash des Kopfs); Lock optional (`lyric-script lock tool.lyrs` → `tool.lyrs.lock`). Der Kopf enthält **keine Rechte** (01 S4); die Abfrage listet die Rechte der Abhängigkeiten mit, `native` eingeschlossen. |
+| Dep | Abhängigkeiten eines Einzelskripts | **Kopf im Skript** (Python PEP 723 / `uv`, Rust `cargo-script`): Frontmatter zwischen `---`-Zeilen am Dateianfang (Form entschieden in 09 Hd; hier zuerst als `//!` notiert) mit derselben Teilmenge wie das Manifest; beim ersten Lauf aufgelöst und gecacht (Schlüssel: Hash des Kopfs); Lock optional (`lyric-script lock tool.lyrs` → `tool.lyrs.lock`). Der Kopf enthält **keine Rechte** (01 S4); die Abfrage listet die Rechte der Abhängigkeiten mit, `native` eingeschlossen. |
 | Man | Manifest | **Eigenes `lyric-script.toml`** plus `lyric-script.lock`, Schema wie Lyric 5s `lyric.toml` (`[package]` mit `name`, `version`, `edition`, `toolchain`; `[dependencies]` mit Pfad und Git; `[lints]`; `[override]`). Ein Lyric-5-Paket als natives Modul (00 Z5) ist eine gewöhnliche Abhängigkeit. |
 
 ## Nebenläufigkeit — übernommen aus Lyric 5 06 (Liste bestätigt)
@@ -109,7 +109,7 @@ entscheiden muss, wem die Datei gehört.
 
 ## Folgen für spätere Bereiche
 
-- **09 Syntax**: Form des Abhängigkeitskopfs (`//!`-Block); `;` als Trenner auf einer Zeile;
+- **09 Syntax**: Form des Abhängigkeitskopfs (entschieden: Frontmatter `---`); `;` als Trenner auf einer Zeile;
   `spawn { }`, `withTimeout(d) { }`.
 - **11 Laufzeit**: Scheduler je Instanz über Lyric-5-Koroutinen oder VM-Frames; `call`/`start`/
   `step` an der Einbettungsschnittstelle; Abbruch geparkter Skript-Koroutinen (01 S5b).

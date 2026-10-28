@@ -115,8 +115,8 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | 06 | — in 05 aufgegangen |
 | 07 | **Nebenläufigkeit und Programmstruktur** (zusammen, 2026-10-28) |
 | 08 | — in 07 aufgegangen |
-| 09 | Syntax und Grammatik, Abweichungstabelle |
-| 10 | Reflexion und Metaprogrammierung |
+| 09 | **Syntax und Reflexion** (zusammen, 2026-10-28), gesammelte Abweichungstabelle |
+| 10 | — in 09 aufgegangen |
 | 11 | Laufzeit und VM in Lyric 5: Grundform, Werte, Format, Startzeit, Einbettung |
 | 12 | Standardbibliothek |
 | 13 | Werkzeuge: REPL, LSP, fmt, `run`, Debugger, native Module bauen |

@@ -90,7 +90,7 @@ println(status?.stdout ?? "kein git")
 | F1 | Grundform | **Kotlin-Form**: Klammern um Bedingungen und Blöcke bleiben, **kein `;`** — das Zeilenende beendet die Anweisung, mit Fortsetzungsregeln (Bereich 09: Zeile endet auf binären Operator, `,`, `(`, `.`; Zeile beginnt mit `.`). Lyric-5-Code wird durch Weglassen der `;` zu Script-Code. |
 | K1a | Prelude | Häufiges ohne Import — **nur Namen, die kein Recht brauchen** (`println`, `print`, `args`, `exit`); Datei, Netz, Prozesse bleiben importiert, weil die Rechte aus den Importen abgeleitet werden (01 S1). |
 | K1c | Interpolation | **Bleibt `f"…"`** (Formatsprache von Lyric 5); jeder String interpolierend wurde verworfen (Escape-Last bei JSON, Regex, Templates). |
-| K1d | Rückgabetypen | **Erschlossen**, Ausdrucksrumpf `fn square(x: int) = x * x`; **Pflicht an exportierten Funktionen und an der Host-API** (Vertrag). |
+| K1d | Rückgabetypen | **Erschlossen**, Ausdrucksrumpf `fn square(x: int) = x * x`. *Präzisiert 2026-10-28 (09 Ret): Kotlin-Regel — `= expr` erschließt, ein Blockrumpf ohne Angabe ist `void`, ein Blockrumpf mit Wert braucht die Angabe; „Pflicht an Exporten" entfällt (Widerspruch zu V), optionaler Lint `explicit-api`.* |
 | L | Sammlungsliterale | **`[]` für alles, der Inhalt entscheidet** (Swift-Form): `[1, 2]` Liste, `["a": 1]` Map, `[:]` leere Map (braucht erwarteten Typ), `Set` über den erwarteten Typ (`FromArrayLiteral`, Lyric 5 10 K4). |
 | K2 | Fehler | **Keine `throws`-Klausel, keine `try`-Pflicht** (Kotlin/Python): jeder Aufruf darf werfen; ein unbehandelter Fehler beendet das Skript mit Meldung und Exit 1. `try?` und `try … catch` bleiben als Werkzeuge. Der Compiler **erschließt** die Fehlermengen und zeigt sie (Editor, `api`). Native Module und Host-API werfen weiter typisiert. |
 | T1 | Zahlen | **Nur `int` (64 Bit, Panik bei Überlauf) und `float` (64 Bit).** Binärdaten als Bibliothekstyp `Bytes` (Index liefert `int` 0–255), große Zahlen als `BigInt` in der Standardbibliothek. Feste Breiten nur an der Grenze zu Host und nativen Modulen, mit Bereichsprüfung (`uint16`-Parameter, 70000 → wirft); `float32` wird dort gerundet. |
@@ -111,7 +111,7 @@ println(status?.stdout ?? "kein git")
 |---|---|---|---|
 | Anweisungsende | `;` (08) | Zeilenende, Fortsetzungsregeln | F1 |
 | Prelude | `println` in `std.io`, nicht im Prelude (10) | `println`, `print`, `args`, `exit` im Prelude | K1a |
-| Rückgabetyp | geschrieben | erschlossen, `= expr`-Rumpf; Pflicht an Exporten | K1d |
+| Rückgabetyp | geschrieben | Kotlin-Regel: `= expr` erschlossen, Block ohne Angabe `void` (09 Ret) | K1d |
 | Map-Literal | keins; `[("a", 1)]` (10 K4) | `["a": 1]`, `[:]` | L |
 | Fehler | `throws`-Klausel + `try`-Pflicht (05) | keine Klausel, keine Pflicht; Mengen erschlossen | K2 |
 | Zahlentypen | `int8…uint64`, `float32/64` (03) | `int`, `float`; `Bytes`, `BigInt` in std | T1 |

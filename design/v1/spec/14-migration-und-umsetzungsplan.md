@@ -392,3 +392,38 @@ Speicherungen in die Kopie. Ziel zuerst, dann die Werte in Schreibreihenfolge. D
 eines Interface-Werts (`<I>`) und eines Funktionswerts (`<fn>`) ist ein Platzhalter bis zum
 Deskriptor (**S3i**). Der Bytecode-Cache verdeckte eine Kontrolle (gleiche Version, anderer
 Compiler) — offener Punkt P11. 158 Tests, 92 Konformanzfälle.
+
+**S3i, präzisiert (Entwurf).** Erst der Deskriptor nach 11 Gen (der .NET-Weg), dann was auf ihn
+gewartet hat:
+
+- *i1 Deskriptoren als Werte.* Ein `TypeDesc` trägt seine Typargumente als Deskriptoren
+  (`args`); ein Deskriptor ist ein Wert der VM. `load.t` legt den eines Programmtyps in ein
+  Referenzregister. Eine geteilte Kopie einer generischen Funktion bekommt je Typparameter einen
+  versteckten Referenzparameter, den der Aufrufer statisch füllt oder aus seinem eigenen
+  weiterreicht. Eine Methode eines generischen Typs liest die Argumente vom Deskriptor ihres
+  Empfängers (`desc.of`), denn über `call.i` kennt der Aufrufer sie nicht — wie .NET, das sie
+  über die MethodTable des `this` findet. Ein Objekt, das eine geteilte Kopie baut
+  (`Pair<T> { … }`), bekommt seinen genauen Typ: `inst.t` interniert `Pair<Foo>` zur Laufzeit
+  (Schablone und Argumente, Layout und Tabelle der geteilten Form), `new` nimmt den Deskriptor
+  dann aus einem Register. Funktions-, Tupel- und Optionaltypen haben Deskriptoren nach Art und
+  Bestandteilen (Arrays mit S7). `x is T` in einer Kopie prüft gegen den Deskriptor. Die
+  Druckform eines Interface-Werts und eines Werts vom Typ `T` ist die seines Werts: die
+  Druckfunktion steht in jeder Tabelle an einem festen Slot.
+- *i2 `Self` und statische Member* (Lyric 5 05 §7): `Self` in Interfaces und Typen; statische
+  Member eines Interfaces, `static fn parse(s: string): Self`, `static let zero: Self`, erreicht
+  über einen Typparameter, `T.parse(s)`. Eine eigene Kopie ruft direkt, eine geteilte über die
+  statische Tabelle des Deskriptors. Statische Defaults. Ein Interface mit `Self` über den
+  Empfänger hinaus, mit statischem oder generischem Member, ist nur Constraint (`LYS-SEM0126`).
+- *i3 assoziierte Typen* (§8 Regeln 1–7): `type Item;`, `Self.Item`, die Antwort im Typ oder im
+  Block, der Pfad `T.Item`, die Fixierung `Iterator<Item = int>`, die Wertform.
+- *i4 eine generische Funktion als Wert*: eine eigene Kopie direkt, eine geteilte als Closure,
+  die die Deskriptoren hält.
+- *i5 Literal-Protokolle* (03 Lit): `FromIntLiteral`, `FromFloatLiteral`, `FromStringLiteral`,
+  `FromBoolLiteral`, `FromNullLiteral` als Prelude-Interfaces mit
+  `static fn from…Literal(v): Self`; ein Literal an einer Stelle, deren Typ konformiert, ruft sie,
+  eine Variable nie. `FromArrayLiteral` und `FromMapLiteral` mit S7.
+- *i6 generische Extend-Blöcke* (§13 Regeln 1–5): bedingte Konformanz, Kohärenz. Die Blöcke auf
+  eingebauten Konstruktoren und die Blanket-Blöcke (Regeln 6–9) mit S7, wo die std sie braucht.
+
+Je Teil Konformanzfälle in 03 und 05; `typeOf` selbst kommt mit `reflect` (S10), sein Prüfstein
+`typeOf([1, 2])` mit S7 — S3i liefert die Deskriptoren, die beide lesen.

@@ -99,6 +99,7 @@ the understanding of the code keeps pace with its size.
 | A2d | unchecked element access on the hot path | not yet: measurement point 1 missed 5× (4.3×), the ratchet binds at measurement point 3 — open point |
 | A3 | instance attribution in the GC | door (live memory limit per instance) |
 | A4 | one card mark for a 16-byte store (interface values) | filed: lyric#610 (open); V3 decided without it at measurement point 1 |
+| F1 | a bug: a field of type `List<Map<…>>` does not lower (LYR-ICE0002) | filed: lyric#612; the checker holds its scopes in a class of their own until it is fixed |
 
 ## Open points for the maintainer
 
@@ -107,3 +108,9 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | # | Point | Since |
 |---|---|---|
 | P1 | File A2d with Lyric 5 now (measurement point 1 missed 5×), or only if measurement point 3 misses? The call path is Script's own lever first. | S1h |
+| P2 | `>` and `>>` kept out of 09 NL rule 2, because they close type arguments too (recorded in 09 as a precision; spec 1 D1). | S2b |
+| P3 | `Name {` opens an initializer only after a capital name (spec 2 D4): with line ends instead of `;`, Lyric 5's rule (what ends the first value) cannot tell an initializer from a trailing block. | S2c |
+| P4 | The parser's nesting bound is 64 (spec 2 D6), below Lyric 5's floor of 128: measured, the parser overflowed a test's task at 95 levels. Raise it by a stack the compiler chooses, once Lyric 5 lets a task choose its stack? | S2c |
+| P5 | A parameter's default is filled in where the call stands, so it cannot read the parameters before it (Lyric 5 §8.1.1 rule 2 lets it). Evaluate defaults in the callee (S3), or keep the narrower rule? | S2d |
+| P6 | After a lexical or syntax error the checker does not run, so a file reports its first kind of fault only. Check the parts that parsed? | S2f |
+| P7 | An unclosed `(` or `[` swallows the line ends after it (09 NL rule 1), so the parser's recovery skips the rest of the file. | S2c |

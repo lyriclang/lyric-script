@@ -198,3 +198,26 @@ Tier-1-Zielen, dazu `fib` und `tally`; 97 Tests, 33 Konformanzfälle (Kapitel 01
 08, 12, 14, 16 der Spec). Messpunkt 2: warm 1,36 ms, kalt 1,66 ms — beide Ratchets halten.
 `run` kam schon mit S2e (der Ende-zu-Ende-Test brauchte es), S2g brachte den Cache. Entscheidungen,
 die das Design präzisieren, stehen als offene Punkte in STATUS (P2–P5).
+
+## S3 — Slices (Plan, Entwurf 2026-10-28)
+
+Ziel aus der Meilensteintabelle: das Typsystem vollständig — generischer Code und Interfaces in
+Skripten, mit Konformanzfällen. Spec-first wie S2: jedes Delta-Kapitel (03, 05, 09) bekommt seine
+Regeln mit dem Slice, der sie baut. Was S2 als `LYS-NYI0001` meldet und zu S3 gehört, verschwindet
+hier (Optionals, Tupel, Funktionswerte, Synthese, Definite Assignment).
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S3a Optionals** | `?T`, `null`, `??`, `!`, `?.` (flacht ab), `??=`, Eingrenzung über `!= null` und `if (let x = …)`, `?T`-Felder Default `null`; in der VM nach 11 V2: `?T` über einem Referenztyp ist die Referenz mit `nil`, sonst die Slots von `T` und ein Präsenz-Slot (`?int` zwei Skalar-Slots, `??int` drei) — dafür bekommt jeder Wert eine **Slot-Form** (Skalare, Referenzen) in Registern, Feldern, Globalen, Argumenten und Rückgaben (Rückgaben mit mehreren Slots in der VM) | Konformanzfälle rot/grün je Form; Panik `LYS-RT0004` bei `!` auf `null` |
+| **S3b Definite Assignment, leere Literale** | `var x: int` ohne Wert mit Definite Assignment (03 T8); „Leer": die erste festlegende Verwendung bestimmt den Typ (03 Leer) | Fehler mit Vorschlag an der Deklaration |
+| **S3c Tupel** | Tupeltypen, benannte Tupel (Etiketten), `t.0`, Destrukturierung in `let` und `for` | Konformanzfälle |
+| **S3d Enums mit Werten, `match`, Patterns** | Varianten mit Nutzlast, `match` als Anweisung und Ausdruck, Patterns (Y6: Namen binden, `.Red`, Typ-Patterns, `=` als Feldtest, Bereiche, Oder), Erschöpfung, `is` mit Eingrenzung | Erschöpfungsfehler mit fehlenden Fällen |
+| **S3e Funktionswerte** | Lambdas in drei Formen, nachlaufende Blöcke, `it`, Captures (Schleifenbindung je Durchlauf frisch, 02 C1), Funktionstypen, Methoden als Werte, lokale `fn` (Y11); VM: Closures (`Closure :: HeapRef`), indirekter Aufruf | Closure-Programme; Capture-Fälle |
+| **S3f Interfaces** | Deklaration, Konformanzlisten, Default-Rümpfe, `by`, `sealed`, Objektsicherheit, `Any`; Interface-Werte und Aufrufe über Witness-Tabellen (11 Gen) | Konformanzfälle; Fehler der Objektsicherheit |
+| **S3g Generics** | generische Funktionen, Structs, Klassen, Enums; Constraints; hybride Instanziierung (eine geteilte Kopie für Referenztypen, je eine für `int`/`float`/`bool`/`char`, 11 Gen) mit Typ-Deskriptoren | generische Programme; Bytecode-Goldtests der Kopien |
+| **S3h Synthese, `with`, Literal-Protokolle** | `Equatable`/`Hashable`/`Debug` für Structs, Enums, Tupel (03 Eq), `{x}` über `Debug`, `Display`; `with` (W1–W8); `From…Literal` an Stellen mit Zieltyp (03 Lit) | `==` auf Structs; Druckform; `with`-Fälle |
+| **S3i Laufzeit-Deskriptoren** | Typ-Deskriptoren zur Laufzeit für `is` und die Reflexion (09 Rf: `typeOf`), Typargumente bleiben erhalten | `typeOf([1, 2])` sagt `int[]` (sobald S7 die Listen bringt: der Deskriptor ist da) |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s3-complete` | generischer Code und Interfaces in Skripten in der CI |
+
+Reihenfolge: a–e vor f–g (Interfaces und Generics bauen auf Optionals, Tupeln und Funktionswerten
+auf), h nach f (Synthese braucht die Interfaces), i zuletzt.

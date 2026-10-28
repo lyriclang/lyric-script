@@ -81,6 +81,8 @@ pub enum Op :: [Variants, Equatable] {
     CheckS,
     CheckR,
     IsNil,
+    // S3e: a call through a function value.
+    CallV,
 }
 
 /// What an operand of an operation names.
@@ -196,6 +198,7 @@ pub fn info(op: Op): OpInfo {
         .CheckS => OpInfo { mnemonic = "check.s", operands = [.Scalar] },
         .CheckR => OpInfo { mnemonic = "check.r", operands = [.Ref] },
         .IsNil => OpInfo { mnemonic = "is.nil", operands = [.Scalar, .Ref] },
+        .CallV => OpInfo { mnemonic = "call.v", operands = [.ScalarBase, .RefBase] },
     };
 }
 

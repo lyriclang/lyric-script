@@ -521,6 +521,39 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 }
                 pc += 1;
             }
+            // a call through a function value: the value is the callee's first reference argument,
+            // and its first scalar field names the function
+            .CallV => {
+                budget = spend(budget);
+                if (budget == -2) {
+                    return Outcome.Suspended;
+                }
+                if (frames.length() >= maxDepth) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
+                }
+                let env = r[br + b];
+                var target = -1;
+                if (env is ScriptObject) {
+                    target = env.scalars[0] as int;
+                }
+                if (target < 0 || target >= module.functions.length()) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a call through no function");
+                }
+                let callee = module.functions[target];
+                frames.push(CallFrame { function = fi, pc = pc + 1, baseS = bs, baseR = br });
+                bs += a;
+                br += b;
+                if (bs + callee.scalars > s.length()) {
+                    s = growScalars(s, bs + callee.scalars);
+                }
+                if (br + callee.refs > r.length()) {
+                    r = growRefs(r, br + callee.refs);
+                }
+                fi = target;
+                f = callee;
+                code = f.code;
+                pc = 0;
+            }
             .IsNil => {
                 s[bs + a] = truth(r[br + b] is Nil);
                 pc += 1;

@@ -271,3 +271,25 @@ Wächter bindet in seiner Bedingung und im Arm, ein Oder-Muster bindet je Name d
 passenden Alternative. Abdeckung nach Maranget über einen vereinfachten Musterraum, der Zeuge
 als Muster geschrieben; unerreichbare Arme nach Lyric 5s enger Regel. Typ-Muster kommen mit S3f
 (Interface-Werte), Array-Muster mit S7. 129 Tests, 71 Konformanzfälle.
+
+**S3e, präzisiert (Entwurf).** Funktionswerte nach Lyric 5 03 §8 ohne `inline fn` und vorerst ohne
+`throws` (S4).
+
+- *Darstellung.* Ein Funktionswert ist ein Objekt eines VM-Typs je Lambda: Skalarfeld 0 ist der
+  Funktionsindex, danach die Captures. Eine Lambda-Funktion nimmt das Objekt als ersten
+  Referenzparameter (Lokale 0); `call.v` (neu, Basen wie `call`) liest den Index aus dem
+  Objekt an der Ref-Basis. Freie und statische Funktionen und gebundene Methoden als Werte
+  bekommen je eine Thunk-Funktion mit diesem ersten Parameter (gecacht je Ziel).
+- *Captures* (§8.3): ein `let` (und ein Parameter, `this`) als Kopie beim Bau; ein `var` in einer
+  Zelle (VM-Typ je Slot-Form), die Funktion und Lambda teilen. Der Checker markiert die
+  eingefangene Lokale als `boxed`; der Codegen legt die Zelle bei der Deklaration an
+  (`SetLocal`, neu `DeclareLocal` für `var x: T` ohne Wert) — eine Bindung im Schleifenrumpf
+  bekommt so je Durchlauf eine frische Zelle (02 C1). Verschachtelte Lambdas fangen über die
+  Captures der äußeren.
+- *Lambdas* (§8.2): `(n: int): int => n + 1`, `x => x * 3`, nachlaufender Block mit `it` oder
+  benannten Parametern; Parametertypen geschrieben oder aus dem erwarteten Funktionstyp, sonst
+  `LYS-SEM0045`; Ergebnis geschrieben, erwartet oder aus dem Wert des Rumpfs (ein `return` in
+  einem Lambda ohne bekanntes Ergebnis verlangt den Typ). Lokale `fn` (§8.6): ihr Name ist in
+  ihrem Rumpf das Objekt selbst (Lokale 0) — so ruft sie sich.
+- *Aufruf* über einen Wert: `f(a)` auf einer Bindung, einem Feld, jedem Ausdruck vom
+  Funktionstyp. Funktionswerte werden nicht verglichen (`LYS-SEM0059`).

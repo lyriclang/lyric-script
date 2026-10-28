@@ -952,9 +952,9 @@ class Checker {
                     this.popScope();
                 }
                 // where one branch never comes out, what the other knows holds after the `if`
-                if (endsAll(t) && !endsAll(o)) {
+                if (leavesAll(t) && !leavesAll(o)) {
                     this.postFacts = no;
-                } else if (otherwise != null && endsAll(o) && !endsAll(t)) {
+                } else if (otherwise != null && leavesAll(o) && !leavesAll(t)) {
                     this.postFacts = yes;
                 }
                 TStmt.If(c, t, o, at.line)
@@ -1455,34 +1455,7 @@ class Checker {
                 }
             }
             .Eq | .Ne => {
-                if (numeric) {
-                    return TExpr.Binary(
-                        boxE(this.coerce(a, wide, at)),
-                        op,
-                        boxE(this.coerce(b, wide, at)),
-                        Ty.Bool
-                    );
-                }
-                if (ta == tb && (ta == .Bool || ta == .Char || this.isEnum(ta))) {
-                    return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
-                }
-                if (ta == .Str && tb == .Str) {
-                    let eq = TExpr.Native(Native.StrEq, [a, b], Ty.Bool);
-                    return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
-                }
-                if (ta == tb) {
-                    return this.notYet(
-                        f"'{binaryText(op)}' on {this.tyName(ta)}",
-                        "S3 (synthesized equality)",
-                        at
-                    );
-                }
-                this.error(
-                    "LYS-SEM0059",
-                    f"'{binaryText(op)}' compares values of one type: {this.tyName(ta)} and {this.tyName(tb)}",
-                    at
-                );
-                return TExpr.Unknown;
+                return this.equality(a, op, b, at);
             }
             _ => { }
         }
@@ -1492,6 +1465,97 @@ class Checker {
             at
         );
         return TExpr.Unknown;
+    }
+
+    /// `a == b` and `a != b` of two checked operands: numbers widened, `bool`, `char`, an enum's
+    /// variants and strings by value, optionals by Lyric 5 §3.2 rule 7.
+    mut fn equality(a: TExpr, op: BinaryOp, b: TExpr, at: Span): TExpr {
+        let ta = typeOf(a);
+        let tb = typeOf(b);
+        if (ta == .Unknown || tb == .Unknown) {
+            return TExpr.Unknown;
+        }
+        let numeric = (ta == .Int || ta == .Float) && (tb == .Int || tb == .Float);
+        if (numeric) {
+            let wide = if (ta == .Float || tb == .Float) Ty.Float else Ty.Int;
+            return TExpr.Binary(
+                boxE(this.coerce(a, wide, at)),
+                op,
+                boxE(this.coerce(b, wide, at)),
+                Ty.Bool
+            );
+        }
+        // an optional beside a value of it or beside its like: a `T` coerces up to `?T`
+        let opt = match (ta) {
+            .Optional(_) => ta,
+            _ => tb,
+        };
+        match (opt) {
+            .Optional(_) => {
+                let x = this.fit(a, opt);
+                let y = this.fit(b, opt);
+                if (x != null && y != null) {
+                    return this.optionalEquality(x, op, y, opt, at);
+                }
+            }
+            _ => { }
+        }
+        if (ta == tb && (ta == .Bool || ta == .Char || this.isEnum(ta))) {
+            return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
+        }
+        if (ta == .Str && tb == .Str) {
+            let eq = TExpr.Native(Native.StrEq, [a, b], Ty.Bool);
+            return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
+        }
+        if (ta == tb) {
+            return this.notYet(
+                f"'{binaryText(op)}' on {this.tyName(ta)}",
+                "S3 (synthesized equality)",
+                at
+            );
+        }
+        this.error(
+            "LYS-SEM0059",
+            f"'{binaryText(op)}' compares values of one type: {this.tyName(ta)} and {this.tyName(tb)}",
+            at
+        );
+        return TExpr.Unknown;
+    }
+
+    /// Two optionals of type `t` are equal where both hold nothing, or both hold values their own
+    /// equality finds equal; each is evaluated once, into a local of its own.
+    mut fn optionalEquality(a: TExpr, op: BinaryOp, b: TExpr, t: Ty, at: Span): TExpr {
+        let inner = match (t) {
+            .Optional(i) => i.value,
+            _ => Ty.Unknown,
+        };
+        let ha = this.hidden(t, at);
+        let hb = this.hidden(t, at);
+        let la = TExpr.Local(ha, t);
+        let lb = TExpr.Local(hb, t);
+        let values = this.equality(
+            TExpr.Narrow(boxE(la), inner),
+            BinaryOp.Eq,
+            TExpr.Narrow(boxE(lb), inner),
+            at
+        );
+        if (typeOf(values) == .Unknown) {
+            return TExpr.Unknown;
+        }
+        let noneA = TExpr.IsNull(boxE(la));
+        let noneB = TExpr.IsNull(boxE(lb));
+        let same = TExpr.If(
+            boxE(noneA),
+            boxE(noneB),
+            boxE(TExpr.If(boxE(noneB), boxE(TExpr.Bool(false)), boxE(values), Ty.Bool)),
+            Ty.Bool
+        );
+        let eq = TExpr.Block(
+            [TStmt.SetLocal(ha, a, at.line), TStmt.SetLocal(hb, b, at.line)],
+            boxE(same),
+            Ty.Bool
+        );
+        return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
     }
 
     /// `a ?? b`: `a` an optional; `b` its value's type, which the result has, or an optional of
@@ -2000,7 +2064,12 @@ class Checker {
 
     mut fn ifStmtValue(cond: Expr, then: Block, otherwise: Stmt, expected: ?Ty, at: Span): TExpr {
         let c = this.condition(cond);
+        this.pushScope();
+        this.narrow(this.factsOf(c, true));
         let a = this.valueBlock(then, expected);
+        this.popScope();
+        this.pushScope();
+        this.narrow(this.factsOf(c, false));
         let b = match (otherwise) {
             .Block(ob, _) => this.valueBlock(ob, expected),
             .If(c2, t2, o2, at2) => {
@@ -2008,6 +2077,7 @@ class Checker {
             }
             _ => TExpr.Unit,
         };
+        this.popScope();
         let t = this.unify(typeOf(a), typeOf(b), at);
         return TExpr.If(boxE(c), boxE(this.coerce(a, t, at)), boxE(this.coerce(b, t, at)), t);
     }
@@ -2310,6 +2380,24 @@ fn endsAll(stmts: TStmt[]): bool {
         return false;
     }
     return ends(stmts[stmts.length() - 1]);
+}
+
+/// Whether control never comes out of the end of `stmts` to what follows them: they return,
+/// break, continue or give `never` (Lyric 5 §3.2 rule 3, §7.1 rule 5).
+fn leavesAll(stmts: TStmt[]): bool {
+    if (stmts.length() == 0) {
+        return false;
+    }
+    return leaves(stmts[stmts.length() - 1]);
+}
+
+fn leaves(s: TStmt): bool {
+    return match (s) {
+        .Break(_, _) | .Continue(_) => true,
+        .If(_, then, otherwise, _) => leavesAll(then) && leavesAll(otherwise),
+        .Block(stmts, _) => leavesAll(stmts),
+        _ => ends(s),
+    };
 }
 
 fn ends(s: TStmt): bool {

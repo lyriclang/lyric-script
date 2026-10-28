@@ -93,6 +93,31 @@ fn aTestNarrowsTheBinding(): void {
 }
 
 @Test
+fn aBranchThatJumpsNarrowsTheRest(): void {
+    // behind `if (x == null) { continue }` the rest of the turn knows (Lyric 5 §3.2 rule 3)
+    let c = "fn c(): int {\n    var sum = 0\n    var i = 0\n    while (i < 4) {\n        i += 1\n        let x: ?int = if (i == 2) null else i\n        if (x == null) {\n            continue\n        }\n        sum += x\n    }\n    return sum\n}";
+    assertEq(value(c, "c"), 8);
+    let b = "fn b(): int {\n    var i = 0\n    loop {\n        i += 1\n        let x: ?int = if (i < 3) i else null\n        if (x == null) {\n            break\n        }\n        i += x\n    }\n    return i\n}";
+    assertEq(value(b, "b"), 3);
+}
+
+@Test
+fn aValueIfOfBlocksNarrows(): void {
+    // the branches of a value `if` of blocks
+    let v = "fn v(x: ?int): int {\n    let y = {\n        if (x != null) {\n            x + 1\n        } else {\n            0\n        }\n    }\n    return y\n}\n";
+    assertEq(value(v + "fn v4(): int = v(4)", "v4"), 5);
+}
+
+@Test
+fn optionalsCompareTheirValues(): void {
+    // both empty, or both holding equal values; a `T` beside a `?T` is one (Lyric 5 §3.2 rule 7)
+    let src = "fn eq(): int {\n    let a: ?int = 5\n    let b: ?int = null\n    let d: ?int = null\n    let s: ?string = \"x\"\n    let p: ??int = 5\n    let q: ?int = 5\n    var n = 0\n    if (a == 5) {\n        n += 1\n    }\n    if (a != b) {\n        n += 2\n    }\n    if (b == d) {\n        n += 4\n    }\n    if (s == \"x\") {\n        n += 8\n    }\n    if (p == q) {\n        n += 16\n    }\n    if (a == 6 || b == 5) {\n        n += 100\n    }\n    return n\n}";
+    assertEq(value(src, "eq"), 31);
+    // no order on an optional
+    assertEq(errs("let a: ?int = 3\nprintln(a < 4)"), ["LYS-SEM0003"]);
+}
+
+@Test
 fn aWriteEndsTheNarrowing(): void {
     // a loop that writes the binding has it narrowed in none of its turns (Lyric 5 §3.2)
     let loop = "fn l(): int {\n    var x: ?int = 3\n    var y = 0\n    if (x != null) {\n        while (y < 2) {\n            y = x + 1\n            x = null\n        }\n    }\n    return y\n}";

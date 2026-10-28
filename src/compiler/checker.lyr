@@ -201,8 +201,9 @@ class Checker {
     // `Any`'s entry, and `Identity`'s
     var anyIndex: int = -1,
     var identityIndex: int = -1,
-    // the synthesized equality of each struct and enum compared, by type
+    // the synthesized equality of each struct and enum compared, by type; its Debug form
     eqFns: Map<int, int>,
+    debugFns: Map<int, int>,
     // the type parameters in scope by name, and the generic they are of
     var typeParams: Map<string, int> = Map<string, int>.new(),
     var genericFn: int = -1,
@@ -242,6 +243,7 @@ class Checker {
             unboxers = Map<int, int>.new(),
             instances = Map<string, int>.new(),
             eqFns = Map<int, int>.new(),
+            debugFns = Map<int, int>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -5493,9 +5495,181 @@ class Checker {
             _ => null,
         };
         if (native == null) {
-            return this.notYet(f"text of a {this.tyName(t)}", "S3 (Display)", at);
+            // every other value prints in its Debug form (03 Eq: `{x}` falls back to it)
+            return this.debugText(v, t, at);
         }
         return TExpr.Native(native, [v], Ty.Str);
+    }
+
+    /// The Debug form of `v` (Lyric 5 05 §14 rule 2): `P { x = 1, y = "a" }`, `E.B(3)`,
+    /// `E.R { w = 4 }`, `E.A`, `(1, "a")`, an optional's value or `null`, a string quoted, a
+    /// `char` in single quotes.
+    mut fn debugText(v: TExpr, t: Ty, at: Span): TExpr {
+        return match (t) {
+            .Str => concatAll([TExpr.Str("\""), v, TExpr.Str("\"")]),
+            .Char => concatAll(
+                [TExpr.Str("'"), TExpr.Native(Native.CharToStr, [v], Ty.Str), TExpr.Str("'")]
+            ),
+            .Int => TExpr.Native(Native.IntToStr, [v], Ty.Str),
+            .Float => TExpr.Native(Native.FloatToStr, [v], Ty.Str),
+            .Bool => TExpr.Native(Native.BoolToStr, [v], Ty.Str),
+            .Optional(inner) => {
+                let h = this.hidden(t, at);
+                let l = TExpr.Local(h, t);
+                TExpr.Block(
+                    [TStmt.SetLocal(h, v, at.line)],
+                    boxE(
+                        TExpr.If(
+                            boxE(TExpr.IsNull(boxE(l))),
+                            boxE(TExpr.Str("null")),
+                            boxE(
+                                this.debugText(TExpr.Narrow(boxE(l), inner.value), inner.value, at)
+                            ),
+                            Ty.Str
+                        )
+                    ),
+                    Ty.Str
+                )
+            }
+            .Tuple(tt) => {
+                let h = this.hidden(t, at);
+                let l = TExpr.Local(h, t);
+                let parts = List<TExpr>.new();
+                parts.push(TExpr.Str("("));
+                var k = 0;
+                for (e in tt.elements) {
+                    if (k > 0) {
+                        parts.push(TExpr.Str(", "));
+                    }
+                    parts.push(this.debugText(TExpr.Elem(boxE(l), k, e), e, at));
+                    k += 1;
+                }
+                parts.push(TExpr.Str(")"));
+                TExpr.Block(
+                    [TStmt.SetLocal(h, v, at.line)],
+                    boxE(concatAll(parts.toArray())),
+                    Ty.Str
+                )
+            }
+            .Named(i) => {
+                if (this.types[i].kind == .Interface) {
+                    TExpr.Str(f"<{this.types[i].name}>")
+                } else {
+                    TExpr.Call(this.debugFnOf(i, at), [v], Ty.Str)
+                }
+            }
+            .Fn(_) => TExpr.Str("<fn>"),
+            .Unknown => v,
+            _ => this.notYet(f"text of a {this.tyName(t)}", "S3i (descriptors)", at),
+        };
+    }
+
+    /// The function giving the Debug form of a value of type `i`, made once.
+    mut fn debugFnOf(i: int, at: Span): int {
+        let known = this.debugFns.get(i);
+        if (known != null) {
+            return known;
+        }
+        let info = this.types[i];
+        let t = Ty.Named(i);
+        let index = this.functions.length();
+        this.functions.push(
+            FnInfo { name = info.name + "#debug", owner = -1, isStatic = true, line = at.line }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        this.debugFns.insert(i, index);
+        let saved = this.ctx;
+        this.ctx = FnCtx.new(index, Ty.Str, false, false);
+        this.declareLocal("x", t, false, at);
+        let x = TExpr.Local(0, t);
+        var body = TExpr.Str(info.name);
+        if (info.kind == .Struct || info.kind == .Class) {
+            body = concatAll(
+                this.fieldsText(
+                    info.name,
+                    info.fields,
+                    (k: int, ft: Ty) => TExpr.Field(boxE(x), k, ft),
+                    at
+                )
+            );
+        } else {
+            // the variant the tag names, its payload after it
+            var rest = TExpr.Str(info.name);
+            var v = info.variants.length() - 1;
+            while (v >= 0) {
+                let vf = info.variantFields[v];
+                let head = f"{info.name}.{info.variants[v]}";
+                var text = TExpr.Str(head);
+                if (info.variantNamed[v]) {
+                    let vv = v;
+                    text = concatAll(
+                        this.fieldsText(
+                            head,
+                            vf,
+                            (k: int, ft: Ty) => TExpr.Payload(boxE(x), i, vv, k, ft),
+                            at
+                        )
+                    );
+                } else if (vf.length() > 0) {
+                    let parts = List<TExpr>.new();
+                    parts.push(TExpr.Str(head + "("));
+                    var k = 0;
+                    for (f in vf) {
+                        if (k > 0) {
+                            parts.push(TExpr.Str(", "));
+                        }
+                        parts.push(this.debugText(TExpr.Payload(boxE(x), i, v, k, f.ty), f.ty, at));
+                        k += 1;
+                    }
+                    parts.push(TExpr.Str(")"));
+                    text = concatAll(parts.toArray());
+                }
+                let isV = TExpr.Binary(
+                    boxE(TExpr.Tag(boxE(x))),
+                    BinaryOp.Eq,
+                    boxE(TExpr.Int(v)),
+                    Ty.Bool
+                );
+                rest = TExpr.If(boxE(isV), boxE(text), boxE(rest), Ty.Str);
+                v -= 1;
+            }
+            body = rest;
+        }
+        let dbg = this.functions[index];
+        dbg.params = [ParamInfo { name = "x", ty = t, default = null }];
+        dbg.returns = Ty.Str;
+        dbg.locals = this.ctx.locals.toArray();
+        dbg.boxed = this.ctx.boxed.toArray();
+        dbg.body = [TStmt.Return(body, at.line)];
+        this.ctx = saved;
+        return index;
+    }
+
+    /// `Name { a = …, b = … }`: each field's Debug form after its name.
+    mut fn fieldsText(
+        name: string,
+        fields: FieldInfo[],
+        read: fn(int, Ty) -> TExpr,
+        at: Span
+    ): TExpr[] {
+        let parts = List<TExpr>.new();
+        if (fields.length() == 0) {
+            parts.push(TExpr.Str(name + " { }"));
+            return parts.toArray();
+        }
+        parts.push(TExpr.Str(name + " { "));
+        var k = 0;
+        for (f in fields) {
+            if (k > 0) {
+                parts.push(TExpr.Str(", "));
+            }
+            parts.push(TExpr.Str(f.name + " = "));
+            parts.push(this.debugText(read(k, f.ty), f.ty, at));
+            k += 1;
+        }
+        parts.push(TExpr.Str(" }"));
+        return parts.toArray();
     }
 
     // --- calls -----------------------------------------------------------------------------------
@@ -6902,6 +7076,17 @@ fn expectedFn(expected: ?Ty): ?FnTy {
         .Fn(ft) => ft,
         _ => null,
     };
+}
+
+/// The strings `parts` joined, left to right.
+fn concatAll(parts: TExpr[]): TExpr {
+    var out = parts[0];
+    var k = 1;
+    while (k < parts.length()) {
+        out = TExpr.Native(Native.Concat, [out, parts[k]], Ty.Str);
+        k += 1;
+    }
+    return out;
 }
 
 /// A name a pattern binds, and the part of the matched value it holds.

@@ -58,6 +58,12 @@ fn enumsCompareVariantThenPayload(): void {
 }
 
 @Test
+fn valuesPrintInTheirDebugForm(): void {
+    let d = "fn d(): int {\n    let c = Shape.Circle(3)\n    let r = Shape.Rect { w = 4, h = 5 }\n    let e = Shape.Empty\n    let o: ?int = null\n    let t = (1, 2)\n    let all = f\"{c}|{r}|{e}|{o}|{t}\"\n    return if (all == \"Shape.Circle(3)|Shape.Rect { w = 4, h = 5 }|Shape.Empty|null|(1, 2)\") 1 else 0\n}";
+    assertEq(value(types + d, "d"), 1);
+}
+
+@Test
 fn whatIsNotCompared(): void {
     assertEq(errs(types + "let same = D { } == D { }"), ["LYS-SEM0059"]);
     assertEq(

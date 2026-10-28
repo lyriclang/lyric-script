@@ -61,7 +61,11 @@ fn checkModule(module: Module): Checked {
     c.declare(module);
     c.checkMain(module);
     c.checkBodies();
-    return Checked { program = c.program(), errors = c.errors.toArray(), warnings = c.warnings.toArray() };
+    return Checked {
+        program = c.program(),
+        errors = c.errors.toArray(),
+        warnings = c.warnings.toArray(),
+    };
 }
 
 /// A loop being checked: `loop` gives the value of its breaks, `while` and `for` give none.
@@ -185,19 +189,24 @@ class Checker {
             match (item) {
                 .Decl(d) => {
                     match (d) {
-                        .Type(t) => this.declareTypeName(t.name, if (t.isClass) TypeKind.Class else TypeKind.Struct, t.span),
+                        .Type(t) => this.declareTypeName(
+                            t.name,
+                            if (t.isClass) TypeKind.Class else TypeKind.Struct,
+                            t.span
+                        ),
                         .Enum(e) => this.declareTypeName(e.name, TypeKind.Enum, e.span),
                         .Alias(a) => {
-                            if (this.typeIndex.containsKey(a.name) || this.aliases.containsKey(a.name)) {
+                            if (this.typeIndex.containsKey(a.name)
+                                || this.aliases.containsKey(a.name)) {
                                 this.error("LYS-SEM0176", f"'{a.name}' is declared twice", a.span);
                             } else {
                                 this.aliases.insert(a.name, a);
                             }
                         }
-                        .Fn(_) => {}
+                        .Fn(_) => { }
                     }
                 }
-                .Stmt(_) => {}
+                .Stmt(_) => { }
             }
         }
         // then what they hold, and the functions' signatures
@@ -215,7 +224,7 @@ class Checker {
                         }
                     }
                 }
-                .Stmt(_) => {}
+                .Stmt(_) => { }
             }
         }
         // the fields' defaults, now that every type is known
@@ -224,10 +233,10 @@ class Checker {
                 .Decl(d) => {
                     match (d) {
                         .Type(t) => this.checkFieldDefaults(t),
-                        _ => {}
+                        _ => { }
                     }
                 }
-                .Stmt(_) => {}
+                .Stmt(_) => { }
             }
         }
         // the parameters' defaults: a call that leaves a parameter out gets its default where it
@@ -263,7 +272,9 @@ class Checker {
     }
 
     mut fn declareTypeName(name: string, kind: TypeKind, at: Span): void {
-        if (this.typeIndex.containsKey(name) || this.aliases.containsKey(name) || isBuiltinType(name)) {
+        if (this.typeIndex.containsKey(name)
+            || this.aliases.containsKey(name)
+            || isBuiltinType(name)) {
             this.error("LYS-SEM0176", f"'{name}' is declared twice", at);
             return;
         }
@@ -295,7 +306,14 @@ class Checker {
                     f.span
                 );
             }
-            fields.push(FieldInfo { name = f.name, ty = this.resolveType(f.type), isVar = f.isVar, default = null });
+            fields.push(
+                FieldInfo {
+                    name = f.name,
+                    ty = this.resolveType(f.type),
+                    isVar = f.isVar,
+                    default = null,
+                }
+            );
         }
         info.fields = fields.toArray();
         for (m in t.methods) {
@@ -341,7 +359,12 @@ class Checker {
     /// Registers a function or a method and its signature; returns its index.
     mut fn declareFn(f: FnDecl, owner: int): int {
         let index = this.functions.length();
-        let info = FnInfo { name = f.name, owner = owner, isStatic = f.isStatic || owner < 0, line = f.span.line };
+        let info = FnInfo {
+            name = f.name,
+            owner = owner,
+            isStatic = f.isStatic || owner < 0,
+            line = f.span.line,
+        };
         let params = List<ParamInfo>.new();
         for (p in f.params) {
             params.push(ParamInfo { name = p.name, ty = this.resolveType(p.type), default = null });
@@ -434,7 +457,11 @@ class Checker {
             _ => 0,
         };
         if (args.length() != arity) {
-            this.error("LYS-SEM0026", f"'{name}' takes {arity} type arguments, not {args.length()}", at);
+            this.error(
+                "LYS-SEM0026",
+                f"'{name}' takes {arity} type arguments, not {args.length()}",
+                at
+            );
             return Ty.Unknown;
         }
         match (name) {
@@ -465,7 +492,7 @@ class Checker {
             "Map" => {
                 return Ty.Map(boxTy(this.resolveType(args[0])), boxTy(this.resolveType(args[1])));
             }
-            _ => {}
+            _ => { }
         }
         if (isWidthType(name)) {
             this.error(
@@ -530,7 +557,11 @@ class Checker {
                 _ => TExpr.ToFloat(boxE(e)),
             };
         }
-        this.error("LYS-SEM0001", f"expected {this.tyName(target)}, found {this.tyName(actual)}", at);
+        this.error(
+            "LYS-SEM0001",
+            f"expected {this.tyName(target)}, found {this.tyName(actual)}",
+            at
+        );
         return TExpr.Unknown;
     }
 
@@ -550,7 +581,7 @@ class Checker {
         for (item in module.items) {
             match (item) {
                 .Stmt(s) => body.push(this.stmt(s)),
-                .Decl(_) => {}
+                .Decl(_) => { }
             }
         }
         let info = this.functions[index];
@@ -618,11 +649,14 @@ class Checker {
                 }
             }
             .Expr(e) => {
-                let value = if (this.fnStates[k] == .Inferring) this.expr(e, null) else this.coerce(this.expr(e, info.returns), info.returns, spanOf(e));
+                let value = if (this.fnStates[k] == .Inferring) this.expr(e, null)
+                    else this.coerce(this.expr(e, info.returns), info.returns, spanOf(e));
                 if (this.fnStates[k] == .Inferring) {
                     info.returns = typeOf(value);
                 }
-                body.push(TStmt.Return(if (typeOf(value) == .Void) null else value, decl.span.line));
+                body.push(
+                    TStmt.Return(if (typeOf(value) == .Void) null else value, decl.span.line)
+                );
             }
         }
         info.body = body.toArray();
@@ -719,7 +753,11 @@ class Checker {
             _ => false,
         };
         if (!effect && typeOf(checked) != .Unknown) {
-            this.error("LYS-SEM0022", "this computes a value and throws it away: only calls, assignments and loops stand alone", at);
+            this.error(
+                "LYS-SEM0022",
+                "this computes a value and throws it away: only calls, assignments and loops stand alone",
+                at
+            );
         }
         return TStmt.Expr(checked, at.line);
     }
@@ -740,7 +778,11 @@ class Checker {
         } else {
             t = typeOf(v);
             if (t == .Void || t == .Never) {
-                this.error("LYS-SEM0010", f"'{name}' takes the value of something that gives none", at);
+                this.error(
+                    "LYS-SEM0010",
+                    f"'{name}' takes the value of something that gives none",
+                    at
+                );
                 t = Ty.Unknown;
             }
         }
@@ -782,9 +824,13 @@ class Checker {
                 this.popScope();
                 return TStmt.ForRange(id, a, b, inclusive, stmts, at.line);
             }
-            _ => {}
+            _ => { }
         }
-        this.notYet("a loop over anything but a range of ints", "S7 (the core collections)", spanOf(iterable));
+        this.notYet(
+            "a loop over anything but a range of ints",
+            "S7 (the core collections)",
+            spanOf(iterable)
+        );
         return TStmt.Expr(TExpr.Unknown, at.line);
     }
 
@@ -797,19 +843,31 @@ class Checker {
         loop.breaks += 1;
         if (value == null) {
             if (loop.isLoop && loop.breakTy != null) {
-                this.error("LYS-SEM0149", "this 'loop' gives a value at some breaks and none at this one", at);
+                this.error(
+                    "LYS-SEM0149",
+                    "this 'loop' gives a value at some breaks and none at this one",
+                    at
+                );
             }
             return TStmt.Break(null, at.line);
         }
         if (!loop.isLoop) {
-            this.error("LYS-SEM0148", "a 'while' or 'for' gives no value: its 'break' takes none", at);
+            this.error(
+                "LYS-SEM0148",
+                "a 'while' or 'for' gives no value: its 'break' takes none",
+                at
+            );
             return TStmt.Break(null, at.line);
         }
         let given = loop.breakTy;
         let v = this.expr(value, given);
         if (given == null) {
             if (loop.breaks > 1) {
-                this.error("LYS-SEM0149", "this 'loop' gives a value at this break and none at another", at);
+                this.error(
+                    "LYS-SEM0149",
+                    "this 'loop' gives a value at this break and none at another",
+                    at
+                );
             }
             loop.breakTy = typeOf(v);
             return TStmt.Break(v, at.line);
@@ -829,15 +887,26 @@ class Checker {
         let expected = this.ctx.returns;
         if (value == null) {
             if (expected != .Void && expected != .Unknown) {
-                this.error("LYS-SEM0226", f"this 'return' gives no value; the function returns {this.tyName(expected)}", at);
+                this.error(
+                    "LYS-SEM0226",
+                    f"this 'return' gives no value; the function returns {this.tyName(expected)}",
+                    at
+                );
             }
             return TStmt.Return(null, at.line);
         }
         if (expected == .Void) {
-            this.error("LYS-SEM0001", "the function returns nothing, so its 'return' takes no value", at);
+            this.error(
+                "LYS-SEM0001",
+                "the function returns nothing, so its 'return' takes no value",
+                at
+            );
             return TStmt.Return(null, at.line);
         }
-        return TStmt.Return(this.coerce(this.expr(value, expected), expected, spanOf(value)), at.line);
+        return TStmt.Return(
+            this.coerce(this.expr(value, expected), expected, spanOf(value)),
+            at.line
+        );
     }
 
     // --- expressions -----------------------------------------------------------------------------
@@ -856,7 +925,9 @@ class Checker {
             .Name(name, at) => this.name(name, at),
             .This(at) => {
                 let fnIndex = this.ctx.fnIndex;
-                if (fnIndex >= 0 && this.functions[fnIndex].owner >= 0 && !this.functions[fnIndex].isStatic) {
+                if (fnIndex >= 0
+                    && this.functions[fnIndex].owner >= 0
+                    && !this.functions[fnIndex].isStatic) {
                     TExpr.Local(0, Ty.Named(this.functions[fnIndex].owner))
                 } else {
                     this.error("LYS-SEM0008", "'this' outside a method", at);
@@ -874,7 +945,13 @@ class Checker {
             .List(_, at) => this.notYet("a list literal", "S7 (the core collections)", at),
             .Map(_, at) => this.notYet("a map literal", "S7 (the core collections)", at),
             .StructInit(name, fields, at) => this.init(name, fields, at),
-            .If(cond, then, otherwise, at) => this.ifExpr(cond.value, then.value, otherwise.value, expected, at),
+            .If(cond, then, otherwise, at) => this.ifExpr(
+                cond.value,
+                then.value,
+                otherwise.value,
+                expected,
+                at
+            ),
             .Block(b, _) => this.valueBlock(b, expected),
             .Loop(body, _, _) => {
                 let ctx = LoopCtx { isLoop = true };
@@ -900,7 +977,9 @@ class Checker {
         if (this.fnByName.containsKey(name)) {
             return this.notYet("a function as a value", "S3 (function values)", at);
         }
-        if (this.typeIndex.containsKey(name) || this.aliases.containsKey(name) || isBuiltinType(name)) {
+        if (this.typeIndex.containsKey(name)
+            || this.aliases.containsKey(name)
+            || isBuiltinType(name)) {
             this.error("LYS-SEM0052", f"'{name}' is a type, not a value", at);
             return TExpr.Unknown;
         }
@@ -934,7 +1013,7 @@ class Checker {
             .In | .NotIn => {
                 return this.notYet(f"'{binaryText(op)}'", "S7 (the core collections)", at);
             }
-            _ => {}
+            _ => { }
         }
         let a = this.expr(l, null);
         let b = this.expr(r, null);
@@ -953,7 +1032,12 @@ class Checker {
             }
             .Add | .Sub | .Mul | .Div | .Rem => {
                 if (numeric) {
-                    return TExpr.Binary(boxE(this.coerce(a, wide, at)), op, boxE(this.coerce(b, wide, at)), wide);
+                    return TExpr.Binary(
+                        boxE(this.coerce(a, wide, at)),
+                        op,
+                        boxE(this.coerce(b, wide, at)),
+                        wide
+                    );
                 }
                 if (op == .Add && ta == .Str && tb == .Str) {
                     return TExpr.Native(Native.Concat, [a, b], Ty.Str);
@@ -966,7 +1050,12 @@ class Checker {
             }
             .Lt | .Le | .Gt | .Ge => {
                 if (numeric) {
-                    return TExpr.Binary(boxE(this.coerce(a, wide, at)), op, boxE(this.coerce(b, wide, at)), Ty.Bool);
+                    return TExpr.Binary(
+                        boxE(this.coerce(a, wide, at)),
+                        op,
+                        boxE(this.coerce(b, wide, at)),
+                        Ty.Bool
+                    );
                 }
                 if (ta == .Char && tb == .Char) {
                     return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
@@ -978,7 +1067,12 @@ class Checker {
             }
             .Eq | .Ne => {
                 if (numeric) {
-                    return TExpr.Binary(boxE(this.coerce(a, wide, at)), op, boxE(this.coerce(b, wide, at)), Ty.Bool);
+                    return TExpr.Binary(
+                        boxE(this.coerce(a, wide, at)),
+                        op,
+                        boxE(this.coerce(b, wide, at)),
+                        Ty.Bool
+                    );
                 }
                 if (ta == tb && (ta == .Bool || ta == .Char || this.isEnum(ta))) {
                     return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
@@ -988,14 +1082,26 @@ class Checker {
                     return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
                 }
                 if (ta == tb) {
-                    return this.notYet(f"'{binaryText(op)}' on {this.tyName(ta)}", "S3 (synthesized equality)", at);
+                    return this.notYet(
+                        f"'{binaryText(op)}' on {this.tyName(ta)}",
+                        "S3 (synthesized equality)",
+                        at
+                    );
                 }
-                this.error("LYS-SEM0059", f"'{binaryText(op)}' compares values of one type: {this.tyName(ta)} and {this.tyName(tb)}", at);
+                this.error(
+                    "LYS-SEM0059",
+                    f"'{binaryText(op)}' compares values of one type: {this.tyName(ta)} and {this.tyName(tb)}",
+                    at
+                );
                 return TExpr.Unknown;
             }
-            _ => {}
+            _ => { }
         }
-        this.error("LYS-SEM0003", f"'{binaryText(op)}' does not take {this.tyName(ta)} and {this.tyName(tb)}", at);
+        this.error(
+            "LYS-SEM0003",
+            f"'{binaryText(op)}' does not take {this.tyName(ta)} and {this.tyName(tb)}",
+            at
+        );
         return TExpr.Unknown;
     }
 
@@ -1016,14 +1122,22 @@ class Checker {
                 let global = this.globalIndex.get(name);
                 if (local != null) {
                     if (!this.ctx.localIsVar[local]) {
-                        this.error("LYS-SEM0019", f"'{name}' is a let: declare it with var to write it", nameAt);
+                        this.error(
+                            "LYS-SEM0019",
+                            f"'{name}' is a let: declare it with var to write it",
+                            nameAt
+                        );
                     }
                     place = Place.Local(local);
                     t = this.ctx.locals[local];
                     current = TExpr.Local(local, t);
                 } else if (global != null) {
                     if (!this.globals[global].isVar) {
-                        this.error("LYS-SEM0019", f"'{name}' is a let: declare it with var to write it", nameAt);
+                        this.error(
+                            "LYS-SEM0019",
+                            f"'{name}' is a let: declare it with var to write it",
+                            nameAt
+                        );
                     }
                     place = Place.Global(global);
                     t = this.globals[global].ty;
@@ -1045,9 +1159,17 @@ class Checker {
                 let (owner, index) = found;
                 let info = this.types[owner];
                 if (info.kind == .Struct) {
-                    this.error("LYS-SEM0019", f"a struct's fields are never written: build a new {info.name}", memberAt);
+                    this.error(
+                        "LYS-SEM0019",
+                        f"a struct's fields are never written: build a new {info.name}",
+                        memberAt
+                    );
                 } else if (!info.fields[index].isVar) {
-                    this.error("LYS-SEM0019", f"'{field}' is no var field of {info.name}", memberAt);
+                    this.error(
+                        "LYS-SEM0019",
+                        f"'{field}' is no var field of {info.name}",
+                        memberAt
+                    );
                 }
                 place = Place.Field(boxE(o), index);
                 t = info.fields[index].ty;
@@ -1057,7 +1179,11 @@ class Checker {
                 return this.notYet("indexing", "S7 (the core collections)", indexAt);
             }
             _ => {
-                this.error("LYS-SEM0019", "this cannot be written: a variable or a field can", spanOf(target));
+                this.error(
+                    "LYS-SEM0019",
+                    "this cannot be written: a variable or a field can",
+                    spanOf(target)
+                );
                 return TExpr.Unknown;
             }
         }
@@ -1082,7 +1208,8 @@ class Checker {
         let fits = match (op) {
             .Add => numeric || (tc == .Str && tv == .Str),
             .Sub | .Mul | .Div | .Rem => numeric,
-            .AddWrap | .SubWrap | .MulWrap | .Shl | .Shr | .BitAnd | .BitOr | .BitXor => tc == .Int && tv == .Int,
+            .AddWrap | .SubWrap | .MulWrap | .Shl | .Shr | .BitAnd | .BitOr | .BitXor => tc == .Int
+                && tv == .Int,
             .And | .Or => tc == .Bool && tv == .Bool,
             _ => false,
         };
@@ -1090,11 +1217,19 @@ class Checker {
             if (op == .Coalesce) {
                 return this.notYet("'??='", "S3 (optionals)", at);
             }
-            this.error("LYS-SEM0003", f"'{binaryText(op)}=' does not take {this.tyName(tc)} and {this.tyName(tv)}", at);
+            this.error(
+                "LYS-SEM0003",
+                f"'{binaryText(op)}=' does not take {this.tyName(tc)} and {this.tyName(tv)}",
+                at
+            );
             return TExpr.Unknown;
         }
         if (tc == .Int && tv == .Float) {
-            this.error("LYS-SEM0001", f"expected int, found float: '{binaryText(op)}=' keeps the type of its target", at);
+            this.error(
+                "LYS-SEM0001",
+                f"expected int, found float: '{binaryText(op)}=' keeps the type of its target",
+                at
+            );
             return TExpr.Unknown;
         }
         return v;
@@ -1111,9 +1246,14 @@ class Checker {
         if (from == .Unknown || to == .Unknown) {
             return TExpr.Unknown;
         }
-        let scalar = (from == .Int || from == .Float || from == .Char) && (to == .Int || to == .Float || to == .Char);
+        let scalar = (from == .Int || from == .Float || from == .Char)
+            && (to == .Int || to == .Float || to == .Char);
         if (!scalar || (from == .Float && to == .Char) || (from == .Char && to == .Float)) {
-            this.error("LYS-SEM0006", f"'as' converts between int, float and char: not {this.tyName(from)} to {this.tyName(to)}", at);
+            this.error(
+                "LYS-SEM0006",
+                f"'as' converts between int, float and char: not {this.tyName(from)} to {this.tyName(to)}",
+                at
+            );
             return TExpr.Unknown;
         }
         return TExpr.Cast(boxE(v), to);
@@ -1141,7 +1281,7 @@ class Checker {
                 this.notYet(f"the members of {this.tyName(t)}", "S7 (the core library)", at);
                 return null;
             }
-            _ => {}
+            _ => { }
         }
         this.error("LYS-SEM0012", f"{this.tyName(t)} has no field '{field}'", at);
         return null;
@@ -1170,7 +1310,7 @@ class Checker {
                     }
                 }
             }
-            _ => {}
+            _ => { }
         }
         let o = this.expr(x, null);
         let found = this.fieldOf(o, name, at);
@@ -1189,7 +1329,11 @@ class Checker {
         }
         let info = this.types[index];
         if (info.kind == .Enum) {
-            this.error("LYS-SEM0031", f"'{name}' is an enum: its values are its variants, written '{name}.Variant'", at);
+            this.error(
+                "LYS-SEM0031",
+                f"'{name}' is an enum: its values are its variants, written '{name}.Variant'",
+                at
+            );
             return TExpr.Unknown;
         }
         let values = List<?TExpr>.new();
@@ -1233,7 +1377,11 @@ class Checker {
             k += 1;
         }
         if (missing.length() > 0) {
-            this.error("LYS-SEM0106", f"'{name}' needs {missing.toArray().join(", ")}: no default gives them", at);
+            this.error(
+                "LYS-SEM0106",
+                f"'{name}' needs {missing.toArray().join(", ")}: no default gives them",
+                at
+            );
         }
         return TExpr.New(index, out.toArray());
     }
@@ -1284,7 +1432,7 @@ class Checker {
                             continue;
                         }
                     }
-                    _ => {}
+                    _ => { }
                 }
             }
             out.push(this.stmt(s));
@@ -1382,14 +1530,15 @@ class Checker {
                 }
                 match (object.value) {
                     .Name(typeName, _) => {
-                        if (this.lookupLocal(typeName) == null && !this.globalIndex.containsKey(typeName)) {
+                        if (this.lookupLocal(typeName) == null
+                            && !this.globalIndex.containsKey(typeName)) {
                             let index = this.typeIndex.get(typeName);
                             if (index != null) {
                                 return this.staticCall(index, method, args, at);
                             }
                         }
                     }
-                    _ => {}
+                    _ => { }
                 }
                 let receiver = this.expr(object.value, null);
                 let t = typeOf(receiver);
@@ -1400,21 +1549,33 @@ class Checker {
                     .Named(i) => {
                         let m = this.types[i].methods.get(method);
                         if (m == null) {
-                            this.error("LYS-SEM0012", f"'{this.types[i].name}' has no method '{method}'", memberAt);
+                            this.error(
+                                "LYS-SEM0012",
+                                f"'{this.types[i].name}' has no method '{method}'",
+                                memberAt
+                            );
                             return TExpr.Unknown;
                         }
                         if (this.functions[m].isStatic) {
-                            this.error("LYS-SEM0074", f"'{method}' is static: call it as {this.types[i].name}.{method}(…)", memberAt);
+                            this.error(
+                                "LYS-SEM0074",
+                                f"'{method}' is static: call it as {this.types[i].name}.{method}(…)",
+                                memberAt
+                            );
                             return TExpr.Unknown;
                         }
                         return this.callAmong(method, [m], receiver, args, at);
                     }
                     _ => {
-                        return this.notYet(f"the methods of {this.tyName(t)}", "S7 (the core library)", memberAt);
+                        return this.notYet(
+                            f"the methods of {this.tyName(t)}",
+                            "S7 (the core library)",
+                            memberAt
+                        );
                     }
                 }
             }
-            _ => {}
+            _ => { }
         }
         this.expr(callee, null);
         return this.notYet("a call through a value", "S3 (function values)", at);
@@ -1444,7 +1605,13 @@ class Checker {
 
     /// Picks the function of `candidates` that takes as many arguments as the call gives (Lyric 5
     /// §8.1.2) and checks the arguments against its parameters.
-    mut fn callAmong(name: string, candidates: int[], receiver: ?TExpr, args: Arg[], at: Span): TExpr {
+    mut fn callAmong(
+        name: string,
+        candidates: int[],
+        receiver: ?TExpr,
+        args: Arg[],
+        at: Span
+    ): TExpr {
         var chosen = -1;
         for (c in candidates) {
             let params = this.functions[c].params;
@@ -1463,7 +1630,11 @@ class Checker {
                 let n = this.functions[candidates[0]].params.length();
                 this.error("LYS-SEM0014", f"'{name}' takes {n} arguments, not {args.length()}", at);
             } else {
-                this.error("LYS-SEM0087", f"no function '{name}' takes {args.length()} arguments", at);
+                this.error(
+                    "LYS-SEM0087",
+                    f"no function '{name}' takes {args.length()} arguments",
+                    at
+                );
             }
             for (a in args) {
                 this.expr(a.value, null);
@@ -1491,12 +1662,20 @@ class Checker {
                     j += 1;
                 }
                 if (k < 0) {
-                    this.error("LYS-SEM0119", f"'{name}' has no parameter '{argName}'", spanOf(a.value));
+                    this.error(
+                        "LYS-SEM0119",
+                        f"'{name}' has no parameter '{argName}'",
+                        spanOf(a.value)
+                    );
                     continue;
                 }
             } else {
                 if (named) {
-                    this.error("LYS-SEM0119", "a positional argument after a named one", spanOf(a.value));
+                    this.error(
+                        "LYS-SEM0119",
+                        "a positional argument after a named one",
+                        spanOf(a.value)
+                    );
                     continue;
                 }
                 position += 1;

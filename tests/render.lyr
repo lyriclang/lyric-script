@@ -2,9 +2,23 @@
 // drawn as four spaces, help, and Lyric 5's JSON objects with their escapes.
 import std.test { assertEq };
 import lyric_script.compiler.diagnostic { Diagnostic };
-import lyric_script.compiler.render { SourceLines, jsonString, renderJson, renderSummary, renderText };
+import lyric_script.compiler.render {
+    SourceLines,
+    jsonString,
+    renderJson,
+    renderSummary,
+    renderText,
+};
 
-fn at(code: string, message: string, start: int, end: int, line: int, column: int, help: ?string): Diagnostic {
+fn at(
+    code: string,
+    message: string,
+    start: int,
+    end: int,
+    line: int,
+    column: int,
+    help: ?string
+): Diagnostic {
     return Diagnostic {
         code = code,
         message = message,
@@ -64,7 +78,10 @@ fn theJsonFormIsLyric5s(): void {
         json,
         "{\"type\":\"diagnostic\",\"version\":1,\"code\":\"LYS-SEM0002\",\"severity\":\"error\",\"message\":\"nothing in scope is named 'y'\",\"span\":{\"file\":\"s.lyrs\",\"start\":{\"line\":1,\"column\":9,\"offset\":8},\"end\":{\"line\":1,\"column\":10,\"offset\":9}},\"labels\":[],\"notes\":[{\"kind\":\"help\",\"message\":\"declare it first\",\"span\":null}],\"rendered\":\"error[LYS-SEM0002]: nothing in scope is named 'y'\\n --> s.lyrs:1:9\\n  |\\n1 | let x = y\\n  |         ^\\n  = help: declare it first\\n\"}"
     );
-    assertEq(renderSummary(1, 2), "{\"type\":\"summary\",\"version\":1,\"errors\":1,\"warnings\":2}");
+    assertEq(
+        renderSummary(1, 2),
+        "{\"type\":\"summary\",\"version\":1,\"errors\":1,\"warnings\":2}"
+    );
 }
 
 @Test

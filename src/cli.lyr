@@ -158,7 +158,9 @@ fn compile(text: string, path: string, json: bool): ?Module {
     if (faults.length() > 0) {
         // the compiler's fault, not the script's
         for (fault in faults) {
-            eprintln(f"error[LYS-ICE0002]: {path}: the compiler made faulty bytecode: {fault.function} at {fault.pc}: {fault.message}");
+            eprintln(
+                f"error[LYS-ICE0002]: {path}: the compiler made faulty bytecode: {fault.function} at {fault.pc}: {fault.message}"
+            );
         }
         return null;
     }
@@ -232,7 +234,9 @@ fn runAsm(path: string): int {
     let faults = check(module);
     if (faults.length() > 0) {
         for (fault in faults) {
-            eprintln(f"error[LYS-ASM0002]: {path}: {fault.function} at {fault.pc}: {fault.message}");
+            eprintln(
+                f"error[LYS-ASM0002]: {path}: {fault.function} at {fault.pc}: {fault.message}"
+            );
         }
         return 1;
     }
@@ -244,7 +248,7 @@ fn runAsm(path: string): int {
                 println(v.text);
             }
         }
-        _ => {}
+        _ => { }
     }
     return finish(outcome);
 }

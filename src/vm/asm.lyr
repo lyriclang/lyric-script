@@ -95,7 +95,10 @@ pub fn assemble(text: string, name: string): Module throws AsmError {
         } else if (line.startsWith("fn ")) {
             current = try header(line.toString(), lineNo);
         } else {
-            throw AsmError { line = lineNo, text = f"expected 'type', 'globals' or 'fn', got '{line}'" };
+            throw AsmError {
+                line = lineNo,
+                text = f"expected 'type', 'globals' or 'fn', got '{line}'",
+            };
         }
     }
     if (let d = current) {

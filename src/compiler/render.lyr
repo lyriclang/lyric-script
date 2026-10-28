@@ -80,7 +80,8 @@ fn renderText(d: Diagnostic, severity: string, path: string, lines: SourceLines)
     if (d.line >= 1 && d.line <= lines.starts.length()) {
         // the span on its first line, at least one character; a tab is drawn as four spaces
         let endLine = lines.lineOf(if (d.end > d.start) d.end - 1 else d.start);
-        let endColumn = if (endLine == d.line && d.end > d.start) lines.columnOf(d.end - 1) + 1 else text.charCount() + 1;
+        let endColumn = if (endLine == d.line && d.end > d.start) lines.columnOf(d.end - 1) + 1
+            else text.charCount() + 1;
         let shown = StringBuilder.new();
         let marks = StringBuilder.new();
         var column = 1;
@@ -115,7 +116,9 @@ fn renderJson(d: Diagnostic, severity: string, path: string, lines: SourceLines)
     let start = f"\"line\":{d.line},\"column\":{d.column},\"offset\":{d.start}";
     let span = f"{{\"file\":{jsonString(path)},\"start\":{{{start}}},\"end\":{{{end}}}}}";
     let help = d.help;
-    let notes = if (help != null) f"[{{\"kind\":\"help\",\"message\":{jsonString(help)},\"span\":null}}]" else "[]";
+    let notes = if (help
+        != null) f"[{{\"kind\":\"help\",\"message\":{jsonString(help)},\"span\":null}}]"
+        else "[]";
     return f"{{\"type\":\"diagnostic\",\"version\":{jsonVersion},\"code\":{jsonString(d.code)},\"severity\":\"{severity}\",\"message\":{jsonString(d.message)},\"span\":{span},\"labels\":[],\"notes\":{notes},\"rendered\":{jsonString(rendered)}}}";
 }
 

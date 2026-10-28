@@ -131,8 +131,10 @@ fn checkOperand(module: Module, f: Function, op: Op, kind: Operand, value: int):
             else f"function {value} of {module.functions.length()}",
         .Type => if (value < module.types.length()) null
             else f"type {value} of {module.types.length()}",
-        .GlobalS => if (value < module.globalsS) null else f"scalar global {value} of {module.globalsS}",
-        .GlobalR => if (value < module.globalsR) null else f"reference global {value} of {module.globalsR}",
+        .GlobalS => if (value < module.globalsS) null
+            else f"scalar global {value} of {module.globalsS}",
+        .GlobalR => if (value < module.globalsR) null
+            else f"reference global {value} of {module.globalsR}",
         .Native => if (value < nativeCount) null else f"native {value} of {nativeCount}",
         .ScalarBase | .RefBase | .Field => null,
     };

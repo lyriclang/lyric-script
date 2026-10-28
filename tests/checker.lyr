@@ -95,7 +95,10 @@ fn callsFitTheirParameters(): void {
     assertEq(errs(p + "println(p(1, c: 3))"), ["LYS-SEM0119"]);
     assertEq(errs(p + "println(p(b: 3, 1))"), ["LYS-SEM0119", "LYS-SEM0014"]);
     // one name, several counts (Lyric 5 §8.1.2)
-    assertEq(errs("fn of(a: int) = a\nfn of(a: int, b: int) = a + b\nprintln(of(1) + of(1, 2))"), []);
+    assertEq(
+        errs("fn of(a: int) = a\nfn of(a: int, b: int) = a + b\nprintln(of(1) + of(1, 2))"),
+        []
+    );
     assertEq(errs("fn of(a: int) = a\nfn of(b: int) = b"), ["LYS-SEM0085"]);
 }
 
@@ -110,7 +113,12 @@ fn structsAreBuiltWhole(): void {
     assertEq(errs(p + "let a = P(1)\nprintln(a.y)"), ["LYS-SEM0012"]);
     assertEq(errs("struct Q {\n    var x: int\n}"), ["LYS-SEM0101"]);
     // `P(1)` is `P.new(1)` (05 D11)
-    assertEq(errs("struct P {\n    x: int\n    static fn new(x: int): P = P { x = x }\n}\nprintln(P(3).x)"), []);
+    assertEq(
+        errs(
+            "struct P {\n    x: int\n    static fn new(x: int): P = P { x = x }\n}\nprintln(P(3).x)"
+        ),
+        []
+    );
 }
 
 @Test

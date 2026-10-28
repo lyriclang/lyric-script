@@ -69,7 +69,13 @@ struct Placement {
             }
             moduleType.push(descs.length());
             fieldIndex.push(indices.toArray());
-            descs.push(TypeDesc { name = t.name, scalarFields = scalars.toArray(), refFields = refs.toArray() });
+            descs.push(
+                TypeDesc {
+                    name = t.name,
+                    scalarFields = scalars.toArray(),
+                    refFields = refs.toArray(),
+                }
+            );
         }
         let globalIndex = List<int>.new();
         var gs = 0;
@@ -188,8 +194,7 @@ class FnGen {
             this.emit(Op.Ret, 0, 0, 0);
         }
         let name = if (this.index == this.p.main) scriptEntry
-            else if (info.owner >= 0) f"{this.p.types[info.owner].name}.{info.name}"
-            else info.name;
+            else if (info.owner >= 0) f"{this.p.types[info.owner].name}.{info.name}" else info.name;
         return Function {
             name = name,
             paramsS = paramsS,
@@ -428,7 +433,11 @@ class FnGen {
     }
 
     mut fn openLoop(result: int): LoopGen {
-        let loop = LoopGen { result = result, breaks = List<int>.new(), continues = List<int>.new() };
+        let loop = LoopGen {
+            result = result,
+            breaks = List<int>.new(),
+            continues = List<int>.new(),
+        };
         this.loops.push(loop);
         return loop;
     }
@@ -464,7 +473,7 @@ class FnGen {
             .Local(id, _) => {
                 return this.localReg[id];
             }
-            _ => {}
+            _ => { }
         }
         let r = this.temp(this.scalar(typeOf(e)));
         this.to(e, r);
@@ -548,7 +557,12 @@ class FnGen {
                     let vm = this.mark();
                     let scalar = this.scalar(this.p.types[ti].fields[k].ty);
                     let rv = this.any(v);
-                    this.emit(if (scalar) Op.SetS else Op.SetR, dst, this.layout.fieldIndex[ti][k], rv);
+                    this.emit(
+                        if (scalar) Op.SetS else Op.SetR,
+                        dst,
+                        this.layout.fieldIndex[ti][k],
+                        rv
+                    );
                     this.release(vm);
                     k += 1;
                 }
@@ -559,7 +573,12 @@ class FnGen {
                     _ => 0,
                 };
                 let ro = this.any(o.value);
-                this.emit(if (this.scalar(t)) Op.GetS else Op.GetR, dst, ro, this.layout.fieldIndex[owner][k]);
+                this.emit(
+                    if (this.scalar(t)) Op.GetS else Op.GetR,
+                    dst,
+                    ro,
+                    this.layout.fieldIndex[owner][k]
+                );
             }
             .Assign(place, op, value, t) => this.assign(place, op, value.value, t, dst),
             .If(c, a, b, _) => {
@@ -583,7 +602,7 @@ class FnGen {
                 this.emit(Op.Jump, top, 0, 0);
                 this.closeLoop(loop, top);
             }
-            .Unit | .Unknown => {}
+            .Unit | .Unknown => { }
         }
         this.release(m);
     }
@@ -679,7 +698,10 @@ class FnGen {
         this.arguments(args, bs, br);
         let nf = nativeFn(n);
         let info = nativeInfo(nf);
-        this.need(bs + info.scalars + (if (info.returnsScalar) 1 else 0), br + info.refs + (if (info.returnsRef) 1 else 0));
+        this.need(
+            bs + info.scalars + (if (info.returnsScalar) 1 else 0),
+            br + info.refs + (if (info.returnsRef) 1 else 0)
+        );
         this.emit(Op.CallN, nativeNumber(nf), bs, br);
         if (info.returnsScalar) {
             this.move(dst, bs, true);

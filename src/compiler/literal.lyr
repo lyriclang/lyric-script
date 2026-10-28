@@ -406,15 +406,7 @@ class TextReader {
             spec = s.toString();
         }
         let start = this.token.start + this.offset(from);
-        out.push(
-            Piece.Hole(
-                start,
-                this.token.start + this.offset(exprEnd),
-                line,
-                column,
-                spec
-            )
-        );
+        out.push(Piece.Hole(start, this.token.start + this.offset(exprEnd), line, column, spec));
         return k + 1;
     }
 

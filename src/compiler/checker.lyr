@@ -50,6 +50,7 @@ import lyric_script.compiler.typed {
     TypeInfo,
     TypeKind,
     TupleTy,
+    tupleOf,
     typeOf,
 };
 
@@ -210,6 +211,23 @@ class Checker {
 
     mut fn error(code: string, message: string, at: Span): void {
         this.errorHelp(code, message, null, at);
+    }
+
+    mut fn warn(code: string, message: string, at: Span): void {
+        if (this.ctx.fixing) {
+            return;
+        }
+        this.warnings.push(
+            Diagnostic {
+                code = code,
+                message = message,
+                start = at.start,
+                end = at.end,
+                line = at.line,
+                column = at.column,
+                help = null,
+            }
+        );
     }
 
     mut fn errorHelp(code: string, message: string, help: ?string, at: Span): void {
@@ -1436,6 +1454,7 @@ class Checker {
             bodies.push(body);
         }
         this.ctx.unassigned = if (arms.length() == 0) before else after;
+        this.coverage(arms, t, at);
         var rt = Ty.Void;
         if (!isStmt) {
             if (expected != null) {
@@ -1468,6 +1487,320 @@ class Checker {
             k -= 1;
         }
         return TExpr.Block([TStmt.SetLocal(tmp, v, at.line)], boxE(rest), rt);
+    }
+
+    /// Lyric 5 §9 §3 and §4: the unguarded arms cover every value of `t`, or the match is refused
+    /// with a value none takes; an arm behind an irrefutable one, or repeating a unit variant, a
+    /// literal or `null` an arm above tests, is warned about.
+    mut fn coverage(arms: MatchArm[], t: Ty, at: Span): void {
+        if (t == .Unknown) {
+            return;
+        }
+        let rows = List<Space[]>.new();
+        let tested = List<string>.new();
+        var closed = false;
+        for (arm in arms) {
+            let guarded = arm.guard != null;
+            if (closed) {
+                this.warn(
+                    "LYS-SEM0112",
+                    "no value reaches this arm: an arm above takes every value",
+                    arm.span
+                );
+            } else if (!guarded) {
+                let key = repeatKey(arm.pattern);
+                var again = false;
+                for (x in tested) {
+                    again = again || x == key;
+                }
+                if (key != "" && again) {
+                    this.warn(
+                        "LYS-SEM0112",
+                        "no value reaches this arm: an arm above tests the same",
+                        arm.span
+                    );
+                }
+                if (key != "") {
+                    tested.push(key);
+                }
+            }
+            if (!guarded) {
+                rows.push([this.spaceOf(arm.pattern, t)]);
+                closed = closed || irrefutable(arm.pattern);
+            }
+        }
+        let missing = this.uncovered(rows.toArray(), [t]);
+        if (missing != null) {
+            this.errorHelp(
+                "LYS-SEM0050",
+                f"this match does not cover every value: no arm takes {this.showSpace(missing[0], t)}",
+                "add an arm for it, or one with '_'",
+                at
+            );
+        }
+    }
+
+    /// What `p` covers of the values of `t`, for the check of coverage.
+    mut fn spaceOf(p: Pattern, t: Ty): Space {
+        match (p) {
+            .Name(_, _) | .Ignore(_) => {
+                return Space.Any;
+            }
+            .Or(alternatives, _) => {
+                let out = List<Space>.new();
+                for (a in alternatives) {
+                    out.push(this.spaceOf(a, t));
+                }
+                return Space.Or(out.toArray());
+            }
+            _ => { }
+        }
+        // a pattern of the inner type against an optional: the value present
+        match (t) {
+            .Optional(inner) => {
+                let isNull = match (p) {
+                    .Literal(e, _) => isNullLit(e),
+                    _ => false,
+                };
+                return if (isNull) Space.Ctor(0, [])
+                    else Space.Ctor(1, [this.spaceOf(p, inner.value)]);
+            }
+            _ => { }
+        }
+        return match (p) {
+            .Tuple(items, _) => {
+                let tt = tupleOf(t);
+                if (tt.elements.length() != items.length()) {
+                    return Space.Any;
+                }
+                let parts = List<Space>.new();
+                var k = 0;
+                for (item in items) {
+                    parts.push(this.spaceOf(item, tt.elements[k]));
+                    k += 1;
+                }
+                Space.Ctor(0, parts.toArray())
+            }
+            .Literal(e, _) => {
+                if (t == .Bool) {
+                    return match (e) {
+                        .Bool(b, _) => Space.Ctor(if (b) 1 else 0, []),
+                        _ => Space.Any,
+                    };
+                }
+                Space.Lit(litKey(e))
+            }
+            // a range is a set of values no other pattern is compared with
+            .Range(_, _, _, at) => Space.Lit(f"range@{at.start}"),
+            .Variant(_, name, payload, _) => {
+                let i = this.enumOf(t);
+                let k = if (i < 0) -1 else this.variantIndex(i, name);
+                if (k < 0) {
+                    return Space.Any;
+                }
+                let fields = this.types[i].variantFields[k];
+                let parts = List<Space>.new();
+                var j = 0;
+                for (f in fields) {
+                    parts.push(
+                        if (payload != null && j < payload.length()) this.spaceOf(payload[j], f.ty)
+                            else Space.Any
+                    );
+                    j += 1;
+                }
+                Space.Ctor(k, parts.toArray())
+            }
+            .VariantFields(_, name, fields, _) => {
+                let i = this.enumOf(t);
+                let k = if (i < 0) -1 else this.variantIndex(i, name);
+                if (k < 0) {
+                    return Space.Any;
+                }
+                Space.Ctor(k, this.fieldSpaces(this.types[i].variantFields[k], fields))
+            }
+            .Fields(_, fields, _) => {
+                let i = match (t) {
+                    .Named(n) => n,
+                    _ => -1,
+                };
+                if (i < 0) {
+                    return Space.Any;
+                }
+                Space.Ctor(0, this.fieldSpaces(this.types[i].fields, fields))
+            }
+            _ => Space.Any,
+        };
+    }
+
+    /// Each field's space: its pattern's where one names it, every value where none does.
+    mut fn fieldSpaces(decls: FieldInfo[], fields: FieldPattern[]): Space[] {
+        let out = List<Space>.new();
+        for (d in decls) {
+            var space = Space.Any;
+            for (f in fields) {
+                if (f.name == d.name) {
+                    space = this.spaceOf(f.pattern, d.ty);
+                }
+            }
+            out.push(space);
+        }
+        return out.toArray();
+    }
+
+    /// How many constructors make up the values of `t`: an enum's variants, `false` and `true`,
+    /// `null` and a value, one for a tuple, a struct or a class; -1 for an open type.
+    mut fn ctorCount(t: Ty): int {
+        return match (t) {
+            .Named(i) => if (this.types[i].kind == .Enum) this.types[i].variants.length() else 1,
+            .Bool => 2,
+            .Optional(_) => 2,
+            .Tuple(_) => 1,
+            _ => -1,
+        };
+    }
+
+    /// The types of constructor `c`'s parts.
+    mut fn ctorParts(t: Ty, c: int): Ty[] {
+        let out = List<Ty>.new();
+        match (t) {
+            .Named(i) => {
+                let fields = if (this.types[i].kind == .Enum) this.types[i].variantFields[c]
+                    else this.types[i].fields;
+                for (f in fields) {
+                    out.push(f.ty);
+                }
+            }
+            .Optional(inner) => {
+                if (c == 1) {
+                    out.push(inner.value);
+                }
+            }
+            .Tuple(tt) => {
+                for (e in tt.elements) {
+                    out.push(e);
+                }
+            }
+            _ => { }
+        }
+        return out.toArray();
+    }
+
+    /// A row of values none of `rows` covers, one per type of `tys`; `null` where they cover all
+    /// (Maranget, "Warnings for pattern matching", 2007).
+    mut fn uncovered(rows: Space[][], tys: Ty[]): ?Space[] {
+        if (tys.length() == 0) {
+            return if (rows.length() == 0) [] else null;
+        }
+        let flat = expandOr(rows);
+        let t = tys[0];
+        let rest = sliceOf(tys, 1, tys.length());
+        let count = this.ctorCount(t);
+        let used = Set<int>.new();
+        for (row in flat) {
+            match (row[0]) {
+                .Ctor(c, _) => {
+                    used.insert(c);
+                }
+                _ => { }
+            }
+        }
+        if (count > 0 && used.length() == count) {
+            var c = 0;
+            while (c < count) {
+                let parts = this.ctorParts(t, c);
+                let sub = List<Ty>.new();
+                for (x in parts) {
+                    sub.push(x);
+                }
+                for (x in rest) {
+                    sub.push(x);
+                }
+                let w = this.uncovered(specialize(flat, c, parts.length()), sub.toArray());
+                if (w != null) {
+                    let out = List<Space>.new();
+                    out.push(Space.Ctor(c, sliceOf(w, 0, parts.length())));
+                    for (x in w[parts.length()..]) {
+                        out.push(x);
+                    }
+                    return out.toArray();
+                }
+                c += 1;
+            }
+            return null;
+        }
+        // the rows that take every value of the column decide the rest
+        let w = this.uncovered(defaultRows(flat), rest);
+        if (w == null) {
+            return null;
+        }
+        // a column that names no constructor is missing any value; one that names some, the first
+        // it leaves out
+        var head = Space.Any;
+        if (count > 0 && used.length() > 0) {
+            var c = 0;
+            while (used.contains(c)) {
+                c += 1;
+            }
+            let parts = List<Space>.new();
+            for (_ in this.ctorParts(t, c)) {
+                parts.push(Space.Any);
+            }
+            head = Space.Ctor(c, parts.toArray());
+        }
+        let out = List<Space>.new();
+        out.push(head);
+        for (x in w) {
+            out.push(x);
+        }
+        return out.toArray();
+    }
+
+    /// A value as a pattern writes it: `.Rect { … }`, `.Num(_)`, `false`, `null`, `(1, _)`.
+    mut fn showSpace(space: Space, t: Ty): string {
+        return match (space) {
+            .Any | .Lit(_) | .Or(_) => "_",
+            .Ctor(c, parts) => {
+                match (t) {
+                    .Bool => {
+                        return if (c == 1) "true" else "false";
+                    }
+                    .Optional(inner) => {
+                        return if (c == 0) "null" else this.showSpace(parts[0], inner.value);
+                    }
+                    .Tuple(tt) => {
+                        let shown = List<string>.new();
+                        var k = 0;
+                        for (x in parts) {
+                            shown.push(this.showSpace(x, tt.elements[k]));
+                            k += 1;
+                        }
+                        return "(" + shown.toArray().join(", ") + ")";
+                    }
+                    .Named(i) => {
+                        let info = this.types[i];
+                        if (info.kind != .Enum) {
+                            return f"{info.name} {{ … }}";
+                        }
+                        let v = info.variants[c];
+                        if (info.variantNamed[c]) {
+                            return f".{v} {{ … }}";
+                        }
+                        if (parts.length() == 0) {
+                            return "." + v;
+                        }
+                        let shown = List<string>.new();
+                        var k = 0;
+                        for (x in parts) {
+                            shown.push(this.showSpace(x, info.variantFields[c][k].ty));
+                            k += 1;
+                        }
+                        return "." + v + "(" + shown.toArray().join(", ") + ")";
+                    }
+                    _ => { }
+                }
+                "_"
+            }
+        };
     }
 
     /// What pattern `p` tests of `src` — a read of the matched value's parts, evaluated as often
@@ -3689,6 +4022,150 @@ fn isNullLit(e: Expr): bool {
     return match (e) {
         .Null(_) => true,
         _ => false,
+    };
+}
+
+/// What a pattern covers, for the check of coverage (Lyric 5 §9 §3): every value, a constructor
+/// of the column's type with its parts, a value of an open type, or alternatives.
+enum Space {
+    Any,
+    Ctor(int, Space[]),
+    Lit(string),
+    Or(Space[]),
+}
+
+/// Elements `from` to `to` of `xs`, as an array of their own.
+fn sliceOf<T>(xs: T[], from: int, to: int): T[] {
+    let out = List<T>.new();
+    var k = from;
+    while (k < to) {
+        out.push(xs[k]);
+        k += 1;
+    }
+    return out.toArray();
+}
+
+/// The rows with each alternative of a first column's or-pattern a row of its own.
+fn expandOr(rows: Space[][]): Space[][] {
+    let out = List<Space[]>.new();
+    for (row in rows) {
+        match (row[0]) {
+            .Or(alternatives) => {
+                let alone = List<Space[]>.new();
+                for (a in alternatives) {
+                    let r = List<Space>.new();
+                    r.push(a);
+                    for (x in row[1..]) {
+                        r.push(x);
+                    }
+                    alone.push(r.toArray());
+                }
+                for (r in expandOr(alone.toArray())) {
+                    out.push(r);
+                }
+            }
+            _ => out.push(row),
+        }
+    }
+    return out.toArray();
+}
+
+/// The rows that admit constructor `c` in their first column, its parts in its place.
+fn specialize(rows: Space[][], c: int, arity: int): Space[][] {
+    let out = List<Space[]>.new();
+    for (row in rows) {
+        let r = List<Space>.new();
+        var keep = true;
+        match (row[0]) {
+            .Ctor(d, parts) => {
+                keep = d == c;
+                for (x in parts) {
+                    r.push(x);
+                }
+            }
+            .Any => {
+                var k = 0;
+                while (k < arity) {
+                    r.push(Space.Any);
+                    k += 1;
+                }
+            }
+            _ => {
+                keep = false;
+            }
+        }
+        if (keep) {
+            for (x in row[1..]) {
+                r.push(x);
+            }
+            out.push(r.toArray());
+        }
+    }
+    return out.toArray();
+}
+
+/// The rows whose first column takes every value, without it.
+fn defaultRows(rows: Space[][]): Space[][] {
+    let out = List<Space[]>.new();
+    for (row in rows) {
+        match (row[0]) {
+            .Any => out.push(sliceOf(row, 1, row.length())),
+            _ => { }
+        }
+    }
+    return out.toArray();
+}
+
+/// Whether `p` matches every value of its type.
+fn irrefutable(p: Pattern): bool {
+    return match (p) {
+        .Name(_, _) | .Ignore(_) => true,
+        .Tuple(items, _) => {
+            var all = true;
+            for (x in items) {
+                all = all && irrefutable(x);
+            }
+            all
+        }
+        .Fields(_, fields, _) => {
+            var all = true;
+            for (f in fields) {
+                all = all && irrefutable(f.pattern);
+            }
+            all
+        }
+        .Or(alternatives, _) => {
+            var any = false;
+            for (x in alternatives) {
+                any = any || irrefutable(x);
+            }
+            any
+        }
+        _ => false,
+    };
+}
+
+/// What an arm tests where a later arm testing the same is unreachable (Lyric 5 §9 §4 rule 1): a
+/// unit variant, a literal, `null`; `""` for any other pattern.
+fn repeatKey(p: Pattern): string {
+    return match (p) {
+        .Variant(_, name, payload, _) => if (payload == null) "variant " + name else "",
+        .Literal(e, _) => litKey(e),
+        _ => "",
+    };
+}
+
+/// A literal's value as a key: two literals of one key test the same value.
+fn litKey(e: Expr): string {
+    return match (e) {
+        .Int(n, _) => f"int {n}",
+        .Float(x, _) => f"float {x}",
+        .Str(text, _) => "string " + text,
+        .Char(c, _) => f"char {c}",
+        .Bool(b, _) => f"bool {b}",
+        .Null(_) => "null",
+        .Unary(op, x, _) => if (op == .Neg) "-" + litKey(x.value) else "?",
+        _ => "?",
     };
 }
 

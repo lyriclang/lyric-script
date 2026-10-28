@@ -541,6 +541,12 @@ severity = "error"
 area = "09-patterns"
 summary = "Every alternative of `P | Q` binds the same names at the same types. Lyric 5's LYR-SEM0032."
 
+[LYS-SEM0050]
+title = "a match that does not cover every value"
+severity = "error"
+area = "09-patterns"
+summary = "The unguarded arms cover every value of the matched type: an enum's variants, `false` and `true`, `null` and the values of an optional, a tuple through its columns; any other type needs an arm with `_` or a name. The diagnostic names a value no arm takes, written as a pattern. Lyric 5's LYR-SEM0050."
+
 [LYS-SEM0052]
 title = "a type used as a value"
 severity = "error"
@@ -618,6 +624,12 @@ title = "a bare name in a pattern that spells a variant"
 severity = "error"
 area = "09-patterns"
 summary = "A bare name binds the whole value; where it spells a variant of the matched enum it would match every value under that name. Write `.Name` to test the variant. Lyric 5's LYR-SEM0111."
+
+[LYS-SEM0112]
+title = "an arm no value reaches"
+severity = "warning"
+area = "09-patterns"
+summary = "An arm after an unguarded arm that takes every value, or one repeating a unit variant, a literal or `null` an unguarded arm above tests. Lyric 5's LYR-SEM0112."
 
 [LYS-SEM0113]
 title = "`.Name` where no enum is expected"

@@ -83,7 +83,8 @@ fn whatSelfAndStaticsRefuse(): void {
 
 @Test
 fn aConstrainedParameterIsHandedOn(): void {
-    // `T :: [Equal]` is an `Equal` where it is handed to another generic, and so is a child's
-    let e = "interface Same :: [Equal] {\n}\nfn inner<T :: [Equal]>(a: T, b: T): bool = a.same(b)\nfn outer<T :: [Equal]>(a: T, b: T): bool = inner(a, b)\nfn child<T :: [Same]>(a: T, b: T): bool = inner(a, b)\nstruct S :: [Same] {\n    x: int\n\n    fn same(o: S): bool = this.x == o.x\n}\nfn e(): int = (if (outer(P { x = 1 }, P { x = 1 })) 1 else 0) + (if (child(S { x = 2 }, S { x = 3 })) 2 else 0)";
-    assertEq(value(types + e, "e"), 1);
+    // `T :: [Show]` is a `Show` where it is handed to another generic, and so is a child's —
+    // said `LYS-SEM0028` since S3g
+    let e = "interface Show {\n    fn show(): int\n}\ninterface More :: [Show] {\n}\nstruct S :: [More] {\n    x: int\n\n    fn show(): int = this.x\n}\nfn inner<T :: [Show]>(x: T): int = x.show()\nfn outer<T :: [Show]>(x: T): int = inner(x)\nfn child<T :: [More]>(x: T): int = inner(x)\nfn e(): int = outer(S { x = 2 }) * 10 + child(S { x = 3 })";
+    assertEq(value(e, "e"), 23);
 }

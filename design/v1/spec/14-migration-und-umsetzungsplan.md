@@ -327,3 +327,25 @@ Objektsicherheit mit S3g; Operator-Interfaces und Synthese mit S3h).
 auf eingebauten Typen; `Any`, `is`, Typ-Muster, `sealed`; `by`). Eine Kontrolle der Boxen blieb
 zuerst grün, weil der richtige Wert zufällig im Skalarregister an der Basis lag; der Test ruft
 jetzt gespeicherte Interface-Werte nach anderer Arbeit. 142 Tests, 82 Konformanzfälle.
+
+**S3g, präzisiert (Entwurf).** Generics nach Lyric 5 03 §9 und 11 Gen.
+
+- *Prüfung einmal* (§9.1 Regel 1): ein generischer Rumpf wird an der Deklaration geprüft, `T`
+  undurchsichtig (`Ty.Param`), seine Member nur aus den Constraints; der getypte Baum trägt
+  `Ty.Param` und Constraint-Aufrufe als eigene Knoten.
+- *Instanzen* (11 Gen): je Funktion bzw. Typ eine Kopie je **Form** der Typargumente — eine
+  geteilte für alle Referenztypen (Strings eingeschlossen), je eine für `int`, `float`, `bool`,
+  `char` (und je Enum ohne Nutzlast, Tupel- und Optional-Form, deren Slots sich unterscheiden).
+  Eine Kopie entsteht durch Ersetzen im getypten Baum (ein Lauf über alle Knoten).
+- *Deskriptor* (11 Gen): die geteilte Kopie nimmt je Typparameter einen versteckten
+  Referenzparameter, den Deskriptor des Typarguments (eine `TypeDesc`-Referenz: Familie,
+  Tabelle). `load.t` lädt ihn, `call.d` (neu: Slot, Basen) ruft über seine Tabelle — so auch auf
+  einem `string`, der selbst keine Tabelle trägt. In einer skalaren Kopie ist der Typ bekannt,
+  der Constraint-Aufruf ein direkter `call`.
+- *Inferenz am Aufruf* (§9.2): Argumente binden, dann der erwartete Typ; geschriebene
+  Typargumente zuerst; was offen bleibt, `LYS-SEM0060`; Anzahl `LYS-SEM0026`, Constraint
+  `LYS-SEM0028`; Kette unendlicher Instanzen `LYS-SEM0197`.
+- *Generische Typen*: `struct Pair<A, B>`, `class Box<T>`, `enum Opt<T>` mit Layout je Form;
+  `Self` und statische Member in Interfaces, Objektsicherheit (§7) mit ihnen.
+- Teile: g1 generische Funktionen (Inferenz, Constraints, Kopien, Deskriptoren); g2 generische
+  Typen; g3 `Self`, Statics, Objektsicherheit; Bytecode-Goldtests der Kopien.

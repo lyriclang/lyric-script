@@ -1,0 +1,251 @@
+{
+  "part": "w1",
+  "runs": 9,
+  "load_before": [
+    "0.27",
+    "1.27",
+    "5.67"
+  ],
+  "load_after": [
+    "0.33",
+    "1.27",
+    "5.64"
+  ],
+  "oracle_acc": null,
+  "rows": [
+    {
+      "name": "base",
+      "what": "class instance -> ScriptObject[] (no interface)",
+      "args": [
+        "base",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 11558111,
+      "min_ns": 10490473,
+      "max_ns": 14233466,
+      "runs_ns": [
+        11341140,
+        13177941,
+        10787117,
+        13032133,
+        14233466,
+        11072908,
+        10490473,
+        11558111,
+        13125554
+      ],
+      "wall_median_s": 0.013869869988411665,
+      "cpu_median_s": 0.012856,
+      "startup_s": null,
+      "ns_per_unit": 1.1558111,
+      "unit": "iteration",
+      "output": {
+        "mode": "base",
+        "n": "10000000",
+        "ns": "11341140",
+        "allocs": "0",
+        "bytes": "0",
+        "gcs": "0",
+        "pause_ns": "0",
+        "check": "56"
+      }
+    },
+    {
+      "name": "class",
+      "what": "class instance -> HeapRef[]",
+      "args": [
+        "class",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 35576347,
+      "min_ns": 31330984,
+      "max_ns": 37519686,
+      "runs_ns": [
+        35979002,
+        35308875,
+        32780232,
+        35852700,
+        37519686,
+        35576347,
+        36094478,
+        31330984,
+        35357209
+      ],
+      "wall_median_s": 0.03740166101488285,
+      "cpu_median_s": 0.036968999999999995,
+      "startup_s": null,
+      "ns_per_unit": 3.5576347,
+      "unit": "iteration",
+      "output": {
+        "mode": "class",
+        "n": "10000000",
+        "ns": "35979002",
+        "allocs": "0",
+        "bytes": "0",
+        "gcs": "0",
+        "pause_ns": "0",
+        "check": "56"
+      }
+    },
+    {
+      "name": "string",
+      "what": "string -> HeapRef[]",
+      "args": [
+        "string",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 114048479,
+      "min_ns": 105121711,
+      "max_ns": 136971281,
+      "runs_ns": [
+        132361129,
+        114864070,
+        105121711,
+        114048479,
+        111368050,
+        113095451,
+        136971281,
+        107062658,
+        117984954
+      ],
+      "wall_median_s": 0.11663406400475651,
+      "cpu_median_s": 0.11617899999999999,
+      "startup_s": null,
+      "ns_per_unit": 11.4048479,
+      "unit": "iteration",
+      "output": {
+        "mode": "string",
+        "n": "10000000",
+        "ns": "132361129",
+        "allocs": "10000000",
+        "bytes": "160000000",
+        "gcs": "37",
+        "pause_ns": "2494988",
+        "check": "72"
+      }
+    },
+    {
+      "name": "struct",
+      "what": "Small { a, b } -> HeapRef[]",
+      "args": [
+        "struct",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 124813870,
+      "min_ns": 115649886,
+      "max_ns": 143156634,
+      "runs_ns": [
+        119293949,
+        124813870,
+        134250277,
+        127909855,
+        122409663,
+        119665421,
+        138543302,
+        115649886,
+        143156634
+      ],
+      "wall_median_s": 0.1277209940017201,
+      "cpu_median_s": 0.12712199999999999,
+      "startup_s": null,
+      "ns_per_unit": 12.481387,
+      "unit": "iteration",
+      "output": {
+        "mode": "struct",
+        "n": "10000000",
+        "ns": "119293949",
+        "allocs": "10000000",
+        "bytes": "320000000",
+        "gcs": "75",
+        "pause_ns": "4231651",
+        "check": "319999728"
+      }
+    },
+    {
+      "name": "int",
+      "what": "int -> HeapRef[]",
+      "args": [
+        "int",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 110979153,
+      "min_ns": 95765722,
+      "max_ns": 147561007,
+      "runs_ns": [
+        147561007,
+        102087543,
+        113597876,
+        108713032,
+        115688235,
+        97237562,
+        115777140,
+        95765722,
+        110979153
+      ],
+      "wall_median_s": 0.1130031600187067,
+      "cpu_median_s": 0.113524,
+      "startup_s": null,
+      "ns_per_unit": 11.0979153,
+      "unit": "iteration",
+      "output": {
+        "mode": "int",
+        "n": "10000000",
+        "ns": "147561007",
+        "allocs": "10000000",
+        "bytes": "160000000",
+        "gcs": "37",
+        "pause_ns": "6552972",
+        "check": "159999864"
+      }
+    },
+    {
+      "name": "move",
+      "what": "ready HeapRef (a string) -> HeapRef[]",
+      "args": [
+        "move",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 34570248,
+      "min_ns": 30539940,
+      "max_ns": 37258341,
+      "runs_ns": [
+        37258341,
+        30996436,
+        35249060,
+        34570248,
+        33855716,
+        30539940,
+        30603274,
+        34782280,
+        36892433
+      ],
+      "wall_median_s": 0.03637306499877013,
+      "cpu_median_s": 0.035919,
+      "startup_s": null,
+      "ns_per_unit": 3.4570248,
+      "unit": "iteration",
+      "output": {
+        "mode": "move",
+        "n": "10000000",
+        "ns": "37258341",
+        "allocs": "0",
+        "bytes": "0",
+        "gcs": "0",
+        "pause_ns": "0",
+        "check": "72"
+      }
+    }
+  ]
+}

@@ -1,0 +1,265 @@
+{
+  "part": "w2",
+  "runs": 9,
+  "load_before": [
+    "0.63",
+    "6.92",
+    "11.23"
+  ],
+  "load_after": [
+    "1.04",
+    "3.06",
+    "8.25"
+  ],
+  "oracle_acc": "670165716117834240",
+  "rows": [
+    {
+      "name": "P0",
+      "what": "plain C loop, no VM (oracle)",
+      "args": [
+        "100000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 152630434.02228504,
+      "min_ns": 135411525.98918414,
+      "max_ns": 181130334.00732094,
+      "runs_ns": [
+        141822151.02482587,
+        148973041.01032203,
+        181130334.00732094,
+        173203518.99252272,
+        159604598.01135585,
+        152630434.02228504,
+        135411525.98918414,
+        161618072.015699,
+        135657885.02455688
+      ],
+      "wall_median_s": 0.15363120700931177,
+      "cpu_median_s": 0.15328899999999998,
+      "startup_s": 0.0010007729870267212,
+      "ns_per_unit": 1.5263043402228504,
+      "unit": "iteration",
+      "output": {
+        "acc": "670165716117834240",
+        "executed": "1300000008",
+        "ns": "0",
+        "frame_bytes": "0",
+        "frame_allocs": "0"
+      }
+    },
+    {
+      "name": "W2-a",
+      "what": "split: scalars uint64[] + refs HeapRef[]",
+      "args": [
+        "100000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 2945365082,
+      "min_ns": 2761381278,
+      "max_ns": 3268980845,
+      "runs_ns": [
+        2945365082,
+        2768235445,
+        2908432743,
+        3115550819,
+        3004180975,
+        2761381278,
+        3002141630,
+        3268980845,
+        2785076387
+      ],
+      "wall_median_s": 2.946695622988045,
+      "cpu_median_s": 2.941255,
+      "startup_s": null,
+      "ns_per_unit": 29.45365082,
+      "unit": "iteration",
+      "output": {
+        "acc": "670165716117834240",
+        "executed": "1300000008",
+        "ns": "2945365082",
+        "frame_bytes": "480",
+        "frame_allocs": "4"
+      },
+      "ns_per_instr": 2.265665433749751
+    },
+    {
+      "name": "W2-b",
+      "what": "Value{bits, ref: HeapRef}, nil object, scalar write .bits",
+      "args": [
+        "100000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 3089339073,
+      "min_ns": 2786831553,
+      "max_ns": 3234886585,
+      "runs_ns": [
+        3089339073,
+        2786831553,
+        2906950589,
+        3128246818,
+        2973458933,
+        3195243092,
+        3106160090,
+        3234886585,
+        3010479966
+      ],
+      "wall_median_s": 3.0914154360070825,
+      "cpu_median_s": 3.090346,
+      "startup_s": null,
+      "ns_per_unit": 30.89339073,
+      "unit": "iteration",
+      "output": {
+        "acc": "670165716117834240",
+        "executed": "1300000008",
+        "ns": "3089339073",
+        "frame_bytes": "448",
+        "frame_allocs": "2"
+      },
+      "ns_per_instr": 2.3764146569143714
+    },
+    {
+      "name": "W2-bc",
+      "what": "Value{bits, ref: HeapRef}, nil object, scalar write whole slot",
+      "args": [
+        "100000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 11787518108,
+      "min_ns": 11179559292,
+      "max_ns": 13672298002,
+      "runs_ns": [
+        11775569962,
+        11291926943,
+        11787518108,
+        11797589461,
+        11462292303,
+        11179559292,
+        13672298002,
+        12460059671,
+        13130628911
+      ],
+      "wall_median_s": 11.789759559003869,
+      "cpu_median_s": 11.784825,
+      "startup_s": null,
+      "ns_per_unit": 117.87518108,
+      "unit": "iteration",
+      "output": {
+        "acc": "670165716117834240",
+        "executed": "1300000008",
+        "ns": "11775569962",
+        "frame_bytes": "448",
+        "frame_allocs": "2"
+      },
+      "ns_per_instr": 9.06732156573956
+    },
+    {
+      "name": "W2-o",
+      "what": "Value{bits, ref: ?HeapRef}, scalar write .bits",
+      "args": [
+        "100000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 3581126637,
+      "min_ns": 3401475863,
+      "max_ns": 3899012029,
+      "runs_ns": [
+        3514030242,
+        3401475863,
+        3522273848,
+        3688426877,
+        3658776394,
+        3472839667,
+        3581126637,
+        3686401609,
+        3899012029
+      ],
+      "wall_median_s": 3.5825533799943514,
+      "cpu_median_s": 3.581693,
+      "startup_s": null,
+      "ns_per_unit": 35.81126637,
+      "unit": "iteration",
+      "output": {
+        "acc": "670165716117834240",
+        "executed": "1300000008",
+        "ns": "3514030242",
+        "frame_bytes": "576",
+        "frame_allocs": "2"
+      },
+      "ns_per_instr": 2.754712780740229
+    },
+    {
+      "name": "W2-oc",
+      "what": "Value{bits, ref: ?HeapRef}, scalar write whole slot",
+      "args": [
+        "100000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 12278194476,
+      "min_ns": 11640205825,
+      "max_ns": 13374956921,
+      "runs_ns": [
+        11640205825,
+        13183736520,
+        12649103385,
+        12153140894,
+        12180813658,
+        12278194476,
+        13253659123,
+        13374956921,
+        11887276021
+      ],
+      "wall_median_s": 12.27946951900958,
+      "cpu_median_s": 12.275795,
+      "startup_s": null,
+      "ns_per_unit": 122.78194476,
+      "unit": "iteration",
+      "output": {
+        "acc": "670165716117834240",
+        "executed": "1300000008",
+        "ns": "11640205825",
+        "frame_bytes": "576",
+        "frame_allocs": "2"
+      },
+      "ns_per_instr": 9.444764923416832
+    },
+    {
+      "name": "P1 (dispatch probe)",
+      "what": "scalar-only register VM, 8 instr/iter",
+      "args": [
+        "100000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 1595198212.0168395,
+      "min_ns": 1419044965.0050142,
+      "max_ns": 1776982452.9823382,
+      "runs_ns": [
+        1419044965.0050142,
+        1776982452.9823382,
+        1754363076.0046654,
+        1517924207.0007603,
+        1463273727.0148938,
+        1634251317.0093298,
+        1704247646.9941902,
+        1595198212.0168395,
+        1503719735.017512
+      ],
+      "wall_median_s": 1.5970136650139466,
+      "cpu_median_s": 1.596533,
+      "startup_s": 0.0018154529971070588,
+      "ns_per_unit": 15.951982120168395,
+      "unit": "iteration",
+      "output": {
+        "acc": "663007437317834240",
+        "executed": "800000006"
+      },
+      "ns_per_instr": 1.9939977500660662
+    }
+  ]
+}

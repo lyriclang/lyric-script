@@ -1,0 +1,269 @@
+{
+  "part": "w3",
+  "runs": 9,
+  "load_before": [
+    "1.02",
+    "2.34",
+    "7.30"
+  ],
+  "load_after": [
+    "1.00",
+    "1.92",
+    "6.59"
+  ],
+  "oracle_acc": null,
+  "rows": [
+    {
+      "name": "small-mono",
+      "what": "hash/eq on string, direct (monomorphized)",
+      "args": [
+        "mono",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 427582459,
+      "min_ns": 408872136,
+      "max_ns": 598273810,
+      "runs_ns": [
+        408872136,
+        448084161,
+        427582459,
+        428613617,
+        598273810,
+        414602086,
+        431887129,
+        426433221,
+        423371451
+      ],
+      "wall_median_s": 0.4302716010133736,
+      "cpu_median_s": 0.429851,
+      "startup_s": null,
+      "ns_per_unit": 42.7582459,
+      "unit": "lookup",
+      "output": {
+        "mode": "mono",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "408872136",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-iface",
+      "what": "hash/eq through the key's interface table (KeyRef)",
+      "args": [
+        "iface",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 504121956,
+      "min_ns": 478234171,
+      "max_ns": 655304752,
+      "runs_ns": [
+        481444312,
+        485967585,
+        504962711,
+        504121956,
+        655304752,
+        489775342,
+        518116287,
+        478234171,
+        529268724
+      ],
+      "wall_median_s": 0.5075856659968849,
+      "cpu_median_s": 0.5072289999999999,
+      "startup_s": null,
+      "ns_per_unit": 50.4121956,
+      "unit": "lookup",
+      "output": {
+        "mode": "iface",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "481444312",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-wit",
+      "what": "hash/eq through a witness object over HeapRef keys",
+      "args": [
+        "wit",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 497280920,
+      "min_ns": 483869787,
+      "max_ns": 550058990,
+      "runs_ns": [
+        520490823,
+        484280067,
+        483869787,
+        550058990,
+        549392260,
+        497280920,
+        544396039,
+        487206634,
+        491147467
+      ],
+      "wall_median_s": 0.500342326995451,
+      "cpu_median_s": 0.49970899999999996,
+      "startup_s": null,
+      "ns_per_unit": 49.728092,
+      "unit": "lookup",
+      "output": {
+        "mode": "wit",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "520490823",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-mono",
+      "what": "hash/eq on string, direct (monomorphized)",
+      "args": [
+        "mono",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 1982695949,
+      "min_ns": 1905907699,
+      "max_ns": 2139994371,
+      "runs_ns": [
+        1961323233,
+        2139994371,
+        1964435143,
+        2013407029,
+        1968876217,
+        1905907699,
+        2090014082,
+        1982695949,
+        1997479532
+      ],
+      "wall_median_s": 2.5718574359780177,
+      "cpu_median_s": 2.57038,
+      "startup_s": null,
+      "ns_per_unit": 198.2695949,
+      "unit": "lookup",
+      "output": {
+        "mode": "mono",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "1961323233",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-iface",
+      "what": "hash/eq through the key's interface table (KeyRef)",
+      "args": [
+        "iface",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 2985206149,
+      "min_ns": 2798154976,
+      "max_ns": 3400865739,
+      "runs_ns": [
+        3400865739,
+        2822701659,
+        2854020410,
+        3041028416,
+        2929886422,
+        2798154976,
+        3047080946,
+        3169916563,
+        2985206149
+      ],
+      "wall_median_s": 3.8583524429996032,
+      "cpu_median_s": 3.854413,
+      "startup_s": null,
+      "ns_per_unit": 298.5206149,
+      "unit": "lookup",
+      "output": {
+        "mode": "iface",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "3400865739",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-wit",
+      "what": "hash/eq through a witness object over HeapRef keys",
+      "args": [
+        "wit",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 3147785218,
+      "min_ns": 2940207929,
+      "max_ns": 3433226571,
+      "runs_ns": [
+        3433226571,
+        2940207929,
+        3147785218,
+        3286936826,
+        3188186823,
+        3119564838,
+        3021871345,
+        3362552507,
+        3056927405
+      ],
+      "wall_median_s": 3.9781841069925576,
+      "cpu_median_s": 3.9759789999999997,
+      "startup_s": null,
+      "ns_per_unit": 314.7785218,
+      "unit": "lookup",
+      "output": {
+        "mode": "wit",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "3433226571",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    }
+  ]
+}

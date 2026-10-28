@@ -1,0 +1,437 @@
+{
+  "part": "w3",
+  "runs": 9,
+  "load_before": [
+    "0.80",
+    "0.95",
+    "3.18"
+  ],
+  "load_after": [
+    "1.02",
+    "1.00",
+    "2.81"
+  ],
+  "oracle_acc": null,
+  "rows": [
+    {
+      "name": "small-mono",
+      "what": "hash/eq on string, direct (monomorphized)",
+      "args": [
+        "mono",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 517708908,
+      "min_ns": 504123250,
+      "max_ns": 560585378,
+      "runs_ns": [
+        508834788,
+        512504896,
+        520874068,
+        528877340,
+        520665493,
+        510602845,
+        504123250,
+        560585378,
+        517708908
+      ],
+      "wall_median_s": 0.5213175289973151,
+      "cpu_median_s": 0.5208959999999999,
+      "startup_s": null,
+      "ns_per_unit": 51.7708908,
+      "unit": "lookup",
+      "output": {
+        "mode": "mono",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "508834788",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-mbox",
+      "what": "as mono, every key behind a StrBox object (the box, no dispatch)",
+      "args": [
+        "mbox",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 544267493,
+      "min_ns": 520002065,
+      "max_ns": 573352314,
+      "runs_ns": [
+        560594018,
+        520002065,
+        541284709,
+        566164581,
+        541494921,
+        535664680,
+        546935664,
+        544267493,
+        573352314
+      ],
+      "wall_median_s": 0.5503494339936879,
+      "cpu_median_s": 0.549992,
+      "startup_s": null,
+      "ns_per_unit": 54.4267493,
+      "unit": "lookup",
+      "output": {
+        "mode": "mbox",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "560594018",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-iface",
+      "what": "hash/eq through the key's interface table (KeyRef)",
+      "args": [
+        "iface",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 583819143,
+      "min_ns": 567818847,
+      "max_ns": 624580031,
+      "runs_ns": [
+        567818847,
+        624580031,
+        583819143,
+        615374432,
+        605184604,
+        569401887,
+        597434169,
+        580177925,
+        569306229
+      ],
+      "wall_median_s": 0.5879828240140341,
+      "cpu_median_s": 0.587587,
+      "startup_s": null,
+      "ns_per_unit": 58.3819143,
+      "unit": "lookup",
+      "output": {
+        "mode": "iface",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "567818847",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-wit",
+      "what": "hash/eq through a witness object over HeapRef keys",
+      "args": [
+        "wit",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 584016007,
+      "min_ns": 559960958,
+      "max_ns": 627100218,
+      "runs_ns": [
+        559960958,
+        580416505,
+        599222499,
+        616926442,
+        584016007,
+        560273450,
+        627100218,
+        595212167,
+        565541804
+      ],
+      "wall_median_s": 0.5869134529784787,
+      "cpu_median_s": 0.586525,
+      "startup_s": null,
+      "ns_per_unit": 58.4016007,
+      "unit": "lookup",
+      "output": {
+        "mode": "wit",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "559960958",
+        "allocs": "0",
+        "check": "32212269722199008",
+        "side": "5"
+      }
+    },
+    {
+      "name": "small-hash",
+      "what": "hashStr(query) alone, no table",
+      "args": [
+        "hash",
+        "4000",
+        "4096",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 175898483,
+      "min_ns": 164810596,
+      "max_ns": 209144689,
+      "runs_ns": [
+        188759124,
+        209144689,
+        182274241,
+        175898483,
+        167062049,
+        164810596,
+        175616893,
+        186089447,
+        167028922
+      ],
+      "wall_median_s": 0.17843788999016397,
+      "cpu_median_s": 0.17801,
+      "startup_s": null,
+      "ns_per_unit": 17.5898483,
+      "unit": "lookup",
+      "output": {
+        "mode": "hash",
+        "n": "4000",
+        "q": "4096",
+        "lookups": "10000000",
+        "cap": "8192",
+        "ns": "188759124",
+        "allocs": "0",
+        "check": "328712534772",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-mono",
+      "what": "hash/eq on string, direct (monomorphized)",
+      "args": [
+        "mono",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 2199445736,
+      "min_ns": 2063927114,
+      "max_ns": 2331827781,
+      "runs_ns": [
+        2147448847,
+        2235831631,
+        2264806027,
+        2331827781,
+        2132396919,
+        2212471708,
+        2105735942,
+        2199445736,
+        2063927114
+      ],
+      "wall_median_s": 2.784360318008112,
+      "cpu_median_s": 2.7840610000000003,
+      "startup_s": null,
+      "ns_per_unit": 219.9445736,
+      "unit": "lookup",
+      "output": {
+        "mode": "mono",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "2147448847",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-mbox",
+      "what": "as mono, every key behind a StrBox object (the box, no dispatch)",
+      "args": [
+        "mbox",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 3037824872,
+      "min_ns": 2888063678,
+      "max_ns": 3128780411,
+      "runs_ns": [
+        3011226053,
+        3119965665,
+        3062017798,
+        3128780411,
+        2888063678,
+        3017484476,
+        3037824872,
+        3009072480,
+        3106952625
+      ],
+      "wall_median_s": 3.865747314004693,
+      "cpu_median_s": 3.8646510000000003,
+      "startup_s": null,
+      "ns_per_unit": 303.7824872,
+      "unit": "lookup",
+      "output": {
+        "mode": "mbox",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "3011226053",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-iface",
+      "what": "hash/eq through the key's interface table (KeyRef)",
+      "args": [
+        "iface",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 3835031644,
+      "min_ns": 3677462680,
+      "max_ns": 4121142006,
+      "runs_ns": [
+        3726770278,
+        4121142006,
+        3843400861,
+        4061897870,
+        3677462680,
+        3835031644,
+        3872338870,
+        3817707273,
+        3773183952
+      ],
+      "wall_median_s": 4.755926312995143,
+      "cpu_median_s": 4.754747,
+      "startup_s": null,
+      "ns_per_unit": 383.5031644,
+      "unit": "lookup",
+      "output": {
+        "mode": "iface",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "3726770278",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-wit",
+      "what": "hash/eq through a witness object over HeapRef keys",
+      "args": [
+        "wit",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 4193396195,
+      "min_ns": 4127826034,
+      "max_ns": 4690695831,
+      "runs_ns": [
+        4690695831,
+        4188595005,
+        4243135137,
+        4400945002,
+        4128034467,
+        4135720213,
+        4193396195,
+        4127826034,
+        4203280188
+      ],
+      "wall_median_s": 5.090585252008168,
+      "cpu_median_s": 5.087574,
+      "startup_s": null,
+      "ns_per_unit": 419.3396195,
+      "unit": "lookup",
+      "output": {
+        "mode": "wit",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "4690695831",
+        "allocs": "0",
+        "check": "32216004602587360",
+        "side": "5"
+      }
+    },
+    {
+      "name": "big-hash",
+      "what": "hashStr(query) alone, no table",
+      "args": [
+        "hash",
+        "1000000",
+        "1048576",
+        "10000000"
+      ],
+      "valid": true,
+      "problems": [],
+      "median_ns": 197229824,
+      "min_ns": 182166892,
+      "max_ns": 210891106,
+      "runs_ns": [
+        199249230,
+        197707940,
+        200275979,
+        186912738,
+        182166892,
+        210891106,
+        195355442,
+        197229824,
+        194792264
+      ],
+      "wall_median_s": 0.6619159049878363,
+      "cpu_median_s": 0.661408,
+      "startup_s": null,
+      "ns_per_unit": 19.7229824,
+      "unit": "lookup",
+      "output": {
+        "mode": "hash",
+        "n": "1000000",
+        "q": "1048576",
+        "lookups": "10000000",
+        "cap": "2097152",
+        "ns": "199249230",
+        "allocs": "0",
+        "check": "327548191882",
+        "side": "5"
+      }
+    }
+  ]
+}

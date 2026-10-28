@@ -2,9 +2,8 @@
 
 Entschieden 2026-10-28 (Maintainer, im Fragedialog). Die VM und der Compiler von Lyric-Script
 werden in Lyric 5 geschrieben (00 Z2). Grundlage: die Sprache aus 02–09, die Host-Regeln aus 01,
-die Dispatch-Probe (`design/v1/probes/dispatch/`). **V2, V3 und Gen stehen unter dem Vorbehalt
-der Werte-Probe** (`design/v1/probes/werte/`); widerlegt sie eine Richtung, kommt die Frage zurück
-in den Dialog.
+die Dispatch-Probe (`design/v1/probes/dispatch/`) und die Werte-Probe (`design/v1/probes/werte/`).
+**Die Werte-Probe (2026-10-28) bestätigt V2 und Gen; V3 wurde nach ihr neu entschieden** (A').
 
 ## Vorgaben aus der Sprache
 
@@ -33,9 +32,9 @@ in den Dialog.
 | # | Frage | Entscheidung |
 |---|---|---|
 | V1 | Maschinenform | **Registermaschine** (gemessen 2,7× je Iteration). Drei Operanden, feste Breite (8 Byte, inline im Array), Registervergabe in einem Durchlauf (Lua). |
-| V2 | Wertdarstellung *(Vorbehalt Probe)* | **Getrennte Dateien**: `scalars: uint64[]` (eine Datei für alle Skalare, alle 64 Bit) und `refs: HeapRef[]`, in Frames und Objekten; der Compiler ordnet jeden Slot statisch zu; `?int` = zwei Skalar-Slots (Wert, Präsenz), `??int` = drei. Der GC scannt nur die Ref-Datei. |
-| V3 | Referenzform *(Vorbehalt Probe)* | **Interface `HeapRef`**, jede Art eine Klasse (`ScriptObject`, `ScriptArray`, `Closure`, `HostHandle`, …), `string` über `extend string :: HeapRef` — sofern ohne Box; sonst Hülle `ScriptString` oder Rückfall auf eine einzige Klasse `Obj`. `is` ist ein Zeigervergleich. |
-| Gen | Generics *(Vorbehalt Probe)* | **Hybrid wie .NET**: eine geteilte Kopie für alle Referenztypen, je eine für `int`, `float`, `bool`, `char` (≤ 5 je Typparameter); das Typargument als versteckter Deskriptor (Reflexion, `is`, Synthese); Constraint-Aufrufe auf Referenztypen über eine Witness-Tabelle. `List<int>` ungeboxt, `List<MeinTyp>` kompiliert nichts neu. |
+| V2 | Wertdarstellung | **Getrennte Dateien**: `scalars: uint64[]` (eine Datei für alle Skalare, alle 64 Bit) und `refs: HeapRef[]`, in Frames und Objekten; der Compiler ordnet jeden Slot statisch zu; `?int` = zwei Skalar-Slots (Wert, Präsenz), `??int` = drei. *Werte-Probe:* gleich schnell wie Zwei-Wort-Slots (1–5 %) und gleich groß — entscheidend ist, dass getrennte Dateien die gemessene Falle ausschließen: ein Zwei-Wort-Slot, der ganz geschrieben wird, ist 4× langsamer (Barriere bei jeder Skalarschreibung). |
+| V3 | Referenzform | **Interface `HeapRef`**, jede Art eine Klasse (`ScriptObject`, `ScriptArray`, `Closure`, `HostHandle`, …); **Strings in einer Hülle `ScriptString :: HeapRef { s: string }`** (eine Allokation beim Erzeugen, danach kostenlos umwandelbar). *Neu entschieden 2026-10-28 nach der Werte-Probe (A'):* `extend string :: HeapRef` boxt bei **jeder** Umwandlung (16 B); das Speichern eines Interface-Werts kostet +2,4 ns, weil Lyric 5s `LYR_WRITE_BARRIER_VALUE` die allgemeine Kartenschleife nimmt — **Anforderung A4** an Lyric 5 ([lyric#610](https://github.com/lyriclang/lyric/issues/610)). **Messpunkt 1 (S1) entscheidet**: ist A4 nicht behoben und dominieren Referenz-Moves, Umstellung auf eine einzige Klasse `Obj` (8-Byte-Referenzen) — eine Änderung nur im Inneren der VM. |
+| Gen | Generics | **Hybrid wie .NET**: eine geteilte Kopie für alle Referenztypen, je eine für `int`, `float`, `bool`, `char` (≤ 5 je Typparameter); das Typargument als versteckter Deskriptor (Reflexion, `is`, Synthese); Constraint-Aufrufe auf Referenztypen über eine Witness-Tabelle. `List<int>` ungeboxt, `List<MeinTyp>` kompiliert nichts neu. *Werte-Probe:* ein Map-Lookup über die Witness-Tabelle kostet im Cache +11–13 % (~2,3 ns je Aufruf); bei großen Tabellen dominiert die zusätzliche Indirektion, nicht der Aufruf — **die native `Map` (12 Src) hält Lyric-5-Strings als Schlüssel direkt, ohne Hülle**. |
 | Co | Koroutinen und Tasks | **VM-eigene Frames** (4.6, Lua): ein Task ist eine Frame-Liste auf dem Heap mit Zustand `Ready`/`Waiting(op)`/`Suspended`/`Done`; Warten und Budget sichern den Zustand und kehren aus der Dispatch-Schleife zurück; I/O startet eine Lyric-5-Operation als Lyric-5-Task, der Skript-Task parkt. *Standalone* wartet die Hauptschleife auf Abschlüsse, `step()` blockiert nie. Grenze: ein Skript-Callback, den ein Native aufruft, darf nicht warten (Fehler; selten, weil die std nach 00 Z6 in Script ist). Braucht A2b nicht. |
 | Thr | Threads | **Eine Instanz darf den Thread wechseln, wenn sie ruht** (kein Aufruf aktiv, kein Task wartet auf I/O); **mehrere Instanzen laufen parallel**; kompilierter Code ist unveränderlich und geteilt, die Typtabellen der VM sind lesesicher. Bereitet die Worker-Instanzen (07, Tür) vor. |
 | Fmt | Bytecode | **Internes Format ohne Versprechen**: Kopf mit Magic, Compiler-Version, Quell-Hash; Cache-Schlüssel Hash(Quelle + Compiler-Version); `loadTrusted` nimmt nur Bytecode der eigenen Toolchain-Version; keine Spec, kein Verifier als Grenze (01 S10); die std liegt vorkompiliert im Binary, `pack` macht dasselbe für Apps. |
@@ -68,6 +67,7 @@ in den Dialog.
 | A2b | Anhalten aus verschachtelten Aufrufen | **nicht nötig** dank Co = A |
 | A2c | exakter Toolchain-Pin | nötig zum Umsetzungsbeginn (bis M15: Lyric 5 aus festem Commit bauen) |
 | A2d | ungeprüfter Elementzugriff im heißen Pfad | erst, wenn das Durchsatz-Ratchet verfehlt wird (24 % gemessen) |
+| A4 | Schreibbarriere für 16-Byte-Werte mit einer Kartenmarkierung statt der allgemeinen Schleife | gestellt: [lyric#610](https://github.com/lyriclang/lyric/issues/610); entscheidet V3 bei Messpunkt 1 |
 | A3 | Instanz-Zuordnung im GC | Tür (Live-Speichergrenze je Instanz) |
 
 ## Begründung
@@ -119,6 +119,6 @@ Lyric-5-Hosts zu einem Nebenprodukt der Implementierung.
 
 ## Offen
 
-- **Werte-Probe** (`design/v1/probes/werte/`): `string` → Interface ohne Allokation? Getrennte
-  Dateien gegen Zwei-Wort-Slots im Dispatch; Witness-Tabelle gegen Direktaufruf beim Map-Lookup.
-- Bereich 13: DAP, LSP, `pack`, Cache-Ort; Bereich 12: Kostenregeln der schweren Natives (01 S5c).
+- Bereich 13 (in 12 aufgegangen): DAP, LSP, `pack`, Cache-Ort; Kostenregeln der schweren Natives
+  (01 S5c).
+- V3 bei Messpunkt 1 (S1): A4 behoben oder Umstellung auf `Obj`.

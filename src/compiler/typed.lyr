@@ -268,6 +268,8 @@ fn typeOf(e: TExpr): Ty {
         .DescArg(_, _, t) => t,
         .DescVariant(_, _, t) => t,
         .NewD(_, _, _, _, t) => t,
+        .DebugParam(_, _, t) => t,
+        .TextParam(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
 }
@@ -390,6 +392,10 @@ enum TExpr :: [Debug] {
     NewD(Box<TExpr>, int, int, TExpr[], Ty),
     /// Whether the value is one of the type the descriptor names.
     IsDesc(Box<TExpr>, Box<TExpr>),
+    /// The Debug form of a value of type parameter `k`: the argument's in each copy (S3i); and
+    /// its text where it stands alone, `{x}` — a string's itself.
+    DebugParam(Box<TExpr>, int, Ty),
+    TextParam(Box<TExpr>, int, Ty),
     Unknown,
 }
 
@@ -418,6 +424,10 @@ struct Program {
     main: int,
     // the interface methods' slots, numbered across the program
     slots: int,
+    // the slot of every type's Debug form, -1 where nothing prints through a table; the
+    // function a function value's table holds there (S3i)
+    debugSlot: int = -1,
+    fnDebug: int = -1,
 }
 
 /// How many scalar and reference slots a value of the type holds (11 V2): one of its file for a

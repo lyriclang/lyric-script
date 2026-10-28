@@ -77,6 +77,7 @@ fn checkModule(module: Module): Checked {
     c.declare(module);
     c.checkMain(module);
     c.checkBodies();
+    c.fillDebugSlot();
     c.instantiate();
     return Checked {
         program = c.program(),
@@ -215,6 +216,11 @@ class Checker {
     // while a copy is made: where each type parameter's descriptor comes from at run time, null
     // where the copy knows its argument (S3i)
     var specDescs: (?TExpr)[] = [],
+    // the slot of every type's Debug form, once something prints through a table (S3i); while
+    // the tables are filled, a type without a form gets a placeholder, not an error
+    var debugSlot: int = -1,
+    var fnDebug: int = -1,
+    var quietDebug: bool = false,
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -259,6 +265,8 @@ class Checker {
             globals = this.globals.toArray(),
             main = this.mainIndex,
             slots = this.slotCount,
+            debugSlot = this.debugSlot,
+            fnDebug = this.fnDebug,
         };
     }
 
@@ -1523,18 +1531,22 @@ class Checker {
     /// Resolves every call of a generic to the copy for its type arguments' shape, making the
     /// copies; a copy's body is the generic's, its type parameters replaced.
     mut fn instantiate(): void {
+        // until nothing is left: a copy makes instances (a shared copy's `Pair<Any>`, whose table
+        // a type made at run time takes, S3i), and an instance's table makes copies
         var ti = 0;
-        while (ti < this.types.length()) {
-            this.tableInstance(ti);
-            ti += 1;
-        }
         var k = 0;
-        while (k < this.functions.length()) {
-            let info = this.functions[k];
-            if (info.typeParams.length() == 0 && info.templateOf < 0) {
-                info.body = this.specStmts(info.body, []);
+        while (ti < this.types.length() || k < this.functions.length()) {
+            while (ti < this.types.length()) {
+                this.tableInstance(ti);
+                ti += 1;
             }
-            k += 1;
+            while (k < this.functions.length()) {
+                let info = this.functions[k];
+                if (info.typeParams.length() == 0 && info.templateOf < 0) {
+                    info.body = this.specStmts(info.body, []);
+                }
+                k += 1;
+            }
         }
     }
 
@@ -1929,6 +1941,23 @@ class Checker {
                 }
             }
             .IsDesc(x, d) => TExpr.IsDesc(this.specBox(x, a), this.specBox(d, a)),
+            .TextParam(x, k, t) => {
+                let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
+                if (src != null || k >= a.length()) {
+                    TExpr.CallIface(this.debugSlotOf(), [this.specExpr(x.value, a)], t)
+                } else {
+                    this.stringOf(this.specExpr(x.value, a), nowhereSpan)
+                }
+            }
+            .DebugParam(x, k, t) => {
+                let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
+                if (src != null || k >= a.length()) {
+                    // a shared copy: the value's own form, through its table
+                    TExpr.CallIface(this.debugSlotOf(), [this.specExpr(x.value, a)], t)
+                } else {
+                    this.debugText(this.specExpr(x.value, a), a[k], nowhereSpan)
+                }
+            }
             .DescOfType(_, _) | .InstDesc(_, _, _) | .DescOfValue(_, _) | .DescArg(_, _, _) => e,
             .DescVariant(_, _, _) | .NewD(_, _, _, _, _) => e,
             .SameRef(x, y) => TExpr.SameRef(this.specBox(x, a), this.specBox(y, a)),
@@ -5807,6 +5836,14 @@ class Checker {
             _ => null,
         };
         if (native == null) {
+            // a type parameter's value as its argument's text, in each copy (S3i)
+            match (t) {
+                .Param(k) => {
+                    this.debugSlotOf();
+                    return TExpr.TextParam(boxE(v), k, Ty.Str);
+                }
+                _ => { }
+            }
             // every other value prints in its Debug form (03 Eq: `{x}` falls back to it)
             return this.debugText(v, t, at);
         }
@@ -5864,16 +5901,107 @@ class Checker {
                 )
             }
             .Named(i) => {
-                if (this.types[i].kind == .Interface) {
-                    TExpr.Str(f"<{this.types[i].name}>")
+                let info = this.types[i];
+                if (info.kind == .Interface) {
+                    // the held value's form, through its table (S3i)
+                    TExpr.CallIface(this.debugSlotOf(), [v], Ty.Str)
+                } else if (info.typeParams.length() > 0) {
+                    // a generic type's form is its template's, copied for the arguments
+                    let tmpl = if (info.template >= 0) info.template else i;
+                    TExpr.CallGeneric(this.debugFnOf(tmpl, at), info.args, [v], Ty.Str)
                 } else {
                     TExpr.Call(this.debugFnOf(i, at), [v], Ty.Str)
                 }
             }
+            .Param(k) => {
+                this.debugSlotOf();
+                TExpr.DebugParam(boxE(v), k, Ty.Str)
+            }
             .Fn(_) => TExpr.Str("<fn>"),
             .Unknown => v,
-            _ => this.notYet(f"text of a {this.tyName(t)}", "S3i (descriptors)", at),
+            _ => if (this.quietDebug) TExpr.Str(f"<{this.tyName(t)}>")
+                else this.notYet(f"text of a {this.tyName(t)}", "S7 (the core collections)", at),
         };
+    }
+
+    /// The slot of every type's Debug form (S3i), given out the first time a value prints
+    /// through a table: an interface value's, or a type parameter's in a shared copy.
+    mut fn debugSlotOf(): int {
+        if (this.debugSlot < 0) {
+            this.debugSlot = this.slotCount;
+            this.slotCount += 1;
+        }
+        return this.debugSlot;
+    }
+
+    /// Every type's Debug form in its table's slot, where something prints through one: a
+    /// generic type's its template's, which each instance copies; a scalar's, a string's and a
+    /// plain enum's out of their boxes; a function value's `<fn>`.
+    mut fn fillDebugSlot(): void {
+        if (this.debugSlot < 0) {
+            return;
+        }
+        this.quietDebug = true;
+        let n = this.types.length();
+        var i = 0;
+        while (i < n) {
+            let info = this.types[i];
+            let instance = info.template >= 0 && info.template != i;
+            if (info.kind != .Interface && !instance) {
+                let f = if (info.kind == .Builtin
+                    || (info.kind == .Enum && !info.payload)) this.debugBoxOf(i)
+                    else this.debugFnOf(i, nowhereSpan);
+                info.witness.insert(this.debugSlot, f);
+            }
+            i += 1;
+        }
+        this.fnDebug = this.textFn("<fn>");
+        this.quietDebug = false;
+    }
+
+    /// A function of the table that gives `text` for any value: a function value's form.
+    mut fn textFn(text: string): int {
+        let anyTy = Ty.Named(this.anyIndex);
+        let index = this.functions.length();
+        this.functions.push(FnInfo { name = "#text", owner = -1, isStatic = true, line = 1 });
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let f = this.functions[index];
+        f.params = [ParamInfo { name = "x", ty = anyTy, default = null }];
+        f.returns = Ty.Str;
+        f.locals = [anyTy];
+        f.boxed = [false];
+        f.body = [TStmt.Return(TExpr.Str(text), 1)];
+        return index;
+    }
+
+    /// The Debug form of a boxed value of type `i`, for its box's table: the value out of the box.
+    mut fn debugBoxOf(i: int): int {
+        let anyTy = Ty.Named(this.anyIndex);
+        let t = this.selfTy(i);
+        let index = this.functions.length();
+        this.functions.push(
+            FnInfo {
+                name = this.types[i].name + "#debugbox",
+                owner = -1,
+                isStatic = true,
+                line = 1,
+            }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let saved = this.ctx;
+        this.ctx = FnCtx.new(index, Ty.Str, false, false);
+        this.declareLocal("x", anyTy, false, nowhereSpan);
+        let body = this.debugText(TExpr.Unbox(boxE(TExpr.Local(0, anyTy)), t), t, nowhereSpan);
+        let f = this.functions[index];
+        f.params = [ParamInfo { name = "x", ty = anyTy, default = null }];
+        f.returns = Ty.Str;
+        f.locals = this.ctx.locals.toArray();
+        f.boxed = this.ctx.boxed.toArray();
+        f.body = [TStmt.Return(body, 1)];
+        this.ctx = saved;
+        return index;
     }
 
     /// The function giving the Debug form of a value of type `i`, made once.
@@ -5885,8 +6013,10 @@ class Checker {
         let info = this.types[i];
         let t = Ty.Named(i);
         let index = this.functions.length();
+        // a method of the type, its receiver the value: what a table's slot holds; the name
+        // without the type arguments, as the type is declared
         this.functions.push(
-            FnInfo { name = info.name + "#debug", owner = -1, isStatic = true, line = at.line }
+            FnInfo { name = "#debug", owner = i, isStatic = false, line = at.line }
         );
         this.fnDecls.push(null);
         this.fnStates.push(FnState.Done);
@@ -5895,11 +6025,12 @@ class Checker {
         this.ctx = FnCtx.new(index, Ty.Str, false, false);
         this.declareLocal("x", t, false, at);
         let x = TExpr.Local(0, t);
-        var body = TExpr.Str(info.name);
+        let name = declaredName(info.name);
+        var body = TExpr.Str(name);
         if (info.kind == .Struct || info.kind == .Class) {
             body = concatAll(
                 this.fieldsText(
-                    info.name,
+                    name,
                     info.fields,
                     (k: int, ft: Ty) => TExpr.Field(boxE(x), k, ft),
                     at
@@ -5907,11 +6038,11 @@ class Checker {
             );
         } else {
             // the variant the tag names, its payload after it
-            var rest = TExpr.Str(info.name);
+            var rest = TExpr.Str(name);
             var v = info.variants.length() - 1;
             while (v >= 0) {
                 let vf = info.variantFields[v];
-                let head = f"{info.name}.{info.variants[v]}";
+                let head = f"{name}.{info.variants[v]}";
                 var text = TExpr.Str(head);
                 if (info.variantNamed[v]) {
                     let vv = v;
@@ -5949,11 +6080,16 @@ class Checker {
             body = rest;
         }
         let dbg = this.functions[index];
-        dbg.params = [ParamInfo { name = "x", ty = t, default = null }];
         dbg.returns = Ty.Str;
         dbg.locals = this.ctx.locals.toArray();
         dbg.boxed = this.ctx.boxed.toArray();
         dbg.body = [TStmt.Return(body, at.line)];
+        if (info.typeParams.length() > 0) {
+            // a template's: copied for each instance, its arguments from the receiver's
+            dbg.typeParams = info.typeParams;
+            dbg.template = dbg.body;
+            dbg.body = [];
+        }
         this.ctx = saved;
         return index;
     }
@@ -7395,6 +7531,18 @@ struct WithUpdate {
     path: string[],
     from: int,
     value: TExpr,
+}
+
+/// A type's name as declared: an instance's without its arguments.
+fn declaredName(name: string): string {
+    var k = 0;
+    for (c in name.chars()) {
+        if (c == '<') {
+            return name[0..k].toString();
+        }
+        k += 1;
+    }
+    return name;
 }
 
 /// The place of what the compiler makes without a source of its own.

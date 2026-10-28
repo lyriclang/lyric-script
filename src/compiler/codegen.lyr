@@ -263,13 +263,22 @@ struct Placement {
                 }
                 captureLoc.push(layOut(fields.toArray(), scalars, refs, p.types));
                 closureType.push(descs.length());
-                descs.push(
-                    TypeDesc {
-                        name = f"<{f.name}>",
-                        scalarFields = scalars.toArray(),
-                        refFields = refs.toArray(),
+                let cd = TypeDesc {
+                    name = f"<{f.name}>",
+                    scalarFields = scalars.toArray(),
+                    refFields = refs.toArray(),
+                };
+                // a function value prints `<fn>` through its table (S3i)
+                if (p.debugSlot >= 0) {
+                    let row = List<int>.new();
+                    var k = 0;
+                    while (k < p.slots) {
+                        row.push(if (k == p.debugSlot) p.fnDebug else -1);
+                        k += 1;
                     }
-                );
+                    cd.methods = row.toArray();
+                }
+                descs.push(cd);
             } else {
                 closureType.push(-1);
                 captureLoc.push([]);
@@ -1322,6 +1331,7 @@ class FnGen {
             }
             // resolved to instances before code is made
             .CallGeneric(_, _, _, _) | .CallConstraint(_, _, _, _, _, _) | .IsParam(_, _, _) => { }
+            .DebugParam(_, _, _) | .TextParam(_, _, _) => { }
             // S3i: descriptors (11 Gen)
             .DescOfType(t, _) => {
                 if (dst.r >= 0) {

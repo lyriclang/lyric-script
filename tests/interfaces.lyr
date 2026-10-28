@@ -96,4 +96,7 @@ fn builtInValuesAndPlainEnumsConformThroughABox(): void {
     let src = "interface Named {\n    fn name(): string\n    fn shout(): string = this.name() + \"!\"\n}\nextend int :: [Named] {\n    fn name(): string = if (this > 0) \"pos\" else \"neg\"\n}\nextend string {\n    fn twice(): string = this + this\n}\nenum Color :: [Named] {\n    Red, Green\n    fn name(): string = match (this) {\n        .Red => \"red\",\n        .Green => \"green\",\n    }\n}\nfn label(n: Named): string = n.name()\n";
     let b = "fn b(): int = (if (label(5) == \"pos\") 1 else 0) + (if (label(Color.Green) == \"green\") 10 else 0) + (if (\"ab\".twice() == \"abab\") 100 else 0) + (if ((-3).shout() == \"neg!\") 1000 else 0)";
     assertEq(value(src + b, "b"), 1111);
+    // values held as interface values, called later: the box's value is what `this` reads
+    let num = "interface Num {\n    fn twice(): int\n}\nextend int :: [Num] {\n    fn twice(): int = this * 2\n}\nfn h(): int {\n    let a: Num = 21\n    let b: Num = 100\n    let c = 7 + 8\n    return a.twice() + b.twice() + c\n}";
+    assertEq(value(num, "h"), 257);
 }

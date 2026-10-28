@@ -87,6 +87,14 @@ pub enum Op :: [Variants, Equatable] {
     CallI,
     IsT,
     IsI,
+    // S3i: descriptors as values (11 Gen).
+    LoadT,
+    InstT,
+    DescOf,
+    DescArg,
+    DescVar,
+    NewD,
+    IsD,
 }
 
 /// What an operand of an operation names.
@@ -206,6 +214,13 @@ pub fn info(op: Op): OpInfo {
         .CallI => OpInfo { mnemonic = "call.i", operands = [.Imm, .ScalarBase, .RefBase] },
         .IsT => OpInfo { mnemonic = "is.t", operands = [.Scalar, .Ref, .Imm] },
         .IsI => OpInfo { mnemonic = "is.i", operands = [.Scalar, .Ref, .Imm] },
+        .LoadT => OpInfo { mnemonic = "load.t", operands = [.Ref, .Type] },
+        .InstT => OpInfo { mnemonic = "inst.t", operands = [.Ref, .Type, .RefBase] },
+        .DescOf => OpInfo { mnemonic = "desc.of", operands = [.Ref, .Ref] },
+        .DescArg => OpInfo { mnemonic = "desc.arg", operands = [.Ref, .Ref, .Imm] },
+        .DescVar => OpInfo { mnemonic = "desc.var", operands = [.Ref, .Ref, .Imm] },
+        .NewD => OpInfo { mnemonic = "new.d", operands = [.Ref, .Ref] },
+        .IsD => OpInfo { mnemonic = "is.d", operands = [.Scalar, .Ref, .Ref] },
     };
 }
 

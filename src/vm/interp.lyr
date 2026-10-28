@@ -13,8 +13,18 @@ import std.core { arrayOf };
 import std.io { print, println };
 import std.task { spawn, yieldNow };
 import lyric_script.vm.op { Instr };
-import lyric_script.vm.module { Function, Module };
-import lyric_script.vm.heap { HeapRef, Nil, ScriptObject, ScriptString, nil, nilRef, sameRef };
+import lyric_script.vm.module { Function, Module, TypeDesc };
+import lyric_script.vm.heap {
+    HeapRef,
+    Nil,
+    ScriptObject,
+    ScriptString,
+    TypeValue,
+    nil,
+    nilRef,
+    sameRef,
+};
+import lyric_script.vm.descriptor { Interning, conforms };
 import lyric_script.vm.native { nativeOf };
 
 /// How a run ended.
@@ -104,6 +114,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     // the script's top-level bindings (07 Top), alive for this run
     var gs: uint64[] = [0 as uint64] * module.globalsS;
     var gr: HeapRef[] = refArray(module.globalsR);
+    // the descriptors of this run: the compiler's, and those shared copies make (S3i)
+    let interning = Interning.of(module);
     let frames = List<CallFrame>.new();
     var code: Instr[] = f.code;
     var pc = 0;
@@ -614,6 +626,138 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 s[bs + a] = truth(o is ScriptObject && o.typeDesc.family == c);
                 pc += 1;
             }
+            // S3i: a type's descriptor as a value (11 Gen)
+            .LoadT => {
+                r[br + a] = TypeValue { d = module.types[b] };
+                pc += 1;
+            }
+            // the descriptor of template `b`'s shape at the descriptors from register `c` on
+            .InstT => {
+                let shape = module.types[b];
+                let args = List<TypeDesc>.new();
+                var k = 0;
+                while (k < shape.args.length()) {
+                    let d = descIn(r[br + c + k]);
+                    if (d == null) {
+                        return panicOut(
+                            module,
+                            frames,
+                            fi,
+                            pc,
+                            "LYS-ICE0001",
+                            "'inst.t' given no descriptor"
+                        );
+                    }
+                    args.push(d);
+                    k += 1;
+                }
+                r[br + a] = TypeValue { d = interning.instance(shape, args.toArray()) };
+                pc += 1;
+            }
+            // the descriptor of the object's type: a variant's is its enum's
+            .DescOf => {
+                let o = r[br + b];
+                if (o is ScriptObject) {
+                    r[br + a] = TypeValue { d = o.typeDesc.parent ?? o.typeDesc };
+                } else {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.of' of no object"
+                    );
+                }
+                pc += 1;
+            }
+            .DescArg => {
+                let d = descIn(r[br + b]);
+                if (d == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.arg' of no descriptor"
+                    );
+                }
+                if (c >= d.args.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.arg' past the arguments"
+                    );
+                }
+                r[br + a] = TypeValue { d = d.args[c] };
+                pc += 1;
+            }
+            .DescVar => {
+                let d = descIn(r[br + b]);
+                if (d == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.var' of no descriptor"
+                    );
+                }
+                if (c >= d.variants.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.var' past the variants"
+                    );
+                }
+                r[br + a] = TypeValue { d = d.variants[c] };
+                pc += 1;
+            }
+            // an object of the type the descriptor in register `b` names
+            .NewD => {
+                let t = descIn(r[br + b]);
+                if (t == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'new.d' of no descriptor"
+                    );
+                }
+                r[br + a] = ScriptObject {
+                    typeDesc = t,
+                    scalars = [0 as uint64] * t.scalarFields.length(),
+                    refs = refArray(t.refFields.length()),
+                };
+                pc += 1;
+            }
+            // whether the value is one of the type the descriptor in register `c` names
+            .IsD => {
+                let o = r[br + b];
+                let d = descIn(r[br + c]);
+                if (d == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'is.d' of no descriptor"
+                    );
+                }
+                s[bs + a] = truth(o is ScriptObject && conforms(o.typeDesc, d));
+                pc += 1;
+            }
             // whether it holds a value of a type that conforms to interface `c`
             .IsI => {
                 let o = r[br + b];
@@ -672,6 +816,14 @@ fn firstRefs(r: HeapRef[], from: int, n: int): HeapRef[] {
 
 fn signed16(v: int): int {
     return if (v >= 32768) v - 65536 else v;
+}
+
+/// The descriptor a register holds, `null` where it holds none.
+fn descIn(v: HeapRef): ?TypeDesc {
+    if (v is TypeValue) {
+        return v.d;
+    }
+    return null;
 }
 
 fn truth(b: bool): uint64 {

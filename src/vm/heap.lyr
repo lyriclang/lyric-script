@@ -53,6 +53,16 @@ pub class ScriptString :: [HeapRef] {
     }
 }
 
+/// A type's descriptor as a value (S3i, 11 Gen): what a shared copy of a generic is handed for
+/// its type parameters, and what it builds its objects with.
+pub class TypeValue :: [HeapRef] {
+    pub d: TypeDesc,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
 /// An object of a script type: its scalar and its reference fields apart (11 V2), behind the
 /// object so that a reload can rebuild them in place (01 S7a).
 pub class ScriptObject :: [HeapRef] {

@@ -28,7 +28,27 @@ pub class TypeDesc :: [Identity] {
     var family: int = -1,
     /// The interfaces the type conforms to, parents included, for `is` against an interface.
     var ifaces: int[] = [],
+    /// S3i, the descriptor as a value (11 Gen): the template it is an instance of — a type of
+    /// the program, or a structural kind (`fnKind`, `tupleKind`, `optionalKind`) —, -1 for none;
+    /// its type arguments, or its parts; the name before them.
+    var template: int = -1,
+    var args: TypeDesc[] = [],
+    var base: string = "",
+    /// A variant's enum; a payload enum's variants; an interface's descriptor.
+    var parent: ?TypeDesc = null,
+    var variants: TypeDesc[] = [],
+    var isInterface: bool = false,
+    /// Its number among the descriptors of a run, the key of their interning.
+    var id: int = -1,
 }
+
+/// The structural kinds of a descriptor's template: a function type (its parameters, then its
+/// result), a tuple (its elements), an optional (its value).
+pub let fnKind: int = -2;
+
+pub let tupleKind: int = -3;
+
+pub let optionalKind: int = -4;
 
 /// A compiled function. Its first `paramsS` scalar registers and first `paramsR` reference
 /// registers hold the arguments.
@@ -176,6 +196,12 @@ fn checkCall(module: Module, f: Function, ins: Instr): ?string {
             return f"native '{n.name}' reaches past the reference registers";
         }
         return null;
+    }
+    // `inst.t` reads one descriptor per argument of its shape (S3i)
+    if (ins.op == .InstT && (ins.b as int) < module.types.length()) {
+        let n = module.types[ins.b as int].args.length();
+        return if ((ins.c as int) + n > f.refs) "'inst.t' reads past the reference registers"
+            else null;
     }
     if (ins.op != .Call || (ins.a as int) >= module.functions.length()) {
         return null;

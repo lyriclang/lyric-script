@@ -1,0 +1,126 @@
+//! The descriptors of a run (S3i, design/v1 11 Gen): one per type, the compiler's and those a
+//! shared copy of a generic makes — `Pair<Foo>` built where the copy knows `T` only at run time.
+//! A descriptor is interned by its template and its arguments, so that two of one type are one
+//! object and `is` compares identities.
+import std.collections { List, Map };
+import lyric_script.vm.module { Module, TypeDesc, fnKind, optionalKind, tupleKind };
+
+/// The descriptors of a run, by template and arguments.
+pub class Interning {
+    table: Map<string, TypeDesc>,
+    var next: int = 0,
+
+    /// The interning of `module`'s descriptors: each numbered by its place, the instances among
+    /// them known by their key.
+    pub static fn of(module: Module): Interning {
+        let it = Interning { table = Map<string, TypeDesc>.new() };
+        var k = 0;
+        for (t in module.types) {
+            t.id = k;
+            k += 1;
+        }
+        it.next = k;
+        for (t in module.types) {
+            if (t.template != -1) {
+                let key = keyOf(t.template, t.args);
+                if (!it.table.containsKey(key)) {
+                    it.table.insert(key, t);
+                }
+            }
+        }
+        return it;
+    }
+
+    /// The descriptor of `shape`'s template at `args`: the one known, or a new one with the
+    /// shape's layout, table and interfaces — the shared copy's — and its variants likewise. A
+    /// descriptor made here is no type of the program: `is` against a written type does not
+    /// meet it, since every type written has its descriptor from the compiler.
+    pub mut fn instance(shape: TypeDesc, args: TypeDesc[]): TypeDesc {
+        let key = keyOf(shape.template, args);
+        let known = this.table.get(key);
+        if (known != null) {
+            return known;
+        }
+        let d = TypeDesc {
+            name = nameOf(shape.template, shape.base, args),
+            scalarFields = shape.scalarFields,
+            refFields = shape.refFields,
+        };
+        d.methods = shape.methods;
+        d.ifaces = shape.ifaces;
+        d.template = shape.template;
+        d.args = args;
+        d.base = shape.base;
+        d.isInterface = shape.isInterface;
+        d.id = this.next;
+        this.next += 1;
+        let variants = List<TypeDesc>.new();
+        for (v in shape.variants) {
+            let vd = TypeDesc {
+                name = f"{d.name}.{v.base}",
+                scalarFields = v.scalarFields,
+                refFields = v.refFields,
+            };
+            vd.methods = v.methods;
+            vd.ifaces = v.ifaces;
+            vd.base = v.base;
+            vd.parent = d;
+            vd.id = this.next;
+            this.next += 1;
+            variants.push(vd);
+        }
+        d.variants = variants.toArray();
+        this.table.insert(key, d);
+        return d;
+    }
+}
+
+fn keyOf(template: int, args: TypeDesc[]): string {
+    let parts = List<string>.new();
+    for (a in args) {
+        parts.push(f"{a.id}");
+    }
+    return f"{template}:{parts.toArray().join(",")}";
+}
+
+/// A descriptor's name from its template and arguments: `Pair<Foo>`, `fn(int) -> Foo`,
+/// `(int, Foo)`, `?Foo`.
+fn nameOf(template: int, base: string, args: TypeDesc[]): string {
+    let names = List<string>.new();
+    for (a in args) {
+        names.push(a.name);
+    }
+    let all = names.toArray();
+    if (template == fnKind) {
+        let n = all.length();
+        let params = List<string>.new();
+        var k = 0;
+        while (k < n - 1) {
+            params.push(all[k]);
+            k += 1;
+        }
+        return f"fn({params.toArray().join(", ")}) -> {all[n - 1]}";
+    }
+    if (template == tupleKind) {
+        return f"({all.join(", ")})";
+    }
+    if (template == optionalKind) {
+        return f"?{all[0]}";
+    }
+    return f"{base}<{all.join(", ")}>";
+}
+
+/// Whether a value of `held`'s type is a value of `d`'s: `d` itself, a variant's enum, or an
+/// interface it conforms to.
+pub fn conforms(held: TypeDesc, d: TypeDesc): bool {
+    if (d.isInterface) {
+        for (x in held.ifaces) {
+            if (x == d.family) {
+                return true;
+            }
+        }
+        return false;
+    }
+    let own = held.parent ?? held;
+    return same(own, d);
+}

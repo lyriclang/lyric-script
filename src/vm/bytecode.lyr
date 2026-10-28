@@ -47,6 +47,21 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
         for (i in t.ifaces) {
             w.word(i);
         }
+        // the descriptor (S3i): its template, five up for the structural kinds; its arguments,
+        // its parent (one up) and its variants by their places
+        w.word(t.template + 5);
+        w.word(t.args.length());
+        for (x in t.args) {
+            w.word(placeOf(module.types, x));
+        }
+        w.text(t.base);
+        let parent = t.parent;
+        w.word(if (parent == null) 0 else placeOf(module.types, parent) + 1);
+        w.word(t.variants.length());
+        for (v in t.variants) {
+            w.word(placeOf(module.types, v));
+        }
+        w.word(if (t.isInterface) 1 else 0);
     }
     w.word(module.functions.length());
     for (f in module.functions) {
@@ -106,6 +121,7 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
     let globalsS = try r.word();
     let globalsR = try r.word();
     let types = List<TypeDesc>.new();
+    let links = List<DescLinks>.new();
     var n = try r.word();
     while (n > 0) {
         let tname = try r.text();
@@ -128,8 +144,50 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         t.methods = methods.toArray();
         t.family = family;
         t.ifaces = ifaces.toArray();
+        t.template = try r.word() - 5;
+        let argPlaces = List<int>.new();
+        var na = try r.word();
+        while (na > 0) {
+            argPlaces.push(try r.word());
+            na -= 1;
+        }
+        t.base = try r.text();
+        let parentPlace = try r.word() - 1;
+        let variantPlaces = List<int>.new();
+        var nv = try r.word();
+        while (nv > 0) {
+            variantPlaces.push(try r.word());
+            nv -= 1;
+        }
+        t.isInterface = try r.word() == 1;
         types.push(t);
+        links.push(
+            DescLinks {
+                args = argPlaces.toArray(),
+                parent = parentPlace,
+                variants = variantPlaces.toArray(),
+            }
+        );
         n -= 1;
+    }
+    // a descriptor names others by their places, later ones too: linked once all are read
+    var li = 0;
+    for (l in links) {
+        let t = types[li];
+        let args = List<TypeDesc>.new();
+        for (x in l.args) {
+            args.push(try placed(types, x));
+        }
+        t.args = args.toArray();
+        if (l.parent >= 0) {
+            t.parent = try placed(types, l.parent);
+        }
+        let variants = List<TypeDesc>.new();
+        for (v in l.variants) {
+            variants.push(try placed(types, v));
+        }
+        t.variants = variants.toArray();
+        li += 1;
     }
     let functions = List<Function>.new();
     let ops = Op.all();
@@ -321,4 +379,30 @@ class Reader {
         }
         return out.toArray();
     }
+}
+
+/// The places a descriptor names while the module is read.
+struct DescLinks {
+    args: int[],
+    parent: int,
+    variants: int[],
+}
+
+/// The place of descriptor `d` among `types`; every descriptor a module's names is among them.
+fn placeOf(types: TypeDesc[], d: TypeDesc): int {
+    var k = 0;
+    for (t in types) {
+        if (same(t, d)) {
+            return k;
+        }
+        k += 1;
+    }
+    return 0;
+}
+
+fn placed(types: List<TypeDesc>, k: int): TypeDesc throws NotOurs {
+    if (k < 0 || k >= types.length()) {
+        throw NotOurs { reason = "a descriptor names a type the module does not have" };
+    }
+    return types[k];
 }

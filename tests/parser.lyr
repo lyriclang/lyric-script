@@ -96,6 +96,7 @@ fn withIsAPostfix(): void {
     // `with` is a word only before its brace
     assertEq(show("with + 1"), "(+ with 1)");
     assertEq(errs("p with { x }"), ["LYS-PAR0037"]);
+    assertEq(errs("p with { x 1 }"), ["LYS-PAR0037"]);
     assertEq(errs("p with { x = 1 y = 2 }"), ["LYS-PAR0029"]);
 }
 

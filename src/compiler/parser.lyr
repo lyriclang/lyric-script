@@ -1148,6 +1148,19 @@ class Parser {
             if (this.at(.LParen)) {
                 let args = try this.parseArgs();
                 e = Expr.Call(boxed(e), args, this.since(first));
+            } else if (this.at(.Lt) && takesTypeArgs(e) && this.typeArgsAhead()) {
+                // `f<int>(x)`: type arguments written, a call after them
+                this.advance();
+                let args = List<TypeExpr>.new();
+                while (!this.at(.Gt)) {
+                    args.push(try this.parseType());
+                    if (!this.at(.Comma)) {
+                        break;
+                    }
+                    this.advance();
+                }
+                try this.expect(.Gt, "LYS-PAR0004", "'>' after the type arguments");
+                e = Expr.Instance(boxed(e), args.toArray(), this.since(first));
             } else if (this.at(.LBrace) && takesTrailing(e)) {
                 // `xs.map { it * 2 }`, `run { … }`: the call's last argument (Lyric 5 03 §8.2)
                 let block = try this.parseTrailing();
@@ -1483,6 +1496,43 @@ class Parser {
             !named,
             this.since(open)
         );
+    }
+
+    /// Whether the `<` here opens type arguments: its matching `>` is followed by `(` (C#'s rule
+    /// for the same doubt), and nothing between belongs to no type.
+    mut fn typeArgsAhead(): bool {
+        var k = 0;
+        var depth = 0;
+        loop {
+            let kind = this.peek(k).kind;
+            if (kind == .Lt) {
+                depth += 1;
+            } else if (kind == .Gt) {
+                depth -= 1;
+            } else if (kind == .Shr) {
+                depth -= 2;
+            } else if (!(kind == .Ident
+                || kind == .Comma
+                || kind == .Question
+                || kind == .QuestionQuestion
+                || kind == .LBracket
+                || kind == .RBracket
+                || kind == .LParen
+                || kind == .RParen
+                || kind == .Arrow
+                || kind == .Colon
+                || kind == .Keyword)) {
+                return false;
+            }
+            k += 1;
+            if (depth <= 0) {
+                break;
+            }
+            if (k > 64) {
+                return false;
+            }
+        }
+        return depth == 0 && this.peek(k).kind == .LParen;
     }
 
     /// A lambda's body: a value block, or an expression.
@@ -2044,6 +2094,14 @@ fn takesTrailing(e: Expr): bool {
         .Call(_, _, _) => true,
         .Member(_, name, _, _) => !isTypeName(name),
         .Name(name, _) => !isTypeName(name),
+        _ => false,
+    };
+}
+
+/// Whether type arguments may follow `e`: a function's name, or a member's.
+fn takesTypeArgs(e: Expr): bool {
+    return match (e) {
+        .Name(_, _) | .Member(_, _, _, _) => true,
         _ => false,
     };
 }

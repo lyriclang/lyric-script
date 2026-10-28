@@ -3963,6 +3963,11 @@ class Checker {
                 at
             ),
             .Match(x, arms, at) => this.matchOf(x.value, arms, expected, false, at),
+            .Instance(_, _, at) => this.notYet(
+                "a generic function as a value",
+                "S3i (descriptors)",
+                at
+            ),
             .Is(x, written, at) => {
                 let v = this.expr(x.value, null);
                 let t = typeOf(v);
@@ -5303,6 +5308,45 @@ class Checker {
     mut fn call(callee: Expr, args: Arg[], expected: ?Ty, at: Span): TExpr {
         match (callee) {
             // `.Num(3)`: a variant of the enum the position expects
+            // `f<int>(x)`: the type arguments bound before the arguments are checked
+            .Instance(inner, targs, iat) => {
+                let tys = List<Ty>.new();
+                for (x in targs) {
+                    tys.push(this.resolveType(x));
+                }
+                match (inner.value) {
+                    .Name(name, _) => {
+                        let candidates = this.fnByName.get(name);
+                        if (candidates != null) {
+                            let fitting = List<int>.new();
+                            for (c in candidates) {
+                                if (this.functions[c].typeParams.length() == tys.length()) {
+                                    fitting.push(c);
+                                }
+                            }
+                            if (fitting.length() == 0) {
+                                this.error(
+                                    "LYS-SEM0026",
+                                    f"no '{name}' takes {tys.length()} type arguments",
+                                    iat
+                                );
+                                return TExpr.Unknown;
+                            }
+                            this.presetBinds = tys.toArray();
+                            let call = this.callAmong(name, fitting.toArray(), null, args, at);
+                            this.presetBinds = [];
+                            return call;
+                        }
+                    }
+                    _ => { }
+                }
+                this.error(
+                    "LYS-SEM0013",
+                    "type arguments are written at a generic function's call",
+                    iat
+                );
+                return TExpr.Unknown;
+            }
             .Implicit(name, nameAt) => {
                 let i = this.expectedEnum(expected);
                 if (i < 0) {
@@ -6867,6 +6911,7 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
         }
         .Lambda(_, _, body, _, _) => exprAny(body.value, onStmt, onExpr),
         .Is(x, _, _) => exprAny(x.value, onStmt, onExpr),
+        .Instance(x, _, _) => exprAny(x.value, onStmt, onExpr),
         .VariantInit(_, _, fields, _) => {
             var found = false;
             for (f in fields) {
@@ -6921,6 +6966,7 @@ fn spanOf(e: Expr): Span {
         .VariantInit(_, _, _, at) => at,
         .Match(_, _, at) => at,
         .Is(_, _, at) => at,
+        .Instance(_, _, at) => at,
         .Lambda(_, _, _, _, at) => at,
     };
 }

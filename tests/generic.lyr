@@ -95,6 +95,18 @@ fn genericTypesTakeTheirArgumentsFromValuesOrThePosition(): void {
 }
 
 @Test
+fn typeArgumentsWrittenAtTheCall(): void {
+    assertEq(value("fn none<T>(): ?T = null\nfn w(): int = none<int>() ?? 7", "w"), 7);
+    assertEq(errs("fn ident<T>(x: T): T = x\nlet s = ident<int>(\"x\")"), ["LYS-SEM0001"]);
+    assertEq(errs("fn ident<T>(x: T): T = x\nlet s = ident<int, int>(1)"), ["LYS-SEM0026"]);
+    // a comparison stays one: no `>` and `(` close it as type arguments
+    assertEq(
+        value("fn c(a: int, b: int): int = if (a < b) 1 else 0\nfn cc(): int = c(1, 2)", "cc"),
+        1
+    );
+}
+
+@Test
 fn whatGenericTypesRefuse(): void {
     assertEq(errs(types + "let p: Pair<int> = Pair { first = 1, second = 2 }"), ["LYS-SEM0026"]);
     assertEq(errs(types + "let o = Opt.None"), ["LYS-SEM0060"]);

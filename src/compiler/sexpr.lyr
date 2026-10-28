@@ -355,6 +355,13 @@ fn showExpr(e: Expr): string {
         }
         .Implicit(name, _) => "." + name,
         .Is(x, t, _) => "(is " + showExpr(x.value) + " " + showType(t) + ")",
+        .Instance(x, args, _) => {
+            let parts = List<string>.new();
+            for (a in args) {
+                parts.push(showType(a));
+            }
+            showExpr(x.value) + "<" + parts.toArray().join(", ") + ">"
+        }
         .Lambda(params, result, body, implicit, _) => {
             let parts = List<string>.new();
             for (p in params) {

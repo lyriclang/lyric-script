@@ -10,6 +10,7 @@ import std.collections { List };
 import lyric_script.compiler.ast {
     AliasDecl,
     Arg,
+    AssocDecl,
     BinaryOp,
     Block,
     Conformance,
@@ -33,6 +34,7 @@ import lyric_script.compiler.ast {
     Segment,
     Span,
     Stmt,
+    TypeAnswer,
     TypeDecl,
     TypeParam,
     TypeExpr,
@@ -410,6 +412,7 @@ class Parser {
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the type's body");
         let fields = List<FieldDecl>.new();
         let methods = List<FnDecl>.new();
+        let answers = List<TypeAnswer>.new();
         loop {
             while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
                 this.advance();
@@ -418,13 +421,14 @@ class Parser {
                 break;
             }
             try {
-                this.parseMember(fields, methods);
+                this.parseMember(fields, methods, answers);
             } catch (_: SyntaxError) {
                 this.synchronize();
             }
         }
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the type's body");
         return TypeDecl {
+            answers = answers.toArray(),
             name = this.text(name),
             typeParams = typeParams,
             conforms = conforms,
@@ -436,8 +440,23 @@ class Parser {
         };
     }
 
-    mut fn parseMember(fields: List<FieldDecl>, methods: List<FnDecl>): void throws SyntaxError {
+    mut fn parseMember(
+        fields: List<FieldDecl>,
+        methods: List<FnDecl>,
+        answers: List<TypeAnswer>
+    ): void throws SyntaxError {
         let first = this.current();
+        // `type Item = int`: the answer to an associated type (Lyric 5 05 §8 rule 3)
+        if (this.atWord("type") && this.peek(1).kind == .Ident) {
+            this.advance();
+            let name = this.advance();
+            try this.expect(.Assign, "LYS-PAR0037", "'=' and the type that answers it");
+            let ty = try this.parseType();
+            answers.push(
+                TypeAnswer { name = this.text(name), type = ty, span = this.since(first) }
+            );
+            return;
+        }
         var isPub = false;
         if (this.atWord("pub") || this.atWord("internal") || this.atWord("private")) {
             isPub = this.atWord("pub");
@@ -500,6 +519,7 @@ class Parser {
         let variants = List<Variant>.new();
         let fields = List<FieldDecl>.new();
         let methods = List<FnDecl>.new();
+        let answers = List<TypeAnswer>.new();
         loop {
             while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
                 this.advance();
@@ -540,7 +560,7 @@ class Parser {
                         );
                     }
                 } else {
-                    this.parseMember(fields, methods);
+                    this.parseMember(fields, methods, answers);
                 }
             } catch (_: SyntaxError) {
                 this.synchronize();
@@ -555,6 +575,7 @@ class Parser {
             );
         }
         return EnumDecl {
+            answers = answers.toArray(),
             name = this.text(name),
             typeParams = typeParams,
             conforms = conforms,
@@ -642,6 +663,7 @@ class Parser {
         this.skipNewlines();
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the interface's body");
         let members = List<FnDecl>.new();
+        let assoc = List<AssocDecl>.new();
         this.inInterface = true;
         defer {
             this.inInterface = false;
@@ -655,6 +677,26 @@ class Parser {
             }
             try {
                 let at = this.current();
+                // `type Item`, `type Item = T`, `type Item :: [B]`: an associated type (05 §8)
+                if (this.atWord("type") && this.peek(1).kind == .Ident) {
+                    this.advance();
+                    let name = this.advance();
+                    let bounds = try this.parseConformances(false);
+                    var dflt: ?TypeExpr = null;
+                    if (this.at(.Assign)) {
+                        this.advance();
+                        dflt = try this.parseType();
+                    }
+                    assoc.push(
+                        AssocDecl {
+                            name = this.text(name),
+                            default = dflt,
+                            bounds = bounds,
+                            span = this.since(at),
+                        }
+                    );
+                    continue;
+                }
                 // a static member (Lyric 5 05 §7 rule 2)
                 var isStatic = false;
                 if (this.atWord("static")) {
@@ -675,6 +717,7 @@ class Parser {
         }
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the interface's body");
         return InterfaceDecl {
+            assoc = assoc.toArray(),
             name = this.text(name),
             parents = parents,
             members = members.toArray(),
@@ -693,6 +736,7 @@ class Parser {
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the block's body");
         let fields = List<FieldDecl>.new();
         let methods = List<FnDecl>.new();
+        let answers = List<TypeAnswer>.new();
         loop {
             while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
                 this.advance();
@@ -701,7 +745,7 @@ class Parser {
                 break;
             }
             try {
-                this.parseMember(fields, methods);
+                this.parseMember(fields, methods, answers);
             } catch (_: SyntaxError) {
                 this.synchronize();
             }
@@ -715,6 +759,7 @@ class Parser {
             );
         }
         return ExtendDecl {
+            answers = answers.toArray(),
             target = target,
             conforms = conforms,
             methods = methods.toArray(),
@@ -2149,7 +2194,12 @@ class Parser {
                 first
             );
         }
-        let name = this.text(this.advance());
+        var name = this.text(this.advance());
+        // `T.Item`, `Self.Item`: an associated type through a type (05 §8 rule 4)
+        while (this.at(.Dot) && this.peek(1).kind == .Ident) {
+            this.advance();
+            name = name + "." + this.text(this.advance());
+        }
         let args = List<TypeExpr>.new();
         if (this.at(.Lt)) {
             this.advance();

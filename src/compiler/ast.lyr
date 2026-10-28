@@ -256,6 +256,7 @@ struct InterfaceDecl :: [Debug] {
     sealed: bool,
     isPub: bool,
     span: Span,
+    assoc: AssocDecl[] = [],
 }
 
 /// `extend T { … }` or `extend T :: [I] { … }`: methods, and conformances, added to a type.
@@ -263,6 +264,22 @@ struct ExtendDecl :: [Debug] {
     target: TypeExpr,
     conforms: Conformance[],
     methods: FnDecl[],
+    span: Span,
+    answers: TypeAnswer[] = [],
+}
+
+/// `type Item;` in an interface: an associated type, its default and its bounds (Lyric 5 05 §8).
+struct AssocDecl :: [Debug] {
+    name: string,
+    default: ?TypeExpr,
+    bounds: Conformance[],
+    span: Span,
+}
+
+/// `type Item = int` in a type or an extend block: the answer to an associated type.
+struct TypeAnswer :: [Debug] {
+    name: string,
+    type: TypeExpr,
     span: Span,
 }
 
@@ -304,6 +321,7 @@ struct TypeDecl :: [Debug] {
     methods: FnDecl[],
     isPub: bool,
     span: Span,
+    answers: TypeAnswer[] = [],
 }
 
 /// A variant of an enum: its name and its payload — positional types (`Num(int)`), named fields
@@ -324,6 +342,7 @@ struct EnumDecl :: [Debug] {
     methods: FnDecl[],
     isPub: bool,
     span: Span,
+    answers: TypeAnswer[] = [],
 }
 
 /// `type Name = T`.

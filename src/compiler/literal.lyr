@@ -66,8 +66,9 @@ pub fn intValue(text: string, negative: bool, t: Token, errors: List<Diagnostic>
     };
 }
 
-/// A float literal's value; `1.` and `.5` (refused by the lexer) read as `1.0` and `0.5`.
-pub fn floatValue(text: string, negative: bool, t: Token, errors: List<Diagnostic>): float {
+/// A float literal's value; `1.` and `.5` read as `1.0` and `0.5`. Its faults are the lexer's
+/// to report (LEX0006, LEX0016).
+pub fn floatValue(text: string, negative: bool): float {
     var clean = text.replace('_', "");
     if (clean.startsWith(".")) {
         clean = f"0{clean}";

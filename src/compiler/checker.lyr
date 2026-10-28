@@ -675,15 +675,42 @@ class Checker {
         let self = this.selfTy(index);
         let boxedSelf = this.boxed(self);
         let added = List<int>.new();
+        // the interfaces a field answers for: each one's field (05 §5)
+        let via = Map<int, int>.new();
         for (c in conforms) {
             let ii = this.typeIndex.get(c.name);
             if (ii == null || this.types[ii].kind != .Interface) {
                 this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
                 continue;
             }
-            if (c.by != null) {
-                this.notYet("a conformance by delegation", "S3f (by)", c.span);
-                continue;
+            let by = c.by;
+            if (by != null) {
+                var field = -1;
+                var k = 0;
+                for (f in info.fields) {
+                    if (f.name == by) {
+                        field = k;
+                    }
+                    k += 1;
+                }
+                if (field < 0 || !this.conformsTo(info.fields[field].ty, ii)) {
+                    this.error(
+                        "LYS-SEM0123",
+                        f"'{by}' is no field of {info.name} that holds a {this.types[ii].name}",
+                        c.span
+                    );
+                    continue;
+                }
+                for (a in this.ancestry(ii)) {
+                    if (via.containsKey(a)) {
+                        this.error(
+                            "LYS-SEM0121",
+                            f"two fields would answer for '{this.types[a].name}'",
+                            c.span
+                        );
+                    }
+                    via.insert(a, field);
+                }
             }
             for (a in this.ancestry(ii)) {
                 var known = false;
@@ -722,6 +749,11 @@ class Checker {
                         slot,
                         if (boxedSelf) this.unboxer(own, self, Ty.Named(ii)) else own
                     );
+                } else if (this.functions[declared].abstract && via.containsKey(ii)) {
+                    // forwarded to the field, callable on the type too
+                    let forward = this.forwarder(index, via.get(ii) ?? 0, ii, declared, slot);
+                    info.methods.insert(member, forward);
+                    info.witness.insert(slot, forward);
                 } else if (!this.functions[declared].abstract) {
                     // the default, its `this` the interface value
                     info.witness.insert(slot, declared);
@@ -735,6 +767,54 @@ class Checker {
             }
         }
         info.ifaces = all.toArray();
+    }
+
+    /// A method of type `owner` that calls member `declared` of interface `ii` on its field
+    /// `field` — read anew at each call, so an exchanged `var` field is the next call's (05 §5).
+    mut fn forwarder(owner: int, field: int, ii: int, declared: int, slot: int): int {
+        let member = this.functions[declared];
+        let ft = this.types[owner].fields[field].ty;
+        let index = this.functions.length();
+        this.functions.push(
+            FnInfo { name = member.name, owner = owner, isStatic = false, line = member.line }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let info = this.functions[index];
+        let self = Ty.Named(owner);
+        let locals = List<Ty>.new();
+        locals.push(self);
+        let params = List<ParamInfo>.new();
+        let args = List<TExpr>.new();
+        let read = TExpr.Field(boxE(TExpr.Local(0, self)), field, ft);
+        let iface = Ty.Named(ii);
+        args.push(
+            if (this.isIfaceTy(ft)) read
+                else if (this.boxed(ft)) TExpr.BoxOf(boxE(read), this.entryOf(ft), iface)
+                    else TExpr.Upcast(boxE(read), iface)
+        );
+        var k = 0;
+        for (p in member.params) {
+            params.push(ParamInfo { name = p.name, ty = p.ty, default = null });
+            locals.push(p.ty);
+            args.push(TExpr.Local(k + 1, p.ty));
+            k += 1;
+        }
+        info.params = params.toArray();
+        info.returns = member.returns;
+        info.locals = locals.toArray();
+        let flags = List<bool>.new();
+        for (_ in locals) {
+            flags.push(false);
+        }
+        info.boxed = flags.toArray();
+        let call = TExpr.CallIface(slot, args.toArray(), member.returns);
+        info.body = if (member.returns == .Void) [
+            TStmt.Expr(call, member.line),
+            TStmt.Return(null, member.line),
+        ]
+            else [TStmt.Return(call, member.line)];
+        return index;
     }
 
     /// Whether functions `a` and `b` take the same parameters and give the same result.

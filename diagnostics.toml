@@ -697,6 +697,12 @@ severity = "error"
 area = "03-types"
 summary = "A type has one field, method or variant of each name. Lyric 5's LYR-SEM0121."
 
+[LYS-SEM0123]
+title = "a delegation to what is no field holding the interface"
+severity = "error"
+area = "05-interfaces"
+summary = "`I by f` names a field of the type that conforms to `I`, or holds a value of it or of a child of it. Lyric 5's LYR-SEM0123."
+
 [LYS-SEM0124]
 title = "an extend block on what is no type it adds to"
 severity = "error"

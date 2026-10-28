@@ -1,0 +1,145 @@
+// Enums with payloads and `match` (S3d, Lyric 5 §4 and §9): variants by position and by field,
+// `.Variant` where the position names the enum, recursive enums without a box, and the patterns
+// — literals, ranges, guards, or-patterns, tuples, fields, optionals — run in the VM.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let shape = "enum Shape {\n    Circle(int)\n    Rect { w: int, h: int }\n    Empty\n}\nfn area(s: Shape): int = match (s) {\n    .Circle(r) => 3 * r * r,\n    .Rect { w, h } => w * h,\n    .Empty => 0,\n}\n";
+
+@Test
+fn variantsAreBuiltAndTakenApart(): void {
+    assertEq(
+        value(
+            shape
+                + "fn a(): int = area(Shape.Circle(2)) + area(Shape.Rect { w = 3, h = 4 }) + area(Shape.Empty)",
+            "a"
+        ),
+        24
+    );
+    // where the position names the enum, `.Variant` says it
+    assertEq(
+        value(shape + "fn b(): int = area(.Rect { w = 2, h = 5 }) + area(.Circle(1))", "b"),
+        13
+    );
+    let color = "enum Color {\n    Red, Green, Blue\n}\nfn c(x: Color): int = match (x) {\n    .Red => 1,\n    .Green => 2,\n    .Blue => 3,\n}\n";
+    assertEq(value(color + "fn cs(): int = c(.Green) * 10 + c(Color.Blue)", "cs"), 23);
+}
+
+@Test
+fn anEnumHoldsItselfWithoutABox(): void {
+    let tree = "enum Tree {\n    Leaf(int)\n    Node(Tree, Tree)\n}\nfn sum(t: Tree): int = match (t) {\n    .Leaf(v) => v,\n    .Node(l, r) => sum(l) + sum(r),\n}\n";
+    assertEq(
+        value(
+            tree
+                + "fn s(): int = sum(Tree.Node(Tree.Leaf(1), Tree.Node(Tree.Leaf(2), Tree.Leaf(3))))",
+            "s"
+        ),
+        6
+    );
+}
+
+@Test
+fn literalsRangesGuardsAndAlternatives(): void {
+    let k = "fn k(n: int): int = match (n) {\n    0 => 100,\n    1 | 2 => 200,\n    3..=9 => 300,\n    m if m < 0 => 400,\n    _ => 500,\n}\n";
+    assertEq(value(k + "fn ks(): int = k(0) + k(2) + k(5) + k(-3) + k(50)", "ks"), 1500);
+    // an or-pattern binds in each alternative, the value from the one that matched
+    let e = "enum E {\n    A(int), B(int), C\n}\nfn e(x: E): int = match (x) {\n    .A(v) | .B(v) => v,\n    .C => 0,\n}\n";
+    assertEq(value(e + "fn es(): int = e(E.A(3)) + e(E.B(4)) + e(E.C)", "es"), 7);
+}
+
+@Test
+fn tuplesFieldsAndOptionals(): void {
+    let t = "fn t(p: (int, string)): int = match (p) {\n    (0, _) => 1,\n    (_, \"x\") => 2,\n    (n, _) => n,\n}\n";
+    assertEq(
+        value(t + "fn ts(): int = t((0, \"a\")) * 100 + t((5, \"x\")) * 10 + t((7, \"y\"))", "ts"),
+        127
+    );
+    let o = "fn o(x: ?Shape): int = match (x) {\n    null => -1,\n    .Circle(r) => r,\n    _ => 0,\n}\n";
+    assertEq(
+        value(shape + o + "fn os(): int = o(null) + o(Shape.Circle(5)) + o(Shape.Empty)", "os"),
+        4
+    );
+    let p = "struct P {\n    x: int\n    y: int\n}\nfn f(p: P): int = match (p) {\n    P { x = 0, y } => y,\n    P { x, y } => x + y,\n}\n";
+    assertEq(value(p + "fn fs(): int = f(P { x = 0, y = 5 }) + f(P { x = 1, y = 2 })", "fs"), 8);
+}
+
+@Test
+fn aMatchStandsAsAStatement(): void {
+    let st = "fn st(s: Shape): int {\n    var n = 0\n    match (s) {\n        .Circle(r) => n = r,\n        .Rect { w, h } => {\n            n = w + h\n        }\n        .Empty => n = -1,\n    }\n    return n\n}\n";
+    assertEq(
+        value(
+            shape + st + "fn sts(): int = st(Shape.Rect { w = 2, h = 3 }) + st(.Circle(4))",
+            "sts"
+        ),
+        9
+    );
+}
+
+@Test
+fn whatVariantsAndPatternsRefuse(): void {
+    let color = "enum Color {\n    Red, Green\n}\n";
+    assertEq(errs(color + "let c = .Red"), ["LYS-SEM0113"]);
+    assertEq(errs(color + "let c = Color.Red(1)"), ["LYS-SEM0031"]);
+    assertEq(errs(shape + "let s = Shape.Circle"), ["LYS-SEM0031"]);
+    assertEq(errs(color + "fn f(c: Color): int = match (c) {\n    Red => 1,\n}"), ["LYS-SEM0111"]);
+    assertEq(
+        errs(shape + "fn f(s: Shape): int = match (s) {\n    .Circle => 1,\n    _ => 0,\n}"),
+        ["LYS-SEM0031"]
+    );
+    let e = "enum E {\n    A(int), B(int)\n}\n";
+    assertEq(
+        errs(e + "fn f(x: E): int = match (x) {\n    .A(v) | .B(w) => 0,\n}"),
+        ["LYS-SEM0032"]
+    );
+    assertEq(
+        errs("fn f(n: int): int = match (n) {\n    \"a\" => 0,\n    _ => 1,\n}"),
+        ["LYS-SEM0029"]
+    );
+    // a line that begins with `.` goes on the line before: a value arm before it ends with `,`;
+    // the parser reports it once and keeps the match (the checker does not run after it, P6)
+    let parsed = parse(
+        color + "fn f(c: Color): int = match (c) {\n    .Red => 1\n    .Green => 2,\n}"
+    );
+    assertEq(parsed.errors.length(), 1);
+    assertEq(parsed.errors[0].code, "LYS-PAR0035");
+}

@@ -89,6 +89,11 @@ class TypeInfo {
     kind: TypeKind,
     var fields: FieldInfo[] = [],
     var variants: string[] = [],
+    // each variant's payload — positions named "0", "1", … — and whether it has named fields
+    var variantFields: FieldInfo[][] = [],
+    var variantNamed: bool[] = [],
+    // whether a variant carries a payload: the enum's values are then objects, else `int`s
+    var payload: bool = false,
     methods: Map<string, int>,
 }
 
@@ -165,6 +170,10 @@ fn typeOf(e: TExpr): Ty {
         .Coalesce(_, _, t) => t,
         .Tuple(_, t) => t,
         .Elem(_, _, t) => t,
+        .MakeVariant(i, _, _) => Ty.Named(i),
+        .Tag(_) => Ty.Int,
+        .Payload(_, _, _, _, t) => t,
+        .Unreachable(t) => t,
         .Unknown => Ty.Unknown,
     };
 }
@@ -226,6 +235,14 @@ enum TExpr :: [Debug] {
     Tuple(TExpr[], Ty),
     /// Element `k` of a tuple, read where it lies.
     Elem(Box<TExpr>, int, Ty),
+    /// A variant of an enum with payloads built: the enum, the variant, the payload's values.
+    MakeVariant(int, int, TExpr[]),
+    /// Which variant an enum's value is, as an `int`.
+    Tag(Box<TExpr>),
+    /// Field `k` of the payload of variant `v` of enum `t`, of a value that is that variant.
+    Payload(Box<TExpr>, int, int, int, Ty),
+    /// Where no arm of a `match` took the value — never reached once the arms are exhaustive.
+    Unreachable(Ty),
     Unknown,
 }
 
@@ -291,7 +308,7 @@ fn isPlainRef(t: Ty, types: TypeInfo[]): bool {
 fn isScalar(t: Ty, types: TypeInfo[]): bool {
     return match (t) {
         .Int | .Float | .Bool | .Char => true,
-        .Named(i) => types[i].kind == .Enum,
+        .Named(i) => types[i].kind == .Enum && !types[i].payload,
         _ => false,
     };
 }

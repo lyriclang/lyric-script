@@ -9,6 +9,7 @@ import lyric_script.compiler.ast {
     Item,
     Module,
     Param,
+    FieldPattern,
     Pattern,
     Stmt,
     TypeExpr,
@@ -58,7 +59,21 @@ fn showDecl(d: Decl): string {
             parts.push("enum");
             parts.push(e.name);
             for (v in e.variants) {
-                parts.push(v.name);
+                if (v.named) {
+                    let fs = List<string>.new();
+                    for (f in v.fields) {
+                        fs.push(f.name + ": " + showType(f.type));
+                    }
+                    parts.push(v.name + "{" + fs.toArray().join(", ") + "}");
+                } else if (v.positional.length() > 0) {
+                    let ts = List<string>.new();
+                    for (x in v.positional) {
+                        ts.push(showType(x));
+                    }
+                    parts.push(v.name + "(" + ts.toArray().join(", ") + ")");
+                } else {
+                    parts.push(v.name);
+                }
             }
             for (m in e.methods) {
                 parts.push(showFn(m));
@@ -111,14 +126,44 @@ fn showPattern(p: Pattern): string {
     return match (p) {
         .Name(name, _) => name,
         .Ignore(_) => "_",
-        .Tuple(items, _) => {
+        .Tuple(items, _) => "(" + showPatterns(items) + ")",
+        .Literal(e, _) => showExpr(e),
+        .Range(a, b, inclusive, _) => showExpr(a) + (if (inclusive) "..=" else "..") + showExpr(b),
+        .Variant(enumName, name, payload, _) => {
+            let head = (enumName ?? "") + "." + name;
+            if (payload != null) head + "(" + showPatterns(payload) + ")" else head
+        }
+        .VariantFields(enumName, name, fields, _) => (enumName ?? "")
+            + "."
+            + name
+            + " {"
+            + showFieldPatterns(fields)
+            + "}",
+        .Fields(name, fields, _) => name + " {" + showFieldPatterns(fields) + "}",
+        .Or(items, _) => {
             let parts = List<string>.new();
             for (x in items) {
                 parts.push(showPattern(x));
             }
-            "(" + parts.toArray().join(" ") + ")"
+            "(or " + parts.toArray().join(" ") + ")"
         }
     };
+}
+
+fn showPatterns(items: Pattern[]): string {
+    let parts = List<string>.new();
+    for (x in items) {
+        parts.push(showPattern(x));
+    }
+    return parts.toArray().join(" ");
+}
+
+fn showFieldPatterns(fields: FieldPattern[]): string {
+    let parts = List<string>.new();
+    for (f in fields) {
+        parts.push(f.name + " " + showPattern(f.pattern));
+    }
+    return parts.toArray().join(" ");
 }
 
 fn showStmt(s: Stmt): string {
@@ -265,6 +310,25 @@ fn showExpr(e: Expr): string {
                 parts.push(showExpr(x));
             }
             "(tuple " + parts.toArray().join(" ") + ")"
+        }
+        .Implicit(name, _) => "." + name,
+        .VariantInit(enumName, name, fields, _) => {
+            let parts = List<string>.new();
+            for (f in fields) {
+                parts.push(f.name + " " + showExpr(f.value));
+            }
+            "(init " + (enumName ?? "") + "." + name + " " + parts.toArray().join(" ") + ")"
+        }
+        .Match(x, arms, _) => {
+            let parts = List<string>.new();
+            for (arm in arms) {
+                let g = arm.guard;
+                let guarded = if (g != null) " if " + showExpr(g) else "";
+                parts.push(
+                    "(" + showPattern(arm.pattern) + guarded + " => " + showExpr(arm.body) + ")"
+                );
+            }
+            "(match " + showExpr(x.value) + " " + parts.toArray().join(" ") + ")"
         }
     };
 }

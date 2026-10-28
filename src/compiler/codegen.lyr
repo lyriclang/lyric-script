@@ -14,8 +14,11 @@ import lyric_script.compiler.typed {
     TExpr,
     TStmt,
     Ty,
+    FieldInfo,
+    TypeInfo,
     elemOffset,
     isPlainRef,
+    isScalar,
     slotsOf,
     tupleOf,
     typeOf,
@@ -59,6 +62,32 @@ fn part(at: Loc, s: int, r: int): Loc {
     return Loc { s = if (at.s < 0) -1 else at.s + s, r = if (at.r < 0) -1 else at.r + r };
 }
 
+/// Where each of `fields` starts among an object's slots, its slots named after it and added to
+/// `scalars` and `refs`.
+fn layOut(
+    fields: FieldInfo[],
+    scalars: List<string>,
+    refs: List<string>,
+    types: TypeInfo[]
+): Loc[] {
+    let locs = List<Loc>.new();
+    for (f in fields) {
+        locs.push(Loc { s = scalars.length(), r = refs.length() });
+        let (ns, nr) = slotsOf(f.ty, types);
+        var k = 0;
+        while (k < ns) {
+            scalars.push(if (k == 0) f.name else f"{f.name}#{k}");
+            k += 1;
+        }
+        k = 0;
+        while (k < nr) {
+            refs.push(if (k == 0) f.name else f"{f.name}#{k}");
+            k += 1;
+        }
+    }
+    return locs.toArray();
+}
+
 /// Where no value is wanted.
 let nowhere: Loc = Loc { s = -1, r = -1 };
 
@@ -67,6 +96,9 @@ let nowhere: Loc = Loc { s = -1, r = -1 };
 struct Placement {
     // the module type of a program type, -1 for an enum
     moduleType: int[],
+    // an enum with payloads: the module type of each variant, and where its fields' slots start
+    variantType: int[][],
+    variantLoc: Loc[][][],
     // each program type's fields: where their slots start in the object
     fieldLoc: Loc[][],
     descs: TypeDesc[],
@@ -77,13 +109,39 @@ struct Placement {
     static fn of(p: Program): Placement {
         let moduleType = List<int>.new();
         let fieldLoc = List<Loc[]>.new();
+        let variantType = List<int[]>.new();
+        let variantLoc = List<Loc[][]>.new();
         let descs = List<TypeDesc>.new();
         for (t in p.types) {
             if (t.kind == .Enum) {
                 moduleType.push(-1);
                 fieldLoc.push([]);
+                let vtypes = List<int>.new();
+                let vlocs = List<Loc[]>.new();
+                if (t.payload) {
+                    var k = 0;
+                    for (fields in t.variantFields) {
+                        let scalars = List<string>.new();
+                        scalars.push("tag");
+                        let refs = List<string>.new();
+                        vlocs.push(layOut(fields, scalars, refs, p.types));
+                        vtypes.push(descs.length());
+                        descs.push(
+                            TypeDesc {
+                                name = f"{t.name}.{t.variants[k]}",
+                                scalarFields = scalars.toArray(),
+                                refFields = refs.toArray(),
+                            }
+                        );
+                        k += 1;
+                    }
+                }
+                variantType.push(vtypes.toArray());
+                variantLoc.push(vlocs.toArray());
                 continue;
             }
+            variantType.push([]);
+            variantLoc.push([]);
             let scalars = List<string>.new();
             let refs = List<string>.new();
             let locs = List<Loc>.new();
@@ -122,6 +180,8 @@ struct Placement {
         }
         return Placement {
             moduleType = moduleType.toArray(),
+            variantType = variantType.toArray(),
+            variantLoc = variantLoc.toArray(),
             fieldLoc = fieldLoc.toArray(),
             descs = descs.toArray(),
             globalLoc = globalLoc.toArray(),
@@ -580,7 +640,7 @@ class FnGen {
             .Binary(_, op, _, _) => op == .And || op == .Or,
             .If(_, _, _, _) | .Block(_, _, _) | .Loop(_, _) | .New(_, _) | .Coalesce(_, _, _) => true,
             // `t = (t.1, t.0)` reads the local after its first write
-            .Tuple(_, _) => true,
+            .Tuple(_, _) | .MakeVariant(_, _, _) => true,
             .Wrap(_, _) => true,
             _ => false,
         };
@@ -751,6 +811,47 @@ class FnGen {
                 let at = this.any(x.value);
                 let (os, or) = elemOffset(tupleOf(typeOf(x.value)), k, this.p.types);
                 this.move(dst, part(at, os, or), t);
+            }
+            // a variant with payloads: an object of its own VM type, the tag its first scalar
+            .MakeVariant(ti, k, values) => {
+                let fields = this.p.types[ti].variantFields[k];
+                this.emit(Op.New, dst.r, this.layout.variantType[ti][k], 0);
+                let tag = this.tempS();
+                this.loadInt(tag, k);
+                this.setField(dst.r, Loc { s = 0, r = 0 }, Loc { s = tag, r = -1 }, Ty.Int);
+                var j = 0;
+                for (v in values) {
+                    let vm = this.mark();
+                    let at = this.any(v);
+                    this.setField(dst.r, this.layout.variantLoc[ti][k][j], at, fields[j].ty);
+                    this.release(vm);
+                    j += 1;
+                }
+            }
+            .Tag(x) => {
+                let xt = typeOf(x.value);
+                let at = this.any(x.value);
+                if (isScalar(xt, this.p.types)) {
+                    if (dst.s >= 0 && dst.s != at.s) {
+                        this.emit(Op.MoveS, dst.s, at.s, 0);
+                    }
+                } else {
+                    this.getField(dst, at.r, Loc { s = 0, r = 0 }, Ty.Int);
+                }
+            }
+            .Payload(x, ti, k, j, t) => {
+                let ro = this.any(x.value).r;
+                this.getField(dst, ro, this.layout.variantLoc[ti][k][j], t);
+            }
+            .Unreachable(_) => {
+                let message = this.temp(Ty.Str).r;
+                this.emit(
+                    Op.LoadStr,
+                    message,
+                    this.stringConst("no arm of the match took the value"),
+                    0
+                );
+                this.emit(Op.Panic, message, 0, 0);
             }
             .Unit | .Unknown => { }
         }

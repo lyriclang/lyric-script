@@ -125,13 +125,48 @@ enum Expr :: [Debug] {
     Unwrap(Box<Expr>, Span),
     /// `(a, b)`: a tuple, of two elements or more.
     Tuple(Expr[], Span),
+    /// `.Red`: the member of the enum the position expects (Lyric 5 §4.2).
+    Implicit(string, Span),
+    /// `Shape.Rect { w = 1 }` or `.Rect { w = 1 }`: a struct variant built; the enum if written.
+    VariantInit(?string, string, FieldInit[], Span),
+    /// `match (e) { arms }`.
+    Match(Box<Expr>, MatchArm[], Span),
 }
 
-/// What a `let` takes apart: a name, `_`, or a tuple of patterns.
+/// An arm of a `match`: its pattern, its guard, its value — an expression or a value block.
+struct MatchArm :: [Debug] {
+    pattern: Pattern,
+    guard: ?Expr,
+    body: Expr,
+    span: Span,
+}
+
+/// `w = P` in a field pattern, or `h` alone, which binds the field to its own name.
+struct FieldPattern :: [Debug] {
+    name: string,
+    pattern: Pattern,
+    span: Span,
+}
+
+/// A pattern (Lyric 5 §9): what an arm of a `match` or a `let` tries against a value.
 enum Pattern :: [Debug] {
+    /// A bare name: binds the whole value.
     Name(string, Span),
     Ignore(Span),
     Tuple(Pattern[], Span),
+    /// An int, float, char, string, `bool` or `null` literal, as the expression it is.
+    Literal(Expr, Span),
+    /// `a..b`, or `a..=b` with the flag, over int or char literals.
+    Range(Expr, Expr, bool, Span),
+    /// `.Num(p)` or `Shape.Num(p)`: the enum if written, the variant, the payload's patterns by
+    /// position — `null` without parentheses.
+    Variant(?string, string, ?Pattern[], Span),
+    /// `.Rect { w = 0, h }` or `Shape.Rect { … }`: a struct variant by its fields.
+    VariantFields(?string, string, FieldPattern[], Span),
+    /// `Point { x = 0, y }`: a struct's or a class's fields.
+    Fields(string, FieldPattern[], Span),
+    /// `P | Q`.
+    Or(Pattern[], Span),
 }
 
 /// A statement, each form a variant.
@@ -207,8 +242,13 @@ struct TypeDecl :: [Debug] {
     span: Span,
 }
 
+/// A variant of an enum: its name and its payload — positional types (`Num(int)`), named fields
+/// (`Rect { w: int, h: int }`, `named` set), or neither.
 struct Variant :: [Debug] {
     name: string,
+    positional: TypeExpr[],
+    fields: FieldDecl[],
+    named: bool,
     span: Span,
 }
 

@@ -18,9 +18,12 @@ import lyric_script.compiler.ast {
     Block,
     EnumDecl,
     Expr,
+    FieldDecl,
     FieldInit,
+    FieldPattern,
     FnDecl,
     Item,
+    MatchArm,
     Module,
     Pattern,
     Segment,
@@ -285,6 +288,7 @@ class Checker {
                 .Decl(d) => {
                     match (d) {
                         .Type(t) => this.checkFieldDefaults(t),
+                        .Enum(e) => this.checkVariantDefaults(e),
                         _ => { }
                     }
                 }
@@ -388,6 +392,8 @@ class Checker {
             return;
         }
         let variants = List<string>.new();
+        let payloads = List<FieldInfo[]>.new();
+        let named = List<bool>.new();
         let seen = Map<string, bool>.new();
         for (v in e.variants) {
             if (seen.containsKey(v.name)) {
@@ -396,8 +402,45 @@ class Checker {
             }
             seen.insert(v.name, true);
             variants.push(v.name);
+            // a payload by position names its fields "0", "1", …
+            let fields = List<FieldInfo>.new();
+            var k = 0;
+            for (x in v.positional) {
+                fields.push(
+                    FieldInfo {
+                        name = f"{k}",
+                        ty = this.resolveType(x),
+                        isVar = false,
+                        default = null,
+                    }
+                );
+                k += 1;
+            }
+            let fieldSeen = Map<string, bool>.new();
+            for (f in v.fields) {
+                if (fieldSeen.containsKey(f.name)) {
+                    this.error("LYS-SEM0121", f"'{v.name}' has a second field '{f.name}'", f.span);
+                    continue;
+                }
+                fieldSeen.insert(f.name, true);
+                fields.push(
+                    FieldInfo {
+                        name = f.name,
+                        ty = this.resolveType(f.type),
+                        isVar = false,
+                        default = null,
+                    }
+                );
+            }
+            if (fields.length() > 0) {
+                info.payload = true;
+            }
+            payloads.push(fields.toArray());
+            named.push(v.named);
         }
         info.variants = variants.toArray();
+        info.variantFields = payloads.toArray();
+        info.variantNamed = named.toArray();
         for (m in e.methods) {
             if (seen.containsKey(m.name)) {
                 this.error("LYS-SEM0121", f"'{e.name}' has a second member '{m.name}'", m.span);
@@ -467,10 +510,41 @@ class Checker {
             return;
         }
         let info = this.types[index];
+        info.fields = this.defaultsOf(info.fields, t.fields);
+    }
+
+    /// The payloads' defaults of a struct variant, as a struct's fields have them.
+    mut fn checkVariantDefaults(e: EnumDecl): void {
+        let index = this.typeIndex.get(e.name);
+        if (index == null) {
+            return;
+        }
+        let info = this.types[index];
+        if (info.kind != .Enum || info.variantFields.length() != info.variants.length()) {
+            return;
+        }
+        let all = List<FieldInfo[]>.new();
+        var k = 0;
+        for (fields in info.variantFields) {
+            var decls: FieldDecl[] = [];
+            for (v in e.variants) {
+                if (v.name == info.variants[k]) {
+                    decls = v.fields;
+                }
+            }
+            all.push(this.defaultsOf(fields, decls));
+            k += 1;
+        }
+        info.variantFields = all.toArray();
+    }
+
+    /// `fields` with the defaults `decls` write, each checked against its field's type; a `?T`
+    /// field without one starts as null (03 Initialisierung).
+    mut fn defaultsOf(infos: FieldInfo[], decls: FieldDecl[]): FieldInfo[] {
         let fields = List<FieldInfo>.new();
-        for (f in info.fields) {
+        for (f in infos) {
             var dflt: ?TExpr = null;
-            for (d in t.fields) {
+            for (d in decls) {
                 let written = d.default;
                 if (d.name == f.name && written != null) {
                     let saved = this.ctx;
@@ -490,7 +564,7 @@ class Checker {
             }
             fields.push(FieldInfo { name = f.name, ty = f.ty, isVar = f.isVar, default = dflt });
         }
-        info.fields = fields.toArray();
+        return fields.toArray();
     }
 
     // --- types -----------------------------------------------------------------------------------
@@ -1172,9 +1246,12 @@ class Checker {
     /// An expression as a statement: a call, an assignment or a loop; anything else would be
     /// computed only to be thrown away (`LYS-SEM0022`).
     mut fn exprStmt(e: Expr, at: Span): TStmt {
-        let checked = this.expr(e, null);
+        let checked = match (e) {
+            .Match(x, arms, matchAt) => this.matchOf(x.value, arms, null, true, matchAt),
+            _ => this.expr(e, null),
+        };
         let effect = match (e) {
-            .Call(_, _, _) | .Assign(_, _, _, _) | .Loop(_, _, _) => true,
+            .Call(_, _, _) | .Assign(_, _, _, _) | .Loop(_, _, _) | .Match(_, _, _) => true,
             _ => false,
         };
         if (!effect && typeOf(checked) != .Unknown) {
@@ -1269,6 +1346,13 @@ class Checker {
                 }
             }
             .Ignore(_) => { }
+            .Literal(_, at) | .Range(_, _, _, at) | .Variant(_, _, _, at) | .VariantFields(_, _, _, at) | .Fields(_, _, at) | .Or(_, at) => {
+                this.error(
+                    "LYS-SEM0098",
+                    "a 'let' takes apart only what cannot fail: test the value with 'match'",
+                    at
+                );
+            }
             .Tuple(items, at) => {
                 let t = typeOf(source);
                 match (t) {
@@ -1303,6 +1387,501 @@ class Checker {
                 }
             }
         }
+    }
+
+    // --- match and its patterns ------------------------------------------------------------------
+
+    /// `match (e) { … }` (Lyric 5 §9, 08 §2 rule 4): `e` held once, the arms tried in order as
+    /// nested `if`s. A statement's arms give nothing; a value's arms meet the expected type, or
+    /// unify.
+    mut fn matchOf(
+        scrutinee: Expr,
+        arms: MatchArm[],
+        expected: ?Ty,
+        isStmt: bool,
+        at: Span
+    ): TExpr {
+        let v = this.expr(scrutinee, null);
+        let t = typeOf(v);
+        let tmp = this.hidden(t, at);
+        let src = TExpr.Local(tmp, t);
+        let before = this.ctx.unassigned;
+        var after = Set<int>.new();
+        let tests = List<?TExpr>.new();
+        let binds = List<TStmt[]>.new();
+        let guards = List<?TExpr>.new();
+        let bodies = List<TExpr>.new();
+        for (arm in arms) {
+            this.ctx.unassigned = before;
+            this.pushScope();
+            let bound = List<Bound>.new();
+            let test = this.patternTest(arm.pattern, src, bound, Map<string, bool>.new());
+            let sets = List<TStmt>.new();
+            for (b in bound) {
+                let id = this.declareLocal(b.name, typeOf(b.value), false, b.at);
+                sets.push(TStmt.SetLocal(id, b.value, b.at.line));
+            }
+            var guard: ?TExpr = null;
+            let written = arm.guard;
+            if (written != null) {
+                guard = this.condition(written);
+            }
+            let body = this.expr(arm.body, if (isStmt) null else expected);
+            this.popScope();
+            // an arm that never comes out adds nothing to what is assigned after the match
+            after = after.union(this.reached(body));
+            tests.push(test);
+            binds.push(sets.toArray());
+            guards.push(guard);
+            bodies.push(body);
+        }
+        this.ctx.unassigned = if (arms.length() == 0) before else after;
+        var rt = Ty.Void;
+        if (!isStmt) {
+            if (expected != null) {
+                rt = expected;
+            } else {
+                rt = Ty.Never;
+                for (b in bodies) {
+                    rt = this.unify(rt, typeOf(b), at);
+                }
+            }
+        }
+        // from the last arm back: each arm's test, its guard with its bindings, its body
+        var rest = TExpr.Unreachable(rt);
+        var k = arms.length() - 1;
+        while (k >= 0) {
+            let body = if (isStmt) TExpr.Block(
+                [TStmt.Expr(bodies[k], at.line)],
+                boxE(TExpr.Unit),
+                Ty.Void
+            )
+                else this.coerce(bodies[k], rt, spanOf(arms[k].body));
+            let taken = TExpr.Block(binds[k], boxE(body), rt);
+            var cond = tests[k];
+            let guard = guards[k];
+            if (guard != null) {
+                let guarded = TExpr.Block(binds[k], boxE(guard), Ty.Bool);
+                cond = if (cond != null) andOf(cond, guarded) else guarded;
+            }
+            rest = if (cond != null) TExpr.If(boxE(cond), boxE(taken), boxE(rest), rt) else taken;
+            k -= 1;
+        }
+        return TExpr.Block([TStmt.SetLocal(tmp, v, at.line)], boxE(rest), rt);
+    }
+
+    /// What pattern `p` tests of `src` — a read of the matched value's parts, evaluated as often
+    /// as needed — as a `bool`; `null` where it matches every value. Its bindings go to `out`.
+    mut fn patternTest(p: Pattern, src: TExpr, out: List<Bound>, seen: Map<string, bool>): ?TExpr {
+        return match (p) {
+            .Ignore(_) => null,
+            .Name(name, at) => {
+                // a bare name that spells a variant would match every value under its name
+                let e = this.enumOf(typeOf(src));
+                if (e >= 0 && this.variantIndex(e, name) >= 0) {
+                    this.error(
+                        "LYS-SEM0111",
+                        f"'{name}' binds the whole value; to test the variant write .{name}",
+                        at
+                    );
+                }
+                if (seen.containsKey(name)) {
+                    this.error("LYS-SEM0097", f"'{name}' is bound twice in this pattern", at);
+                } else {
+                    seen.insert(name, true);
+                    out.push(Bound { name = name, value = src, at = at });
+                }
+                null
+            }
+            .Tuple(items, at) => this.tupleTest(items, src, out, seen, at),
+            .Literal(e, at) => this.literalTest(e, src, at),
+            .Range(low, high, inclusive, at) => this.rangeTest(low, high, inclusive, src, at),
+            .Variant(enumName, name, payload, at) => this.variantTest(
+                enumName,
+                name,
+                payload,
+                null,
+                src,
+                out,
+                seen,
+                at
+            ),
+            .VariantFields(enumName, name, fields, at) => this.variantTest(
+                enumName,
+                name,
+                null,
+                fields,
+                src,
+                out,
+                seen,
+                at
+            ),
+            .Fields(typeName, fields, at) => this.fieldsTest(typeName, fields, src, out, seen, at),
+            .Or(alternatives, at) => this.orTest(alternatives, src, out, seen, at),
+        };
+    }
+
+    /// The names of the patterns bound to values of no known type: after a fault.
+    mut fn bindUnknown(patterns: Pattern[], out: List<Bound>, seen: Map<string, bool>): void {
+        for (p in patterns) {
+            this.patternTest(p, TExpr.Unknown, out, seen);
+        }
+    }
+
+    /// The value of the optional `src`, where it is one: a pattern of its inner type tests
+    /// presence first (Lyric 5 §9 §3 rule 4).
+    mut fn presentOf(src: TExpr): ?TExpr {
+        return match (typeOf(src)) {
+            .Optional(inner) => TExpr.Narrow(boxE(src), inner.value),
+            _ => null,
+        };
+    }
+
+    mut fn tupleTest(
+        items: Pattern[],
+        src: TExpr,
+        out: List<Bound>,
+        seen: Map<string, bool>,
+        at: Span
+    ): ?TExpr {
+        let inner = this.presentOf(src);
+        if (inner != null) {
+            return presentAnd(src, this.tupleTest(items, inner, out, seen, at));
+        }
+        let t = typeOf(src);
+        match (t) {
+            .Tuple(tt) => {
+                if (tt.elements.length() == items.length()) {
+                    var test: ?TExpr = null;
+                    var k = 0;
+                    for (item in items) {
+                        let element = TExpr.Elem(boxE(src), k, tt.elements[k]);
+                        test = andMaybe(test, this.patternTest(item, element, out, seen));
+                        k += 1;
+                    }
+                    return test;
+                }
+                this.error(
+                    "LYS-SEM0029",
+                    f"the pattern takes {items.length()} elements; the value is {this.tyName(t)}",
+                    at
+                );
+            }
+            .Unknown => { }
+            _ => {
+                this.error("LYS-SEM0029", f"a tuple pattern against {this.tyName(t)}", at);
+            }
+        }
+        this.bindUnknown(items, out, seen);
+        return null;
+    }
+
+    /// A literal: the value equal to it, by the equality of the matched value's type; `null`
+    /// against an optional only.
+    mut fn literalTest(e: Expr, src: TExpr, at: Span): ?TExpr {
+        let t = typeOf(src);
+        let lit = this.expr(e, null);
+        let lt = typeOf(lit);
+        if (t == .Unknown || lt == .Unknown) {
+            return null;
+        }
+        if (lt == .NullLit) {
+            match (t) {
+                .Optional(_) => {
+                    return TExpr.IsNull(boxE(src));
+                }
+                _ => {
+                    this.error(
+                        "LYS-SEM0029",
+                        f"'null' against {this.tyName(t)}, which is never null",
+                        at
+                    );
+                    return null;
+                }
+            }
+        }
+        var base = t;
+        loop {
+            match (base) {
+                .Optional(inner) => base = inner.value,
+                _ => {
+                    break;
+                }
+            }
+        }
+        if (base != lt && !(base == .Float && lt == .Int)) {
+            this.error("LYS-SEM0029", f"a {this.tyName(lt)} literal against {this.tyName(t)}", at);
+            return null;
+        }
+        let eq = this.equality(src, BinaryOp.Eq, lit, at);
+        return if (typeOf(eq) == .Unknown) null else eq;
+    }
+
+    /// `a..b`, `a..=b` over int or char literals: the values between.
+    mut fn rangeTest(low: Expr, high: Expr, inclusive: bool, src: TExpr, at: Span): ?TExpr {
+        let inner = this.presentOf(src);
+        if (inner != null) {
+            return presentAnd(src, this.rangeTest(low, high, inclusive, inner, at));
+        }
+        let t = typeOf(src);
+        let a = this.expr(low, null);
+        let b = this.expr(high, null);
+        if (t == .Unknown || typeOf(a) == .Unknown || typeOf(b) == .Unknown) {
+            return null;
+        }
+        let fits = (t == .Int || t == .Char) && typeOf(a) == t && typeOf(b) == t;
+        if (!fits) {
+            this.error(
+                "LYS-SEM0029",
+                f"a range of int or char literals against {this.tyName(t)}",
+                at
+            );
+            return null;
+        }
+        let from = TExpr.Binary(boxE(src), BinaryOp.Ge, boxE(a), Ty.Bool);
+        let to = TExpr.Binary(
+            boxE(src),
+            if (inclusive) BinaryOp.Le else BinaryOp.Lt,
+            boxE(b),
+            Ty.Bool
+        );
+        return TExpr.Binary(boxE(from), BinaryOp.And, boxE(to), Ty.Bool);
+    }
+
+    /// `.Num(p)`, `.Rect { w = p }`, qualified or not: the variant, then its payload's patterns.
+    mut fn variantTest(
+        enumName: ?string,
+        name: string,
+        payload: ?Pattern[],
+        fields: ?FieldPattern[],
+        src: TExpr,
+        out: List<Bound>,
+        seen: Map<string, bool>,
+        at: Span
+    ): ?TExpr {
+        let inner = this.presentOf(src);
+        if (inner != null) {
+            return presentAnd(
+                src,
+                this.variantTest(enumName, name, payload, fields, inner, out, seen, at)
+            );
+        }
+        let subs = List<Pattern>.new();
+        if (payload != null) {
+            for (x in payload) {
+                subs.push(x);
+            }
+        }
+        if (fields != null) {
+            for (f in fields) {
+                subs.push(f.pattern);
+            }
+        }
+        let t = typeOf(src);
+        if (t == .Unknown) {
+            this.bindUnknown(subs.toArray(), out, seen);
+            return null;
+        }
+        let i = this.enumOf(t);
+        if (i < 0) {
+            this.error(
+                "LYS-SEM0029",
+                f"'.{name}' tests a variant; the value is {this.tyName(t)}, no enum",
+                at
+            );
+            this.bindUnknown(subs.toArray(), out, seen);
+            return null;
+        }
+        let info = this.types[i];
+        let k = this.variantIndex(i, name);
+        if ((enumName != null && enumName != info.name) || k < 0) {
+            let what = if (k < 0) f"'{info.name}' has no variant '{name}'"
+                else f"the pattern names {enumName ?? ""}; the value is {info.name}";
+            this.error("LYS-SEM0029", what, at);
+            this.bindUnknown(subs.toArray(), out, seen);
+            return null;
+        }
+        let vf = info.variantFields[k];
+        var test: ?TExpr = TExpr.Binary(
+            boxE(TExpr.Tag(boxE(src))),
+            BinaryOp.Eq,
+            boxE(TExpr.Int(k)),
+            Ty.Bool
+        );
+        if (payload != null) {
+            if (vf.length() == 0 || info.variantNamed[k]) {
+                this.error(
+                    "LYS-SEM0031",
+                    if (vf.length() == 0) f"'{name}' carries no payload: write .{name}"
+                        else f"'{name}' has named fields: test them as .{name} {{ … }}",
+                    at
+                );
+                this.bindUnknown(subs.toArray(), out, seen);
+                return test;
+            }
+            if (payload.length() != vf.length()) {
+                this.error(
+                    "LYS-SEM0029",
+                    f"'{name}' carries {vf.length()} values; the pattern takes {payload.length()}",
+                    at
+                );
+                this.bindUnknown(subs.toArray(), out, seen);
+                return test;
+            }
+            var j = 0;
+            for (x in payload) {
+                let part = TExpr.Payload(boxE(src), i, k, j, vf[j].ty);
+                test = andMaybe(test, this.patternTest(x, part, out, seen));
+                j += 1;
+            }
+        } else if (fields != null) {
+            if (!info.variantNamed[k]) {
+                this.error("LYS-SEM0031", f"'{name}' has no named fields", at);
+                this.bindUnknown(subs.toArray(), out, seen);
+                return test;
+            }
+            for (f in fields) {
+                var j = 0;
+                var found = -1;
+                for (decl in vf) {
+                    if (decl.name == f.name) {
+                        found = j;
+                    }
+                    j += 1;
+                }
+                if (found < 0) {
+                    this.error("LYS-SEM0015", f"'{name}' has no field '{f.name}'", f.span);
+                    this.bindUnknown([f.pattern], out, seen);
+                    continue;
+                }
+                let part = TExpr.Payload(boxE(src), i, k, found, vf[found].ty);
+                test = andMaybe(test, this.patternTest(f.pattern, part, out, seen));
+            }
+        } else if (vf.length() > 0) {
+            let form = if (info.variantNamed[k]) f".{name} {{ … }}" else f".{name}(…)";
+            this.error("LYS-SEM0031", f"'{name}' carries a payload: write {form}", at);
+        }
+        return test;
+    }
+
+    /// `Point { x = 0, y }`: the fields it names of a struct or class value of that type.
+    mut fn fieldsTest(
+        typeName: string,
+        fields: FieldPattern[],
+        src: TExpr,
+        out: List<Bound>,
+        seen: Map<string, bool>,
+        at: Span
+    ): ?TExpr {
+        let inner = this.presentOf(src);
+        if (inner != null) {
+            return presentAnd(src, this.fieldsTest(typeName, fields, inner, out, seen, at));
+        }
+        let subs = List<Pattern>.new();
+        for (f in fields) {
+            subs.push(f.pattern);
+        }
+        let t = typeOf(src);
+        let i = match (t) {
+            .Named(n) => if (this.types[n].kind != .Enum && this.types[n].name == typeName) n
+                else -1,
+            _ => -1,
+        };
+        if (i < 0) {
+            if (t != .Unknown) {
+                this.error(
+                    "LYS-SEM0029",
+                    f"the pattern names {typeName}; the value is {this.tyName(t)}",
+                    at
+                );
+            }
+            this.bindUnknown(subs.toArray(), out, seen);
+            return null;
+        }
+        var test: ?TExpr = null;
+        for (f in fields) {
+            var j = 0;
+            var found = -1;
+            for (decl in this.types[i].fields) {
+                if (decl.name == f.name) {
+                    found = j;
+                }
+                j += 1;
+            }
+            if (found < 0) {
+                this.error("LYS-SEM0015", f"'{typeName}' has no field '{f.name}'", f.span);
+                this.bindUnknown([f.pattern], out, seen);
+                continue;
+            }
+            let part = TExpr.Field(boxE(src), found, this.types[i].fields[found].ty);
+            test = andMaybe(test, this.patternTest(f.pattern, part, out, seen));
+        }
+        return test;
+    }
+
+    /// `P | Q`: either; every alternative binds the same names at the same types, each name the
+    /// value of the alternative that matched (Lyric 5 §9 §2 rule 7).
+    mut fn orTest(
+        alternatives: Pattern[],
+        src: TExpr,
+        out: List<Bound>,
+        seen: Map<string, bool>,
+        at: Span
+    ): ?TExpr {
+        let tests = List<?TExpr>.new();
+        let bounds = List<List<Bound>>.new();
+        for (alt in alternatives) {
+            let b = List<Bound>.new();
+            tests.push(this.patternTest(alt, src, b, Map<string, bool>.new()));
+            bounds.push(b);
+        }
+        let first = bounds[0];
+        var k = 1;
+        while (k < bounds.length()) {
+            let other = bounds[k];
+            var same = other.length() == first.length();
+            for (b in first) {
+                let o = boundNamed(other, b.name);
+                same = same && o != null && typeOf(o) == typeOf(b.value);
+            }
+            if (!same) {
+                this.error(
+                    "LYS-SEM0032",
+                    "every alternative binds the same names, of the same types",
+                    at
+                );
+            }
+            k += 1;
+        }
+        // any alternative: no test where one matches every value
+        var test: ?TExpr = TExpr.Bool(false);
+        for (x in tests) {
+            if (x == null) {
+                test = null;
+                break;
+            }
+            let sofar = test;
+            test = if (sofar != null) TExpr.Binary(boxE(sofar), BinaryOp.Or, boxE(x), Ty.Bool)
+                else null;
+        }
+        for (b in first) {
+            if (seen.containsKey(b.name)) {
+                this.error("LYS-SEM0097", f"'{b.name}' is bound twice in this pattern", b.at);
+                continue;
+            }
+            seen.insert(b.name, true);
+            let t = typeOf(b.value);
+            var value = boundNamed(bounds[bounds.length() - 1], b.name) ?? TExpr.Unknown;
+            var j = bounds.length() - 2;
+            while (j >= 0) {
+                let mine = boundNamed(bounds[j], b.name) ?? TExpr.Unknown;
+                let tj = tests[j];
+                value = if (tj != null) TExpr.If(boxE(tj), boxE(mine), boxE(value), t) else mine;
+                j -= 1;
+            }
+            out.push(Bound { name = b.name, value = value, at = b.at });
+        }
+        return test;
     }
 
     /// Whether a binding here is a global of the script: the outermost scope of its code.
@@ -1573,7 +2152,16 @@ class Checker {
             .Assign(target, op, value, at) => this.assign(target.value, op, value.value, at),
             .Range(_, _, _, at) => this.notYet("a range as a value", "S3", at),
             .Cast(x, written, at) => this.cast(x.value, written, at),
-            .Call(callee, args, at) => this.call(callee.value, args, at),
+            .Call(callee, args, at) => this.call(callee.value, args, expected, at),
+            .Implicit(name, at) => this.implicit(name, expected, at),
+            .VariantInit(enumName, name, fields, at) => this.variantInit(
+                enumName,
+                name,
+                fields,
+                expected,
+                at
+            ),
+            .Match(x, arms, at) => this.matchOf(x.value, arms, expected, false, at),
             .Index(_, _, at) => this.notYet("indexing", "S7 (the core collections)", at),
             .Member(x, name, optional, at) => this.member(x.value, name, optional, at),
             .List(_, at) => this.notYet("a list literal", "S7 (the core collections)", at),
@@ -1740,7 +2328,8 @@ class Checker {
             this.popScope();
             this.ctx.unassigned = before;
         } else {
-            b = this.expr(r, null);
+            // `x == .Red`: the other side names the enum (Lyric 5 §4.2 rule 1)
+            b = this.expr(r, if ((op == .Eq || op == .Ne) && isImplicit(r)) typeOf(a) else null);
         }
         let ta = typeOf(a);
         let tb = typeOf(b);
@@ -1855,7 +2444,7 @@ class Checker {
             }
             _ => { }
         }
-        if (ta == tb && (ta == .Bool || ta == .Char || this.isEnum(ta))) {
+        if (ta == tb && (ta == .Bool || ta == .Char || this.isScalarEnum(ta))) {
             return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
         }
         if (ta == .Str && tb == .Str) {
@@ -1949,11 +2538,157 @@ class Checker {
         };
     }
 
-    mut fn isEnum(t: Ty): bool {
+    /// An enum whose values are `int`s: none of its variants carries a payload.
+    mut fn isScalarEnum(t: Ty): bool {
         return match (t) {
-            .Named(i) => this.types[i].kind == .Enum,
+            .Named(i) => this.types[i].kind == .Enum && !this.types[i].payload,
             _ => false,
         };
+    }
+
+    /// The enum `t` is, or holds as an optional; -1 where it is none.
+    mut fn enumOf(t: Ty): int {
+        return match (t) {
+            .Named(i) => if (this.types[i].kind == .Enum) i else -1,
+            .Optional(inner) => this.enumOf(inner.value),
+            _ => -1,
+        };
+    }
+
+    /// The enum the position expects, `?E` naming `E` (Lyric 5 §4.2 rule 1); -1 where none.
+    mut fn expectedEnum(expected: ?Ty): int {
+        if (expected == null) {
+            return -1;
+        }
+        return this.enumOf(expected);
+    }
+
+    mut fn variantIndex(i: int, name: string): int {
+        var k = 0;
+        for (v in this.types[i].variants) {
+            if (v == name) {
+                return k;
+            }
+            k += 1;
+        }
+        return -1;
+    }
+
+    /// `Color.Red`, `.Red`: a unit variant — an `int` where the enum carries no payload, an
+    /// object where another variant does.
+    mut fn unitVariant(i: int, k: int, at: Span): TExpr {
+        let info = this.types[i];
+        let v = info.variants[k];
+        if (info.variantFields[k].length() > 0) {
+            let form = if (info.variantNamed[k]) f"{info.name}.{v} {{ … }}"
+                else f"{info.name}.{v}(…)";
+            this.error("LYS-SEM0031", f"'{v}' carries a payload: build it as {form}", at);
+            return TExpr.Unknown;
+        }
+        return if (info.payload) TExpr.MakeVariant(i, k, []) else TExpr.Variant(i, k);
+    }
+
+    /// `Shape.Num(3)`: a variant whose payload is given by position.
+    mut fn variantCall(i: int, k: int, args: Arg[], at: Span): TExpr {
+        let info = this.types[i];
+        let v = info.variants[k];
+        let fields = info.variantFields[k];
+        if (fields.length() == 0) {
+            this.error("LYS-SEM0031", f"'{v}' carries no payload: write {info.name}.{v}", at);
+            return TExpr.Unknown;
+        }
+        if (info.variantNamed[k]) {
+            this.error(
+                "LYS-SEM0031",
+                f"'{v}' has named fields: build it as {info.name}.{v} {{ … }}",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        if (args.length() != fields.length()) {
+            this.error(
+                "LYS-SEM0014",
+                f"'{v}' carries {fields.length()} values; {args.length()} are given",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let values = List<TExpr>.new();
+        var j = 0;
+        for (a in args) {
+            if (a.name != null) {
+                this.error("LYS-SEM0119", f"'{v}' takes its payload by position", spanOf(a.value));
+            }
+            let t = fields[j].ty;
+            values.push(this.coerce(this.expr(a.value, t), t, spanOf(a.value)));
+            j += 1;
+        }
+        return TExpr.MakeVariant(i, k, values.toArray());
+    }
+
+    /// `.Red` where the position expects an enum (Lyric 5 §4.2).
+    mut fn implicit(name: string, expected: ?Ty, at: Span): TExpr {
+        let i = this.expectedEnum(expected);
+        if (i < 0) {
+            this.error(
+                "LYS-SEM0113",
+                f"'.{name}' needs an enum where it stands: name it, as E.{name}",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let k = this.variantIndex(i, name);
+        if (k < 0) {
+            this.error("LYS-SEM0012", f"'{this.types[i].name}' has no variant '{name}'", at);
+            return TExpr.Unknown;
+        }
+        return this.unitVariant(i, k, at);
+    }
+
+    /// `Shape.Rect { w = 1, h = 2 }` and `.Rect { … }`: a variant with named fields.
+    mut fn variantInit(
+        enumName: ?string,
+        name: string,
+        fields: FieldInit[],
+        expected: ?Ty,
+        at: Span
+    ): TExpr {
+        var i = -1;
+        if (enumName != null) {
+            let index = this.typeIndex.get(enumName);
+            if (index == null || this.types[index].kind != .Enum) {
+                this.error("LYS-SEM0011", f"'{enumName}' names no enum", at);
+                return TExpr.Unknown;
+            }
+            i = index;
+        } else {
+            i = this.expectedEnum(expected);
+            if (i < 0) {
+                this.error(
+                    "LYS-SEM0113",
+                    f"'.{name}' needs an enum where it stands: name it, as E.{name} {{ … }}",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+        }
+        let info = this.types[i];
+        let k = this.variantIndex(i, name);
+        if (k < 0) {
+            this.error("LYS-SEM0012", f"'{info.name}' has no variant '{name}'", at);
+            return TExpr.Unknown;
+        }
+        if (!info.variantNamed[k]) {
+            this.error(
+                "LYS-SEM0031",
+                f"'{name}' has no named fields: write {info.name}.{name}"
+                    + (if (info.variantFields[k].length() > 0) "(…)" else ""),
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let values = this.fieldValues(f"{info.name}.{name}", info.variantFields[k], fields, at);
+        return TExpr.MakeVariant(i, k, values);
     }
 
     mut fn assign(target: Expr, op: ?BinaryOp, value: Expr, at: Span): TExpr {
@@ -2272,13 +3007,9 @@ class Checker {
                 if (this.lookupLocal(typeName) == null && !this.globalIndex.containsKey(typeName)) {
                     let index = this.typeIndex.get(typeName);
                     if (index != null) {
-                        let info = this.types[index];
-                        var k = 0;
-                        for (v in info.variants) {
-                            if (v == name) {
-                                return TExpr.Variant(index, k);
-                            }
-                            k += 1;
+                        let k = this.variantIndex(index, name);
+                        if (k >= 0) {
+                            return this.unitVariant(index, k, at);
                         }
                         this.error("LYS-SEM0012", f"'{typeName}' has no member '{name}'", at);
                         return TExpr.Unknown;
@@ -2317,14 +3048,20 @@ class Checker {
             );
             return TExpr.Unknown;
         }
+        return TExpr.New(index, this.fieldValues(name, info.fields, fields, at));
+    }
+
+    /// The values of an initializer of `decls`: each given one checked against its field, a
+    /// default where none is given; every field without either named in one report.
+    mut fn fieldValues(name: string, decls: FieldInfo[], fields: FieldInit[], at: Span): TExpr[] {
         let values = List<?TExpr>.new();
-        for (_ in info.fields) {
+        for (_ in decls) {
             values.push(null);
         }
         for (f in fields) {
             var k = 0;
             var found = -1;
-            for (decl in info.fields) {
+            for (decl in decls) {
                 if (decl.name == f.name) {
                     found = k;
                 }
@@ -2338,13 +3075,13 @@ class Checker {
                 this.error("LYS-SEM0070", f"'{f.name}' is given twice", f.span);
                 continue;
             }
-            let t = info.fields[found].ty;
+            let t = decls[found].ty;
             values[found] = this.coerce(this.expr(f.value, t), t, spanOf(f.value));
         }
         let out = List<TExpr>.new();
         let missing = List<string>.new();
         var k = 0;
-        for (decl in info.fields) {
+        for (decl in decls) {
             let given = values[k];
             let dflt = decl.default;
             if (given != null) {
@@ -2364,7 +3101,7 @@ class Checker {
                 at
             );
         }
-        return TExpr.New(index, out.toArray());
+        return out.toArray();
     }
 
     mut fn ifExpr(cond: Expr, then: Expr, otherwise: Expr, expected: ?Ty, at: Span): TExpr {
@@ -2539,8 +3276,30 @@ class Checker {
 
     // --- calls -----------------------------------------------------------------------------------
 
-    mut fn call(callee: Expr, args: Arg[], at: Span): TExpr {
+    mut fn call(callee: Expr, args: Arg[], expected: ?Ty, at: Span): TExpr {
         match (callee) {
+            // `.Num(3)`: a variant of the enum the position expects
+            .Implicit(name, nameAt) => {
+                let i = this.expectedEnum(expected);
+                if (i < 0) {
+                    this.error(
+                        "LYS-SEM0113",
+                        f"'.{name}' needs an enum where it stands: name it, as E.{name}(…)",
+                        nameAt
+                    );
+                    return TExpr.Unknown;
+                }
+                let k = this.variantIndex(i, name);
+                if (k < 0) {
+                    this.error(
+                        "LYS-SEM0012",
+                        f"'{this.types[i].name}' has no variant '{name}'",
+                        nameAt
+                    );
+                    return TExpr.Unknown;
+                }
+                return this.variantCall(i, k, args, at);
+            }
             .Name(name, nameAt) => {
                 if (this.lookupLocal(name) != null || this.globalIndex.containsKey(name)) {
                     return this.notYet("a call through a value", "S3 (function values)", nameAt);
@@ -2638,6 +3397,11 @@ class Checker {
 
     mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
         let info = this.types[typeIndex];
+        // `Shape.Num(3)`: a variant with a payload by position
+        let k = this.variantIndex(typeIndex, method);
+        if (k >= 0) {
+            return this.variantCall(typeIndex, k, args, at);
+        }
         let m = info.methods.get(method);
         if (m == null) {
             if (method == "new") {
@@ -2928,6 +3692,52 @@ fn isNullLit(e: Expr): bool {
     };
 }
 
+/// A name a pattern binds, and the part of the matched value it holds.
+struct Bound {
+    name: string,
+    value: TExpr,
+    at: Span,
+}
+
+fn boundNamed(bounds: List<Bound>, name: string): ?TExpr {
+    for (b in bounds) {
+        if (b.name == name) {
+            return b.value;
+        }
+    }
+    return null;
+}
+
+fn andOf(a: TExpr, b: TExpr): TExpr {
+    return TExpr.Binary(boxE(a), BinaryOp.And, boxE(b), Ty.Bool);
+}
+
+/// Both tests; a missing one tests nothing.
+fn andMaybe(a: ?TExpr, b: ?TExpr): ?TExpr {
+    if (a == null) {
+        return b;
+    }
+    if (b == null) {
+        return a;
+    }
+    return andOf(a, b);
+}
+
+/// That the optional `src` holds a value, and then `test`.
+fn presentAnd(src: TExpr, test: ?TExpr): TExpr {
+    let present = TExpr.Unary(UnaryOp.Not, boxE(TExpr.IsNull(boxE(src))), Ty.Bool);
+    return if (test != null) andOf(present, test) else present;
+}
+
+/// Whether `e` names a member of the enum its position expects: `.Red`, `.Num(3)`, `.Rect { … }`.
+fn isImplicit(e: Expr): bool {
+    return match (e) {
+        .Implicit(_, _) | .VariantInit(_, _, _, _) => true,
+        .Call(callee, _, _) => isImplicit(callee.value),
+        _ => false,
+    };
+}
+
 /// The tuple of `n` elements `expected` is, or holds as an optional; `null` where it is none.
 fn expectedTuple(expected: ?Ty, n: int): ?TupleTy {
     if (expected == null) {
@@ -3074,6 +3884,23 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
             }
             found
         }
+        .VariantInit(_, _, fields, _) => {
+            var found = false;
+            for (f in fields) {
+                found = found || exprAny(f.value, onStmt, onExpr);
+            }
+            found
+        }
+        .Match(x, arms, _) => {
+            var found = exprAny(x.value, onStmt, onExpr);
+            for (arm in arms) {
+                let g = arm.guard;
+                found = found
+                    || (g != null && exprAny(g, onStmt, onExpr))
+                    || exprAny(arm.body, onStmt, onExpr);
+            }
+            found
+        }
         _ => false,
     };
 }
@@ -3107,5 +3934,8 @@ fn spanOf(e: Expr): Span {
         .Loop(_, _, at) => at,
         .Unwrap(_, at) => at,
         .Tuple(_, at) => at,
+        .Implicit(_, at) => at,
+        .VariantInit(_, _, _, at) => at,
+        .Match(_, _, at) => at,
     };
 }

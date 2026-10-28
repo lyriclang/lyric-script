@@ -260,3 +260,14 @@ Elemente hintereinander, inline wie ein Optional (11 V2) — kein Objekt, `t.k` 
 Platz. Etiketten fahren im Typ mit, zählen aber nicht zu seiner Gleichheit (Lyric 5 §6 Regel 3).
 Gleichheit, Hash und Druckform (Regel 6) kommen mit der Synthese in S3h, `for ((a, b) in …)` mit
 den Sammlungen in S7. 119 Tests, 61 Konformanzfälle.
+
+**S3d, Ergebnis.** Enums mit Nutzlast, `match` und die Muster nach Lyric 5 §4 und §9, in vier
+Teilen (d1 Deklaration und Bau, d2 `match` und Muster, d3 Abdeckung, d4 Muster in `if let`,
+`while let`, `let … else`). Darstellung: ein Enum ohne Nutzlast ist ein `int`; eines mit Nutzlast
+eine Referenz auf ein unveränderliches Objekt, ein VM-Typ je Variante mit dem Tag als erstem
+Skalar — wie ein Struct, also rekursiv ohne `Box` (Abweichung von Lyric 5 §4.1 Regeln 3–4, Folge
+aus 03). Ein `match` senkt zu verschachtelten `if`s über einen einmal gehaltenen Wert; ein
+Wächter bindet in seiner Bedingung und im Arm, ein Oder-Muster bindet je Name den Wert der
+passenden Alternative. Abdeckung nach Maranget über einen vereinfachten Musterraum, der Zeuge
+als Muster geschrieben; unerreichbare Arme nach Lyric 5s enger Regel. Typ-Muster kommen mit S3f
+(Interface-Werte), Array-Muster mit S7. 129 Tests, 71 Konformanzfälle.

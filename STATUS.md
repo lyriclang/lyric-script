@@ -84,7 +84,7 @@ Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; meas
 | S3a optionals | done — Lyric 5 §3.1–3.3 with its codes; every value has a slot shape (11 V2: `?int` two scalar slots, `??int` three, a `?T` of a reference the reference with `nil`); results of several slots; narrowing ends at a write; ten cases in the delta's 03 |
 | S3b definite assignment, empty literals | done — Lyric 5's definite assignment (`SEM0018`), a global takes its value where declared (`SEM0903`); `var x = null` takes the type of the first use that fixes one (two passes, the first quiet); `[]` and `[:]` take the same way with S7. Follow-ups of S3a: narrowing behind `break`/`continue` and in a value `if`, `==` on optionals. Own codes moved to 0900 (P9) |
 | S3c tuples | done — Lyric 5 §6 rules 1–5: labels outside the type, `t.0`/`t.x`, `let (a, b) = t` nested and with `_`; in the VM a tuple is its elements' slots in order, inline. Equality and display with S3h, `for ((a, b) in …)` with S7 |
-| S3d enums with values, `match`, patterns | — |
+| S3d enums with values, `match`, patterns | done — tuple and struct variants, `.Variant` where the position names the enum; an enum with payloads is a reference (an object per variant, the tag its first scalar), so it holds itself without a box; `match` as statement and value, Lyric 5's patterns (type patterns with S3f, array patterns with S7), coverage with a witness (Maranget), unreachable arms; patterns in `if let`, `while let`, `let … else`. Arms stand apart by `,` or a line end (P10) |
 | S3e function values | — |
 | S3f interfaces | — |
 | S3g generics | — |
@@ -135,4 +135,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P6 | After a lexical or syntax error the checker does not run, so a file reports its first kind of fault only. Check the parts that parsed? | S2f |
 | P7 | An unclosed `(` or `[` swallows the line ends after it (09 NL rule 1), so the parser's recovery skips the rest of the file. | S2c |
 | P8 | A global of the script takes its value where it is declared (`SEM0903`): definite assignment cannot follow a function that reads it. Allow `var g: T` at the top where no function reads `g`? | S3b |
+| P10 | Arms of a `match` stand apart by `,` or a line end; a line that begins with `.` goes on the line before (09 NL rule 3), so a value arm before a `.Variant` arm needs its `,` (`LYS-PAR0035`, with a hint). Lyric 5 requires the `,` always. Keep the leniency, or require `,` as Lyric 5 does? | S3d |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

@@ -254,7 +254,7 @@ fn typeOf(e: TExpr): Ty {
         .Upcast(_, t) => t,
         .BoxOf(_, _, t) => t,
         .Unbox(_, t) => t,
-        .IsType(_, _, _) | .IsIface(_, _, _) => Ty.Bool,
+        .IsType(_, _, _) | .IsIface(_, _, _) | .SameRef(_, _) => Ty.Bool,
         .CallGeneric(_, _, _, t) => t,
         .CallConstraint(_, _, _, _, _, t) => t,
         .CallIface(_, _, t) => t,
@@ -352,6 +352,8 @@ enum TExpr :: [Debug] {
     IsType(Box<TExpr>, int, Ty),
     /// Whether it holds a value of a type that conforms to interface `k`.
     IsIface(Box<TExpr>, int, Ty),
+    /// Whether two references are one object: `==` on a class that is an `Identity`.
+    SameRef(Box<TExpr>, Box<TExpr>),
     /// A call of a generic function with the type arguments it bound; an instance's call once
     /// the copies are made.
     CallGeneric(int, Ty[], TExpr[], Ty),

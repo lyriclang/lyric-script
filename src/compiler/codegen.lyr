@@ -1052,6 +1052,13 @@ class FnGen {
                 this.emit(Op.New, dst.r, this.layout.boxType[ti], 0);
                 this.setField(dst.r, Loc { s = 0, r = 0 }, v, t);
             }
+            .SameRef(x, y) => {
+                let ra = this.any(x.value).r;
+                let rb = this.any(y.value).r;
+                if (dst.s >= 0) {
+                    this.emit(Op.Same, dst.s, ra, rb);
+                }
+            }
             .IsType(x, k, _) => {
                 let ref = this.any(x.value).r;
                 if (dst.s >= 0) {

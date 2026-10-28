@@ -198,8 +198,11 @@ class Checker {
     var mainIndex: int = -1,
     // the interface methods' slots given so far
     var slotCount: int = 0,
-    // `Any`'s entry
+    // `Any`'s entry, and `Identity`'s
     var anyIndex: int = -1,
+    var identityIndex: int = -1,
+    // the synthesized equality of each struct and enum compared, by type
+    eqFns: Map<int, int>,
     // the type parameters in scope by name, and the generic they are of
     var typeParams: Map<string, int> = Map<string, int>.new(),
     var genericFn: int = -1,
@@ -238,6 +241,7 @@ class Checker {
             builtinIndex = Map<string, int>.new(),
             unboxers = Map<int, int>.new(),
             instances = Map<string, int>.new(),
+            eqFns = Map<int, int>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -306,6 +310,13 @@ class Checker {
         this.anyIndex = this.types.length();
         this.declareTypeName(
             "Any",
+            TypeKind.Interface,
+            Span { start = 0, end = 0, line = 1, column = 1 }
+        );
+        // `Identity`: a class compared by its reference (03 Eq)
+        this.identityIndex = this.types.length();
+        this.declareTypeName(
+            "Identity",
             TypeKind.Interface,
             Span { start = 0, end = 0, line = 1, column = 1 }
         );
@@ -1743,6 +1754,7 @@ class Checker {
             .BoxOf(x, k, t) => TExpr.BoxOf(this.specBox(x, a), k, this.subst(t, a)),
             .Unbox(x, t) => TExpr.Unbox(this.specBox(x, a), this.subst(t, a)),
             .IsType(x, k, t) => TExpr.IsType(this.specBox(x, a), k, this.subst(t, a)),
+            .SameRef(x, y) => TExpr.SameRef(this.specBox(x, a), this.specBox(y, a)),
             .IsIface(x, k, t) => TExpr.IsIface(this.specBox(x, a), k, this.subst(t, a)),
             .CallGeneric(fi, targs, xs, t) => {
                 let bound = List<Ty>.new();
@@ -4303,11 +4315,18 @@ class Checker {
             return TExpr.Unknown;
         }
         if (ta == tb) {
-            return this.notYet(
-                f"'{binaryText(op)}' on {this.tyName(ta)}",
-                "S3 (synthesized equality)",
-                at
-            );
+            // a struct, an enum, a tuple compares its parts; a class only as an `Identity` (03 Eq)
+            let missing = this.notEquatable(ta, List<int>.new());
+            if (missing != null) {
+                this.error(
+                    "LYS-SEM0059",
+                    f"'{binaryText(op)}' does not compare {this.tyName(ta)}: {missing}",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            let eq = this.sameValue(a, b, ta, at);
+            return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
         }
         this.error(
             "LYS-SEM0059",
@@ -4315,6 +4334,182 @@ class Checker {
             at
         );
         return TExpr.Unknown;
+    }
+
+    /// What keeps values of `t` from being compared, `null` where nothing does: a class that is
+    /// no `Identity`, a function, an interface value — in a field, a payload, an element.
+    mut fn notEquatable(t: Ty, seen: List<int>): ?string {
+        return match (t) {
+            .Int | .Float | .Bool | .Char | .Str | .Unknown | .NullLit => null,
+            .Optional(inner) => this.notEquatable(inner.value, seen),
+            .Tuple(tt) => {
+                for (e in tt.elements) {
+                    let m = this.notEquatable(e, seen);
+                    if (m != null) {
+                        return m;
+                    }
+                }
+                null
+            }
+            .Named(i) => {
+                let info = this.types[i];
+                for (x in seen) {
+                    if (x == i) {
+                        return null;
+                    }
+                }
+                seen.push(i);
+                match (info.kind) {
+                    .Class => {
+                        return if (this.conformsTo(t, this.identityIndex)) null
+                            else f"the class {info.name} is no Identity";
+                    }
+                    .Interface | .Builtin => {
+                        return f"{info.name} values are not compared";
+                    }
+                    _ => { }
+                }
+                for (f in info.fields) {
+                    let m = this.notEquatable(f.ty, seen);
+                    if (m != null) {
+                        return f"its field '{f.name}': {m}";
+                    }
+                }
+                for (vf in info.variantFields) {
+                    for (f in vf) {
+                        let m = this.notEquatable(f.ty, seen);
+                        if (m != null) {
+                            return f"a payload: {m}";
+                        }
+                    }
+                }
+                null
+            }
+            _ => f"{this.tyName(t)} values are not compared",
+        };
+    }
+
+    /// `a == b` of two values of `t`, which compares: a tuple element by element, a class by its
+    /// reference, a struct or an enum through its synthesized function.
+    mut fn sameValue(a: TExpr, b: TExpr, t: Ty, at: Span): TExpr {
+        match (t) {
+            .Tuple(tt) => {
+                let ha = this.hidden(t, at);
+                let hb = this.hidden(t, at);
+                var all = TExpr.Bool(true);
+                var k = tt.elements.length() - 1;
+                while (k >= 0) {
+                    let et = tt.elements[k];
+                    let one = this.equality(
+                        TExpr.Elem(boxE(TExpr.Local(ha, t)), k, et),
+                        BinaryOp.Eq,
+                        TExpr.Elem(boxE(TExpr.Local(hb, t)), k, et),
+                        at
+                    );
+                    all = if (k == tt.elements.length() - 1) one else andOf(one, all);
+                    k -= 1;
+                }
+                return TExpr.Block(
+                    [TStmt.SetLocal(ha, a, at.line), TStmt.SetLocal(hb, b, at.line)],
+                    boxE(all),
+                    Ty.Bool
+                );
+            }
+            .Named(i) => {
+                if (this.types[i].kind == .Class) {
+                    return TExpr.SameRef(boxE(a), boxE(b));
+                }
+                return TExpr.Call(this.eqFnOf(i, at), [a, b], Ty.Bool);
+            }
+            _ => {
+                return TExpr.Unknown;
+            }
+        }
+    }
+
+    /// The function comparing two values of struct or enum `i` field by field, made once: an
+    /// enum's the same variant with equal payloads (Lyric 5 05 §14 rules 2–3).
+    mut fn eqFnOf(i: int, at: Span): int {
+        let known = this.eqFns.get(i);
+        if (known != null) {
+            return known;
+        }
+        let info = this.types[i];
+        let t = Ty.Named(i);
+        let index = this.functions.length();
+        this.functions.push(
+            FnInfo { name = info.name + "#eq", owner = -1, isStatic = true, line = at.line }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        this.eqFns.insert(i, index);
+        let eqInfo = this.functions[index];
+        eqInfo.params = [
+            ParamInfo { name = "a", ty = t, default = null },
+            ParamInfo { name = "b", ty = t, default = null },
+        ];
+        eqInfo.returns = Ty.Bool;
+        eqInfo.boxed = [false, false];
+        let saved = this.ctx;
+        this.ctx = FnCtx.new(index, Ty.Bool, false, false);
+        let a = TExpr.Local(0, t);
+        let b = TExpr.Local(1, t);
+        this.declareLocal("a", t, false, at);
+        this.declareLocal("b", t, false, at);
+        var body = TExpr.Bool(true);
+        if (info.kind == .Struct) {
+            var k = info.fields.length() - 1;
+            while (k >= 0) {
+                let f = info.fields[k];
+                let one = this.equality(
+                    TExpr.Field(boxE(a), k, f.ty),
+                    BinaryOp.Eq,
+                    TExpr.Field(boxE(b), k, f.ty),
+                    at
+                );
+                body = if (k == info.fields.length() - 1) one else andOf(one, body);
+                k -= 1;
+            }
+        } else {
+            // the same variant, then its payload
+            var rest = TExpr.Bool(true);
+            var v = info.variants.length() - 1;
+            while (v >= 0) {
+                let vf = info.variantFields[v];
+                var payload = TExpr.Bool(true);
+                var k = vf.length() - 1;
+                while (k >= 0) {
+                    let one = this.equality(
+                        TExpr.Payload(boxE(a), i, v, k, vf[k].ty),
+                        BinaryOp.Eq,
+                        TExpr.Payload(boxE(b), i, v, k, vf[k].ty),
+                        at
+                    );
+                    payload = if (k == vf.length() - 1) one else andOf(one, payload);
+                    k -= 1;
+                }
+                let isV = TExpr.Binary(
+                    boxE(TExpr.Tag(boxE(a))),
+                    BinaryOp.Eq,
+                    boxE(TExpr.Int(v)),
+                    Ty.Bool
+                );
+                rest = TExpr.If(boxE(isV), boxE(payload), boxE(rest), Ty.Bool);
+                v -= 1;
+            }
+            let sameTag = TExpr.Binary(
+                boxE(TExpr.Tag(boxE(a))),
+                BinaryOp.Eq,
+                boxE(TExpr.Tag(boxE(b))),
+                Ty.Bool
+            );
+            body = andOf(sameTag, rest);
+        }
+        eqInfo.locals = this.ctx.locals.toArray();
+        eqInfo.boxed = this.ctx.boxed.toArray();
+        eqInfo.body = [TStmt.Return(body, at.line)];
+        this.ctx = saved;
+        return index;
     }
 
     /// Two optionals of type `t` are equal where both hold nothing, or both hold values their own

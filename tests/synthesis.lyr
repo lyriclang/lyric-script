@@ -1,0 +1,69 @@
+// Synthesis (S3h, 03 Eq and Lyric 5 05 §14): structs, enums and tuples compare without a list
+// when their parts do, a class only as an `Identity`; run in the VM.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let types = "struct P {\n    x: int\n    name: string\n}\nenum Shape {\n    Circle(int)\n    Rect { w: int, h: int }\n    Empty\n}\nenum Tree {\n    Leaf(int)\n    Node(Tree, Tree)\n}\nclass C :: [Identity] {\n    var n: int = 0\n}\nclass D {\n    var n: int = 0\n}\n";
+
+@Test
+fn structsTuplesAndIdentitiesCompare(): void {
+    let e = "fn e(): int {\n    var n = 0\n    if (P { x = 1, name = \"a\" } == P { x = 1, name = \"a\" }) {\n        n += 1\n    }\n    if (P { x = 1, name = \"a\" } != P { x = 2, name = \"a\" }) {\n        n += 2\n    }\n    if (P { x = 1, name = \"a\" } != P { x = 1, name = \"b\" }) {\n        n += 4\n    }\n    if ((1, \"a\") == (1, \"a\") && (1, \"a\") != (1, \"b\")) {\n        n += 8\n    }\n    let c = C { }\n    let c2 = C { }\n    if (c == c && c != c2) {\n        n += 16\n    }\n    let o: ?P = P { x = 1, name = \"a\" }\n    if (o == P { x = 1, name = \"a\" }) {\n        n += 32\n    }\n    return n\n}";
+    assertEq(value(types + e, "e"), 63);
+}
+
+@Test
+fn enumsCompareVariantThenPayload(): void {
+    let e = "fn e(): int {\n    var n = 0\n    if (Shape.Rect { w = 1, h = 2 } == Shape.Rect { w = 1, h = 2 }) {\n        n += 1\n    }\n    if (Shape.Circle(1) != Shape.Empty) {\n        n += 2\n    }\n    if (Shape.Circle(1) != Shape.Circle(2)) {\n        n += 4\n    }\n    if (Tree.Node(Tree.Leaf(1), Tree.Leaf(2)) == Tree.Node(Tree.Leaf(1), Tree.Leaf(2))) {\n        n += 8\n    }\n    if (Tree.Node(Tree.Leaf(1), Tree.Leaf(2)) != Tree.Node(Tree.Leaf(1), Tree.Leaf(3))) {\n        n += 16\n    }\n    return n\n}";
+    assertEq(value(types + e, "e"), 31);
+}
+
+@Test
+fn whatIsNotCompared(): void {
+    assertEq(errs(types + "let same = D { } == D { }"), ["LYS-SEM0059"]);
+    assertEq(
+        errs(
+            "struct F {\n    f: fn() -> int\n}\nlet g = () => 1\nlet same = F { f = g } == F { f = g }"
+        ),
+        ["LYS-SEM0059"]
+    );
+}

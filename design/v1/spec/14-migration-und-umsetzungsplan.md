@@ -369,3 +369,18 @@ Aufruf (`f<int>(x)`, C#s Regel gegen die Mehrdeutigkeit mit `<`). *Neu zugeschni
 statische Member über einen Typparameter (`T.make()`), assoziierte Typen, Objektsicherheit und
 eine generische Funktion als Wert brauchen den Deskriptor — in der geteilten Kopie steht kein
 Empfänger, der die Tabelle trägt — und gehen mit ihm in **S3i**. 148 Tests, 85 Konformanzfälle.
+
+**S3h, präzisiert (Entwurf).** Die Literal-Protokolle (`From…Literal`) brauchen statische
+Member und gehen mit dem Deskriptor nach **S3i**; S3h nimmt:
+
+- *h1 Gleichheit* (03 Eq, Lyric 5 05 §14 Regeln 2–3): `==`/`!=` auf Structs, Enums (Variante,
+  dann Nutzlast), Tupeln und Optionals, wenn jeder Teil vergleichbar ist — ohne Liste; je Typ
+  eine synthetische Funktion (rekursive Typen rufen sie wieder). Klassen nur mit `:: Identity`
+  (Referenzgleichheit, `same`); sonst `LYS-SEM0059` mit dem Teil, der nicht vergleichbar ist.
+  `Identity` ist wie `Any` ein Name des Prelude. `Hashable` mit den Sammlungen (S7).
+- *h2 Druckform* (Lyric 5 05 §14 Regel 2): `Debug` ungefragt — `P { x = 1, y = "a" }`,
+  `E.B(3)`, `E.R { w = 4 }`, `E.A`, `(1, "a")`, ein Optional als sein Wert oder `null`, ein
+  String in Anführungszeichen, ein `char` in einfachen —; `{x}` und `println(x)` nehmen sie für
+  alles außer den Skalaren und Strings (Display mit den Prelude-Interfaces, S7).
+- *h3 `with`* (Lyric 5 03 §2.5): Kopie eines Structs mit ersetzten Feldern, alte Werte rechts,
+  Pfade `with { to.x = 9 }`; auf Klassen und Tupeln `LYS-SEM0116`.

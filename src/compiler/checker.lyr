@@ -33,6 +33,7 @@ import lyric_script.compiler.ast {
     Segment,
     Span,
     Stmt,
+    TypeAnswer,
     TypeDecl,
     TypeExpr,
     TypeParam,
@@ -226,6 +227,11 @@ class Checker {
     var selfTyIs: ?Ty = null,
     // while a static default's copy is made: one of its own, never shared
     var copyExact: bool = false,
+    // the type parameters of the declaration whose signature is resolved, with their
+    // constraints: what `T.Item` is read through (S3i)
+    var declaringParams: TypeParamInfo[] = [],
+    // an associated type's default, by "<interface>.<name>"
+    assocDefaults: Map<string, TypeExpr>,
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -259,6 +265,7 @@ class Checker {
             instances = Map<string, int>.new(),
             eqFns = Map<int, int>.new(),
             debugFns = Map<int, int>.new(),
+            assocDefaults = Map<string, TypeExpr>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -429,6 +436,7 @@ class Checker {
                 .Stmt(_) => { }
             }
         }
+        this.checkAnswers(module);
         // the parameters' defaults: a call that leaves a parameter out gets its default where it
         // stands, so a default sees no parameter (Lyric 5 lets it read those before it)
         var k = 0;
@@ -489,6 +497,7 @@ class Checker {
             this.typeParams = savedScope;
             info.filled = true;
         }
+        this.declareAnswers(index, t.answers);
         let fields = List<FieldInfo>.new();
         let seen = Map<string, bool>.new();
         for (f in t.fields) {
@@ -546,6 +555,23 @@ class Checker {
                 continue;
             }
             let info = this.types[index];
+            // its associated types (05 §8): a value of it would have no one signature
+            let assoc = List<string>.new();
+            for (a in i.assoc) {
+                assoc.push(a.name);
+                let d = a.default;
+                if (d != null) {
+                    this.assocDefaults.insert(f"{index}.{a.name}", d);
+                }
+                if (a.bounds.length() > 0) {
+                    this.notYet("a bound on an associated type", "S3i i3b", a.span);
+                }
+                if (!info.constraintOnly) {
+                    info.constraintOnly = true;
+                    info.onlyWhy = f"it declares the associated type '{a.name}'";
+                }
+            }
+            info.assocNames = assoc.toArray();
             for (m in i.members) {
                 var names = m.isStatic;
                 for (p in m.params) {
@@ -584,6 +610,162 @@ class Checker {
                         changed = true;
                     }
                 }
+            }
+        }
+    }
+
+    /// `T.Item`, `Self.Item`, `Bag.Item`: an associated type through a type (05 §8 rule 4).
+    mut fn assocPath(path: string, at: Span): Ty {
+        let parts = List<string>.new();
+        for (p in path.split(".")) {
+            parts.push(p.toString());
+        }
+        if (parts.length() != 2) {
+            this.notYet("a path through an associated type of an associated type", "S3i i3b", at);
+            return Ty.Unknown;
+        }
+        let head = parts[0];
+        let item = parts[1];
+        var base = Ty.Unknown;
+        let pk = this.typeParams.get(head);
+        if (pk != null) {
+            base = Ty.Param(pk);
+        } else if (head == "Self") {
+            let s = this.selfTyIs;
+            if (s == null) {
+                this.error(
+                    "LYS-SEM0011",
+                    "'Self' names the type whose members these are: in an interface or a type",
+                    at
+                );
+                return Ty.Unknown;
+            }
+            base = s;
+        } else {
+            let i = this.typeNamed(head);
+            if (i < 0) {
+                this.error("LYS-SEM0011", f"unknown type '{head}'", at);
+                return Ty.Unknown;
+            }
+            base = this.selfTy(i);
+        }
+        return this.assocOf(base, item, at);
+    }
+
+    /// The associated type `item` of `base`: through a type parameter the constraint that
+    /// declares it; of a type its answer (`LYS-SEM0128` where there is none).
+    mut fn assocOf(base: Ty, item: string, at: Span): Ty {
+        match (base) {
+            .Param(k) => {
+                let infos = if (this.genericFn >= 0) this.functions[this.genericFn].typeParams
+                    else this.declaringParams;
+                if (k < infos.length()) {
+                    for (c in infos[k].constraints) {
+                        for (x in this.ancestry(c)) {
+                            for (n in this.types[x].assocNames) {
+                                if (n == item) {
+                                    return Ty.Assoc(boxTy(base), x, item);
+                                }
+                            }
+                        }
+                    }
+                }
+                this.error(
+                    "LYS-SEM0128",
+                    f"no constraint of {this.tyName(base)} declares an associated type '{item}'",
+                    at
+                );
+                return Ty.Unknown;
+            }
+            .Unknown => {
+                return Ty.Unknown;
+            }
+            _ => { }
+        }
+        let answer = this.answerOf(base, item);
+        if (answer == null) {
+            this.error(
+                "LYS-SEM0128",
+                f"'{this.tyName(base)}' answers no associated type '{item}'",
+                at
+            );
+            return Ty.Unknown;
+        }
+        return answer;
+    }
+
+    /// A type's answer to the associated type `item`; an instance's is its template's at its
+    /// arguments.
+    mut fn answerOf(t: Ty, item: string): ?Ty {
+        let e = this.entryOf(t);
+        if (e < 0) {
+            return null;
+        }
+        let info = this.types[e];
+        let own = info.answers.get(item);
+        if (own != null) {
+            return own;
+        }
+        if (info.template >= 0 && info.template != e) {
+            let tmpl = this.types[info.template].answers.get(item);
+            if (tmpl != null) {
+                return this.subst(tmpl, info.args);
+            }
+        }
+        return null;
+    }
+
+    /// The answers a type's body or extend block writes (05 §8 rule 3), `Self` its type.
+    mut fn declareAnswers(index: int, answers: TypeAnswer[]): void {
+        let info = this.types[index];
+        let saved = this.selfTyIs;
+        this.selfTyIs = this.selfTy(index);
+        for (a in answers) {
+            if (info.answers.containsKey(a.name)) {
+                this.error("LYS-SEM0121", f"'{info.name}' answers '{a.name}' twice", a.span);
+                continue;
+            }
+            info.answers.insert(a.name, this.resolveType(a.type));
+        }
+        this.selfTyIs = saved;
+    }
+
+    /// Every type's answers: each one an interface of the type asks for (`LYS-SEM0129`).
+    mut fn checkAnswers(module: Module): void {
+        for (item in module.items) {
+            match (item) {
+                .Decl(d) => match (d) {
+                    .Type(t) => this.answersAsked(t.name, t.answers),
+                    .Enum(e) => this.answersAsked(e.name, e.answers),
+                    .Extend(x) => match (x.target) {
+                        .Named(name, _, _) => this.answersAsked(name, x.answers),
+                        _ => { }
+                    },
+                    _ => { }
+                },
+                .Stmt(_) => { }
+            }
+        }
+    }
+
+    mut fn answersAsked(name: string, answers: TypeAnswer[]): void {
+        let index = this.typeNamed(name);
+        if (index < 0) {
+            return;
+        }
+        for (a in answers) {
+            var asked = false;
+            for (ii in this.types[index].ifaces) {
+                for (n in this.types[ii].assocNames) {
+                    asked = asked || n == a.name;
+                }
+            }
+            if (!asked) {
+                this.error(
+                    "LYS-SEM0129",
+                    f"no interface of '{this.types[index].name}' asks for an associated type '{a.name}'",
+                    a.span
+                );
             }
         }
     }
@@ -676,6 +858,7 @@ class Checker {
             return;
         }
         let info = this.types[index];
+        this.declareAnswers(index, x.answers);
         for (m in x.methods) {
             if (info.methods.containsKey(m.name)) {
                 this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
@@ -880,6 +1063,24 @@ class Checker {
         for (ii in added) {
             all.push(ii);
             let iface = this.types[ii];
+            // its associated types: answered by the type, or by the default (05 §8 rule 3)
+            for (n in iface.assocNames) {
+                if (!info.answers.containsKey(n)) {
+                    let d = this.assocDefaults.get(f"{ii}.{n}");
+                    if (d != null) {
+                        let saved = this.selfTyIs;
+                        this.selfTyIs = self;
+                        info.answers.insert(n, this.resolveType(d));
+                        this.selfTyIs = saved;
+                    } else {
+                        this.error(
+                            "LYS-SEM0128",
+                            f"'{info.name}' does not answer '{iface.name}.{n}'",
+                            conforms[0].span
+                        );
+                    }
+                }
+            }
             for (member in iface.memberNames) {
                 let slot = iface.slotOf.get(member) ?? -1;
                 let declared = iface.methods.get(member) ?? -1;
@@ -978,12 +1179,12 @@ class Checker {
         let fa = this.functions[a];
         let fb = this.functions[b];
         if (fa.params.length() != fb.params.length()
-            || fa.returns != this.subst(fb.returns, selfArgs)) {
+            || !sameOrUnknown(fa.returns, this.subst(fb.returns, selfArgs))) {
             return false;
         }
         var k = 0;
         while (k < fa.params.length()) {
-            if (fa.params[k].ty != this.subst(fb.params[k].ty, selfArgs)) {
+            if (!sameOrUnknown(fa.params[k].ty, this.subst(fb.params[k].ty, selfArgs))) {
                 return false;
             }
             k += 1;
@@ -1081,6 +1282,7 @@ class Checker {
             this.typeParams = savedScope;
             info.filled = true;
         }
+        this.declareAnswers(index, e.answers);
         let variants = List<string>.new();
         let payloads = List<FieldInfo[]>.new();
         let named = List<bool>.new();
@@ -1153,6 +1355,13 @@ class Checker {
         // `Self` in its signature: its type's (S3i)
         let savedSelf = this.selfTyIs;
         this.selfTyIs = this.selfFor(owner);
+        let savedDeclaring = this.declaringParams;
+        if (owner >= 0 && this.types[owner].kind == .Interface && this.types[owner].selfParam) {
+            this.declaringParams = [TypeParamInfo { name = "Self", constraints = [owner] }];
+        }
+        defer {
+            this.declaringParams = savedDeclaring;
+        }
         defer {
             this.selfTyIs = savedSelf;
         }
@@ -1178,6 +1387,7 @@ class Checker {
             }
             info.typeParams = tps.toArray();
             this.typeParams = scope;
+            this.declaringParams = info.typeParams;
         }
         let params = List<ParamInfo>.new();
         for (p in f.params) {
@@ -1348,6 +1558,9 @@ class Checker {
     }
 
     mut fn resolveNamedType(name: string, args: TypeExpr[], at: Span): Ty {
+        if (name.contains(".")) {
+            return this.assocPath(name, at);
+        }
         let param = this.typeParams.get(name);
         if (param != null && args.length() == 0) {
             return Ty.Param(param);
@@ -1483,6 +1696,7 @@ class Checker {
                 "fn(" + parts.toArray().join(", ") + ") -> " + this.tyName(ft.result.value)
             }
             .Cell(inner) => this.tyName(inner.value),
+            .Assoc(b, _, n) => f"{this.tyName(b.value)}.{n}",
         };
     }
 
@@ -1742,8 +1956,11 @@ class Checker {
     mut fn instanceOf(fi: int, args: Ty[]): int {
         let shaped = List<Ty>.new();
         let keys = List<string>.new();
+        var ak = 0;
         for (a in args) {
-            if (this.sharedShape(a) && !this.copyExact) {
+            let shares = this.sharedShape(a) && !this.copyExact && !this.assocConstrained(fi, ak);
+            ak += 1;
+            if (shares) {
                 shaped.push(Ty.Named(this.anyIndex));
                 keys.push("ref");
             } else {
@@ -1806,7 +2023,10 @@ class Checker {
         let fromThis = this.descsFromThis(fi);
         var k = 0;
         for (x in args) {
-            if (generic.templateOf >= 0 || !this.sharedShape(x) || this.copyExact) {
+            if (generic.templateOf >= 0
+                || !this.sharedShape(x)
+                || this.copyExact
+                || this.assocConstrained(fi, k)) {
                 sources.push(null);
             } else if (fromThis) {
                 let own = TExpr.DescOfValue(boxE(TExpr.Local(0, anyTy)), anyTy);
@@ -1857,12 +2077,29 @@ class Checker {
         }
         var k = 0;
         for (x in bound) {
-            if (this.sharedShape(x)) {
+            if (this.sharedShape(x) && !this.assocConstrained(fi, k)) {
                 out.push(k);
             }
             k += 1;
         }
         return out.toArray();
+    }
+
+    /// Whether type parameter `k` of `fi` is constrained by an interface with associated types:
+    /// a copy of its own for each argument, since an answer's slots differ by type (S3i).
+    mut fn assocConstrained(fi: int, k: int): bool {
+        let tps = this.functions[fi].typeParams;
+        if (k >= tps.length()) {
+            return false;
+        }
+        for (c in tps[k].constraints) {
+            for (x in this.ancestry(c)) {
+                if (this.types[x].assocNames.length() > 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// Whether `t` names a type parameter whose descriptor the copy being made gets at run time.
@@ -2235,6 +2472,13 @@ class Checker {
         }
         return match (t) {
             .Param(k) => if (k < a.length()) a[k] else t,
+            .Assoc(b, ii, n) => {
+                let nb = this.subst(b.value, a);
+                match (nb) {
+                    .Param(_) | .Unknown => Ty.Assoc(boxTy(nb), ii, n),
+                    _ => this.answerOf(nb, n) ?? Ty.Unknown,
+                }
+            }
             .Named(i) => {
                 let info = this.types[i];
                 if (info.template < 0 || info.args.length() == 0) {
@@ -2477,6 +2721,7 @@ class Checker {
     mut fn enterGenericType(index: int, params: TypeParam[]): void {
         let info = this.types[index];
         info.typeParams = this.typeParamsOf(params);
+        this.declaringParams = info.typeParams;
         info.template = index;
         let own = List<Ty>.new();
         let scope = Map<string, int>.new();
@@ -7880,11 +8125,16 @@ struct WithUpdate {
     value: TExpr,
 }
 
+/// Whether `a` is `b`, or one of them unknown after a fault reported already.
+fn sameOrUnknown(a: Ty, b: Ty): bool {
+    return a == b || a == .Unknown || b == .Unknown;
+}
+
 /// Whether a written type names `Self`.
 fn mentionsSelf(t: TypeExpr): bool {
     return match (t) {
         .Named(name, args, _) => {
-            var found = name == "Self";
+            var found = name == "Self" || name.startsWith("Self.");
             for (x in args) {
                 found = found || mentionsSelf(x);
             }

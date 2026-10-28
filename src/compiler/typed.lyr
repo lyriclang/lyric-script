@@ -29,6 +29,9 @@ enum Ty :: [Equatable, Debug] {
     Cell(Box<Ty>),
     /// Type parameter `k` of the generic being checked (S3g): opaque, its constraints' members.
     Param(int),
+    /// `T.Item`: the associated type `Item`, which interface `k` declares, of a type parameter;
+    /// the type's answer in each copy (S3i).
+    Assoc(Box<Ty>, int, string),
 }
 
 /// A type parameter: its name and the interfaces its argument satisfies.
@@ -159,6 +162,9 @@ class TypeInfo {
     var selfParam: bool = false,
     var constraintOnly: bool = false,
     var onlyWhy: string = "",
+    // an interface's associated types; a type's answers to them, by name (S3i)
+    var assocNames: string[] = [],
+    var answers: Map<string, Ty> = Map<string, Ty>.new(),
 }
 
 struct ParamInfo :: [Debug] {

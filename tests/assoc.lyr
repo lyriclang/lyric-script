@@ -1,0 +1,83 @@
+// Associated types (S3i, Lyric 5 05 §8 rules 1–4): an interface declares them, a type answers,
+// `Self.Item` and `T.Item` read the answer — in a copy of its own for each type, since an
+// answer's slots differ by type; run in the VM.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let types = "interface Container {\n    type Item\n    fn first(): Self.Item\n}\nstruct IntBox :: [Container] {\n    v: int\n    type Item = int\n\n    fn first(): int = this.v\n}\nstruct StrBox :: [Container] {\n    s: string\n    type Item = string\n\n    fn first(): string = this.s\n}\nclass Bag :: [Container] {\n    var n: int = 5\n    type Item = IntBox\n\n    fn first(): IntBox = IntBox { v = this.n }\n}\nextend int :: [Container] {\n    type Item = string\n\n    fn first(): string = \"i\"\n}\nfn firstOf<T :: [Container]>(c: T): T.Item = c.first()\n";
+
+@Test
+fn anAnswerIsTheTypesOwn(): void {
+    // a scalar, a string, a struct and a built-in's answer: each type its own copy
+    let e = "fn e(): int {\n    var n = 0\n    if (firstOf(IntBox { v = 3 }) + 1 == 4) {\n        n += 1\n    }\n    if (firstOf(StrBox { s = \"a\" }) == \"a\") {\n        n += 2\n    }\n    if (firstOf(Bag { }).v == 5) {\n        n += 4\n    }\n    if (firstOf(7) == \"i\") {\n        n += 8\n    }\n    return n\n}";
+    assertEq(value(types + e, "e"), 15);
+}
+
+@Test
+fn aDefaultAnswersForTheType(): void {
+    let e = "interface Counted {\n    type Unit = int\n    fn count(): Self.Unit\n}\nstruct Z :: [Counted] {\n    fn count(): int = 3\n}\nfn countOf<T :: [Counted]>(x: T): T.Unit = x.count()\nfn e(): int = countOf(Z { }) + 1";
+    assertEq(value(e, "e"), 4);
+}
+
+@Test
+fn whatAssociatedTypesRefuse(): void {
+    // a conformer without an answer, and no default
+    assertEq(
+        errs(types + "struct Q :: [Container] {\n    fn first(): int = 1\n}"),
+        ["LYS-SEM0128"]
+    );
+    // an answer no interface asks for
+    assertEq(errs(types + "struct W {\n    type Item = int\n}"), ["LYS-SEM0129"]);
+    // a member that does not read the answer
+    assertEq(
+        errs(
+            types
+                + "struct V :: [Container] {\n    type Item = int\n\n    fn first(): string = \"x\"\n}"
+        ),
+        ["LYS-SEM0042"]
+    );
+    // a path no constraint declares
+    assertEq(errs(types + "fn g<T>(x: T): T.Item = x"), ["LYS-SEM0128"]);
+    // an interface with associated types is a constraint only
+    assertEq(errs(types + "let c: Container = IntBox { v = 1 }"), ["LYS-SEM0126"]);
+}

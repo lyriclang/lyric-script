@@ -427,3 +427,10 @@ gewartet hat:
 
 Je Teil Konformanzfälle in 03 und 05; `typeOf` selbst kommt mit `reflect` (S10), sein Prüfstein
 `typeOf([1, 2])` mit S7 — S3i liefert die Deskriptoren, die beide lesen.
+
+**S3i i1, Ergebnis.** Die Probe vorher: `mk(Foo { }) is Pair<Foo>` war `false` — die geteilte
+Kopie baute `Pair<Any>`, ein Fehler seit S3g. Jetzt hat jeder Typ einen Deskriptor (ein
+Interface und ein Enum mit Nutzlast eigene, das Enum mit seinen Varianten verknüpft; Funktions-,
+Tupel- und Optionaltypen nach Bedarf); sieben Ops, Bytecode-Format 3. Eine Kopie, deren Lambda
+`T` braucht, kennt den Deskriptor noch nicht (die Closure müsste ihn halten) — mit i4. 164
+Tests, 93 Konformanzfälle.

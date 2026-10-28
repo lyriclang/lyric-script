@@ -1,0 +1,5 @@
+# The empty program: start-up and teardown only. Prints 0, like v46/empty.lyr.
+fn main() -> s regs 1 0
+    load.i s0, 0
+    ret.s s0
+end

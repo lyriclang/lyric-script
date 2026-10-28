@@ -1,0 +1,213 @@
+module (format 4.0)
+  capabilities: 0x0
+  strings:
+    s0 "Utf8Error"
+    s1 "<tuple>"
+    s2 "Result<int, ParseError>"
+    s3 "Result<int, ParseError>.Ok"
+    s4 "ParseError"
+    s5 "ParseErrorKind"
+    s6 "ParseErrorKind.Empty"
+    s7 "ParseErrorKind.InvalidDigit"
+    s8 "ParseErrorKind.Overflow"
+    s9 "Result<int, ParseError>.Err"
+    s10 "StringBuilder"
+    s11 "Exception"
+    s12 "Iterator<int>"
+    s13 "RangeIterator"
+    s14 "InclusiveRangeIterator"
+    s15 "Iterator<float>"
+    s16 "UnsignedRangeIterator"
+    s17 "InclusiveUnsignedRangeIterator"
+    s18 "StringIterator"
+    s19 "Iterator<string>"
+    s20 "LineIterator"
+    s21 "FilterIterator<int>"
+    s22 "TakeIterator<int>"
+    s23 "SkipIterator<int>"
+    s24 "TakeWhileIterator<int>"
+    s25 "ChainIterator<int>"
+    s26 "SkipWhileIterator<int>"
+    s27 "StepByIterator<int>"
+    s28 "InspectIterator<int>"
+    s29 "DedupIterator<int>"
+    s30 "FilterIterator<float>"
+    s31 "TakeIterator<float>"
+    s32 "SkipIterator<float>"
+    s33 "TakeWhileIterator<float>"
+    s34 "ChainIterator<float>"
+    s35 "SkipWhileIterator<float>"
+    s36 "StepByIterator<float>"
+    s37 "InspectIterator<float>"
+    s38 "DedupIterator<float>"
+    s39 "FilterIterator<string>"
+    s40 "TakeIterator<string>"
+    s41 "SkipIterator<string>"
+    s42 "TakeWhileIterator<string>"
+    s43 "ChainIterator<string>"
+    s44 "SkipWhileIterator<string>"
+    s45 "StepByIterator<string>"
+    s46 "InspectIterator<string>"
+    s47 "DedupIterator<string>"
+    s48 "main.fib"
+    s49 "main.main"
+    s50 "std.io.console.println<int>"
+    s51 "std.core.<extend>.int.show"
+    s52 "fib.lyr"
+    s53 "console.lyr"
+    s54 "core.lyr"
+    s55 "n"
+    s56 "value"
+    s57 "this"
+  start: main.main
+  type Utf8Error(i64)
+  type <tuple>(i64, i64, i64)
+  enum Result<int, ParseError> {Result<int, ParseError>.Ok, Result<int, ParseError>.Err}
+  type Result<int, ParseError>.Ok(i64, i64)
+  type ParseError(&ParseErrorKind, i64)
+  enum ParseErrorKind {ParseErrorKind.Empty, ParseErrorKind.InvalidDigit, ParseErrorKind.Overflow}
+  type ParseErrorKind.Empty(i64)
+  type ParseErrorKind.InvalidDigit(i64)
+  type ParseErrorKind.Overflow(i64)
+  type Result<int, ParseError>.Err(i64, &ParseError)
+  type StringBuilder(string[], i64)
+  type Exception(string)
+  interface Iterator<int> {next, filter, take, skip, takeWhile, chain, skipWhile, stepBy, inspect, dedupBy, reduce, count, first, last, nth, any, all, none, find, position, countWhere, forEach, toArray}
+  type RangeIterator(i64, i64)
+  type InclusiveRangeIterator(i64, i64, bool)
+  interface Iterator<float> {next, filter, take, skip, takeWhile, chain, skipWhile, stepBy, inspect, dedupBy, reduce, count, first, last, nth, any, all, none, find, position, countWhere, forEach, toArray}
+  type UnsignedRangeIterator(u64, u64)
+  type InclusiveUnsignedRangeIterator(u64, u64, bool)
+  type StringIterator(char[], i64)
+  interface Iterator<string> {next, filter, take, skip, takeWhile, chain, skipWhile, stepBy, inspect, dedupBy, reduce, count, first, last, nth, any, all, none, find, position, countWhere, forEach, toArray}
+  type LineIterator(bool)
+  type FilterIterator<int>(interface, fn)
+  type TakeIterator<int>(interface, i64)
+  type SkipIterator<int>(interface, i64)
+  type TakeWhileIterator<int>(interface, fn, bool)
+  type ChainIterator<int>(interface, interface, bool)
+  type SkipWhileIterator<int>(interface, fn, bool)
+  type StepByIterator<int>(interface, i64, bool)
+  type InspectIterator<int>(interface, fn)
+  type DedupIterator<int>(interface, fn, i64, bool)
+  type FilterIterator<float>(interface, fn)
+  type TakeIterator<float>(interface, i64)
+  type SkipIterator<float>(interface, i64)
+  type TakeWhileIterator<float>(interface, fn, bool)
+  type ChainIterator<float>(interface, interface, bool)
+  type SkipWhileIterator<float>(interface, fn, bool)
+  type StepByIterator<float>(interface, i64, bool)
+  type InspectIterator<float>(interface, fn)
+  type DedupIterator<float>(interface, fn, i64, bool)
+  type FilterIterator<string>(interface, fn)
+  type TakeIterator<string>(interface, i64)
+  type SkipIterator<string>(interface, i64)
+  type TakeWhileIterator<string>(interface, fn, bool)
+  type ChainIterator<string>(interface, interface, bool)
+  type SkipWhileIterator<string>(interface, fn, bool)
+  type StepByIterator<string>(interface, i64, bool)
+  type InspectIterator<string>(interface, fn)
+  type DedupIterator<string>(interface, fn, i64, bool)
+  import std.io.console.rawPrintln(string) -> void
+  import std.core.fromInt(i64) -> string
+  names Utf8Error(offset)
+  names <tuple>(0, 1, 2)
+  names Result<int, ParseError>.Ok($tag, 0)
+  names ParseError(kind, offset)
+  names ParseErrorKind.Empty($tag)
+  names ParseErrorKind.InvalidDigit($tag)
+  names ParseErrorKind.Overflow($tag)
+  names Result<int, ParseError>.Err($tag, 0)
+  names StringBuilder(parts, count)
+  names Exception(text)
+  names RangeIterator(current, end)
+  names InclusiveRangeIterator(current, last, done)
+  names UnsignedRangeIterator(current, end)
+  names InclusiveUnsignedRangeIterator(current, last, done)
+  names StringIterator(chars, index)
+  names LineIterator(done)
+  names FilterIterator<int>(source, keep)
+  names TakeIterator<int>(source, remaining)
+  names SkipIterator<int>(source, pending)
+  names TakeWhileIterator<int>(source, keep, done)
+  names ChainIterator<int>(first, second, onFirst)
+  names SkipWhileIterator<int>(source, drop, passing)
+  names StepByIterator<int>(source, step, atStart)
+  names InspectIterator<int>(source, look)
+  names DedupIterator<int>(source, key, lastKey, started)
+  names FilterIterator<float>(source, keep)
+  names TakeIterator<float>(source, remaining)
+  names SkipIterator<float>(source, pending)
+  names TakeWhileIterator<float>(source, keep, done)
+  names ChainIterator<float>(first, second, onFirst)
+  names SkipWhileIterator<float>(source, drop, passing)
+  names StepByIterator<float>(source, step, atStart)
+  names InspectIterator<float>(source, look)
+  names DedupIterator<float>(source, key, lastKey, started)
+  names FilterIterator<string>(source, keep)
+  names TakeIterator<string>(source, remaining)
+  names SkipIterator<string>(source, pending)
+  names TakeWhileIterator<string>(source, keep, done)
+  names ChainIterator<string>(first, second, onFirst)
+  names SkipWhileIterator<string>(source, drop, passing)
+  names StepByIterator<string>(source, step, atStart)
+  names InspectIterator<string>(source, look)
+  names DedupIterator<string>(source, key, lastKey, started)
+
+fn main.fib -> i64 {
+  params: 1
+  maxstack: 3
+  slots:
+    l0: i64 ; n
+  bb0:
+    brcmpk lt i64 l0, 2 -> bb1, bb2
+  bb1:
+    ldloc 0
+    retval
+  bb2:
+    ldloc 0
+    const i64 1
+    sub i64
+    call main.fib
+    ldloc 0
+    const i64 2
+    sub i64
+    call main.fib
+    add i64
+    retval
+}
+
+fn main.main -> i64 {
+  params: 0
+  maxstack: 1
+  slots:
+  bb0:
+    const i64 32
+    call main.fib
+    call std.io.console.println<int>
+    const i64 0
+    retval
+}
+
+fn std.io.console.println<int> -> void {
+  params: 1
+  maxstack: 1
+  slots:
+    l0: i64 ; value
+  bb0:
+    ldloc 0
+    call std.core.<extend>.int.show
+    call std.io.console.rawPrintln
+    ret
+}
+
+fn std.core.<extend>.int.show -> string {
+  params: 1
+  maxstack: 1
+  slots:
+    l0: i64 ; this
+  bb0:
+    ldloc 0
+    call std.core.fromInt
+    retval
+}

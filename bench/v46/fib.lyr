@@ -1,0 +1,15 @@
+// B1 fib: fib(N) recursive, the slow way — two calls per step; call heavy.
+// The same algorithm as ../fib.lyrsasm.
+import std.io.console { println };
+
+fn fib(n: int): int {
+    if (n < 2) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main(): int {
+    println(fib(32));
+    return 0;
+}

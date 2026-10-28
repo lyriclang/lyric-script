@@ -121,4 +121,15 @@ Lyric-5-Hosts zu einem Nebenprodukt der Implementierung.
 
 - Bereich 13 (in 12 aufgegangen): DAP, LSP, `pack`, Cache-Ort; Kostenregeln der schweren Natives
   (01 S5c).
-- V3 bei Messpunkt 1 (S1): A4 behoben oder Umstellung auf `Obj`.
+- ~~V3 bei Messpunkt 1 (S1): A4 behoben oder Umstellung auf `Obj`.~~ **Entschieden bei
+  Messpunkt 1 (2026-10-28, `bench/README.md`): A' bleibt.** A4 ist offen, aber Referenz-Moves
+  dominieren nicht: die eine Interface-Speicherung je Knoten macht geschätzt ~9 % des Listenlaufs
+  aus; selbst ohne sie stiege B3 nur von 3,7× auf ~4,1×, und `Obj` spart genau diese Kosten.
+
+**Messpunkt 1 (S1h, 2026-10-28).** Script gegen 4.6 Release: fib 3,2–3,5×, loop 6,0×, objects
+4,0–4,2×, geometrisches Mittel **4,3×** — das Ziel ≥ 5× ist **verfehlt, nicht um mehr als 2×**:
+kein Neuzuschnitt, das Ziel bleibt (verbindlich an Messpunkt 3, der Bench-Suite in S7). Der
+schwächste Punkt sind die **Aufrufe** (B1), nicht die Referenzen: der Aufrufpfad (`List<CallFrame>`,
+Funktionstabelle, zwei Wachstumsprüfungen, `spend` je Aufruf) ist der erste eigene Hebel vor
+Messpunkt 3. A2d (ungeprüfter Zugriff) wird nach der Dispatch-Zeile erst gestellt, wenn das
+Ratchet der Bench-Suite verfehlt wird — offener Punkt für den Maintainer, ob schon jetzt.

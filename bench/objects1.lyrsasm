@@ -1,0 +1,35 @@
+# B3 objects with ROUNDS = 1 (supplement: splits the build from the walk). B3 objects: a linked list of N nodes (one int and one reference field, values 0..N-1, built
+# by prepending), then the values summed ROUNDS times — allocation and field access.
+# Loops rotated (test at the bottom). The same algorithm as v46/objects.lyr.
+type Node scalar value ref next
+
+fn main() -> s regs 7 3
+    load.null r0                # head = null
+    load.null r2                # null, to compare against
+    load.i s0, 0                # i
+    load.k s1, 100000           # N
+build:
+    new r1, Node
+    set.s r1, Node.value, s0
+    set.r r1, Node.next, r0
+    move.r r0, r1               # head = the new node
+    add.imm s0, s0, 1
+    jump.lt.i s0, s1, @build
+    load.i s2, 0                # round
+    load.i s3, 1                # ROUNDS = 1: the build and one walk
+    load.i s4, 0                # sum
+round:
+    move.r r1, r0               # p = head
+    same s5, r1, r2
+    jump.if s5, @roundend
+walk:
+    get.s s6, r1, Node.value
+    add.i s4, s4, s6
+    get.r r1, r1, Node.next     # p = p.next
+    same s5, r1, r2
+    jump.ifnot s5, @walk
+roundend:
+    add.imm s2, s2, 1
+    jump.lt.i s2, s3, @round
+    ret.s s4
+end

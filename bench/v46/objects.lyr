@@ -1,0 +1,32 @@
+// B3 objects: a linked list of N nodes (one int and one reference field, values 0..N-1, built
+// by prepending), then the values summed ROUNDS times — allocation and field access.
+// The same algorithm as ../objects.lyrsasm.
+import std.io.console { println };
+
+class Node {
+    value: int,
+    next: ?Node,
+}
+
+fn main(): int {
+    let n = 100000;
+    let rounds = 50;
+    var head: ?Node = null;
+    var i = 0;
+    while (i < n) {
+        head = Node { value = i, next = head };
+        i += 1;
+    }
+    var sum = 0;
+    var round = 0;
+    while (round < rounds) {
+        var p = head;
+        while (let node = p) {
+            sum += node.value;
+            p = node.next;
+        }
+        round += 1;
+    }
+    println(sum);
+    return 0;
+}

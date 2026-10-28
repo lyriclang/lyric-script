@@ -82,6 +82,7 @@ fn functionsReturnWhatTheySay(): void {
 fn anExpressionBodyGivesItsType(): void {
     assertEq(errs("fn twice(x: int) = x * 2\nlet t: int = twice(2)\nprintln(t)"), []);
     assertEq(globalType("fn half(x: int) = x / 2.0\nlet h = half(3)", "h"), Ty.Float);
+    assertEq(errs("fn half(x: int) = x / 2.0\nprintln(half(3))"), []);
     assertEq(errs("fn loopy(x: int) = loopy(x)"), ["LYS-SEM0010"]);
 }
 
@@ -140,6 +141,7 @@ fn loopsAndTheirBreaks(): void {
 @Test
 fn valuesOfIfAndBlocks(): void {
     assertEq(globalType("let x = if (true) 1 else 2.5", "x"), Ty.Float);
+    assertEq(errs("let x = if (true) 1 else 2.5\nprintln(x)"), []);
     assertEq(errs("let y = if (true) 1 else \"a\"\nprintln(y)"), ["LYS-SEM0016"]);
     assertEq(globalType("let b = {\n    let t = 2\n    t * 3\n}", "b"), Ty.Int);
     assertEq(errs("let n = 3\nprintln(f\"n = {n}, half = {n / 2.0}\")"), []);

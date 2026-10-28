@@ -547,6 +547,12 @@ severity = "error"
 area = "03-types"
 summary = "`List` takes one, `Map` two, the other types none (generics come with S3). Lyric 5's LYR-SEM0026."
 
+[LYS-SEM0027]
+title = "a member of an associated type that no bound provides"
+severity = "error"
+area = "05-interfaces"
+summary = "A generic body calls a method on a value of an associated type, `it.next()` with `it: A.Iter`, that none of the type's bounds declares; without a bound it has no member. Lyric 5's LYR-SEM0027."
+
 [LYS-SEM0028]
 title = "a type argument that does not satisfy its parameter's constraints"
 severity = "error"
@@ -768,6 +774,12 @@ title = "a 'loop' whose breaks give a value only in part"
 severity = "error"
 area = "07-statements"
 summary = "A `loop` gives a value at every break, or at none. Lyric 5's LYR-SEM0149."
+
+[LYS-SEM0160]
+title = "an associated type's answer does not meet its bound"
+severity = "error"
+area = "05-interfaces"
+summary = "A conforming type answers an associated type with a type that does not conform to the bound the interface declares for it, `type Iter :: [Iterator]` answered with `int`. Lyric 5's LYR-SEM0160."
 
 [LYS-SEM0176]
 title = "a name bound twice in one scope"

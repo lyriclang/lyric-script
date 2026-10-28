@@ -281,6 +281,7 @@ fn typeOf(e: TExpr): Ty {
         .NewD(_, _, _, _, t) => t,
         .DebugParam(_, _, t) => t,
         .CallStatic(_, _, _, _, _, t) => t,
+        .CallBound(_, _, _, _, _, t) => t,
         .CallStaticD(_, _, _, t) => t,
         .TextParam(_, _, t) => t,
         .Unknown => Ty.Unknown,
@@ -408,6 +409,9 @@ enum TExpr :: [Debug] {
     /// A static member of a constraint of type parameter `k`, reached through it (`T.parse(s)`):
     /// the interface, the member, its slot, the arguments (S3i).
     CallStatic(int, int, string, int, TExpr[], Ty),
+    /// A member of a bound of an associated type, called on a value of it (`it.next()` with
+    /// `it: A.Iter`): the type, the interface, the member, its slot, the arguments (S3i).
+    CallBound(Ty, int, string, int, TExpr[], Ty),
     /// The function in slot `k` of the descriptor given, called with the arguments: a static
     /// member through a shared copy's type parameter.
     CallStaticD(int, Box<TExpr>, TExpr[], Ty),

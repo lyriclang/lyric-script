@@ -1332,6 +1332,7 @@ class FnGen {
             // resolved to instances before code is made
             .CallGeneric(_, _, _, _) | .CallConstraint(_, _, _, _, _, _) | .IsParam(_, _, _) => { }
             .DebugParam(_, _, _) | .TextParam(_, _, _) | .CallStatic(_, _, _, _, _, _) => { }
+            .CallBound(_, _, _, _, _, _) => { }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)
             .CallStaticD(slot, d, args, t) => {

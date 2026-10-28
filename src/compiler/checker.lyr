@@ -230,8 +230,9 @@ class Checker {
     // the type parameters of the declaration whose signature is resolved, with their
     // constraints: what `T.Item` is read through (S3i)
     var declaringParams: TypeParamInfo[] = [],
-    // an associated type's default, by "<interface>.<name>"
+    // an associated type's default and its bounds, by "<interface>.<name>"
     assocDefaults: Map<string, TypeExpr>,
+    assocBounds: Map<string, int[]>,
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -266,6 +267,7 @@ class Checker {
             eqFns = Map<int, int>.new(),
             debugFns = Map<int, int>.new(),
             assocDefaults = Map<string, TypeExpr>.new(),
+            assocBounds = Map<string, int[]>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -563,9 +565,17 @@ class Checker {
                 if (d != null) {
                     this.assocDefaults.insert(f"{index}.{a.name}", d);
                 }
-                if (a.bounds.length() > 0) {
-                    this.notYet("a bound on an associated type", "S3i i3b", a.span);
+                // its bounds: interfaces, as a type parameter's constraints (05 §8 rule 2)
+                let bounds = List<int>.new();
+                for (b in a.bounds) {
+                    let bi = this.typeIndex.get(b.name);
+                    if (bi == null || this.types[bi].kind != .Interface) {
+                        this.error("LYS-SEM0078", f"'{b.name}' is no interface", b.span);
+                        continue;
+                    }
+                    bounds.push(bi);
                 }
+                this.assocBounds.insert(f"{index}.{a.name}", bounds.toArray());
                 if (!info.constraintOnly) {
                     info.constraintOnly = true;
                     info.onlyWhy = f"it declares the associated type '{a.name}'";
@@ -620,12 +630,7 @@ class Checker {
         for (p in path.split(".")) {
             parts.push(p.toString());
         }
-        if (parts.length() != 2) {
-            this.notYet("a path through an associated type of an associated type", "S3i i3b", at);
-            return Ty.Unknown;
-        }
         let head = parts[0];
-        let item = parts[1];
         var base = Ty.Unknown;
         let pk = this.typeParams.get(head);
         if (pk != null) {
@@ -649,7 +654,17 @@ class Checker {
             }
             base = this.selfTy(i);
         }
-        return this.assocOf(base, item, at);
+        var k = 1;
+        while (k < parts.length()) {
+            base = this.assocOf(base, parts[k], at);
+            k += 1;
+        }
+        return base;
+    }
+
+    /// The bounds of associated type `name` of interface `ii`.
+    mut fn boundsOf(ii: int, name: string): int[] {
+        return this.assocBounds.get(f"{ii}.{name}") ?? [];
     }
 
     /// The associated type `item` of `base`: through a type parameter the constraint that
@@ -678,6 +693,24 @@ class Checker {
                 return Ty.Unknown;
             }
             .Unknown => {
+                return Ty.Unknown;
+            }
+            // through an associated type: what its bounds declare (05 §8 rule 4)
+            .Assoc(_, ii, n) => {
+                for (b in this.boundsOf(ii, n)) {
+                    for (x in this.ancestry(b)) {
+                        for (m in this.types[x].assocNames) {
+                            if (m == item) {
+                                return Ty.Assoc(boxTy(base), x, item);
+                            }
+                        }
+                    }
+                }
+                this.error(
+                    "LYS-SEM0128",
+                    f"no bound of {this.tyName(base)} declares an associated type '{item}'",
+                    at
+                );
                 return Ty.Unknown;
             }
             _ => { }
@@ -1080,6 +1113,18 @@ class Checker {
                         );
                     }
                 }
+                let answer = info.answers.get(n);
+                if (answer != null) {
+                    for (b in this.boundsOf(ii, n)) {
+                        if (answer != .Unknown && !this.conformsTo(answer, b)) {
+                            this.error(
+                                "LYS-SEM0160",
+                                f"'{info.name}' answers '{iface.name}.{n}' with {this.tyName(answer)}, which is no {this.types[b].name}",
+                                conforms[0].span
+                            );
+                        }
+                    }
+                }
             }
             for (member in iface.memberNames) {
                 let slot = iface.slotOf.get(member) ?? -1;
@@ -1245,6 +1290,16 @@ class Checker {
                 var found = false;
                 for (x in kinds) {
                     found = found || x == ii;
+                }
+                found
+            }
+            // an associated type is what its bounds are, and their parents
+            .Assoc(_, ai, an) => {
+                var found = false;
+                for (b in this.boundsOf(ai, an)) {
+                    for (x in this.ancestry(b)) {
+                        found = found || x == ii;
+                    }
                 }
                 found
             }
@@ -2425,6 +2480,10 @@ class Checker {
                 }
                 TExpr.Call(inst, all.toArray(), this.subst(t, a))
             }
+            .CallBound(bt, ii, member, slot, xs, t) => {
+                let concrete = this.subst(bt, a);
+                this.memberCallOn(concrete, ii, member, slot, this.specAll(xs, a), this.subst(t, a))
+            }
             .CallConstraint(k, ii, member, slot, xs, t) => {
                 let all = this.specAll(xs, a);
                 let rt = this.subst(t, a);
@@ -2433,35 +2492,55 @@ class Checker {
                     // a shared copy: through the receiver's own table
                     return TExpr.CallIface(slot, all, rt);
                 }
-                // a copy of its own: the type's own method, or the interface's default
-                let entry = this.entryOf(concrete);
-                let own = if (entry >= 0) this.types[entry].methods.get(member) else null;
-                if (own != null) {
-                    return TExpr.Call(own, all, rt);
-                }
-                let found = this.ifaceMember(ii, member);
-                if (found == null) {
-                    return TExpr.Unknown;
-                }
-                let (fi, _) = found;
-                if (this.selfGeneric(fi)) {
-                    // a default generic over `Self`: its copy for the type, the receiver as it is
-                    return TExpr.Call(this.selfCopy(fi, concrete), all, rt);
-                }
-                let iface = Ty.Named(this.functions[fi].owner);
-                let rest = List<TExpr>.new();
-                rest.push(
-                    if (this.boxed(concrete)) TExpr.BoxOf(boxE(all[0]), entry, iface)
-                        else TExpr.Upcast(boxE(all[0]), iface)
-                );
-                var j = 1;
-                while (j < all.length()) {
-                    rest.push(all[j]);
-                    j += 1;
-                }
-                TExpr.Call(fi, rest.toArray(), rt)
+                this.memberCallOn(concrete, ii, member, slot, all, rt)
             }
         };
+    }
+
+    /// Member `member` of interface `ii` called on a value of the concrete type: the type's own
+    /// method, or the interface's default — a copy for the type where it is generic over `Self`,
+    /// else on the receiver made an interface value.
+    mut fn memberCallOn(
+        concrete: Ty,
+        ii: int,
+        member: string,
+        slot: int,
+        all: TExpr[],
+        rt: Ty
+    ): TExpr {
+        match (concrete) {
+            .Assoc(_, _, _) | .Param(_) => {
+                return TExpr.CallIface(slot, all, rt);
+            }
+            _ => { }
+        }
+        // a copy of its own: the type's own method, or the interface's default
+        let entry = this.entryOf(concrete);
+        let own = if (entry >= 0) this.types[entry].methods.get(member) else null;
+        if (own != null) {
+            return TExpr.Call(own, all, rt);
+        }
+        let found = this.ifaceMember(ii, member);
+        if (found == null) {
+            return TExpr.Unknown;
+        }
+        let (fi, _) = found;
+        if (this.selfGeneric(fi)) {
+            // a default generic over `Self`: its copy for the type, the receiver as it is
+            return TExpr.Call(this.selfCopy(fi, concrete), all, rt);
+        }
+        let iface = Ty.Named(this.functions[fi].owner);
+        let rest = List<TExpr>.new();
+        rest.push(
+            if (this.boxed(concrete)) TExpr.BoxOf(boxE(all[0]), entry, iface)
+                else TExpr.Upcast(boxE(all[0]), iface)
+        );
+        var j = 1;
+        while (j < all.length()) {
+            rest.push(all[j]);
+            j += 1;
+        }
+        return TExpr.Call(fi, rest.toArray(), rt);
     }
 
     /// `t` with type parameter `k` replaced by `a[k]` throughout — in an instance of a generic
@@ -2475,7 +2554,8 @@ class Checker {
             .Assoc(b, ii, n) => {
                 let nb = this.subst(b.value, a);
                 match (nb) {
-                    .Param(_) | .Unknown => Ty.Assoc(boxTy(nb), ii, n),
+                    // still open: through a type parameter, or an associated type of one
+                    .Param(_) | .Unknown | .Assoc(_, _, _) => Ty.Assoc(boxTy(nb), ii, n),
                     _ => this.answerOf(nb, n) ?? Ty.Unknown,
                 }
             }
@@ -7221,6 +7301,38 @@ class Checker {
         let t = typeOf(receiver);
         match (t) {
             .Unknown => {
+                return TExpr.Unknown;
+            }
+            .Assoc(_, ai, an) => {
+                // an associated type has its bounds' members (05 §8 rule 4)
+                for (b in this.boundsOf(ai, an)) {
+                    let found = this.ifaceMember(b, method);
+                    if (found != null) {
+                        let (fi, slot) = found;
+                        if (this.selfGeneric(fi)) {
+                            this.presetBinds = [t];
+                        }
+                        let call = this.callAmong(method, [fi], receiver, args, at);
+                        this.presetBinds = [];
+                        return match (call) {
+                            .Call(_, all, rt) => TExpr.CallBound(t, b, method, slot, all, rt),
+                            .CallGeneric(_, _, all, rt) => TExpr.CallBound(
+                                t,
+                                b,
+                                method,
+                                slot,
+                                all,
+                                rt
+                            ),
+                            _ => call,
+                        };
+                    }
+                }
+                this.error(
+                    "LYS-SEM0027",
+                    f"'{this.tyName(t)}' has no method '{method}': its bounds give none",
+                    memberAt
+                );
                 return TExpr.Unknown;
             }
             .Param(k) => {

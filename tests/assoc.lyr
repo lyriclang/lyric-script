@@ -81,3 +81,33 @@ fn whatAssociatedTypesRefuse(): void {
     // an interface with associated types is a constraint only
     assertEq(errs(types + "let c: Container = IntBox { v = 1 }"), ["LYS-SEM0126"]);
 }
+
+let iterating = "interface Iterator {\n    type Item\n    fn next(): ?Self.Item\n}\ninterface Iterable {\n    type Iter :: [Iterator]\n    fn iter(): Self.Iter\n}\nclass Counter :: [Iterator] {\n    var n: int = 0\n    type Item = int\n\n    fn next(): ?int {\n        if (this.n >= 3) {\n            return null\n        }\n        this.n += 1\n        return this.n\n    }\n}\nstruct Three :: [Iterable] {\n    type Iter = Counter\n\n    fn iter(): Counter = Counter { }\n}\nfn count<I :: [Iterator]>(it: I): int {\n    var n = 0\n    while (it.next() != null) {\n        n += 1\n    }\n    return n\n}\n";
+
+@Test
+fn aBoundGivesItsMembers(): void {
+    // `A.Iter` is an `Iterator`: handed to `count`, its `next` called, `A.Iter.Item` its answer
+    let e = "fn countAll<A :: [Iterable]>(a: A): int = count(a.iter())\nfn firstOfAll<A :: [Iterable]>(a: A): ?A.Iter.Item = a.iter().next()\nfn e(): int = countAll(Three { }) * 10 + (firstOfAll(Three { }) ?? 0)";
+    assertEq(value(iterating + e, "e"), 31);
+}
+
+@Test
+fn whatBoundsRefuse(): void {
+    // an answer that is no `Iterator`
+    assertEq(
+        errs(
+            iterating
+                + "struct Bad :: [Iterable] {\n    type Iter = int\n\n    fn iter(): int = 1\n}"
+        ),
+        ["LYS-SEM0160"]
+    );
+    // a member no bound gives
+    assertEq(
+        errs(
+            iterating + "fn f<A :: [Iterable]>(a: A): int {\n    a.iter().size()\n    return 0\n}"
+        ),
+        ["LYS-SEM0027"]
+    );
+    // a path through a name no bound declares
+    assertEq(errs(iterating + "fn g<A :: [Iterable]>(a: A): A.Iter.Size = 1"), ["LYS-SEM0128"]);
+}

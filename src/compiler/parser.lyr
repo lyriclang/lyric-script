@@ -38,6 +38,7 @@ import lyric_script.compiler.ast {
     TypeExpr,
     UnaryOp,
     Variant,
+    WithField,
 };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.lexer { lex, lexRange };
@@ -1184,6 +1185,11 @@ class Parser {
                 let index = try this.parseExpr();
                 try this.expect(.RBracket, "LYS-PAR0004", "']' after the index");
                 e = Expr.Index(boxed(e), boxed(index), this.since(first));
+            } else if (this.atWord("with") && this.peek(1).kind == .LBrace) {
+                // `p with { x = 1 }` (Lyric 5 02 M6): a postfix, `with` contextual
+                this.advance();
+                let fields = try this.parseWithFields();
+                e = Expr.With(boxed(e), fields, this.since(first));
             } else if (this.at(.Bang)) {
                 // `x!`: a `!` after an operand is the unwrap; before one it is `not`
                 this.advance();
@@ -1656,6 +1662,56 @@ class Parser {
             }
         }
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the initializer");
+        return fields.toArray();
+    }
+
+    /// `{ x = 1, pos.y = 2 }` after `with`: as an initializer's fields, a path on the left, the
+    /// `=` always written.
+    mut fn parseWithFields(): WithField[] throws SyntaxError {
+        this.advance();
+        let fields = List<WithField>.new();
+        loop {
+            while (this.at(.Newline) || this.at(.Comma)) {
+                this.advance();
+            }
+            if (this.at(.RBrace)) {
+                break;
+            }
+            let ft = try this.expect(.Ident, "LYS-PAR0026", "a field's name");
+            let path = List<string>.new();
+            path.push(this.text(ft));
+            while (this.at(.Dot)) {
+                this.advance();
+                path.push(
+                    this.text(try this.expect(.Ident, "LYS-PAR0026", "a field's name after '.'"))
+                );
+            }
+            if (!this.at(.Assign)) {
+                let t = this.current();
+                this.report(
+                    "LYS-PAR0037",
+                    f"a field in 'with' without '=': found {this.shown(t)}",
+                    t
+                );
+                // the rest of the fields is given up and the copy kept: one report, no cascade
+                this.skipToClose();
+                break;
+            }
+            this.advance();
+            let value = try this.parseExpr();
+            fields.push(WithField { path = path.toArray(), value = value, span = this.since(ft) });
+            if (!(this.at(.Comma) || this.at(.Newline) || this.at(.RBrace))) {
+                let t = this.current();
+                this.report(
+                    "LYS-PAR0029",
+                    f"fields without ',' or a line end between them: found {this.shown(t)}",
+                    t
+                );
+                this.skipToClose();
+                break;
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' to close 'with'");
         return fields.toArray();
     }
 

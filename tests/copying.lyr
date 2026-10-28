@@ -1,0 +1,91 @@
+// `with` (S3h, Lyric 5 02 M6): a copy of a struct with the named fields replaced, paths into the
+// structs it holds, the values left to right over the old value; run in the VM.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let types = "struct P {\n    x: int\n    y: int\n}\nstruct Pos {\n    x: int\n    y: int\n}\nstruct Thing {\n    name: string\n    pos: Pos\n}\nstruct Holder<T> {\n    v: T\n    n: int\n}\nclass Log {\n    var n: int = 0\n}\nenum E {\n    A { w: int }\n}\nfn step(log: Log, d: int): int {\n    log.n = log.n * 10 + d\n    return d\n}\nfn made(log: Log, x: int): P {\n    log.n = log.n * 10 + x\n    return P { x = x, y = 0 }\n}\n";
+
+@Test
+fn aCopyReplacesTheNamedFields(): void {
+    // the values see the old `p`: the second copy swaps
+    let e = "fn e(): int {\n    let p = P { x = 1, y = 2 }\n    let q = p with { x = 3 }\n    let s = p with { x = p.y, y = p.x }\n    return p.x * 100000 + p.y * 10000 + q.x * 1000 + q.y * 100 + s.x * 10 + s.y\n}";
+    assertEq(value(types + e, "e"), 123221);
+}
+
+@Test
+fn pathsReachIntoTheStructsItHolds(): void {
+    // a later path into a field replaced whole changes the new value; a whole field after a path
+    // replaces what the path changed
+    let e = "fn e(): int {\n    let t = Thing { name = \"a\", pos = Pos { x = 1, y = 2 } }\n    let a = t with { pos.x = 9 }\n    let b = t with { pos.x = 7, pos.y = 8 }\n    let c = t with { pos = Pos { x = 5, y = 6 }, pos.x = 4 }\n    let d = t with { pos.x = 4, pos = Pos { x = 5, y = 6 } }\n    let n = if (a.name == \"a\" && t.pos.x == 1) 1 else 0\n    return n * 100000000 + a.pos.x * 10000000 + a.pos.y * 1000000 + b.pos.x * 100000 + b.pos.y * 10000 + c.pos.x * 1000 + c.pos.y * 100 + d.pos.x * 10 + d.pos.y\n}";
+    assertEq(value(types + e, "e"), 192784656);
+}
+
+@Test
+fn theTargetFirstThenTheValuesAsWritten(): void {
+    // `y` is written before `x`; `with` binds as a postfix, before `.x` and inside `+`
+    let e = "fn e(): int {\n    let log = Log { }\n    let r = made(log, 3) with { y = step(log, 2), x = step(log, 1) }\n    let p = P { x = 1, y = 2 }\n    let a = p with { x = 3 }.x\n    let b = 1 + p with { x = 5 }.x\n    return log.n * 10000 + r.x * 1000 + r.y * 100 + a * 10 + b\n}";
+    assertEq(value(types + e, "e"), 3211236);
+}
+
+@Test
+fn aGenericStructCopiesAsItsInstance(): void {
+    let e = "fn e(): int {\n    let h = Holder { v = \"a\", n = 1 }\n    let c = h with { n = 2 }\n    let d = c with { v = \"bc\" }\n    return c.n * 1000 + (if (c.v == \"a\") 100 else 0) + (if (d.v == \"bc\") 10 else 0) + d.n\n}";
+    assertEq(value(types + e, "e"), 2112);
+}
+
+@Test
+fn whatIsNotCopied(): void {
+    let p = "let p = P { x = 1, y = 2 }\n";
+    let t = "let t = Thing { name = \"a\", pos = Pos { x = 1, y = 2 } }\n";
+    assertEq(errs(types), []);
+    assertEq(errs(types + "let c = Log { }\nlet d = c with { n = 1 }"), ["LYS-SEM0116"]);
+    assertEq(errs("let t = (1, 2)\nlet u = t with { x = 1 }"), ["LYS-SEM0116"]);
+    assertEq(errs(types + "let e = E.A { w = 1 }\nlet f = e with { w = 2 }"), ["LYS-SEM0116"]);
+    assertEq(errs(types + t + "let u = t with { name.x = 1 }"), ["LYS-SEM0116"]);
+    assertEq(errs(types + p + "let q = p with { z = 1 }"), ["LYS-SEM0015"]);
+    assertEq(errs(types + t + "let u = t with { pos.z = 1 }"), ["LYS-SEM0015"]);
+    assertEq(errs(types + p + "let q = p with { x = 1, x = 2 }"), ["LYS-SEM0070"]);
+    assertEq(errs(types + p + "let q = p with { x = \"a\" }"), ["LYS-SEM0001"]);
+    // the copy is its value: alone, it is thrown away (W7)
+    assertEq(errs(types + p + "p with { x = 1 }"), ["LYS-SEM0022"]);
+}

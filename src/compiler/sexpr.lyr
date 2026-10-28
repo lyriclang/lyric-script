@@ -336,6 +336,14 @@ fn showExpr(e: Expr): string {
             }
             "(init " + parts.toArray().join(" ") + ")"
         }
+        .With(target, fields, _) => {
+            let parts = List<string>.new();
+            parts.push(showExpr(target.value));
+            for (field in fields) {
+                parts.push(field.path.join(".") + "=" + showExpr(field.value));
+            }
+            "(with " + parts.toArray().join(" ") + ")"
+        }
         .If(cond, then, otherwise, _) => "(if "
             + showExpr(cond.value)
             + " "

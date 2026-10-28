@@ -88,6 +88,18 @@ fn aCapitalNameBeforeABraceIsAnInitializer(): void {
 }
 
 @Test
+fn withIsAPostfix(): void {
+    assertEq(show("p with { x = 1, pos.y = 2 }"), "(with p x=1 pos.y=2)");
+    assertEq(show("p with {\n    x = 1\n    y = 2\n}"), "(with p x=1 y=2)");
+    assertEq(show("p with { x = 1 }.x"), "(. (with p x=1) x)");
+    assertEq(show("q + p with { x = 1 }"), "(+ q (with p x=1))");
+    // `with` is a word only before its brace
+    assertEq(show("with + 1"), "(+ with 1)");
+    assertEq(errs("p with { x }"), ["LYS-PAR0037"]);
+    assertEq(errs("p with { x = 1 y = 2 }"), ["LYS-PAR0029"]);
+}
+
+@Test
 fn ifWhereAValueStands(): void {
     assertEq(show("let x = if (a) 1 else 2"), "(let x (if a 1 2))");
     assertEq(

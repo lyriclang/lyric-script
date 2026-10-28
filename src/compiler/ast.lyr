@@ -76,6 +76,13 @@ struct FieldInit :: [Debug] {
     span: Span,
 }
 
+/// A field of `with`: its path (`x`, or `pos.y` into a struct the value holds), its value.
+struct WithField :: [Debug] {
+    path: string[],
+    value: Expr,
+    span: Span,
+}
+
 /// An entry of a map literal, `key: value`.
 struct MapEntry :: [Debug] {
     key: Expr,
@@ -133,6 +140,8 @@ enum Expr :: [Debug] {
     Match(Box<Expr>, MatchArm[], Span),
     /// `x is T`: whether the interface value holds a `T`.
     Is(Box<Expr>, TypeExpr, Span),
+    /// `p with { x = 1, pos.y = 2 }`: a copy of the struct with the named fields replaced.
+    With(Box<Expr>, WithField[], Span),
     /// `f<int>`: a generic with its type arguments written, as a call's callee.
     Instance(Box<Expr>, TypeExpr[], Span),
     /// A lambda: its parameters, its result type if written, its body (an expression or a value

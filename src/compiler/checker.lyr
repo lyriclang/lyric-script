@@ -37,6 +37,7 @@ import lyric_script.compiler.ast {
     TypeExpr,
     TypeParam,
     UnaryOp,
+    WithField,
     binaryText,
     unaryText,
 };
@@ -4003,6 +4004,7 @@ class Checker {
             .List(_, at) => this.notYet("a list literal", "S7 (the core collections)", at),
             .Map(_, at) => this.notYet("a map literal", "S7 (the core collections)", at),
             .StructInit(name, fields, at) => this.init(name, fields, expected, at),
+            .With(target, fields, at) => this.withOf(target.value, fields, at),
             .If(cond, then, otherwise, at) => this.ifExpr(
                 cond.value,
                 then.value,
@@ -5328,6 +5330,134 @@ class Checker {
             );
         }
         return out.toArray();
+    }
+
+    /// `p with { x = 1, pos.y = 2 }` (Lyric 5 02 M6): a copy of the struct `p` with the named
+    /// fields replaced, of `p`'s type — on a struct only (W2); a path reaches into a struct the
+    /// value holds (W6). The target first, then the values left to right, each seeing the old `p`
+    /// (W4). A struct is shared and never changed, so each struct a path touches is built anew;
+    /// a later path into a field replaced whole applies to the new value, as Lyric 5's stores do.
+    mut fn withOf(target: Expr, fields: WithField[], at: Span): TExpr {
+        let p = this.expr(target, null);
+        let t = typeOf(p);
+        let owner = this.structOf(t);
+        if (owner < 0) {
+            if (t != .Unknown) {
+                let what = match (t) {
+                    .Named(i) => if (this.types[i].kind
+                        == .Class) f"'{this.types[i].name}' is a class: an object is changed in place"
+                        else f"'{this.types[i].name}' is no struct",
+                    .Tuple(_) => f"'{this.tyName(t)}' is a tuple, which has no fields to name",
+                    _ => f"'{this.tyName(t)}' is no struct",
+                };
+                this.error(
+                    "LYS-SEM0116",
+                    f"'with' copies a struct with fields replaced; {what}",
+                    at
+                );
+            }
+            for (f in fields) {
+                this.expr(f.value, null);
+            }
+            return TExpr.Unknown;
+        }
+        let h = this.hidden(t, at);
+        let setup = List<TStmt>.new();
+        setup.push(TStmt.SetLocal(h, p, at.line));
+        let seen = Set<string>.new();
+        let updates = List<WithUpdate>.new();
+        for (f in fields) {
+            let key = f.path.join(".");
+            if (seen.contains(key)) {
+                this.error("LYS-SEM0070", f"'{key}' is given twice in 'with'", f.span);
+                this.expr(f.value, null);
+                continue;
+            }
+            seen.insert(key);
+            let ft = this.withPath(t, f.path, f.span);
+            if (ft == null) {
+                this.expr(f.value, null);
+                continue;
+            }
+            let v = this.coerce(this.expr(f.value, ft), ft, spanOf(f.value));
+            let vh = this.hidden(ft, f.span);
+            setup.push(TStmt.SetLocal(vh, v, f.span.line));
+            updates.push(WithUpdate { path = f.path, from = 0, value = TExpr.Local(vh, ft) });
+        }
+        let copy = this.rebuilt(TExpr.Local(h, t), owner, updates.toArray());
+        return TExpr.Block(setup.toArray(), boxE(copy), t);
+    }
+
+    /// The struct type `t` is, or -1.
+    fn structOf(t: Ty): int {
+        return match (t) {
+            .Named(i) => if (this.types[i].kind == .Struct) i else -1,
+            _ => -1,
+        };
+    }
+
+    /// The type of the field a path of `with` names in `t`; `null` after the report where a step
+    /// is no struct (`LYS-SEM0116`) or names no field (`LYS-SEM0015`).
+    mut fn withPath(t: Ty, path: string[], at: Span): ?Ty {
+        var holder = t;
+        var k = 0;
+        for (name in path) {
+            let o = this.structOf(holder);
+            if (o < 0) {
+                let through = sliceOf(path, 0, k).join(".");
+                this.error(
+                    "LYS-SEM0116",
+                    f"'{through}' is a '{this.tyName(holder)}', not a struct: a path in 'with' reaches through structs only",
+                    at
+                );
+                return null;
+            }
+            let info = this.types[o];
+            var found = -1;
+            var j = 0;
+            for (d in info.fields) {
+                if (d.name == name) {
+                    found = j;
+                }
+                j += 1;
+            }
+            if (found < 0) {
+                this.error("LYS-SEM0015", f"'{info.name}' declares no field '{name}'", at);
+                return null;
+            }
+            holder = info.fields[found].ty;
+            k += 1;
+        }
+        return holder;
+    }
+
+    /// A new `owner` from `base`: each field the old one, or the value the last update that
+    /// replaces it whole gives, with the deeper updates after that one built into it.
+    mut fn rebuilt(base: TExpr, owner: int, updates: WithUpdate[]): TExpr {
+        let info = this.types[owner];
+        let values = List<TExpr>.new();
+        var k = 0;
+        for (d in info.fields) {
+            var start = TExpr.Field(boxE(base), k, d.ty);
+            var deeper = List<WithUpdate>.new();
+            for (u in updates) {
+                if (u.path[u.from] != d.name) {
+                    continue;
+                }
+                if (u.from == u.path.length() - 1) {
+                    start = u.value;
+                    deeper = List<WithUpdate>.new();
+                } else {
+                    deeper.push(WithUpdate { path = u.path, from = u.from + 1, value = u.value });
+                }
+            }
+            if (deeper.length() > 0) {
+                start = this.rebuilt(start, this.structOf(d.ty), deeper.toArray());
+            }
+            values.push(start);
+            k += 1;
+        }
+        return TExpr.New(owner, values.toArray());
     }
 
     mut fn ifExpr(cond: Expr, then: Expr, otherwise: Expr, expected: ?Ty, at: Span): TExpr {
@@ -7078,6 +7208,13 @@ fn expectedFn(expected: ?Ty): ?FnTy {
     };
 }
 
+/// A field `with` replaces: its path, the step the struct being built is at, the value.
+struct WithUpdate {
+    path: string[],
+    from: int,
+    value: TExpr,
+}
+
 /// The strings `parts` joined, left to right.
 fn concatAll(parts: TExpr[]): TExpr {
     var out = parts[0];
@@ -7266,6 +7403,13 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
             }
             found
         }
+        .With(target, fields, _) => {
+            var found = exprAny(target.value, onStmt, onExpr);
+            for (f in fields) {
+                found = found || exprAny(f.value, onStmt, onExpr);
+            }
+            found
+        }
         .Interpolated(segments, _) => {
             var found = false;
             for (seg in segments) {
@@ -7337,6 +7481,7 @@ fn spanOf(e: Expr): Span {
         .List(_, at) => at,
         .Map(_, at) => at,
         .StructInit(_, _, at) => at,
+        .With(_, _, at) => at,
         .If(_, _, _, at) => at,
         .Block(_, at) => at,
         .Loop(_, _, at) => at,

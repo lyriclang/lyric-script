@@ -1,0 +1,126 @@
+// Tuples (S3c, Lyric 5 §6): literals, `t.0` and labels, tuples as parameters, results, fields and
+// optionals, `let (a, b) = t` — run in the VM, where a tuple is its elements' slots in order.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    assertEq(parsed.errors.length(), 0, "the source parses");
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+@Test
+fn elementsAreReadByPositionAndLabel(): void {
+    assertEq(
+        value(
+            "fn f(): int {\n    let t = (1, \"a\", 3.5)\n    return t.0 + (if (t.1 == \"a\") 10 else 0)\n}",
+            "f"
+        ),
+        11
+    );
+    assertEq(
+        value(
+            "fn g(): int {\n    let p: (x: int, y: int) = (3, 4)\n    return p.x * 10 + p.y\n}",
+            "g"
+        ),
+        34
+    );
+    // a literal takes the types the expected tuple gives its elements
+    assertEq(
+        value(
+            "fn o(): int {\n    let t: (int, ?int) = (5, null)\n    return t.0 + (t.1 ?? 7)\n}",
+            "o"
+        ),
+        12
+    );
+}
+
+@Test
+fn tuplesAreParametersResultsFieldsAndOptionals(): void {
+    let swap = "fn swap(p: (int, string)): (string, int) = (p.1, p.0)\n";
+    assertEq(
+        value(swap + "fn s(): int {\n    let r = swap((7, \"z\"))\n    return r.1\n}", "s"),
+        7
+    );
+    let field = "struct S {\n    p: (int, int)\n}\n";
+    assertEq(
+        value(
+            field + "fn sf(): int {\n    let s = S { p = (2, 3) }\n    return s.p.0 * s.p.1\n}",
+            "sf"
+        ),
+        6
+    );
+    assertEq(
+        value("fn ot(): int {\n    let t: ?(int, int) = (4, 5)\n    return t?.1 ?? 0\n}", "ot"),
+        5
+    );
+    // a tuple is replaced whole, and its old elements are read before the new one is written
+    assertEq(
+        value(
+            "fn sw(): int {\n    var t = (1, 2)\n    t = (t.1, t.0)\n    return t.0 * 10 + t.1\n}",
+            "sw"
+        ),
+        21
+    );
+}
+
+@Test
+fn aLetTakesATupleApart(): void {
+    assertEq(
+        value("fn d(): int {\n    let (a, (b, _)) = (1, (2, 3))\n    return a * 10 + b\n}", "d"),
+        12
+    );
+    assertEq(
+        value("fn v(): int {\n    var (x, y) = (1, 2)\n    x = 5\n    return x + y\n}", "v"),
+        7
+    );
+}
+
+@Test
+fn whatTuplesRefuse(): void {
+    assertEq(errs("println((1, 2).2)"), ["LYS-SEM0012"]);
+    // a label is seen through the type it was written on
+    assertEq(
+        errs("let p: (x: int, y: int) = (1, 2)\nlet q: (int, int) = p\nprintln(q.x)"),
+        ["LYS-SEM0012"]
+    );
+    assertEq(errs("let (a, b) = (1, 2, 3)"), ["LYS-SEM0058"]);
+    assertEq(errs("let (a, b) = 3"), ["LYS-SEM0058"]);
+    assertEq(errs("let (a, a) = (1, 2)"), ["LYS-SEM0097"]);
+    assertEq(errs("var t = (1, 2)\nt.0 = 3"), ["LYS-SEM0019"]);
+    assertEq(errs("let t = (1, null)"), ["LYS-SEM0010"]);
+    assertEq(errs("let t = (1,)"), ["LYS-PAR0010"]);
+    assertEq(errs("let t: (x: int, x: int) = (1, 2)"), ["LYS-PAR0010"]);
+}

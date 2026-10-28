@@ -274,6 +274,12 @@ severity = "error"
 area = "02-grammar"
 summary = "A list of type arguments, `List<int>`, is not closed by `>`. Lyric 5's LYR-PAR0009."
 
+[LYS-PAR0010]
+title = "a tuple of fewer than two elements, or a label given twice"
+severity = "error"
+area = "03-types"
+summary = "`(1,)` or `(int,)`: a tuple has two elements or more, one value in parentheses is a grouping; and a tuple type gives each label once. Lyric 5's LYR-PAR0010."
+
 [LYS-PAR0011]
 title = "a type is missing"
 severity = "error"
@@ -455,7 +461,7 @@ summary = "The name names no type. Lyric 5's LYR-SEM0011."
 title = "a member the type does not have"
 severity = "error"
 area = "05-interfaces"
-summary = "The type has no field, method or variant of the name; `Point(1, 2)` is `Point.new(1, 2)` and needs a `static fn new`. Lyric 5's LYR-SEM0012."
+summary = "The type has no field, method or variant of the name, a tuple no element at the position or under the label; `Point(1, 2)` is `Point.new(1, 2)` and needs a `static fn new`. Lyric 5's LYR-SEM0012."
 
 [LYS-SEM0014]
 title = "a call with the wrong number of arguments"
@@ -523,6 +529,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "A method is called through its type; it needs a value to be called on. Lyric 5's LYR-SEM0055."
 
+[LYS-SEM0058]
+title = "a destructuring that does not fit the value"
+severity = "error"
+area = "03-types"
+summary = "`let (a, b) = …` takes apart a value that is no tuple, or of another number of elements. Lyric 5's LYR-SEM0058."
+
 [LYS-SEM0059]
 title = "an equality the type does not support"
 severity = "error"
@@ -558,6 +570,12 @@ title = "a call that no function of the name takes"
 severity = "error"
 area = "08-expressions"
 summary = "No function of the name takes as many arguments as the call gives. Lyric 5's LYR-SEM0087."
+
+[LYS-SEM0097]
+title = "a name bound twice in one pattern"
+severity = "error"
+area = "03-types"
+summary = "One pattern binds a name once: `let (a, a) = …` is refused. Lyric 5's LYR-SEM0097."
 
 [LYS-SEM0106]
 title = "an initializer that omits a field without a default"

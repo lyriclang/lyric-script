@@ -22,6 +22,7 @@ import lyric_script.compiler.ast {
     FnDecl,
     Item,
     Module,
+    Pattern,
     Segment,
     Span,
     Stmt,
@@ -45,6 +46,7 @@ import lyric_script.compiler.typed {
     Ty,
     TypeInfo,
     TypeKind,
+    TupleTy,
     typeOf,
 };
 
@@ -498,9 +500,12 @@ class Checker {
             .Named(name, args, at) => this.resolveNamed(name, args, at),
             .Optional(inner, _) => Ty.Optional(boxTy(this.resolveType(inner.value))),
             .List(inner, _) => Ty.List(boxTy(this.resolveType(inner.value))),
-            .Tuple(_, at) => {
-                this.notYet("a tuple type", "S3", at);
-                Ty.Unknown
+            .Tuple(elements, labels, _) => {
+                let tys = List<Ty>.new();
+                for (x in elements) {
+                    tys.push(this.resolveType(x));
+                }
+                Ty.Tuple(TupleTy { elements = tys.toArray(), labels = labels })
             }
             .Fn(_, _, at) => {
                 this.notYet("a function type", "S3", at);
@@ -601,6 +606,16 @@ class Checker {
             .Map(k, v) => f"Map<{this.tyName(k.value)}, {this.tyName(v.value)}>",
             .Optional(e) => f"?{this.tyName(e.value)}",
             .NullLit => "null",
+            .Tuple(tt) => {
+                let parts = List<string>.new();
+                var k = 0;
+                for (e in tt.elements) {
+                    let label = tt.labels[k];
+                    parts.push(if (label == "") this.tyName(e) else f"{label}: {this.tyName(e)}");
+                    k += 1;
+                }
+                "(" + parts.toArray().join(", ") + ")"
+            }
         };
     }
 
@@ -1009,6 +1024,7 @@ class Checker {
         return match (s) {
             .Expr(e, at) => this.exprStmt(e, at),
             .Let(isVar, name, written, value, at) => this.letStmt(isVar, name, written, value, at),
+            .Destructure(isVar, pattern, value, at) => this.destructure(isVar, pattern, value, at),
             .If(cond, then, otherwise, at) => {
                 let c = this.condition(cond);
                 let yes = this.factsOf(c, true);
@@ -1209,6 +1225,84 @@ class Checker {
         }
         let id = this.declareLocal(name, t, isVar, at);
         return TStmt.SetLocal(id, v, at.line);
+    }
+
+    /// `let (a, b) = v`: `v` held once, each name bound to its element (Lyric 5 §6 rule 4); at
+    /// the top of the script's code the names are globals.
+    mut fn destructure(isVar: bool, pattern: Pattern, value: Expr, at: Span): TStmt {
+        let v = this.expr(value, null);
+        let t = typeOf(v);
+        let tmp = this.hidden(t, at);
+        let out = List<TStmt>.new();
+        out.push(TStmt.SetLocal(tmp, v, at.line));
+        this.bindPattern(
+            isVar,
+            pattern,
+            TExpr.Local(tmp, t),
+            Map<string, bool>.new(),
+            out,
+            at.line
+        );
+        return TStmt.Block(out.toArray(), at.line);
+    }
+
+    mut fn bindPattern(
+        isVar: bool,
+        p: Pattern,
+        source: TExpr,
+        seen: Map<string, bool>,
+        out: List<TStmt>,
+        line: int
+    ): void {
+        match (p) {
+            .Name(name, at) => {
+                if (seen.containsKey(name)) {
+                    this.error("LYS-SEM0097", f"'{name}' is bound twice in this pattern", at);
+                    return;
+                }
+                seen.insert(name, true);
+                let t = typeOf(source);
+                if (this.atTop()) {
+                    out.push(TStmt.SetGlobal(this.declareGlobal(name, t, isVar, at), source, line));
+                } else {
+                    out.push(TStmt.SetLocal(this.declareLocal(name, t, isVar, at), source, line));
+                }
+            }
+            .Ignore(_) => { }
+            .Tuple(items, at) => {
+                let t = typeOf(source);
+                match (t) {
+                    .Tuple(tt) => {
+                        if (tt.elements.length() == items.length()) {
+                            var k = 0;
+                            for (item in items) {
+                                let element = TExpr.Elem(boxE(source), k, tt.elements[k]);
+                                this.bindPattern(isVar, item, element, seen, out, line);
+                                k += 1;
+                            }
+                            return;
+                        }
+                        this.error(
+                            "LYS-SEM0058",
+                            f"the pattern takes {items.length()} elements apart; the value is {this.tyName(t)}",
+                            at
+                        );
+                    }
+                    .Unknown => { }
+                    _ => {
+                        this.error(
+                            "LYS-SEM0058",
+                            f"the pattern takes a tuple apart; the value is {this.tyName(t)}",
+                            at
+                        );
+                    }
+                }
+                // after a fault the names are bound all the same, of no known type
+                for (item in items) {
+                    this.bindPattern(isVar, item, TExpr.Unknown, seen, out, line);
+                }
+            }
+        }
     }
 
     /// Whether a binding here is a global of the script: the outermost scope of its code.
@@ -1450,6 +1544,7 @@ class Checker {
                     _ => TExpr.Null(Ty.NullLit),
                 }
             }
+            .Tuple(items, _) => this.tuple(items, expected),
             .Unwrap(x, at) => {
                 let v = this.expr(x.value, null);
                 match (typeOf(v)) {
@@ -1505,6 +1600,65 @@ class Checker {
                 TExpr.Loop(stmts, t)
             }
         };
+    }
+
+    /// `(a, b)`: where a tuple of its length is expected — through an optional too — each
+    /// element where the expected element is, and the tuple of the expected type, labels and all
+    /// (Lyric 5 §6 rule 5); else each element as it stands.
+    mut fn tuple(items: Expr[], expected: ?Ty): TExpr {
+        let want = expectedTuple(expected, items.length());
+        let values = List<TExpr>.new();
+        let tys = List<Ty>.new();
+        let labels = List<string>.new();
+        var bad = false;
+        var k = 0;
+        for (x in items) {
+            if (want != null) {
+                let et = want.elements[k];
+                values.push(this.coerce(this.expr(x, et), et, spanOf(x)));
+                tys.push(et);
+            } else {
+                let v = this.expr(x, null);
+                let t = typeOf(v);
+                if (t == .NullLit || t == .Void || t == .Never) {
+                    this.error(
+                        "LYS-SEM0010",
+                        "this element gives no type of its own: write the tuple's type",
+                        spanOf(x)
+                    );
+                    bad = true;
+                }
+                values.push(v);
+                tys.push(t);
+            }
+            labels.push("");
+            k += 1;
+        }
+        if (bad) {
+            return TExpr.Unknown;
+        }
+        let t = if (want != null) Ty.Tuple(want)
+            else Ty.Tuple(TupleTy { elements = tys.toArray(), labels = labels.toArray() });
+        return TExpr.Tuple(values.toArray(), t);
+    }
+
+    /// `t.0`, `t.x`: the element of tuple `o` at a position or under a label of its type.
+    mut fn element(o: TExpr, tt: TupleTy, name: string, at: Span): TExpr {
+        var found = positionOf(name);
+        if (found < 0) {
+            var k = 0;
+            for (label in tt.labels) {
+                if (label == name) {
+                    found = k;
+                }
+                k += 1;
+            }
+        }
+        if (found < 0 || found >= tt.elements.length()) {
+            this.error("LYS-SEM0012", f"{this.tyName(Ty.Tuple(tt))} has no element '{name}'", at);
+            return TExpr.Unknown;
+        }
+        return TExpr.Elem(boxE(o), found, tt.elements[found]);
     }
 
     mut fn name(name: string, at: Span): TExpr {
@@ -1871,6 +2025,17 @@ class Checker {
                     return TExpr.Unknown;
                 }
                 let o = this.expr(object.value, null);
+                match (typeOf(o)) {
+                    .Tuple(_) => {
+                        this.error(
+                            "LYS-SEM0019",
+                            "a tuple's elements are never written: build a new tuple",
+                            memberAt
+                        );
+                        return TExpr.Unknown;
+                    }
+                    _ => { }
+                }
                 let found = this.fieldOf(o, field, memberAt);
                 if (found == null) {
                     return TExpr.Unknown;
@@ -2087,6 +2252,12 @@ class Checker {
             }
             let (o, tmp, inner) = held;
             let present = TExpr.Narrow(boxE(TExpr.Local(tmp, typeOf(o))), inner);
+            match (inner) {
+                .Tuple(tt) => {
+                    return this.optChain(tmp, o, this.element(present, tt, name, at), at);
+                }
+                _ => { }
+            }
             let found = this.fieldOf(present, name, at);
             if (found == null) {
                 return TExpr.Unknown;
@@ -2117,6 +2288,12 @@ class Checker {
             _ => { }
         }
         let o = this.expr(x, null);
+        match (typeOf(o)) {
+            .Tuple(tt) => {
+                return this.element(o, tt, name, at);
+            }
+            _ => { }
+        }
         let found = this.fieldOf(o, name, at);
         if (found == null) {
             return TExpr.Unknown;
@@ -2675,6 +2852,7 @@ fn stmtSpan(s: Stmt): Span {
     return match (s) {
         .Expr(_, at) => at,
         .Let(_, _, _, _, at) => at,
+        .Destructure(_, _, _, at) => at,
         .If(_, _, _, at) => at,
         .While(_, _, _, at) => at,
         .For(_, _, _, _, at) => at,
@@ -2750,6 +2928,35 @@ fn isNullLit(e: Expr): bool {
     };
 }
 
+/// The tuple of `n` elements `expected` is, or holds as an optional; `null` where it is none.
+fn expectedTuple(expected: ?Ty, n: int): ?TupleTy {
+    if (expected == null) {
+        return null;
+    }
+    let t = match (expected) {
+        .Optional(inner) => inner.value,
+        _ => expected,
+    };
+    return match (t) {
+        .Tuple(tt) => if (tt.elements.length() == n) tt else null,
+        _ => null,
+    };
+}
+
+/// The position `t.0` names: its digits as a number, -1 where it is no number (or no position a
+/// tuple could have).
+fn positionOf(name: string): int {
+    var n = 0;
+    for (c in name.chars()) {
+        let d = c.toDigit(10);
+        if (d == null || n > 1000) {
+            return -1;
+        }
+        n = n * 10 + d;
+    }
+    return n;
+}
+
 /// `s` and `id` in it, as a new set: the sets of what is unassigned are never changed in place.
 fn withId(s: Set<int>, id: int): Set<int> {
     let out = s.union(Set<int>.new());
@@ -2775,6 +2982,7 @@ fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
     return match (s) {
         .Expr(e, _) => exprAny(e, onStmt, onExpr),
         .Let(_, _, _, v, _) => v != null && exprAny(v, onStmt, onExpr),
+        .Destructure(_, _, v, _) => exprAny(v, onStmt, onExpr),
         .If(c, then, o, _) => exprAny(c, onStmt, onExpr)
             || blockAny(then, onStmt, onExpr)
             || (o != null && stmtAny(o.value, onStmt, onExpr)),
@@ -2859,6 +3067,13 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
         .Block(b, _) => blockAny(b, onStmt, onExpr),
         .Loop(b, _, _) => blockAny(b, onStmt, onExpr),
         .Unwrap(x, _) => exprAny(x.value, onStmt, onExpr),
+        .Tuple(items, _) => {
+            var found = false;
+            for (x in items) {
+                found = found || exprAny(x, onStmt, onExpr);
+            }
+            found
+        }
         _ => false,
     };
 }
@@ -2891,5 +3106,6 @@ fn spanOf(e: Expr): Span {
         .Block(_, at) => at,
         .Loop(_, _, at) => at,
         .Unwrap(_, at) => at,
+        .Tuple(_, at) => at,
     };
 }

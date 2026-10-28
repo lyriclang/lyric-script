@@ -23,6 +23,7 @@ import lyric_script.compiler.ast {
     MapEntry,
     Module,
     Param,
+    Pattern,
     Segment,
     Span,
     Stmt,
@@ -586,6 +587,13 @@ class Parser {
     mut fn parseLet(): Stmt throws SyntaxError {
         let first = this.advance();
         let isVar = this.isWord(first, "var");
+        // `let (a, b) = t`: the tuple taken apart
+        if (this.at(.LParen)) {
+            let pattern = try this.parsePattern();
+            try this.expect(.Assign, "LYS-PAR0020", "'=' and the value to take apart");
+            let value = try this.parseExpr();
+            return Stmt.Destructure(isVar, pattern, value, this.since(first));
+        }
         let name = this.current();
         if (name.kind != .Ident) {
             throw this.failure(
@@ -922,8 +930,29 @@ class Parser {
             .LParen => {
                 this.advance();
                 let inner = try this.parseExpr();
-                try this.expect(.RParen, "LYS-PAR0008", "')'");
-                return inner;
+                if (!this.at(.Comma)) {
+                    try this.expect(.RParen, "LYS-PAR0008", "')'");
+                    return inner;
+                }
+                // `(a, b)`: a tuple
+                let items = List<Expr>.new();
+                items.push(inner);
+                while (this.at(.Comma)) {
+                    this.advance();
+                    if (this.at(.RParen)) {
+                        break;
+                    }
+                    items.push(try this.parseExpr());
+                }
+                try this.expect(.RParen, "LYS-PAR0008", "')' to close the tuple");
+                if (items.length() < 2) {
+                    throw this.failure(
+                        "LYS-PAR0010",
+                        "a tuple has two elements or more: one in parentheses is a grouping",
+                        t
+                    );
+                }
+                return Expr.Tuple(items.toArray(), this.since(t));
             }
             .LBracket => {
                 return try this.parseCollection();
@@ -1119,6 +1148,41 @@ class Parser {
     // --- types -----------------------------------------------------------------------------------
 
     /// A written type: `int`, `Point`, `List<int>`, `?T`, `T[]`, `(A, B)`, `fn(A) -> B`.
+    /// `(a, (b, _))`: the names a `let` binds from a tuple's elements; `_` binds none.
+    mut fn parsePattern(): Pattern throws SyntaxError {
+        let first = this.current();
+        if (this.at(.LParen)) {
+            this.advance();
+            let items = List<Pattern>.new();
+            while (!this.at(.RParen)) {
+                items.push(try this.parsePattern());
+                if (!this.at(.Comma)) {
+                    break;
+                }
+                this.advance();
+            }
+            try this.expect(.RParen, "LYS-PAR0008", "')' to close the pattern");
+            if (items.length() < 2) {
+                throw this.failure(
+                    "LYS-PAR0010",
+                    "a tuple has two elements or more: one in parentheses is a grouping",
+                    first
+                );
+            }
+            return Pattern.Tuple(items.toArray(), this.since(first));
+        }
+        if (this.at(.Ident)) {
+            let name = this.text(this.advance());
+            return if (name == "_") Pattern.Ignore(this.since(first))
+                else Pattern.Name(name, this.since(first));
+        }
+        throw this.failure(
+            "LYS-PAR0020",
+            f"a binding without its name: found {this.shown(first)}",
+            first
+        );
+    }
+
     mut fn parseType(): TypeExpr throws SyntaxError {
         let first = this.current();
         var ty = try this.parseTypeAtom();
@@ -1147,18 +1211,45 @@ class Parser {
         if (this.at(.LParen)) {
             this.advance();
             let elements = List<TypeExpr>.new();
+            let labels = List<string>.new();
+            var commas = 0;
             while (!this.at(.RParen)) {
+                // `x: T`: a label, a name for the reader (Lyric 5 §6 rule 3)
+                var label = "";
+                if (this.at(.Ident) && this.peek(1).kind == .Colon) {
+                    let named = this.advance();
+                    label = this.text(named);
+                    for (l in labels) {
+                        if (l == label) {
+                            throw this.failure(
+                                "LYS-PAR0010",
+                                f"the label '{label}' is given twice in one tuple",
+                                named
+                            );
+                        }
+                    }
+                    this.advance();
+                }
                 elements.push(try this.parseType());
+                labels.push(label);
                 if (!this.at(.Comma)) {
                     break;
                 }
                 this.advance();
+                commas += 1;
             }
             try this.expect(.RParen, "LYS-PAR0008", "')' to close the tuple type");
-            if (elements.length() == 1) {
+            if (elements.length() == 1 && commas == 0 && labels[0] == "") {
                 return elements[0];
             }
-            return TypeExpr.Tuple(elements.toArray(), this.since(first));
+            if (elements.length() < 2) {
+                throw this.failure(
+                    "LYS-PAR0010",
+                    "a tuple has two elements or more: one in parentheses is a grouping",
+                    first
+                );
+            }
+            return TypeExpr.Tuple(elements.toArray(), labels.toArray(), this.since(first));
         }
         if (this.atWord("fn")) {
             this.advance();

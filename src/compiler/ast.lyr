@@ -58,7 +58,8 @@ enum TypeExpr :: [Debug] {
     Named(string, TypeExpr[], Span),
     Optional(Box<TypeExpr>, Span),
     List(Box<TypeExpr>, Span),
-    Tuple(TypeExpr[], Span),
+    /// `(A, B)` or `(x: A, y: B)`: the elements and their labels, `""` where none is written.
+    Tuple(TypeExpr[], string[], Span),
     Fn(TypeExpr[], Box<TypeExpr>, Span),
 }
 
@@ -122,6 +123,15 @@ enum Expr :: [Debug] {
     Loop(Block, ?string, Span),
     /// `x!`: the optional's value, the script's panic where it is absent.
     Unwrap(Box<Expr>, Span),
+    /// `(a, b)`: a tuple, of two elements or more.
+    Tuple(Expr[], Span),
+}
+
+/// What a `let` takes apart: a name, `_`, or a tuple of patterns.
+enum Pattern :: [Debug] {
+    Name(string, Span),
+    Ignore(Span),
+    Tuple(Pattern[], Span),
 }
 
 /// A statement, each form a variant.
@@ -129,6 +139,8 @@ enum Stmt :: [Debug] {
     Expr(Expr, Span),
     /// `let` or, with the flag, `var`: the name, its type if written, its value if given.
     Let(bool, string, ?TypeExpr, ?Expr, Span),
+    /// `let (a, b) = value`, or `var`: the tuple taken apart.
+    Destructure(bool, Pattern, Expr, Span),
     /// `if` as a statement: the `else` is a block's statement or another `if`, or none.
     If(Expr, Block, ?Box<Stmt>, Span),
     While(Expr, Block, ?string, Span),

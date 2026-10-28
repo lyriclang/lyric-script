@@ -14,8 +14,10 @@ import lyric_script.compiler.typed {
     TExpr,
     TStmt,
     Ty,
+    elemOffset,
     isPlainRef,
     slotsOf,
+    tupleOf,
     typeOf,
 };
 import lyric_script.vm.module { Function, Module, ReturnKind, TypeDesc };
@@ -49,6 +51,12 @@ fn generate(p: Program, name: string): Module {
 struct Loc {
     s: int,
     r: int,
+}
+
+/// The slots `s` scalars and `r` references into `at`: where an element of a tuple lies. A file
+/// no value is wanted in stays so.
+fn part(at: Loc, s: int, r: int): Loc {
+    return Loc { s = if (at.s < 0) -1 else at.s + s, r = if (at.r < 0) -1 else at.r + r };
 }
 
 /// Where no value is wanted.
@@ -552,6 +560,12 @@ class FnGen {
                     _ => { }
                 }
             }
+            // an element lies among its tuple's slots
+            .Elem(x, k, _) => {
+                let at = this.any(x.value);
+                let (os, or) = elemOffset(tupleOf(typeOf(x.value)), k, this.p.types);
+                return part(at, os, or);
+            }
             _ => { }
         }
         let at = this.temp(typeOf(e));
@@ -565,6 +579,8 @@ class FnGen {
         let steps = match (e) {
             .Binary(_, op, _, _) => op == .And || op == .Or,
             .If(_, _, _, _) | .Block(_, _, _) | .Loop(_, _) | .New(_, _) | .Coalesce(_, _, _) => true,
+            // `t = (t.1, t.0)` reads the local after its first write
+            .Tuple(_, _) => true,
             .Wrap(_, _) => true,
             _ => false,
         };
@@ -721,6 +737,20 @@ class FnGen {
                 this.release(m);
                 this.to(b.value, dst);
                 this.patch(toEnd, this.here());
+            }
+            .Tuple(items, t) => {
+                let tt = tupleOf(t);
+                var k = 0;
+                for (x in items) {
+                    let (os, or) = elemOffset(tt, k, this.p.types);
+                    this.to(x, part(dst, os, or));
+                    k += 1;
+                }
+            }
+            .Elem(x, k, t) => {
+                let at = this.any(x.value);
+                let (os, or) = elemOffset(tupleOf(typeOf(x.value)), k, this.p.types);
+                this.move(dst, part(at, os, or), t);
             }
             .Unit | .Unknown => { }
         }

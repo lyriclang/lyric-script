@@ -22,6 +22,51 @@ enum Ty :: [Equatable, Debug] {
     Optional(Box<Ty>),
     /// The type of a `null` no place has given a type yet.
     NullLit,
+    Tuple(TupleTy),
+}
+
+/// A tuple's elements, and the labels its written type gave them (`""` where none). A label is a
+/// name for the reader and no part of the type (Lyric 5 §6 rule 3): equality skips it.
+pub struct TupleTy :: [Debug, Equatable] {
+    elements: Ty[],
+    labels: string[],
+
+    /// Whether `o` has the same elements, whatever their labels.
+    pub fn equals(o: TupleTy): bool {
+        if (this.elements.length() != o.elements.length()) {
+            return false;
+        }
+        var k = 0;
+        while (k < this.elements.length()) {
+            if (this.elements[k] != o.elements[k]) {
+                return false;
+            }
+            k += 1;
+        }
+        return true;
+    }
+}
+
+/// The tuple type `t` is; none of no elements where it is no tuple.
+fn tupleOf(t: Ty): TupleTy {
+    return match (t) {
+        .Tuple(tt) => tt,
+        _ => TupleTy { elements = [], labels = [] },
+    };
+}
+
+/// Where element `k` of a tuple starts among its slots: the slots of the elements before it.
+fn elemOffset(tt: TupleTy, k: int, types: TypeInfo[]): (int, int) {
+    var s = 0;
+    var r = 0;
+    var j = 0;
+    while (j < k) {
+        let (ns, nr) = slotsOf(tt.elements[j], types);
+        s += ns;
+        r += nr;
+        j += 1;
+    }
+    return (s, r);
 }
 
 enum TypeKind :: [Equatable, Debug] {
@@ -118,6 +163,8 @@ fn typeOf(e: TExpr): Ty {
         .Unwrap(_, t) => t,
         .IsNull(_) => Ty.Bool,
         .Coalesce(_, _, t) => t,
+        .Tuple(_, t) => t,
+        .Elem(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
 }
@@ -175,6 +222,10 @@ enum TExpr :: [Debug] {
     /// `a ?? b`: `a`'s value where it is there, else `b`.
     Coalesce(Box<TExpr>, Box<TExpr>, Ty),
     /// After a fault.
+    /// `(a, b)`: the elements' slots in order, no object.
+    Tuple(TExpr[], Ty),
+    /// Element `k` of a tuple, read where it lies.
+    Elem(Box<TExpr>, int, Ty),
     Unknown,
 }
 
@@ -213,6 +264,17 @@ fn slotsOf(t: Ty, types: TypeInfo[]): (int, int) {
             let (s, r) = slotsOf(inner.value, types);
             if (isPlainRef(inner.value, types)) (s, r) else (s + 1, r)
         }
+        // a tuple is its elements' slots in order, inline
+        .Tuple(tt) => {
+            var s = 0;
+            var r = 0;
+            for (e in tt.elements) {
+                let (ns, nr) = slotsOf(e, types);
+                s += ns;
+                r += nr;
+            }
+            (s, r)
+        }
         _ => if (isScalar(t, types)) (1, 0) else (0, 1),
     };
 }
@@ -220,7 +282,7 @@ fn slotsOf(t: Ty, types: TypeInfo[]): (int, int) {
 /// Whether the type is a reference that is no optional: its `?` costs no slot.
 fn isPlainRef(t: Ty, types: TypeInfo[]): bool {
     return match (t) {
-        .Optional(_) | .Void | .Never | .Unknown => false,
+        .Optional(_) | .Tuple(_) | .Void | .Never | .Unknown => false,
         _ => !isScalar(t, types),
     };
 }

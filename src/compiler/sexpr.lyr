@@ -9,6 +9,7 @@ import lyric_script.compiler.ast {
     Item,
     Module,
     Param,
+    Pattern,
     Stmt,
     TypeExpr,
     binaryText,
@@ -106,6 +107,20 @@ fn showBlock(b: Block): string {
     return "{" + parts.toArray().join("; ") + "}";
 }
 
+fn showPattern(p: Pattern): string {
+    return match (p) {
+        .Name(name, _) => name,
+        .Ignore(_) => "_",
+        .Tuple(items, _) => {
+            let parts = List<string>.new();
+            for (x in items) {
+                parts.push(showPattern(x));
+            }
+            "(" + parts.toArray().join(" ") + ")"
+        }
+    };
+}
+
 fn showStmt(s: Stmt): string {
     return match (s) {
         .Expr(e, _) => showExpr(e),
@@ -115,6 +130,12 @@ fn showStmt(s: Stmt): string {
             let given = if (value != null) " " + showExpr(value) else "";
             "(" + word + " " + name + typed + given + ")"
         }
+        .Destructure(isVar, pattern, value, _) => "("
+            + (if (isVar) "var " else "let ")
+            + showPattern(pattern)
+            + " "
+            + showExpr(value)
+            + ")",
         .If(cond, then, otherwise, _) => {
             let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";
             "(if " + showExpr(cond) + " " + showBlock(then) + rest + ")"
@@ -238,6 +259,13 @@ fn showExpr(e: Expr): string {
         .Block(b, _) => showBlock(b),
         .Loop(body, _, _) => "(loop " + showBlock(body) + ")",
         .Unwrap(x, _) => "(unwrap " + showExpr(x.value) + ")",
+        .Tuple(items, _) => {
+            let parts = List<string>.new();
+            for (x in items) {
+                parts.push(showExpr(x));
+            }
+            "(tuple " + parts.toArray().join(" ") + ")"
+        }
     };
 }
 
@@ -252,10 +280,12 @@ fn showType(t: TypeExpr): string {
         }
         .Optional(inner, _) => "?" + showType(inner.value),
         .List(inner, _) => showType(inner.value) + "[]",
-        .Tuple(elements, _) => {
+        .Tuple(elements, labels, _) => {
             let parts = List<string>.new();
+            var k = 0;
             for (x in elements) {
-                parts.push(showType(x));
+                parts.push(if (labels[k] == "") showType(x) else labels[k] + ": " + showType(x));
+                k += 1;
             }
             "(" + parts.toArray().join(", ") + ")"
         }

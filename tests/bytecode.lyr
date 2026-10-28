@@ -1,0 +1,90 @@
+// The cache's bytecode: a module reads back as it was written, and a file of another format,
+// another compiler, another source or with missing bytes is none of ours.
+import std.collections { List };
+import std.test { assertEq, assertThrows };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.asm { disassemble };
+import lyric_script.vm.bytecode { decode, encode };
+import lyric_script.vm.module { Module };
+
+let source: string = "struct P {\n    x: int\n    name: string\n}\nvar total = 0.5\nfn f(n: int): int {\n    var s = 0\n    for (i in 0..n) {\n        s += i\n    }\n    return s\n}\nlet p = P { x = f(10), name = \"p\" }\nprintln(f\"{p.name} {p.x} {total}\")\n";
+
+fn compiled(): Module {
+    return generate(checkModule(parse(source).module).program, "demo");
+}
+
+@Test
+fn aModuleReadsBackAsItWasWritten(): void {
+    let m = compiled();
+    let bytes = encode(m, 3, "1.0.0-test", "abc");
+    let back = try! decode(bytes, 3, "1.0.0-test", "abc");
+    assertEq(disassemble(back), disassemble(m));
+    assertEq(back.globalsS, m.globalsS);
+    assertEq(back.globalsR, m.globalsR);
+}
+
+@Test
+fn aFileOfAnotherToolchainIsNoneOfOurs(): void {
+    let bytes = encode(compiled(), 3, "1.0.0-test", "abc");
+    assertEq(
+        assertThrows(
+            () => {
+                try decode(bytes, 4, "1.0.0-test", "abc");
+            }
+        ).message(),
+        "another bytecode format"
+    );
+    assertEq(
+        assertThrows(
+            () => {
+                try decode(bytes, 3, "1.0.1", "abc");
+            }
+        ).message(),
+        "another compiler's bytecode"
+    );
+    assertEq(
+        assertThrows(
+            () => {
+                try decode(bytes, 3, "1.0.0-test", "abd");
+            }
+        ).message(),
+        "the bytecode of another source"
+    );
+}
+
+/// The first `n` bytes of `bytes`.
+fn first(bytes: uint8[], n: int): uint8[] {
+    let out = List<uint8>.new();
+    var k = 0;
+    while (k < n) {
+        out.push(bytes[k]);
+        k += 1;
+    }
+    return out.toArray();
+}
+
+@Test
+fn aDamagedFileIsNoneOfOurs(): void {
+    let bytes = encode(compiled(), 3, "1.0.0-test", "abc");
+    let cut = first(bytes, bytes.length() - 3);
+    assertEq(
+        assertThrows(
+            () => {
+                try decode(cut, 3, "1.0.0-test", "abc");
+            }
+        ).message(),
+        "a file that ends early"
+    );
+    let other = first(encode(compiled(), 3, "1.0.0-test", "abc"), 5);
+    other[0] = 1 as uint8;
+    assertEq(
+        assertThrows(
+            () => {
+                try decode(other, 3, "1.0.0-test", "abc");
+            }
+        ).message(),
+        "no bytecode file"
+    );
+}

@@ -5,6 +5,7 @@ import std.fs { readText };
 import std.io { eprintln, println };
 import std.os { args };
 import lyric_script { version };
+import lyric_script.cache { clean, load, store };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.checker { checkModule };
 import lyric_script.compiler.codegen { generate, scriptEntry };
@@ -22,6 +23,7 @@ fn usage(): void {
     println("commands:");
     println("  run FILE   run a script (also: lyric-script FILE.lyrs)");
     println("  check FILE check a script without running it");
+    println("  clean      empty the bytecode cache");
     println("");
     println("options of run and check:");
     println("  --json     the diagnostics as JSON lines on standard output");
@@ -43,6 +45,13 @@ fn main(): int {
     }
     if (command == "--help" || command == "help") {
         usage();
+        return 0;
+    }
+    if (command == "clean" && given.length() == 2) {
+        let dir = clean();
+        if (dir != null) {
+            println(f"emptied {dir}");
+        }
         return 0;
     }
     if (command == "run" || command == "check" || command == "asm") {
@@ -120,7 +129,7 @@ fn checkScript(path: string, json: bool): int {
     if (text == null) {
         return 2;
     }
-    return if (compile(text, path, json) != null) 0 else 1;
+    return if (compile(text, path, json).module != null) 0 else 1;
 }
 
 /// Runs a script: 0 at its end, 1 where it does not compile, 101 for a panic.
@@ -129,29 +138,48 @@ fn runScript(path: string, json: bool): int {
     if (text == null) {
         return 2;
     }
-    let module = compile(text, path, json);
+    // a script compiled before, without a warning, runs from its bytecode (11 Fmt)
+    let cached = load(text);
+    if (cached != null) {
+        if (json) {
+            println(renderSummary(0, 0));
+        }
+        return finish(execute(cached, scriptEntry, [], -1));
+    }
+    let compiled = compile(text, path, json);
+    let module = compiled.module;
     if (module == null) {
         return 1;
+    }
+    if (compiled.warnings == 0) {
+        store(text, module);
     }
     return finish(execute(module, scriptEntry, [], -1));
 }
 
+/// What compiling a script gave: its module, `null` where it has errors, and how many warnings
+/// it had — a script with warnings is not cached, so that they are said at every run.
+struct Compiled {
+    module: ?Module,
+    warnings: int,
+}
+
 /// The module of a script, its diagnostics reported — as text on standard error, or as JSON
-/// lines on standard output that a summary closes —; `null` where it has errors.
-fn compile(text: string, path: string, json: bool): ?Module {
+/// lines on standard output that a summary closes.
+fn compile(text: string, path: string, json: bool): Compiled {
     let r = Reporter { path = path, lines = SourceLines.of(text), json = json };
     let parsed = parse(text);
     r.all(parsed.errors, parsed.warnings);
     if (parsed.errors.length() > 0) {
         r.summary();
-        return null;
+        return Compiled { module = null, warnings = r.warnings };
     }
     // the checker reads a tree without faults: a fault of the parse would only echo
     let checked = checkModule(parsed.module);
     r.all(checked.errors, checked.warnings);
     r.summary();
     if (checked.errors.length() > 0) {
-        return null;
+        return Compiled { module = null, warnings = r.warnings };
     }
     let module = generate(checked.program, path);
     let faults = check(module);
@@ -162,9 +190,9 @@ fn compile(text: string, path: string, json: bool): ?Module {
                 f"error[LYS-ICE0002]: {path}: the compiler made faulty bytecode: {fault.function} at {fault.pc}: {fault.message}"
             );
         }
-        return null;
+        return Compiled { module = null, warnings = r.warnings };
     }
-    return module;
+    return Compiled { module = module, warnings = r.warnings };
 }
 
 /// Says a script's diagnostics, in the form asked for, and counts them.

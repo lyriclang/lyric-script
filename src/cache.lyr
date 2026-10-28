@@ -1,0 +1,116 @@
+//! The bytecode cache of `run` (design/v1, 11 Fmt; 12 Cache): a script compiled once runs from
+//! its bytecode until its source or the toolchain changes. The files lie in the user's cache
+//! directory, where Lyric 5 puts its own: `LYRIC_SCRIPT_CACHE` where it is set, else
+//! `$XDG_CACHE_HOME/lyric-script` or `~/.cache/lyric-script`, on Windows
+//! `%LOCALAPPDATA%\lyric-script\cache` — under `bytecode/`, one file per source, named by its key.
+import std.core { StringBuilder };
+import std.crypto { sha256 };
+import std.fs { createDirAll, exists, readBytes, remove, removeAll, rename, writeBytes };
+import std.os { Platform, env, homeDir, pid, platform };
+import lyric_script { version };
+import lyric_script.vm { bytecodeFormat };
+import lyric_script.vm.bytecode { NotOurs, decode, encode };
+import lyric_script.vm.module { Module, check };
+
+/// The cache's directory, `null` where there is no home to find it in.
+fn cacheRoot(): ?string {
+    let configured = env("LYRIC_SCRIPT_CACHE");
+    if (configured != null && !configured.isEmpty()) {
+        return configured;
+    }
+    if (platform() == Platform.Windows) {
+        let local = env("LOCALAPPDATA");
+        if (local != null && !local.isEmpty()) {
+            return f"{local}/lyric-script/cache";
+        }
+        return null;
+    }
+    let xdg = env("XDG_CACHE_HOME");
+    if (xdg != null && !xdg.isEmpty()) {
+        return f"{xdg}/lyric-script";
+    }
+    let home = homeDir();
+    if (home == null) {
+        return null;
+    }
+    return f"{home}/.cache/lyric-script";
+}
+
+/// A source's key: the hash of the source with the toolchain's version and bytecode format, as
+/// hex (11 Fmt) — another source, another toolchain, another key.
+fn sourceKey(source: string): string {
+    let digest = sha256(f"{source}\u{0}{version}\u{0}{bytecodeFormat}".toBytes()[..]);
+    let out = StringBuilder.new();
+    for (b in digest) {
+        let v = b as int;
+        out.appendChar(hexDigit(v / 16));
+        out.appendChar(hexDigit(v % 16));
+    }
+    return out.toString();
+}
+
+fn hexDigit(n: int): char {
+    return ((if (n < 10) 48 + n else 87 + n) as uint32) as char;
+}
+
+fn pathOf(root: string, key: string): string {
+    return f"{root}/bytecode/{key[0..32]}.lyrsc";
+}
+
+/// The cached module of a source; `null` where there is none this toolchain wrote for it. A file
+/// that does not read back, or whose structure fails the VM's check, is no cache.
+fn load(source: string): ?Module {
+    let root = cacheRoot();
+    if (root == null) {
+        return null;
+    }
+    let key = sourceKey(source);
+    let path = pathOf(root, key);
+    if (!exists(path)) {
+        return null;
+    }
+    let bytes = try readBytes(path) catch (_) {
+        return null;
+    };
+    let module = try decode(bytes, bytecodeFormat, version, key) catch (_: NotOurs) {
+        return null;
+    };
+    if (check(module).length() > 0) {
+        return null;
+    }
+    return module;
+}
+
+/// Keeps a source's module for its next run. The file is written beside its place and renamed
+/// into it, so a run that reads it at the same time never sees half of it; a cache that cannot be
+/// written is no fault of the run.
+fn store(source: string, module: Module): void {
+    let root = cacheRoot();
+    if (root == null) {
+        return;
+    }
+    let key = sourceKey(source);
+    let path = pathOf(root, key);
+    let partial = f"{path}.{pid()}.tmp";
+    let bytes = encode(module, bytecodeFormat, version, key);
+    try {
+        createDirAll(f"{root}/bytecode");
+        writeBytes(partial, bytes[..]);
+        rename(partial, path);
+    } catch (_) {
+        try? remove(partial);
+    }
+}
+
+/// Empties the cache (`lyric-script clean`); the directory it emptied, `null` where none.
+fn clean(): ?string {
+    let root = cacheRoot();
+    if (root == null) {
+        return null;
+    }
+    let dir = f"{root}/bytecode";
+    if (exists(dir)) {
+        try? removeAll(dir);
+    }
+    return dir;
+}

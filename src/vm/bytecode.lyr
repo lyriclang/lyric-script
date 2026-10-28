@@ -1,0 +1,289 @@
+//! The bytecode a script's run leaves in the cache (design/v1, 11 Fmt): an internal format with no
+//! promise — a head with the magic, the format, the compiler's version and the source's hash,
+//! then the module. Only the toolchain that wrote it reads it back: a head that does not match is
+//! no file of this toolchain, and the reader says so rather than guessing (01 S10).
+import std.collections { List };
+import lyric_script.vm.module { Function, Module, ReturnKind, TypeDesc };
+import lyric_script.vm.op { Instr, Op };
+
+/// The first bytes of every file: `LYSB`.
+let magic: int[] = [76, 89, 83, 66];
+
+/// Why a file is no bytecode this toolchain reads: the caller compiles the source anew.
+pub struct NotOurs :: [Error] {
+    reason: string,
+
+    /// Why the file is none of ours.
+    pub fn message(): string {
+        return this.reason;
+    }
+}
+
+/// The module as bytes, under a head that names the format, the compiler's version and the
+/// source's hash.
+fn encode(module: Module, format: int, version: string, sourceHash: string): uint8[] {
+    let w = Writer { out = List<uint8>.new() };
+    for (b in magic) {
+        w.byte(b);
+    }
+    w.word(format);
+    w.text(version);
+    w.text(sourceHash);
+    w.text(module.name);
+    w.word(module.globalsS);
+    w.word(module.globalsR);
+    w.word(module.types.length());
+    for (t in module.types) {
+        w.text(t.name);
+        w.texts(t.scalarFields);
+        w.texts(t.refFields);
+    }
+    w.word(module.functions.length());
+    for (f in module.functions) {
+        w.text(f.name);
+        w.word(f.paramsS);
+        w.word(f.paramsR);
+        w.word(f.scalars);
+        w.word(f.refs);
+        w.byte(
+            match (f.returns) {
+                .Void => 0,
+                .Scalar => 1,
+                .Ref => 2,
+            }
+        );
+        w.word(f.code.length());
+        for (ins in f.code) {
+            w.byte(opNumber(ins.op));
+            w.half(ins.a as int);
+            w.half(ins.b as int);
+            w.half(ins.c as int);
+        }
+        w.word(f.constants.length());
+        for (k in f.constants) {
+            w.long(k);
+        }
+        w.texts(f.strings);
+        w.word(f.lines.length());
+        for (n in f.lines) {
+            w.word(n);
+        }
+    }
+    return w.out.toArray();
+}
+
+/// The module in `bytes`, when their head names this format, version and source.
+fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Module throws NotOurs {
+    let r = Reader { bytes = bytes };
+    for (b in magic) {
+        if (try r.byte() != b) {
+            throw NotOurs { reason = "no bytecode file" };
+        }
+    }
+    if (try r.word() != format) {
+        throw NotOurs { reason = "another bytecode format" };
+    }
+    if (try r.text() != version) {
+        throw NotOurs { reason = "another compiler's bytecode" };
+    }
+    if (try r.text() != sourceHash) {
+        throw NotOurs { reason = "the bytecode of another source" };
+    }
+    let name = try r.text();
+    let globalsS = try r.word();
+    let globalsR = try r.word();
+    let types = List<TypeDesc>.new();
+    var n = try r.word();
+    while (n > 0) {
+        let tname = try r.text();
+        let scalarFields = try r.texts();
+        let refFields = try r.texts();
+        types.push(TypeDesc { name = tname, scalarFields = scalarFields, refFields = refFields });
+        n -= 1;
+    }
+    let functions = List<Function>.new();
+    let ops = Op.all();
+    n = try r.word();
+    while (n > 0) {
+        let fname = try r.text();
+        let paramsS = try r.word();
+        let paramsR = try r.word();
+        let scalars = try r.word();
+        let refs = try r.word();
+        let returns = match (try r.byte()) {
+            0 => ReturnKind.Void,
+            1 => ReturnKind.Scalar,
+            2 => ReturnKind.Ref,
+            _ => throw NotOurs { reason = "a function's result kind" },
+        };
+        let code = List<Instr>.new();
+        var k = try r.word();
+        while (k > 0) {
+            let op = try r.byte();
+            if (op >= ops.length()) {
+                throw NotOurs { reason = "an unknown operation" };
+            }
+            let a = try r.half();
+            let b = try r.half();
+            let c = try r.half();
+            code.push(Instr { op = ops[op], a = a as uint16, b = b as uint16, c = c as uint16 });
+            k -= 1;
+        }
+        let constants = List<uint64>.new();
+        k = try r.word();
+        while (k > 0) {
+            constants.push(try r.long());
+            k -= 1;
+        }
+        let strings = try r.texts();
+        let lines = List<int>.new();
+        k = try r.word();
+        while (k > 0) {
+            lines.push(try r.word());
+            k -= 1;
+        }
+        functions.push(
+            Function {
+                name = fname,
+                paramsS = paramsS,
+                paramsR = paramsR,
+                scalars = scalars,
+                refs = refs,
+                returns = returns,
+                code = code.toArray(),
+                constants = constants.toArray(),
+                strings = strings,
+                lines = lines.toArray(),
+            }
+        );
+        n -= 1;
+    }
+    if (!r.atEnd()) {
+        throw NotOurs { reason = "bytes after the module" };
+    }
+    return Module {
+        name = name,
+        functions = functions.toArray(),
+        types = types.toArray(),
+        globalsS = globalsS,
+        globalsR = globalsR,
+    };
+}
+
+/// The number of an operation: its place among the operations, as `Op.all()` lists them.
+fn opNumber(op: Op): int {
+    var k = 0;
+    for (o in Op.all()) {
+        if (o == op) {
+            return k;
+        }
+        k += 1;
+    }
+    return 255;
+}
+
+/// Writes numbers little-endian and text as its length and its UTF-8 bytes.
+class Writer {
+    out: List<uint8>,
+
+    mut fn byte(v: int): void {
+        this.out.push((v & 0xFF) as uint8);
+    }
+
+    mut fn half(v: int): void {
+        this.byte(v);
+        this.byte(v >> 8);
+    }
+
+    mut fn word(v: int): void {
+        this.half(v & 0xFFFF);
+        this.half((v >> 16) & 0xFFFF);
+    }
+
+    mut fn long(v: uint64): void {
+        var k = 0;
+        while (k < 8) {
+            this.byte(((v >> ((8 * k) as uint64)) & 0xFF) as int);
+            k += 1;
+        }
+    }
+
+    mut fn text(s: string): void {
+        let bytes = s.toBytes();
+        this.word(bytes.length());
+        for (b in bytes) {
+            this.out.push(b);
+        }
+    }
+
+    mut fn texts(xs: string[]): void {
+        this.word(xs.length());
+        for (s in xs) {
+            this.text(s);
+        }
+    }
+}
+
+/// Reads what `Writer` wrote; a file that ends early is no file of ours.
+class Reader {
+    bytes: uint8[],
+    var at: int = 0,
+
+    mut fn atEnd(): bool {
+        return this.at == this.bytes.length();
+    }
+
+    mut fn byte(): int throws NotOurs {
+        if (this.at >= this.bytes.length()) {
+            throw NotOurs { reason = "a file that ends early" };
+        }
+        let b = this.bytes[this.at] as int;
+        this.at += 1;
+        return b;
+    }
+
+    mut fn half(): int throws NotOurs {
+        let lo = try this.byte();
+        let hi = try this.byte();
+        return lo | (hi << 8);
+    }
+
+    mut fn word(): int throws NotOurs {
+        let lo = try this.half();
+        let hi = try this.half();
+        return lo | (hi << 16);
+    }
+
+    mut fn long(): uint64 throws NotOurs {
+        var v: uint64 = 0;
+        var k = 0;
+        while (k < 8) {
+            let b = try this.byte();
+            v = v | ((b as uint64) << ((8 * k) as uint64));
+            k += 1;
+        }
+        return v;
+    }
+
+    mut fn text(): string throws NotOurs {
+        let n = try this.word();
+        if (n > this.bytes.length() - this.at) {
+            throw NotOurs { reason = "a file that ends early" };
+        }
+        let from = this.at;
+        this.at += n;
+        return try string.fromUtf8(this.bytes[from..from + n]) catch (_) throw NotOurs {
+            reason = "text that is no UTF-8",
+        };
+    }
+
+    mut fn texts(): string[] throws NotOurs {
+        let out = List<string>.new();
+        var n = try this.word();
+        while (n > 0) {
+            out.push(try this.text());
+            n -= 1;
+        }
+        return out.toArray();
+    }
+}

@@ -293,3 +293,9 @@ als Muster geschrieben; unerreichbare Arme nach Lyric 5s enger Regel. Typ-Muster
   ihrem Rumpf das Objekt selbst (Lokale 0) — so ruft sie sich.
 - *Aufruf* über einen Wert: `f(a)` auf einer Bindung, einem Feld, jedem Ausdruck vom
   Funktionstyp. Funktionswerte werden nicht verglichen (`LYS-SEM0059`).
+
+**S3e, Ergebnis.** Wie präzisiert, in zwei Teilen (Lambdas, Captures, lokale `fn`, Aufruf über
+Werte; dann nachlaufende Blöcke, gebundene Methoden, statische Funktionen und Felder als
+Funktionswerte). Der erste stille Lauf von 03 Leer macht keine Funktion bleibend: was er an
+Lambdas und Thunks anlegt, nimmt er zurück. Ein S2-Pin, der `run { 7 }` als Fehler festhielt,
+fiel mit seiner Regel. 134 Tests, 75 Konformanzfälle.

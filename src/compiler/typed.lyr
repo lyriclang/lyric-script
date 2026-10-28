@@ -110,6 +110,12 @@ fn typeOf(e: TExpr): Ty {
         .Block(_, _, t) => t,
         .Loop(_, t) => t,
         .Unit => Ty.Void,
+        .Null(t) => t,
+        .Wrap(_, t) => t,
+        .Narrow(_, t) => t,
+        .Unwrap(_, t) => t,
+        .IsNull(_) => Ty.Bool,
+        .Coalesce(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
 }
@@ -154,6 +160,18 @@ enum TExpr :: [Debug] {
     Loop(TStmt[], Ty),
     /// The value of what gives none: a `void` call's, a block's without a value.
     Unit,
+    /// `null` of an optional type.
+    Null(Ty),
+    /// A value of `T` where a `?T` is taken: present (03 O).
+    Wrap(Box<TExpr>, Ty),
+    /// An optional's value where it is known to be there — a narrowed binding: no check.
+    Narrow(Box<TExpr>, Ty),
+    /// `x!`: the optional's value, the script's panic where it is absent (`LYS-RT0004`).
+    Unwrap(Box<TExpr>, Ty),
+    /// Whether an optional is absent, a `bool`.
+    IsNull(Box<TExpr>),
+    /// `a ?? b`: `a`'s value where it is there, else `b`.
+    Coalesce(Box<TExpr>, Box<TExpr>, Ty),
     /// After a fault.
     Unknown,
 }
@@ -179,6 +197,30 @@ struct Program {
     functions: FnInfo[],
     globals: GlobalInfo[],
     main: int,
+}
+
+/// How many scalar and reference slots a value of the type holds (11 V2): one of its file for a
+/// scalar or a reference. `?T` over a reference that is no optional is that reference, `nil` for
+/// null; any other `?T` holds the slots of `T` and, after them, one scalar for its presence —
+/// `?int` two scalar slots, `??int` three. The value comes first, so a narrowed optional is read
+/// where it lies.
+fn slotsOf(t: Ty, types: TypeInfo[]): (int, int) {
+    return match (t) {
+        .Void | .Never | .Unknown => (0, 0),
+        .Optional(inner) => {
+            let (s, r) = slotsOf(inner.value, types);
+            if (isPlainRef(inner.value, types)) (s, r) else (s + 1, r)
+        }
+        _ => if (isScalar(t, types)) (1, 0) else (0, 1),
+    };
+}
+
+/// Whether the type is a reference that is no optional: its `?` costs no slot.
+fn isPlainRef(t: Ty, types: TypeInfo[]): bool {
+    return match (t) {
+        .Optional(_) | .Void | .Never | .Unknown => false,
+        _ => !isScalar(t, types),
+    };
 }
 
 /// Whether a value of this type lives in the scalar file (true) or the reference file of the VM.

@@ -363,3 +363,9 @@ Schablonen mit den Parametern des Typs; ein Aufruf auf einer Instanz ist ein `Ca
 die Tabelle einer Instanz entsteht in der Kopierphase. Der Ersatz kennt Instanzen: in
 `Named(Instanz mit Parametern)` werden die Argumente ersetzt. Ein Initialisierer ohne
 Typargumente bindet sie aus den Feldwerten, `.None` aus dem erwarteten Typ.
+
+**S3g, Ergebnis.** g1 generische Funktionen, g2 generische Typen, g3 geschriebene Typargumente am
+Aufruf (`f<int>(x)`, C#s Regel gegen die Mehrdeutigkeit mit `<`). *Neu zugeschnitten:* `Self`,
+statische Member über einen Typparameter (`T.make()`), assoziierte Typen, Objektsicherheit und
+eine generische Funktion als Wert brauchen den Deskriptor — in der geteilten Kopie steht kein
+Empfänger, der die Tabelle trägt — und gehen mit ihm in **S3i**. 148 Tests, 85 Konformanzfälle.

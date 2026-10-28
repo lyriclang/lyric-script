@@ -87,9 +87,9 @@ Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; meas
 | S3d enums with values, `match`, patterns | done — tuple and struct variants, `.Variant` where the position names the enum; an enum with payloads is a reference (an object per variant, the tag its first scalar), so it holds itself without a box; `match` as statement and value, Lyric 5's patterns (type patterns with S3f, array patterns with S7), coverage with a witness (Maranget), unreachable arms; patterns in `if let`, `while let`, `let … else`. Arms stand apart by `,` or a line end (P10) |
 | S3e function values | done — `fn(A) -> R`, lambdas in three forms (trailing blocks with `it` or named parameters), functions, statics and bound methods as values, calls through values (`call.v`, new); captures: a `let` copied, a `var` in a box made at its declaration, so fresh per loop pass; local `fn` calling itself. Without `throws` until S4 |
 | S3f interfaces | done — declarations, defaults (their `this` the interface value), parents, conformance in a list or `extend` (also on `int`, `string`), `by`; an interface value is the conformer's reference or a box; each descriptor carries its slot table and interfaces (format 2), `call.i`, `is.t`, `is.i`; `Any`, `is` with narrowing, type patterns, `sealed`. `Self`, statics, associated types, object safety with S3g |
-| S3g generics | in progress — g1 generic functions (inference, a lambda's last; constraints; copies per shape: one shared by VM-object types, one per other type) and g2 generic structs, classes, enums done; g3 `Self`, statics, associated types, written type arguments, object safety open |
+| S3g generics | done — generic functions (inference, constraints, written type arguments) and types; copies per shape: one shared by VM-object types (constraint calls through the value's table), one per other type. `Self`, statics through a type parameter, associated types, object safety and a generic function as a value go with the descriptors to S3i |
 | S3h synthesis, `with`, literal protocols | — |
-| S3i runtime descriptors | — |
+| S3i runtime descriptors | — (with `Self`, statics through a type parameter, associated types, object safety, a generic function as a value — from S3g) |
 
 Exit criterion: generic code and interfaces in scripts, in CI; the delta's chapter 03 with its cases.
 

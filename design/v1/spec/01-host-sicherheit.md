@@ -142,11 +142,6 @@ Schaden eines Fehlers in `loadTrusted`-Bytecode.
 
 ## Vorgaben für spätere Bereiche
 
-- **02 Laufzeit/VM**: Prüfstellen (Rückwärtssprünge, Aufrufe) für Fuel und Deadline; Fuel je
-  Grundblock; Anhalten = Rückkehr aus der Dispatch-Schleife mit aufgehobenem Frame-Stack;
-  Allokationszähler im Allokationspfad; Objekte tragen ihre Instanz (S9) und eine Typversion
-  (S7a, Umbau am Ort); Ressourcen-Register je Instanz (S5b `abort`); Bytecode-Cache-Schlüssel;
-  `loadTrusted`.
 - **03 Wertmodell**: Map/Set in Einfügereihenfolge (S8); tiefe Kopie über die Instanzgrenze (S9)
   — welche Typen kopierbar sind, und was mit nicht kopierbaren (Handles) geschieht.
 - **06 Fehler**: `PermissionError`; `Cancelled` beim Reload; Ergebnisform an der Grenze (S11).
@@ -155,8 +150,13 @@ Schaden eines Fehlers in `loadTrusted`-Bytecode.
   dynamisches Laden von Modulen bräuchte eine zweite Prüfung (S1) — ob es das gibt.
 - **09 Syntax**: `@Migrate`, ggf. `@BeforeReload`/`@AfterReload` entfallen (Stufe 2).
 - **10 Reflexion**: Hasher und Identität ohne Adressen (S8).
-- **11 std**: Kostenregel je schwerem Native (S5c); `std.random` geseedet/per Recht (S8).
-- **12 Werkzeuge**: Abfrage-UX, `--allow`/`-A`, `run --watch` mit Reload-Bericht.
+- **11 Laufzeit/VM**: Prüfstellen (Rückwärtssprünge, Aufrufe) für Fuel und Deadline; Fuel je
+  Grundblock; Anhalten = Rückkehr aus der Dispatch-Schleife mit aufgehobenem Frame-Stack;
+  Allokationszähler im Allokationspfad; Objekte tragen ihre Instanz (S9) und eine Typversion
+  (S7a, Umbau am Ort); Ressourcen-Register je Instanz (S5b `abort`); Bytecode-Cache-Schlüssel;
+  `loadTrusted`.
+- **12 std**: Kostenregel je schwerem Native (S5c); `std.random` geseedet/per Recht (S8).
+- **13 Werkzeuge**: Abfrage-UX, `--allow`/`-A`, `run --watch` mit Reload-Bericht.
 
 ## Anforderungen an Lyric 5
 

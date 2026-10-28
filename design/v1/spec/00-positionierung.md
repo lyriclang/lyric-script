@@ -15,7 +15,7 @@ Releases gibt es nicht mehr; 4.6 ist Ausgangsmaterial, nicht Kompatibilitätsver
 |---|---|---|
 | Z0 | Was ist unverhandelbar? | **Statisch typisiert** (die VM-Sicherheit hängt daran), **Sandbox**, **Instruktionsbudget**, **Hot-Reload**. Typisierung „statisch mit explizitem Ausweg“: Inferenz so weit wie möglich, ein expliziter Typ `Any` für dynamische Daten mit geprüftem `is`/`as?`; **eine fehlende Annotation bedeutet nie `Any`**. |
 | Z1 | Primärer Einsatz | **Terminal-Skripte und Automatisierung (b)** vor **Erweiterungssprache in Hosts (a)** und **Einbettung in Lyric-5-Programme (d)**. **Eine Sprache, eine Endung `.lyrs`, zwei Profile**: *standalone* (Top-Level-Code als Einstieg, volle `std`, Freigaben per Flag/Manifest, kein Budget) und *embedded* (der Host bestimmt Rechte, API und Budget; Vorgabe: nichts erlaubt). Top-Level-Code ist in beiden Profilen erlaubt; eingebettet läuft er beim Instanziieren als Initialisierung. |
-| Z2 | Laufzeit und Implementierung | **Lyric-Script wird in Lyric 5 neu geschrieben — Compiler, VM und native Teile der std.** Präzisiert 2026-10-28 (Strategie B): **Beginn vor 5.0 gegen einen gepinnten `dev`-Build** — die VM nach den Bereichen 01/02, Frontend und std nach dem Syntax-Bereich. Die C#-Codebasis von 4.6 ist Vorlage (VM, Format, Sema), Testorakel und Korpus, kein Code, der überlebt; der Lyric-Quelltext von 4.6 (std 8,4k Zeilen, Beispiele 5k) wandert über `lyric fix --from-4` (Lyric 5, M16) mit. Keine .NET-Abhängigkeit in Sprache, Laufzeit oder Einbettung. |
+| Z2 | Laufzeit und Implementierung | **Lyric-Script wird in Lyric 5 neu geschrieben — Compiler, VM und native Teile der std.** Präzisiert 2026-10-28 (Strategie B): **Beginn vor 5.0 gegen einen gepinnten `dev`-Build** — nach den Sprachbereichen und dem VM-Bereich (11); vorgezogen nur die sprachunabhängige Dispatch-Probe (Reihenfolge geändert 2026-10-28, siehe Fahrplan). Die C#-Codebasis von 4.6 ist Vorlage (VM, Format, Sema), Testorakel und Korpus, kein Code, der überlebt; der Lyric-Quelltext von 4.6 (std 8,4k Zeilen, Beispiele 5k) wandert über `lyric fix --from-4` (Lyric 5, M16) mit. Keine .NET-Abhängigkeit in Sprache, Laufzeit oder Einbettung. |
 | Z6 | Sprache der Standardbibliothek | **Python-Modell**: der Großteil in Lyric-Script selbst; nativ (Lyric 5, als native Module nach Z5) nur I/O, OS-Zugang und gemessene heiße Pfade (Text-Kerne, Hashing, Regex, Parser). 4.6 steht bei 74 % Lyric zu 26 % nativ (617 Funktionen, 162 ohne Rumpf). Der Compiler wird **nicht** selbst gehostet (Startzeit und Reload, Bootstrap). |
 | Z3 | Verhältnis zu Lyric 5 | **Sprachfamilie: Lyric 5 ist die Referenz.** Script weicht nur ab, wo die Abweichung dem Skript-Charakter dient; jede Abweichung steht mit Begründung in einer **Abweichungstabelle** (je Bereich, gesammelt im Plan). „Als Lyric erkennbar, mit den Abkürzungen einer Skriptsprache.“ |
 | Z4 | Abstand zu 4.6 | **Bytecode-VM bleibt das Ausführungsmodell** (kein Baum-Interpreter, kein nativer Compile); **Oberfläche und VM entstehen neu** (aus Z2, Z3). Das **Format darf brechen**: Erato 2 / Lyricpp hält eigene Werkzeugkopien und ist kein Abnehmer laufender Änderungen. |
@@ -70,12 +70,13 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | Compiler in Lyric-Script selbst gehostet (Strategie D) | Compile im Interpreter bei jedem Start und Reload (geschätzt eine Zehnerpotenz langsamer, nicht gemessen) trifft Rolle b; Bootstrap-Abbild. Bei Skriptsprachen selten (PyPy, Pharo). |
 | Baum-Interpreter oder native Kompilation | Bytecode trägt Budget, Hot-Reload und Sandbox-Prüfung beim Laden (Z4). |
 | Rohes `extern "C"` / `extern "dotnet"` in Script | Grenze von Hand, Sandbox-Loch; native Module decken den Bedarf mit einem Mechanismus. |
-| Gemeinsamer Frontend-Code mit Lyric 5 über Repos | Kopplung an ein bewegliches Ziel; die Familie entsteht aus den Dokumenten. Mit dem Neubau in Lyric 5 neu zu prüfen (Bereich 2/12). |
+| Gemeinsamer Frontend-Code mit Lyric 5 über Repos | Kopplung an ein bewegliches Ziel; die Familie entsteht aus den Dokumenten. Mit dem Neubau in Lyric 5 neu zu prüfen (Bereich 11/13). |
 
 ## Was das den späteren Bereichen vorgibt
 
 - **Zeitlinie**: Die Runde endet in einem Plan; die Umsetzung beginnt gegen Lyric 5 `dev`
-  (gepinnt) — die VM nach 01/02, der Rest nach dem Syntax-Bereich. Kein Zwischenrelease auf
+  (gepinnt) — nach den Sprachbereichen 02–10 und dem VM-Bereich 11; vorgezogen nur die
+  Dispatch-Probe, die die Anforderungen A2a–c belegt. Kein Zwischenrelease auf
   der C#-Basis. Befunde in Lyric 5 gehen als Issues an `lyriclang/lyric`, nicht als
   Umgehungen in Script.
 - **Host und Sicherheit**: Capabilities, Budget, Hot-Reload als Axiome; heutige Lücken
@@ -95,7 +96,10 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | # | Anforderung | Betrifft | Wann nötig |
 |---|---|---|---|
 | A1 | **Mehrere Lyric-5-Bibliotheken in einem Prozess** (geteiltes Runtime): ein `lyric-script`-Prozess, der zwei native Module lädt, hätte heute zwei Runtimes — 11 H1 erlaubt eines, H7 lässt `--shared-runtime` als Tür. Alternative ohne Änderung an 5: native Module statisch in ein eigenes `lyric-script`-Binary linken. | 11 H1, H7 | erst bei dynamisch geladenen nativen Modulen |
-| A2 | Lyric 5 muss eine VM tragen: schnelle Dispatch-Schleife (`match` über Opcodes zu Sprungtabelle), Arrays ohne Bounds-Check-Kosten im heißen Pfad, Koroutinen-API zum Einhängen von Skript-Koroutinen. Zu prüfen gegen die 5.0-Fähigkeiten, nicht zu fordern ohne Messung. | 01, 06, 03 | Bereich 2 dieser Runde |
+| A2a | **Dispatch**: `match` über Ganzzahl/Enum wird heute zu einer `if`-Kette (IR ohne Switch-Terminator); eine VM braucht einen C-`switch`/eine Sprungtabelle — oder den Messbeleg, dass clang `-O2` die Kette umwandelt | IR, C-Emitter | Dispatch-Probe (vorgezogen) |
+| A2b | **Anhalten aus verschachtelten Aufrufen**: öffentliches `park`/`unpark` oder typisiertes Yield aus Hilfsfunktionen (heute `park` in std privat) — für Budget-Anhalten und Skript-Koroutinen (01 S5b) | 06, std.task | Bereich 11 |
+| A2c | **Exakter Toolchain-Pin** (heute nur Mindestversion; `lyric toolchain install` kommt mit M15); bis dahin baut die CI von Lyric-Script Lyric 5 aus einem festen Commit | 11 W9, M15 | Umsetzungsbeginn |
+| A2d | Kosten der stets aktiven Indexprüfung im heißen Pfad — erst nach Messung zu stellen (Alternative heute: `Ptr` in `unsafe {}`) | 03 N5 | nach der Probe |
 | A3 | **Instanz-Zuordnung im GC** (Heap-Partitionen oder Abrechnung beim Markieren) für eine Live-Speichergrenze pro Instanz (01 S6, Tür) | 01 S6; Lyric 5 01, M11 | erst wenn die Tür geöffnet wird |
 
 ## Fahrplan der Runde
@@ -104,16 +108,24 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 |---|---|
 | 00 | Positionierung (dieses Dokument) |
 | 01 | Host und Sicherheit: Profile, Capabilities, Budget, Hot-Reload, Determinismus |
-| 02 | Laufzeit und VM in Lyric 5: Wertmodell der VM, Format, Startzeit, Einbettung |
-| 03 | Wertmodell der Sprache: Zahlen, Strings, Sammlungsliterale, Mutabilität, `Any` |
-| 04 | Typisierung: Inferenz, Parameter, Generics, `Any`-Grenze |
-| 05 | Abstraktion: Klassen, Interfaces, Protokolle |
+| 02 | **Leitbild**: Beispielprogramme in Stilvarianten, Katalog der Skript-Merkmale |
+| 03 | Wertmodell der Sprache: Zahlen, Strings, Sammlungen, Mutabilität, `Any` |
+| 04 | Typsystem und Inferenz (inkl. Generics: monomorphisiert oder gelöscht) |
+| 05 | Abstraktion: Klassen, Vererbung?, Interfaces, strukturelle Typen? |
 | 06 | Fehler |
 | 07 | Nebenläufigkeit: Koroutinen, vom Host gepumpte Event-Loop |
 | 08 | Programmstruktur und Module: Top-Level-Code, Shebang, Abhängigkeiten, Manifest |
-| 09 | Syntax und Abweichungstabelle |
+| 09 | Syntax und Grammatik, Abweichungstabelle |
 | 10 | Reflexion und Metaprogrammierung |
-| 11 | Standardbibliothek |
-| 12 | Werkzeuge: REPL, LSP, fmt, `run`, Debugger, native Module bauen |
-| 13 | Migration 4.6 → 1.0 |
-| 14 | Umsetzungsplan zu `lyric-script 1.0.0` |
+| 11 | Laufzeit und VM in Lyric 5: Grundform, Werte, Format, Startzeit, Einbettung |
+| 12 | Standardbibliothek |
+| 13 | Werkzeuge: REPL, LSP, fmt, `run`, Debugger, native Module bauen |
+| 14 | Migration 4.6 → 1.0 |
+| 15 | Umsetzungsplan zu `lyric-script 1.0.0` |
+
+**Reihenfolge geändert (2026-10-28, Maintainer):** die Sprache vor der VM — was die VM können
+muss, folgt aus Sprachentscheidungen (Generics gelöscht oder monomorphisiert, Ganzzahlbreite,
+Vererbung, Fehlerform). Methode für 03–10: **Abweichungsrunden** — je Gebiet das
+Entscheidungsdokument von Lyric 5 und der Stand von 4.6, je Punkt übernehmen / ändern /
+streichen. Die schon gestellten VM-Fragen (Stack/Register, Wertdarstellung, Referenzform) sind
+Material für 11.

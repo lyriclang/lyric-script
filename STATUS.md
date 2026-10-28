@@ -77,6 +77,22 @@ Exit criterion: hand-written bytecode runs in CI on every Tier 1 target; measure
 
 Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; measurement point 2 recorded.
 
+### S3 — open
+
+| Slice | State |
+|---|---|
+| S3a optionals | done — Lyric 5 §3.1–3.3 with its codes; every value has a slot shape (11 V2: `?int` two scalar slots, `??int` three, a `?T` of a reference the reference with `nil`); results of several slots; narrowing ends at a write; ten cases in the delta's 03 |
+| S3b definite assignment, empty literals | — |
+| S3c tuples | — |
+| S3d enums with values, `match`, patterns | — |
+| S3e function values | — |
+| S3f interfaces | — |
+| S3g generics | — |
+| S3h synthesis, `with`, literal protocols | — |
+| S3i runtime descriptors | — |
+
+Exit criterion: generic code and interfaces in scripts, in CI; the delta's chapter 03 with its cases.
+
 ## Working mode
 
 Decided 2026-10-28 (14): **autonomous, as on the Lyric 5 line** — Claude plans each slice and

@@ -286,6 +286,7 @@ struct FieldDecl :: [Debug] {
 /// A struct or, with the flag, a class: its fields and its methods.
 struct TypeDecl :: [Debug] {
     name: string,
+    typeParams: TypeParam[],
     conforms: Conformance[],
     isClass: bool,
     fields: FieldDecl[],
@@ -306,6 +307,7 @@ struct Variant :: [Debug] {
 
 struct EnumDecl :: [Debug] {
     name: string,
+    typeParams: TypeParam[],
     conforms: Conformance[],
     variants: Variant[],
     methods: FnDecl[],

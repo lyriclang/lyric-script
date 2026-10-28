@@ -146,6 +146,14 @@ class TypeInfo {
     // their slots runs on it
     var ifaces: int[] = [],
     var witness: Map<int, int> = Map<int, int>.new(),
+    // a generic type's parameters; an instance's template and arguments — the template is the
+    // instance with its own parameters
+    var typeParams: TypeParamInfo[] = [],
+    var template: int = -1,
+    var args: Ty[] = [],
+    // an instance whose fields the template has given, and whose table the copies have made
+    var filled: bool = false,
+    var tabled: bool = false,
 }
 
 struct ParamInfo :: [Debug] {

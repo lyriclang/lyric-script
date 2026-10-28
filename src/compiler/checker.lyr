@@ -35,6 +35,7 @@ import lyric_script.compiler.ast {
     Stmt,
     TypeDecl,
     TypeExpr,
+    TypeParam,
     UnaryOp,
     binaryText,
     unaryText,
@@ -204,6 +205,8 @@ class Checker {
     var genericFn: int = -1,
     // the copies made of generics, by function and the shape of the type arguments
     instances: Map<string, int>,
+    // the type arguments a method's receiver binds before its call is checked
+    var presetBinds: Ty[] = [],
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -353,6 +356,15 @@ class Checker {
                 .Stmt(_) => { }
             }
         }
+        // the instances made before their template's members were known
+        var ti = 0;
+        while (ti < this.types.length()) {
+            let t = this.types[ti];
+            if (t.template >= 0 && t.template != ti) {
+                this.fillInstance(ti);
+            }
+            ti += 1;
+        }
         // the fields' defaults, now that every type is known
         for (item in module.items) {
             match (item) {
@@ -436,6 +448,14 @@ class Checker {
         let info = this.types[index];
         if (info.kind == .Enum || info.name != t.name) {
             return;
+        }
+        let savedScope = this.typeParams;
+        if (t.typeParams.length() > 0) {
+            this.enterGenericType(index, t.typeParams);
+        }
+        defer {
+            this.typeParams = savedScope;
+            info.filled = true;
         }
         let fields = List<FieldInfo>.new();
         let seen = Map<string, bool>.new();
@@ -872,7 +892,8 @@ class Checker {
                 }
                 found
             }
-            .Named(i) => {
+            .Named(j) => {
+                let i = if (this.types[j].template >= 0) this.types[j].template else j;
                 let kinds = if (this.types[i].kind == .Interface) this.ancestry(i)
                     else this.types[i].ifaces;
                 var found = false;
@@ -893,6 +914,14 @@ class Checker {
         let info = this.types[index];
         if (info.kind != .Enum) {
             return;
+        }
+        let savedScope = this.typeParams;
+        if (e.typeParams.length() > 0) {
+            this.enterGenericType(index, e.typeParams);
+        }
+        defer {
+            this.typeParams = savedScope;
+            info.filled = true;
         }
         let variants = List<string>.new();
         let payloads = List<FieldInfo[]>.new();
@@ -1004,6 +1033,9 @@ class Checker {
                     state = FnState.Declared;
                 }
             }
+        }
+        if (owner >= 0 && f.typeParams.length() == 0 && this.types[owner].typeParams.length() > 0) {
+            info.typeParams = this.types[owner].typeParams;
         }
         this.typeParams = savedScope;
         this.functions.push(info);
@@ -1124,6 +1156,24 @@ class Checker {
         let param = this.typeParams.get(name);
         if (param != null && args.length() == 0) {
             return Ty.Param(param);
+        }
+        // an instance of a generic type of the program
+        let generic = this.typeIndex.get(name);
+        if (generic != null && this.types[generic].typeParams.length() > 0) {
+            let n = this.types[generic].typeParams.length();
+            if (args.length() != n) {
+                this.error(
+                    "LYS-SEM0026",
+                    f"'{name}' takes {n} type arguments, not {args.length()}",
+                    at
+                );
+                return Ty.Unknown;
+            }
+            let tys = List<Ty>.new();
+            for (x in args) {
+                tys.push(this.resolveType(x));
+            }
+            return Ty.Named(this.typeInstance(generic, tys.toArray()));
         }
         let arity = match (name) {
             "List" => 1,
@@ -1456,6 +1506,11 @@ class Checker {
     /// Resolves every call of a generic to the copy for its type arguments' shape, making the
     /// copies; a copy's body is the generic's, its type parameters replaced.
     mut fn instantiate(): void {
+        var ti = 0;
+        while (ti < this.types.length()) {
+            this.tableInstance(ti);
+            ti += 1;
+        }
         var k = 0;
         while (k < this.functions.length()) {
             let info = this.functions[k];
@@ -1521,24 +1576,32 @@ class Checker {
         let info = this.functions[index];
         let params = List<ParamInfo>.new();
         for (p in generic.params) {
-            params.push(ParamInfo { name = p.name, ty = substTy(p.ty, a), default = null });
+            params.push(ParamInfo { name = p.name, ty = this.subst(p.ty, a), default = null });
         }
         info.params = params.toArray();
-        info.returns = substTy(generic.returns, a);
+        info.returns = this.subst(generic.returns, a);
         let locals = List<Ty>.new();
         for (t in generic.locals) {
-            locals.push(substTy(t, a));
+            locals.push(this.subst(t, a));
         }
         info.locals = locals.toArray();
         info.boxed = generic.boxed;
         info.env = generic.env;
         let caps = List<CaptureInfo>.new();
         for (c in generic.captures) {
-            caps.push(CaptureInfo { ty = substTy(c.ty, a), isCell = c.isCell });
+            caps.push(CaptureInfo { ty = this.subst(c.ty, a), isCell = c.isCell });
         }
         info.captures = caps.toArray();
         info.body = this.specStmts(generic.template, a);
         return index;
+    }
+
+    /// Type `ti` with the arguments in place: an instance's.
+    mut fn specType(ti: int, a: Ty[]): int {
+        return match (this.subst(Ty.Named(ti), a)) {
+            .Named(j) => j,
+            _ => ti,
+        };
     }
 
     mut fn specStmts(list: TStmt[], a: Ty[]): TStmt[] {
@@ -1601,81 +1664,100 @@ class Checker {
     mut fn specExpr(e: TExpr, a: Ty[]): TExpr {
         return match (e) {
             .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Variant(_, _) | .Unit | .Unknown => e,
-            .Local(id, t) => TExpr.Local(id, substTy(t, a)),
-            .Global(g, t) => TExpr.Global(g, substTy(t, a)),
-            .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), substTy(t, a)),
+            .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
+            .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
+            .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
             .Binary(x, op, y, t) => TExpr.Binary(
                 this.specBox(x, a),
                 op,
                 this.specBox(y, a),
-                substTy(t, a)
+                this.subst(t, a)
             ),
             .ToFloat(x) => TExpr.ToFloat(this.specBox(x, a)),
-            .Cast(x, t) => TExpr.Cast(this.specBox(x, a), substTy(t, a)),
-            .Call(fi, xs, t) => TExpr.Call(fi, this.specAll(xs, a), substTy(t, a)),
-            .Native(n, xs, t) => TExpr.Native(n, this.specAll(xs, a), substTy(t, a)),
-            .New(ti, xs) => TExpr.New(ti, this.specAll(xs, a)),
-            .Field(x, k, t) => TExpr.Field(this.specBox(x, a), k, substTy(t, a)),
+            .Cast(x, t) => TExpr.Cast(this.specBox(x, a), this.subst(t, a)),
+            .Call(fi, xs, t) => TExpr.Call(fi, this.specAll(xs, a), this.subst(t, a)),
+            .Native(n, xs, t) => TExpr.Native(n, this.specAll(xs, a), this.subst(t, a)),
+            // a generic type's instance with the arguments in place
+            .New(ti, xs) => TExpr.New(this.specType(ti, a), this.specAll(xs, a)),
+            .Field(x, k, t) => TExpr.Field(this.specBox(x, a), k, this.subst(t, a)),
             .Assign(place, op, v, t) => {
                 let p = match (place) {
                     .Field(o, k) => Place.Field(this.specBox(o, a), k),
                     _ => place,
                 };
-                TExpr.Assign(p, op, this.specBox(v, a), substTy(t, a))
+                TExpr.Assign(p, op, this.specBox(v, a), this.subst(t, a))
             }
             .If(c, x, y, t) => TExpr.If(
                 this.specBox(c, a),
                 this.specBox(x, a),
                 this.specBox(y, a),
-                substTy(t, a)
+                this.subst(t, a)
             ),
-            .Block(b, v, t) => TExpr.Block(this.specStmts(b, a), this.specBox(v, a), substTy(t, a)),
-            .Loop(b, t) => TExpr.Loop(this.specStmts(b, a), substTy(t, a)),
-            .Null(t) => TExpr.Null(substTy(t, a)),
-            .Wrap(x, t) => TExpr.Wrap(this.specBox(x, a), substTy(t, a)),
-            .Narrow(x, t) => TExpr.Narrow(this.specBox(x, a), substTy(t, a)),
-            .Unwrap(x, t) => TExpr.Unwrap(this.specBox(x, a), substTy(t, a)),
+            .Block(b, v, t) => TExpr.Block(
+                this.specStmts(b, a),
+                this.specBox(v, a),
+                this.subst(t, a)
+            ),
+            .Loop(b, t) => TExpr.Loop(this.specStmts(b, a), this.subst(t, a)),
+            .Null(t) => TExpr.Null(this.subst(t, a)),
+            .Wrap(x, t) => TExpr.Wrap(this.specBox(x, a), this.subst(t, a)),
+            .Narrow(x, t) => TExpr.Narrow(this.specBox(x, a), this.subst(t, a)),
+            .Unwrap(x, t) => TExpr.Unwrap(this.specBox(x, a), this.subst(t, a)),
             .IsNull(x) => TExpr.IsNull(this.specBox(x, a)),
             .Coalesce(x, y, t) => TExpr.Coalesce(
                 this.specBox(x, a),
                 this.specBox(y, a),
-                substTy(t, a)
+                this.subst(t, a)
             ),
-            .Tuple(xs, t) => TExpr.Tuple(this.specAll(xs, a), substTy(t, a)),
-            .Elem(x, k, t) => TExpr.Elem(this.specBox(x, a), k, substTy(t, a)),
-            .MakeVariant(ti, k, xs) => TExpr.MakeVariant(ti, k, this.specAll(xs, a)),
+            .Tuple(xs, t) => TExpr.Tuple(this.specAll(xs, a), this.subst(t, a)),
+            .Elem(x, k, t) => TExpr.Elem(this.specBox(x, a), k, this.subst(t, a)),
+            .MakeVariant(ti, k, xs) => TExpr.MakeVariant(
+                this.specType(ti, a),
+                k,
+                this.specAll(xs, a)
+            ),
             .Tag(x) => TExpr.Tag(this.specBox(x, a)),
-            .Payload(x, ti, k, j, t) => TExpr.Payload(this.specBox(x, a), ti, k, j, substTy(t, a)),
-            .Unreachable(t) => TExpr.Unreachable(substTy(t, a)),
+            .Payload(x, ti, k, j, t) => TExpr.Payload(
+                this.specBox(x, a),
+                this.specType(ti, a),
+                k,
+                j,
+                this.subst(t, a)
+            ),
+            .Unreachable(t) => TExpr.Unreachable(this.subst(t, a)),
             .Closure(fi, xs, t) => {
                 // a lambda of a generic's body: its copy for these arguments
                 let f = if (this.functions[fi].templateOf >= 0) this.instanceOf(fi, a) else fi;
-                TExpr.Closure(f, this.specAll(xs, a), substTy(t, a))
+                TExpr.Closure(f, this.specAll(xs, a), this.subst(t, a))
             }
-            .Captured(k, t) => TExpr.Captured(k, substTy(t, a)),
-            .CapturedCell(k, t) => TExpr.CapturedCell(k, substTy(t, a)),
-            .CellOf(id, t) => TExpr.CellOf(id, substTy(t, a)),
+            .Captured(k, t) => TExpr.Captured(k, this.subst(t, a)),
+            .CapturedCell(k, t) => TExpr.CapturedCell(k, this.subst(t, a)),
+            .CellOf(id, t) => TExpr.CellOf(id, this.subst(t, a)),
             .CallValue(f, xs, t) => TExpr.CallValue(
                 this.specBox(f, a),
                 this.specAll(xs, a),
-                substTy(t, a)
+                this.subst(t, a)
             ),
-            .Upcast(x, t) => TExpr.Upcast(this.specBox(x, a), substTy(t, a)),
-            .CallIface(slot, xs, t) => TExpr.CallIface(slot, this.specAll(xs, a), substTy(t, a)),
-            .BoxOf(x, k, t) => TExpr.BoxOf(this.specBox(x, a), k, substTy(t, a)),
-            .Unbox(x, t) => TExpr.Unbox(this.specBox(x, a), substTy(t, a)),
-            .IsType(x, k, t) => TExpr.IsType(this.specBox(x, a), k, substTy(t, a)),
-            .IsIface(x, k, t) => TExpr.IsIface(this.specBox(x, a), k, substTy(t, a)),
+            .Upcast(x, t) => TExpr.Upcast(this.specBox(x, a), this.subst(t, a)),
+            .CallIface(slot, xs, t) => TExpr.CallIface(slot, this.specAll(xs, a), this.subst(t, a)),
+            .BoxOf(x, k, t) => TExpr.BoxOf(this.specBox(x, a), k, this.subst(t, a)),
+            .Unbox(x, t) => TExpr.Unbox(this.specBox(x, a), this.subst(t, a)),
+            .IsType(x, k, t) => TExpr.IsType(this.specBox(x, a), k, this.subst(t, a)),
+            .IsIface(x, k, t) => TExpr.IsIface(this.specBox(x, a), k, this.subst(t, a)),
             .CallGeneric(fi, targs, xs, t) => {
                 let bound = List<Ty>.new();
                 for (x in targs) {
-                    bound.push(substTy(x, a));
+                    bound.push(this.subst(x, a));
                 }
-                TExpr.Call(this.instanceOf(fi, bound.toArray()), this.specAll(xs, a), substTy(t, a))
+                TExpr.Call(
+                    this.instanceOf(fi, bound.toArray()),
+                    this.specAll(xs, a),
+                    this.subst(t, a)
+                )
             }
             .CallConstraint(k, ii, member, slot, xs, t) => {
                 let all = this.specAll(xs, a);
-                let rt = substTy(t, a);
+                let rt = this.subst(t, a);
                 let concrete = if (k < a.length()) a[k] else Ty.Unknown;
                 if (this.sharedShape(concrete)) {
                     // a shared copy: through the receiver's own table
@@ -1706,6 +1788,224 @@ class Checker {
                 TExpr.Call(fi, rest.toArray(), rt)
             }
         };
+    }
+
+    /// `t` with type parameter `k` replaced by `a[k]` throughout — in an instance of a generic
+    /// type too, which becomes the instance of the replaced arguments.
+    mut fn subst(t: Ty, a: Ty[]): Ty {
+        if (a.length() == 0) {
+            return t;
+        }
+        return match (t) {
+            .Param(k) => if (k < a.length()) a[k] else t,
+            .Named(i) => {
+                let info = this.types[i];
+                if (info.template < 0 || info.args.length() == 0) {
+                    return t;
+                }
+                let args = List<Ty>.new();
+                var changed = false;
+                for (x in info.args) {
+                    let y = this.subst(x, a);
+                    changed = changed || y != x;
+                    args.push(y);
+                }
+                if (changed) Ty.Named(this.typeInstance(info.template, args.toArray())) else t
+            }
+            .Optional(inner) => Ty.Optional(boxTy(this.subst(inner.value, a))),
+            .List(inner) => Ty.List(boxTy(this.subst(inner.value, a))),
+            .Map(k, v) => Ty.Map(boxTy(this.subst(k.value, a)), boxTy(this.subst(v.value, a))),
+            .Cell(inner) => Ty.Cell(boxTy(this.subst(inner.value, a))),
+            .Tuple(tt) => {
+                let es = List<Ty>.new();
+                for (x in tt.elements) {
+                    es.push(this.subst(x, a));
+                }
+                Ty.Tuple(TupleTy { elements = es.toArray(), labels = tt.labels })
+            }
+            .Fn(ft) => {
+                let ps = List<Ty>.new();
+                for (x in ft.params) {
+                    ps.push(this.subst(x, a));
+                }
+                Ty.Fn(
+                    FnTy { params = ps.toArray(), result = boxTy(this.subst(ft.result.value, a)) }
+                )
+            }
+            _ => t,
+        };
+    }
+
+    /// `t` with the type parameters bound so far replaced; the others stay.
+    mut fn substOpen(t: Ty, binds: (?Ty)[]): Ty {
+        let a = List<Ty>.new();
+        var k = 0;
+        for (b in binds) {
+            a.push(b ?? Ty.Param(k));
+            k += 1;
+        }
+        return this.subst(t, a.toArray());
+    }
+
+    /// Binds the type parameters of `pattern` by `actual` (03 §9.2 rule 1), through instances of
+    /// one generic type too.
+    mut fn bind(pattern: Ty, actual: Ty, binds: List<?Ty>): void {
+        match (pattern) {
+            .Named(p) => {
+                match (actual) {
+                    .Named(x) => {
+                        let pi = this.types[p];
+                        let xi = this.types[x];
+                        if (pi.template >= 0 && pi.template == xi.template) {
+                            var k = 0;
+                            while (k < pi.args.length() && k < xi.args.length()) {
+                                this.bind(pi.args[k], xi.args[k], binds);
+                                k += 1;
+                            }
+                        }
+                    }
+                    _ => { }
+                }
+            }
+            _ => bindTyFree(pattern, actual, binds),
+        }
+    }
+
+    /// The instance of generic type `ti` for `args` (03 §9.1): one entry per argument list, its
+    /// fields and variants the template's with the arguments in place.
+    mut fn typeInstance(ti: int, args: Ty[]): int {
+        let tmpl = this.types[ti];
+        var own = args.length() == tmpl.typeParams.length();
+        var k = 0;
+        for (x in args) {
+            own = own && x == Ty.Param(k);
+            k += 1;
+        }
+        if (own) {
+            return ti;
+        }
+        let names = List<string>.new();
+        for (x in args) {
+            names.push(this.tyName(x));
+        }
+        let key = f"type {ti}<{names.toArray().join(",")}>";
+        let known = this.instances.get(key);
+        if (known != null) {
+            return known;
+        }
+        let index = this.types.length();
+        this.types.push(
+            TypeInfo {
+                name = f"{tmpl.name}<{names.toArray().join(", ")}>",
+                kind = tmpl.kind,
+                methods = tmpl.methods,
+            }
+        );
+        this.instances.insert(key, index);
+        let info = this.types[index];
+        info.template = ti;
+        info.args = args;
+        if (tmpl.filled) {
+            this.fillInstance(index);
+        }
+        return index;
+    }
+
+    /// An instance's fields and variants, its template's with the arguments in place.
+    mut fn fillInstance(i: int) {
+        let info = this.types[i];
+        if (info.filled) {
+            return;
+        }
+        info.filled = true;
+        let tmpl = this.types[info.template];
+        let fields = List<FieldInfo>.new();
+        for (f in tmpl.fields) {
+            fields.push(
+                FieldInfo {
+                    name = f.name,
+                    ty = this.subst(f.ty, info.args),
+                    isVar = f.isVar,
+                    default = null,
+                }
+            );
+        }
+        info.fields = fields.toArray();
+        info.variants = tmpl.variants;
+        info.variantNamed = tmpl.variantNamed;
+        info.payload = tmpl.payload;
+        let all = List<FieldInfo[]>.new();
+        for (vf in tmpl.variantFields) {
+            let fs = List<FieldInfo>.new();
+            for (f in vf) {
+                fs.push(
+                    FieldInfo {
+                        name = f.name,
+                        ty = this.subst(f.ty, info.args),
+                        isVar = f.isVar,
+                        default = null,
+                    }
+                );
+            }
+            all.push(fs.toArray());
+        }
+        info.variantFields = all.toArray();
+    }
+
+    /// An instance's table: each slot's function, the template's copied for the arguments.
+    mut fn tableInstance(i: int): void {
+        let info = this.types[i];
+        if (info.tabled || info.template < 0 || info.template == i) {
+            return;
+        }
+        info.tabled = true;
+        let tmpl = this.types[info.template];
+        info.ifaces = tmpl.ifaces;
+        for (slot in tmpl.witness.keys()) {
+            let fi = tmpl.witness.get(slot) ?? -1;
+            if (fi >= 0) {
+                info.witness.insert(
+                    slot,
+                    if (this.functions[fi].typeParams.length() > 0) this.instanceOf(fi, info.args)
+                        else fi
+                );
+            }
+        }
+    }
+
+    /// The type parameters of declaration `params` in scope by name; their constraints read.
+    mut fn typeParamsOf(params: TypeParam[]): TypeParamInfo[] {
+        let out = List<TypeParamInfo>.new();
+        for (tp in params) {
+            let cs = List<int>.new();
+            for (c in tp.constraints) {
+                let ii = this.typeIndex.get(c.name);
+                if (ii == null || this.types[ii].kind != .Interface) {
+                    this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
+                    continue;
+                }
+                cs.push(ii);
+            }
+            out.push(TypeParamInfo { name = tp.name, constraints = cs.toArray() });
+        }
+        return out.toArray();
+    }
+
+    /// Makes a generic type a template: its parameters in scope for what follows.
+    mut fn enterGenericType(index: int, params: TypeParam[]): void {
+        let info = this.types[index];
+        info.typeParams = this.typeParamsOf(params);
+        info.template = index;
+        let own = List<Ty>.new();
+        let scope = Map<string, int>.new();
+        var k = 0;
+        for (tp in params) {
+            own.push(Ty.Param(k));
+            scope.insert(tp.name, k);
+            k += 1;
+        }
+        info.args = own.toArray();
+        this.typeParams = scope;
     }
 
     /// A fresh context for function `k`: its receiver and its parameters its first locals.
@@ -3683,7 +3983,7 @@ class Checker {
             .Member(x, name, optional, at) => this.member(x.value, name, optional, at),
             .List(_, at) => this.notYet("a list literal", "S7 (the core collections)", at),
             .Map(_, at) => this.notYet("a map literal", "S7 (the core collections)", at),
-            .StructInit(name, fields, at) => this.init(name, fields, at),
+            .StructInit(name, fields, at) => this.init(name, fields, expected, at),
             .If(cond, then, otherwise, at) => this.ifExpr(
                 cond.value,
                 then.value,
@@ -4131,11 +4431,22 @@ class Checker {
             this.error("LYS-SEM0031", f"'{v}' carries a payload: build it as {form}", at);
             return TExpr.Unknown;
         }
+        if (info.typeParams.length() > 0 && info.template == i) {
+            this.error(
+                "LYS-SEM0060",
+                f"'{info.variants[k]}' of the generic '{info.name}' takes its type from the position: write it there",
+                at
+            );
+            return TExpr.Unknown;
+        }
         return if (info.payload) TExpr.MakeVariant(i, k, []) else TExpr.Variant(i, k);
     }
 
     /// `Shape.Num(3)`: a variant whose payload is given by position.
     mut fn variantCall(i: int, k: int, args: Arg[], at: Span): TExpr {
+        if (this.types[i].typeParams.length() > 0 && this.types[i].template == i) {
+            return this.genericVariantCall(i, k, args, at);
+        }
         let info = this.types[i];
         let v = info.variants[k];
         let fields = info.variantFields[k];
@@ -4170,6 +4481,53 @@ class Checker {
             j += 1;
         }
         return TExpr.MakeVariant(i, k, values.toArray());
+    }
+
+    /// `Opt.Some(3)`: the instance of the generic enum the payload binds.
+    mut fn genericVariantCall(i: int, k: int, args: Arg[], at: Span): TExpr {
+        let tmpl = this.types[i];
+        let fields = tmpl.variantFields[k];
+        if (fields.length() == 0 || tmpl.variantNamed[k] || args.length() != fields.length()) {
+            this.error(
+                "LYS-SEM0060",
+                f"'{tmpl.variants[k]}' of the generic '{tmpl.name}' takes its type from its payload or the position: give them",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let binds = List<?Ty>.new();
+        for (_ in tmpl.typeParams) {
+            binds.push(null);
+        }
+        let values = List<TExpr>.new();
+        var j = 0;
+        for (a in args) {
+            let v = this.expr(a.value, if (hasParam(fields[j].ty)) null else fields[j].ty);
+            this.bind(fields[j].ty, typeOf(v), binds);
+            values.push(v);
+            j += 1;
+        }
+        let tys = List<Ty>.new();
+        for (b in binds) {
+            if (b == null) {
+                this.error(
+                    "LYS-SEM0060",
+                    f"nothing here says all of '{tmpl.name}''s type arguments: write them",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            tys.push(b);
+        }
+        let inst = this.typeInstance(i, tys.toArray());
+        this.fillInstance(inst);
+        let out = List<TExpr>.new();
+        j = 0;
+        for (v in values) {
+            out.push(this.coerce(v, this.types[inst].variantFields[k][j].ty, at));
+            j += 1;
+        }
+        return TExpr.MakeVariant(inst, k, out.toArray());
     }
 
     /// `.Red` where the position expects an enum (Lyric 5 §4.2).
@@ -4610,7 +4968,7 @@ class Checker {
         return TExpr.Field(boxE(o), index, this.types[owner].fields[index].ty);
     }
 
-    mut fn init(name: string, fields: FieldInit[], at: Span): TExpr {
+    mut fn init(name: string, fields: FieldInit[], expected: ?Ty, at: Span): TExpr {
         let index = this.typeIndex.get(name);
         if (index == null) {
             this.resolveNamed(name, [], at);
@@ -4625,7 +4983,96 @@ class Checker {
             );
             return TExpr.Unknown;
         }
+        if (info.typeParams.length() > 0) {
+            return this.genericInit(index, fields, expected, at);
+        }
         return TExpr.New(index, this.fieldValues(name, info.fields, fields, at));
+    }
+
+    /// `Pair { first = 1, second = "a" }`: the instance the position expects, or the one the
+    /// fields' values bind (03 §9.2).
+    mut fn genericInit(index: int, fields: FieldInit[], expected: ?Ty, at: Span): TExpr {
+        let tmpl = this.types[index];
+        var inst = -1;
+        if (expected != null) {
+            match (expected) {
+                .Named(e) => {
+                    if (this.types[e].template == index) {
+                        inst = e;
+                    }
+                }
+                _ => { }
+            }
+        }
+        if (inst >= 0) {
+            this.fillInstance(inst);
+            return TExpr.New(
+                inst,
+                this.fieldValues(this.types[inst].name, this.types[inst].fields, fields, at)
+            );
+        }
+        let binds = List<?Ty>.new();
+        for (_ in tmpl.typeParams) {
+            binds.push(null);
+        }
+        let checked = List<?TExpr>.new();
+        for (_ in tmpl.fields) {
+            checked.push(null);
+        }
+        for (f in fields) {
+            var k = 0;
+            for (d in tmpl.fields) {
+                if (d.name == f.name && checked[k] == null) {
+                    let v = this.expr(f.value, if (hasParam(d.ty)) null else d.ty);
+                    this.bind(d.ty, typeOf(v), binds);
+                    checked[k] = v;
+                }
+                k += 1;
+            }
+        }
+        let args = List<Ty>.new();
+        var j = 0;
+        for (tp in tmpl.typeParams) {
+            let b = binds[j];
+            if (b == null) {
+                this.error(
+                    "LYS-SEM0060",
+                    f"nothing here says what '{tp.name}' of '{tmpl.name}' is: write it",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            args.push(b);
+            j += 1;
+        }
+        inst = this.typeInstance(index, args.toArray());
+        this.fillInstance(inst);
+        let info = this.types[inst];
+        let out = List<TExpr>.new();
+        var k = 0;
+        for (d in info.fields) {
+            let v = checked[k];
+            let dflt = tmpl.fields[k].default;
+            if (v != null) {
+                out.push(this.coerce(v, d.ty, at));
+            } else if (dflt != null) {
+                out.push(this.specExpr(dflt, info.args));
+            } else {
+                match (d.ty) {
+                    .Optional(_) => out.push(TExpr.Null(d.ty)),
+                    _ => {
+                        this.error(
+                            "LYS-SEM0106",
+                            f"'{info.name}' needs '{d.name}': no default gives it",
+                            at
+                        );
+                        out.push(TExpr.Unknown);
+                    }
+                }
+            }
+            k += 1;
+        }
+        return TExpr.New(inst, out.toArray());
     }
 
     /// The values of an initializer of `decls`: each given one checked against its field, a
@@ -5446,6 +5893,14 @@ class Checker {
                     };
                 }
                 let m = this.types[i].methods.get(method);
+                if (m != null
+                    && this.functions[m].typeParams.length() > 0
+                    && this.types[i].args.length() > 0) {
+                    this.presetBinds = this.types[i].args;
+                    let call = this.callAmong(method, [m], receiver, args, at);
+                    this.presetBinds = [];
+                    return call;
+                }
                 // a default of a conformance, called on the conformer
                 if (m == null) {
                     for (ii in this.types[i].ifaces) {
@@ -5602,6 +6057,15 @@ class Checker {
         }
         let deferred = List<int>.new();
         let deferredArgs = List<Expr>.new();
+        // a method of an instance of a generic type: the instance's arguments bound already
+        if (this.presetBinds.length() == typeParams.length()) {
+            var j = 0;
+            for (x in this.presetBinds) {
+                binds[j] = x;
+                j += 1;
+            }
+        }
+        this.presetBinds = [];
         var position = 0;
         var named = false;
         for (a in args) {
@@ -5657,17 +6121,17 @@ class Checker {
                 deferredArgs.push(a.value);
                 continue;
             }
-            let want = substOpen(params[k].ty, binds.toArray());
+            let want = this.substOpen(params[k].ty, binds.toArray());
             let v = this.expr(a.value, if (hasParam(want)) null else want);
-            bindTy(params[k].ty, typeOf(v), binds);
+            this.bind(params[k].ty, typeOf(v), binds);
             given[k] = v;
         }
         if (typeParams.length() > 0) {
             var d = 0;
             for (k in deferred) {
-                let want = substOpen(params[k].ty, binds.toArray());
+                let want = this.substOpen(params[k].ty, binds.toArray());
                 let v = this.expr(deferredArgs[d], want);
-                bindTy(params[k].ty, typeOf(v), binds);
+                this.bind(params[k].ty, typeOf(v), binds);
                 given[k] = v;
                 d += 1;
             }
@@ -5704,7 +6168,7 @@ class Checker {
             var k = 0;
             for (p in params) {
                 let v = given[k];
-                let pt = substTy(p.ty, bound);
+                let pt = this.subst(p.ty, bound);
                 let dflt = p.default;
                 if (v != null) {
                     out.push(this.coerce(v, pt, at));
@@ -5720,7 +6184,7 @@ class Checker {
                 chosen,
                 bound,
                 out.toArray(),
-                substTy(this.returnsOf(chosen, at), bound)
+                this.subst(this.returnsOf(chosen, at), bound)
             );
         }
         let out = List<TExpr>.new();
@@ -6067,46 +6531,6 @@ fn typeFact(x: TExpr, t: Ty, out: List<Fact>): void {
     }
 }
 
-/// `t` with type parameter `k` replaced by `a[k]` throughout.
-fn substTy(t: Ty, a: Ty[]): Ty {
-    if (a.length() == 0) {
-        return t;
-    }
-    return match (t) {
-        .Param(k) => if (k < a.length()) a[k] else t,
-        .Optional(inner) => Ty.Optional(boxTy(substTy(inner.value, a))),
-        .List(inner) => Ty.List(boxTy(substTy(inner.value, a))),
-        .Map(k, v) => Ty.Map(boxTy(substTy(k.value, a)), boxTy(substTy(v.value, a))),
-        .Cell(inner) => Ty.Cell(boxTy(substTy(inner.value, a))),
-        .Tuple(tt) => {
-            let es = List<Ty>.new();
-            for (x in tt.elements) {
-                es.push(substTy(x, a));
-            }
-            Ty.Tuple(TupleTy { elements = es.toArray(), labels = tt.labels })
-        }
-        .Fn(ft) => {
-            let ps = List<Ty>.new();
-            for (x in ft.params) {
-                ps.push(substTy(x, a));
-            }
-            Ty.Fn(FnTy { params = ps.toArray(), result = boxTy(substTy(ft.result.value, a)) })
-        }
-        _ => t,
-    };
-}
-
-/// `t` with the type parameters bound so far replaced; the others stay.
-fn substOpen(t: Ty, binds: (?Ty)[]): Ty {
-    let a = List<Ty>.new();
-    var k = 0;
-    for (b in binds) {
-        a.push(b ?? Ty.Param(k));
-        k += 1;
-    }
-    return substTy(t, a.toArray());
-}
-
 /// Whether a type parameter stands in `t`.
 fn hasParam(t: Ty): bool {
     return match (t) {
@@ -6133,7 +6557,7 @@ fn hasParam(t: Ty): bool {
 
 /// Binds the type parameters of `pattern` by `actual` (03 §9.2 rule 1): at any depth; a plain
 /// value where `?U` is asked binds `U`; the first binding stays.
-fn bindTy(pattern: Ty, actual: Ty, binds: List<?Ty>): void {
+fn bindTyFree(pattern: Ty, actual: Ty, binds: List<?Ty>): void {
     if (actual == .Unknown || actual == .NullLit || actual == .Never) {
         return;
     }
@@ -6145,13 +6569,13 @@ fn bindTy(pattern: Ty, actual: Ty, binds: List<?Ty>): void {
         }
         .Optional(p) => {
             match (actual) {
-                .Optional(x) => bindTy(p.value, x.value, binds),
-                _ => bindTy(p.value, actual, binds),
+                .Optional(x) => bindTyFree(p.value, x.value, binds),
+                _ => bindTyFree(p.value, actual, binds),
             }
         }
         .List(p) => {
             match (actual) {
-                .List(x) => bindTy(p.value, x.value, binds),
+                .List(x) => bindTyFree(p.value, x.value, binds),
                 _ => { }
             }
         }
@@ -6160,7 +6584,7 @@ fn bindTy(pattern: Ty, actual: Ty, binds: List<?Ty>): void {
                 .Tuple(xt) => {
                     var k = 0;
                     while (k < pt.elements.length() && k < xt.elements.length()) {
-                        bindTy(pt.elements[k], xt.elements[k], binds);
+                        bindTyFree(pt.elements[k], xt.elements[k], binds);
                         k += 1;
                     }
                 }
@@ -6172,10 +6596,10 @@ fn bindTy(pattern: Ty, actual: Ty, binds: List<?Ty>): void {
                 .Fn(xf) => {
                     var k = 0;
                     while (k < pf.params.length() && k < xf.params.length()) {
-                        bindTy(pf.params[k], xf.params[k], binds);
+                        bindTyFree(pf.params[k], xf.params[k], binds);
                         k += 1;
                     }
-                    bindTy(pf.result.value, xf.result.value, binds);
+                    bindTyFree(pf.result.value, xf.result.value, binds);
                 }
                 _ => { }
             }

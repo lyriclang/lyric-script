@@ -400,6 +400,10 @@ class Parser {
         let isClass = this.atWord("class");
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "the type's name");
+        var typeParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            typeParams = try this.parseTypeParams();
+        }
         let conforms = try this.parseConformances(true);
         this.skipNewlines();
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the type's body");
@@ -421,6 +425,7 @@ class Parser {
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the type's body");
         return TypeDecl {
             name = this.text(name),
+            typeParams = typeParams,
             conforms = conforms,
             isClass = isClass,
             fields = fields.toArray(),
@@ -484,6 +489,10 @@ class Parser {
     mut fn parseEnum(isPub: bool, first: Token): EnumDecl throws SyntaxError {
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "the enum's name");
+        var typeParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            typeParams = try this.parseTypeParams();
+        }
         let conforms = try this.parseConformances(false);
         this.skipNewlines();
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the enum's body");
@@ -546,6 +555,7 @@ class Parser {
         }
         return EnumDecl {
             name = this.text(name),
+            typeParams = typeParams,
             conforms = conforms,
             variants = variants.toArray(),
             methods = methods.toArray(),

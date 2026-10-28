@@ -82,3 +82,20 @@ fn whatGenericsRefuse(): void {
     // a type parameter has its constraints' members and no others
     assertEq(errs("fn f<T>(x: T): string = x.name()"), ["LYS-SEM0012"]);
 }
+
+let types = "struct Pair<A, B> {\n    first: A\n    second: B\n    fn swap(): Pair<B, A> = Pair { first = this.second, second = this.first }\n}\nclass Box<T> {\n    var v: T\n    fn get(): T = this.v\n    fn put(x: T): void {\n        this.v = x\n    }\n}\nenum Opt<T> {\n    Some(T), None\n    fn or(d: T): T = match (this) {\n        .Some(x) => x,\n        .None => d,\n    }\n}\n";
+
+@Test
+fn genericTypesTakeTheirArgumentsFromValuesOrThePosition(): void {
+    let g = "fn g(): int {\n    let p = Pair { first = 1, second = \"a\" }\n    let q = p.swap()\n    let b = Box { v = 5 }\n    b.put(b.get() + 1)\n    let o: Opt<int> = .None\n    let s = Opt.Some(40)\n    return q.second + b.get() + o.or(1000) + s.or(0)\n}";
+    assertEq(value(types + g, "g"), 1047);
+    // an instance written in a type, its methods copied for its arguments
+    let w = "fn w(): int {\n    let x: Pair<string, int> = Pair { first = \"k\", second = 7 }\n    let y: Box<string> = Box { v = \"s\" }\n    return x.second + (if (y.get() == \"s\") 100 else 0)\n}";
+    assertEq(value(types + w, "w"), 107);
+}
+
+@Test
+fn whatGenericTypesRefuse(): void {
+    assertEq(errs(types + "let p: Pair<int> = Pair { first = 1, second = 2 }"), ["LYS-SEM0026"]);
+    assertEq(errs(types + "let o = Opt.None"), ["LYS-SEM0060"]);
+}

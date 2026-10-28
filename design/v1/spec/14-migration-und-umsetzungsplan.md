@@ -299,3 +299,26 @@ Werte; dann nachlaufende Blöcke, gebundene Methoden, statische Funktionen und F
 Funktionswerte). Der erste stille Lauf von 03 Leer macht keine Funktion bleibend: was er an
 Lambdas und Thunks anlegt, nimmt er zurück. Ein S2-Pin, der `run { 7 }` als Fehler festhielt,
 fiel mit seiner Regel. 134 Tests, 75 Konformanzfälle.
+
+**S3f, präzisiert (Entwurf).** Interfaces nach Lyric 5 05 §1–§6, §9–§11, soweit sie keine
+Generics brauchen (`Self`, statische Member, assoziierte Typen, generische Member und `extend`,
+Objektsicherheit mit S3g; Operator-Interfaces und Synthese mit S3h).
+
+- *Darstellung.* Ein Interface-Wert ist eine Referenz auf ein Objekt: Structs, Klassen und Enums
+  mit Nutzlast sind es schon (geteilt, nicht kopiert — Abweichung 05 aus 03); ein Skalar, ein
+  `string`, ein Enum ohne Nutzlast wird beim Übergang in ein Box-Objekt eines VM-Typs je
+  eingebautem Typ gelegt. Ein Kind-Wert ist so ohne Umbau ein Wert seiner Eltern (§11).
+- *Dispatch.* Jede Interface-Methode des Programms bekommt eine Slot-Nummer; jede `TypeDesc`
+  trägt eine Tabelle Slot → Funktion (−1: nicht konform) und die Programmtyp-Nummer für `is`.
+  `call.i` (neu: Slot, Basen) liest den Empfänger an der Ref-Basis und ruft die Funktion seiner
+  Tabelle. Ein Default wird einmal übersetzt, mit `this` als Interface-Wert (§2 Regel 3: ein
+  Aufruf auf `this` dispatcht erneut); für eine Box ruft ein Thunk die Methode mit dem
+  ausgepackten Wert. Das Bytecode-Format bekommt die Tabellen (Formatversion steigt).
+- *Konformanz* in der Liste von Struct, Klasse, Enum und in `extend T :: [I] { … }`; `extend T`
+  auch auf eingebauten Typen (Methoden auf `int`, `string`). Jedes abstrakte Member der Kette
+  mit exakter Signatur (`LYS-SEM0020`, `LYS-SEM0042`); Eltern, Defaults, ein eigenes Member
+  gewinnt; zwei Defaults eines Namens entscheidet der Typ (`LYS-SEM0043`).
+- *`Any`, `is`, Typ-Muster, `sealed`* (§9–§10): `x is T` vergleicht die Programmtyp-Nummer bzw.
+  sucht in der Tabelle, mit Eingrenzung (Auspacken bei Boxen); Typ-Muster `c: Circle` im
+  `match`; ein `sealed interface` macht die Abdeckung über seine Konformer geschlossen.
+- *Delegation* `by` (§5): Weiterleitungsfunktionen je nicht selbst geschriebenem Member.

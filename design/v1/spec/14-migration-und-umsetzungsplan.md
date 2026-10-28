@@ -142,3 +142,28 @@ Registry.
 **Vorsichtsregeln** (14 Start): der gepinnte Lyric-5-Bau liegt in einem eigenen Worktree unter
 WSL (`~/dev/projects/lyric-worktrees/script-pin`), nie im Checkout der Lyric-5-Session; keine
 Lyric-5-Testläufe; Builds nicht, während eine Messprobe läuft.
+
+## S1 — Slices (Plan, 2026-10-28)
+
+Ziel aus der Meilensteintabelle: die VM als Lyric-5-Bibliothek, mit handgeschriebenem Bytecode
+lauffähig, und **Messpunkt 1** gegen 4.6. S1 hat keine Sprachoberfläche (Bytecode ist intern,
+11 Fmt) — kein Delta-Kapitel der Spec; die Laufzeitpanik-Codes (`LYS-RT…`) kommen in den
+Diagnosekatalog.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S1a Instruktionen** | `Instr` (8 Byte, inline im Array: Opcode, drei 16-Bit-Operanden; Sprung- und Konstantenziele als Operand oder Folgewort), die Opcode-Tabelle des Kerns: Moves (Skalar, Ref), Konstanten (`int`, `float`, Konstantenpool), `int`- und `float`-Arithmetik, Vergleiche, `int`↔`float` (`as`, sättigend), `bool`-Logik, Sprünge (unbedingt, bedingt, fusionierter Vergleich+Sprung), `call`/`ret`, `panic` | Tabellentest: jeder Opcode hat Name, Operandenarten, Länge |
+| **S1b Module und Funktionen** | `Function` (Name, Zahl der Skalar- und Ref-Register, Code, Konstanten, Zeilentabelle), `Module`, `TypeDesc` (Name, Skalar- und Ref-Felder mit Namen) — die Laufzeitform, die der Compiler in S2 erzeugt | Konstruktion und Prüfung der Grenzen (Registerindizes, Sprungziele) beim Laden eigener Module |
+| **S1c Text-Assembler** | eine Textform für Tests (`.lyrsasm`): Funktionen mit Registerzahlen, Labels, Konstanten, Typen; Assembler und Disassembler | Rundreise Text → Modul → Text; Fehler mit Zeile |
+| **S1d Interpreter** | Frames mit `scalars: uint64[]` und `refs: HeapRef[]` (V2), VM-eigener Frame-Stack (Co = A), Dispatch über `match` (Sprungtabelle, A2a), `call`/`ret` mit Argumenten in beiden Dateien; **Skript-Paniken erkennt die VM** (Überlauf über `checked*`, Division durch 0, Index) mit Backtrace aus den VM-Frames und Zeilen; ein Aufruf in die VM läuft an einer Lyric-5-Task-Grenze, eine Lyric-5-Panik wird `.Panic(intern)` (11) | fib, Schleifen, Überlauf, Division durch 0, Rekursionstiefe; Backtrace-Form |
+| **S1e Objekte** | `interface HeapRef`, `ScriptObject` (Kopf: TypeDesc, besitzende Instanz, Typversion, Generation — die letzten drei als Felder ohne Verhalten bis S8/S9), `ScriptString` (V3 A'); Opcodes `new`, Feld lesen/schreiben (Skalar, Ref), Identitätsvergleich | Objektprogramme (verkettete Liste, Zähler in Objekten); Werte überleben eine GC-Sammlung (`lyr_gc_collect` erzwungen) |
+| **S1f Fuel-Gerüst** | Zähler je Grundblock an Rückwärtssprüngen und Aufrufen; Erschöpfung hält an und meldet `.Suspended` (Fortsetzen in S8) | Endlosschleife mit Budget hält an der erwarteten Stelle an (deterministisch) |
+| **S1g Kommandozeile** | `lyric-script asm <datei.lyrsasm>` — führt Bytecode-Text aus; in `help` als vorläufig markiert, entfällt mit `run` in S2 | Ende-zu-Ende in der CI |
+| **S1h Messpunkt 1** | Mikro-Bench (fib, Schleifen, Felder in Objekten) in `bench/`, dieselben Programme für 4.6 (aus `v4.6-final`), dieselbe Maschine, Netzbetrieb; Ratchet ≥ 5×; **Entscheidung V3** (A4 = lyric#610 behoben? sonst Referenz-Moves messen, ggf. `Obj`) | Bericht `bench/README.md` mit Erwartung vorab und Kontrolle |
+| **Abschluss** | STATUS, PR, CI grün, Merge, Tag `s1-complete` | handgeschriebener Bytecode läuft in der CI auf allen Tier-1-Zielen |
+
+**Ergebnis Messpunkt 1 (2026-10-28, `bench/README.md`):** 4,3× im geometrischen Mittel (fib
+3,2–3,5×, loop 6,0×, objects 4,0–4,2×) — Ziel ≥ 5× verfehlt, nicht um mehr als 2×, also kein
+Neuzuschnitt; V3 bleibt A' (11). **Folge für den Plan:** S7 bekommt vor Messpunkt 3 einen Slice
+„Aufrufpfad der VM" (Frames ohne `List`, aufgelöste Funktionstabelle, eine Wachstumsprüfung je
+Aufruf, Fuel an Rücksprüngen statt je Aufruf), gemessen mit diesem Bench.

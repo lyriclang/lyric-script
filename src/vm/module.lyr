@@ -1,0 +1,161 @@
+//! The run-time form of compiled code: modules, functions and object types, as the compiler
+//! (S2) and the text assembler produce them and the interpreter runs them. `check` tests the
+//! structure of a module; it guards against faults of the toolchain, not against foreign
+//! bytecode, which is never loaded (design/v1, 01 S10).
+import std.collections { List };
+import lyric_script.vm.op { Instr, Op, Operand, info };
+
+/// What a function returns, and in which register file the caller receives it.
+pub enum ReturnKind :: [Equatable] {
+    Void,
+    Scalar,
+    Ref,
+}
+
+/// An object type: its name and its fields, the scalar ones and the reference ones apart
+/// (design/v1, 11 V2). The descriptor's identity is the type's identity.
+pub class TypeDesc :: [Identity] {
+    name: string,
+    scalarFields: string[],
+    refFields: string[],
+}
+
+/// A compiled function. Its first `paramsS` scalar registers and first `paramsR` reference
+/// registers hold the arguments.
+pub class Function :: [Identity] {
+    name: string,
+    paramsS: int,
+    paramsR: int,
+    scalars: int,
+    refs: int,
+    returns: ReturnKind,
+    code: Instr[],
+    /// The scalar constants, as their 64 bits.
+    constants: uint64[],
+    /// The string constants.
+    strings: string[],
+    /// The source line of each instruction; 0 where there is none.
+    lines: int[],
+}
+
+/// A compiled module: its functions and the object types they create.
+pub class Module :: [Identity] {
+    name: string,
+    functions: Function[],
+    types: TypeDesc[],
+}
+
+/// A fault in the structure of a module: the function, the instruction and what is wrong.
+pub struct CheckError {
+    function: string,
+    pc: int,
+    message: string,
+}
+
+/// The faults of `module`'s structure; none for a module the interpreter can run.
+pub fn check(module: Module): CheckError[] {
+    let errors = List<CheckError>.new();
+    for (f in module.functions) {
+        checkFunction(module, f, errors);
+    }
+    return errors.toArray();
+}
+
+fn checkFunction(module: Module, f: Function, errors: List<CheckError>): void {
+    if (f.paramsS > f.scalars || f.paramsR > f.refs) {
+        errors.push(
+            CheckError { function = f.name, pc = -1, message = "more parameters than registers" }
+        );
+    }
+    if (f.lines.length() != f.code.length()) {
+        errors.push(
+            CheckError {
+                function = f.name,
+                pc = -1,
+                message = "the line table does not match the code",
+            }
+        );
+    }
+    if (f.code.length() == 0) {
+        errors.push(CheckError { function = f.name, pc = -1, message = "no instructions" });
+    }
+    var pc = 0;
+    while (pc < f.code.length()) {
+        let ins = f.code[pc];
+        let operands = info(ins.op).operands;
+        var i = 0;
+        while (i < operands.length()) {
+            let value = operandValue(ins, i);
+            let fault = checkOperand(module, f, ins.op, operands[i], value);
+            if (fault != null) {
+                errors.push(CheckError { function = f.name, pc = pc, message = fault });
+            }
+            i += 1;
+        }
+        let call = checkCall(module, f, ins);
+        if (call != null) {
+            errors.push(CheckError { function = f.name, pc = pc, message = call });
+        }
+        let ret = checkReturn(f, ins.op);
+        if (ret != null) {
+            errors.push(CheckError { function = f.name, pc = pc, message = ret });
+        }
+        pc += 1;
+    }
+}
+
+fn operandValue(ins: Instr, i: int): int {
+    return match (i) {
+        0 => ins.a as int,
+        1 => ins.b as int,
+        _ => ins.c as int,
+    };
+}
+
+fn checkOperand(module: Module, f: Function, op: Op, kind: Operand, value: int): ?string {
+    return match (kind) {
+        .Scalar => if (value < f.scalars) null else f"scalar register {value} of {f.scalars}",
+        .Ref => if (value < f.refs) null else f"reference register {value} of {f.refs}",
+        .Imm => null,
+        .Const => {
+            let size = if (op == .LoadStr) f.strings.length() else f.constants.length();
+            if (value < size) null else f"constant {value} of {size}"
+        }
+        .Label => if (value < f.code.length()) null
+            else f"jump target {value} of {f.code.length()}",
+        .Func => if (value < module.functions.length()) null
+            else f"function {value} of {module.functions.length()}",
+        .Type => if (value < module.types.length()) null
+            else f"type {value} of {module.types.length()}",
+        .ScalarBase | .RefBase | .Field => null,
+    };
+}
+
+/// A call passes the callee's parameters from consecutive registers starting at its bases, and
+/// the result lands at the base of the file the callee returns in.
+fn checkCall(module: Module, f: Function, ins: Instr): ?string {
+    if (ins.op != .Call || (ins.a as int) >= module.functions.length()) {
+        return null;
+    }
+    let callee = module.functions[ins.a as int];
+    let baseS = ins.b as int;
+    let baseR = ins.c as int;
+    if (baseS + callee.paramsS > f.scalars || (callee.returns == .Scalar && baseS >= f.scalars)) {
+        return f"call of '{callee.name}' reaches past the scalar registers";
+    }
+    if (baseR + callee.paramsR > f.refs || (callee.returns == .Ref && baseR >= f.refs)) {
+        return f"call of '{callee.name}' reaches past the reference registers";
+    }
+    return null;
+}
+
+fn checkReturn(f: Function, op: Op): ?string {
+    return match (op) {
+        .Ret => if (f.returns == .Void) null else "'ret' in a function that returns a value",
+        .RetS => if (f.returns == .Scalar) null
+            else "'ret.s' in a function that does not return a scalar",
+        .RetR => if (f.returns == .Ref) null
+            else "'ret.r' in a function that does not return a reference",
+        _ => null,
+    };
+}

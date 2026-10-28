@@ -1,0 +1,58 @@
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/empty.release.lyrbc: 1949 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/empty.debug.lyrbc: 2747 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/fib.release.lyrbc: 14684 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/fib.debug.lyrbc: 2812 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/loop.release.lyrbc: 2036 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/loop.debug.lyrbc: 2837 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/objects.release.lyrbc: 2219 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/objects.debug.lyrbc: 3053 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/objects1.release.lyrbc: 2220 bytes
+/home/Olivier/dev/projects/lyric-script-bench/bench/bc/objects1.debug.lyrbc: 3054 bytes
+date: 2026-10-28T17:48:54+01:00
+cpu: Intel(R) Core(TM) Ultra 5 228V
+vcpus: 8
+kernel: 6.18.54.1-microsoft-standard-WSL2
+os: "Arch Linux"
+dotnet runtimes: Microsoft.NETCore.App 10.0.12 [/home/Olivier/.dotnet/shared/Microsoft.NETCore.App]
+lyrc: lyrc 4.6.0
+lyrvm: lyrvm 4.6.0 (.lyrbc 4.0)
+4.6 commit: 33339164f0a9785336ece22deec4b933d2101260 (v4.6-final)
+zig: 0.16.0
+tmpfs           7.7G  1.4G  6.4G  18% /tmp
+waiting 17:48:55: loadavg 2.61
+ 296 /home/Olivier/.dotnet/sdk/10.0.401/Roslyn/bincore/VBCSCompiler -pipename:GxQB9yyAabQOWi4qPbSrKkxHutygZaiwC1DxPm0l0Ow
+ 107 /home/Olivier/.dotnet/dotnet exec --runtimeconfig /home/Olivier/dev/projects/lyric-worktrees/m15-s5/tests/Lyric5.Tests/bin/Debug/net10.
+start: 2026-10-28T17:50:25+01:00 loadavg 0.74 2.42 3.69 1/250 1366469
+round 0 (warm-up): loadavg 0.74
+round 1: loadavg 0.76
+round 2: loadavg 0.78
+round 3: loadavg 0.80
+round 4: loadavg 0.82
+round 5: loadavg 0.83
+round 6: loadavg 0.85
+round 7: loadavg 0.87
+
+| program | VM | median wall s | min | max | median CPU s | valid |
+|---|---|---:|---:|---:|---:|---|
+| empty | script | 0.002 | 0.002 | 0.003 | 0.002 | ok |
+| empty | v46-release | 0.091 | 0.086 | 0.136 | 0.087 | ok |
+| empty | v46-debug | 0.100 | 0.089 | 0.115 | 0.097 | ok |
+| fib | script | 0.194 | 0.181 | 0.207 | 0.193 | ok |
+| fib | v46-release | 0.610 | 0.590 | 0.696 | 0.621 | ok |
+| fib | v46-debug | 0.616 | 0.591 | 0.724 | 0.622 | ok |
+| loop | script | 0.152 | 0.144 | 0.179 | 0.151 | ok |
+| loop | v46-release | 0.905 | 0.877 | 1.015 | 0.906 | ok |
+| loop | v46-debug | 0.786 | 0.761 | 0.960 | 0.789 | ok |
+| objects | script | 0.160 | 0.154 | 0.173 | 0.161 | ok |
+| objects | v46-release | 0.671 | 0.639 | 0.989 | 0.676 | ok |
+| objects | v46-debug | 0.695 | 0.653 | 0.818 | 0.696 | ok |
+| objects1 | script | 0.024 | 0.023 | 0.029 | 0.025 | ok |
+| objects1 | v46-release | 0.165 | 0.157 | 0.204 | 0.161 | ok |
+| objects1 | v46-debug | 0.167 | 0.160 | 0.248 | 0.164 | ok |
+
+v46-release / script: fib gross 3.15 net 2.71 cpu 3.22, loop gross 5.96 net 5.45 cpu 5.99, objects gross 4.20 net 3.69 cpu 4.20
+  geomean gross 4.29 net 3.79 cpu 4.32
+v46-debug / script: fib gross 3.18 net 2.70 cpu 3.22, loop gross 5.18 net 4.60 cpu 5.22, objects gross 4.35 net 3.79 cpu 4.33
+  geomean gross 4.16 net 3.61 cpu 4.17
+invalid runs: 0
+end: 2026-10-28T17:51:09+01:00 loadavg 0.88 2.22 3.56 1/250 1367456

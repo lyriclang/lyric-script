@@ -109,6 +109,13 @@ jobs:
           grep -q '^lyric-script 1\.0\.0-dev ' version.txt
           code=0; "$bin" frobnicate || code=$?
           [ "$code" -eq 2 ]
+          # S1: hand-written bytecode runs; a panic reports its frames and exits with 101
+          "$bin" asm examples/asm/fib.lyrsasm | tee fib.txt
+          grep -qx '75025' fib.txt
+          code=0; "$bin" asm examples/asm/oops.lyrsasm 2> oops.txt || code=$?
+          cat oops.txt
+          [ "$code" -eq 101 ]
+          grep -q 'LYS-RT0001' oops.txt
 
       - name: Build the C ABI library
         shell: bash

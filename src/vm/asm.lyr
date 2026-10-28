@@ -1,0 +1,590 @@
+//! The text form of compiled code (`.lyrsasm`), for tests and for looking at what the compiler
+//! makes: `assemble` reads it into a `Module`, `disassemble` writes a module out again.
+//!
+//! ```text
+//! type Node scalar value ref next
+//!
+//! fn fib(s) -> s regs 4 0
+//!     load.i s1, 2
+//!     jump.lt.i s0, s1, @small
+//!     ...
+//! small:
+//!     ret.s s0
+//! end
+//! ```
+//!
+//! A line holds one declaration, label or instruction; `#` starts a comment. Operands by kind:
+//! `s3` a scalar register, `r1` a reference register, `-5` an immediate, a literal (`12`,
+//! `1.5`, `"text"`) a constant, `@name` a label, a function or a type by its name, a field as
+//! `Type.field` or `.index`.
+import std.collections { List, Map, Set };
+import std.core { ParseError, StringBuilder };
+import lyric_script.vm.op { Instr, Op, Operand, info, opOf };
+import lyric_script.vm.module { Function, Module, ReturnKind, TypeDesc };
+
+/// A line of assembly text that cannot be read.
+pub struct AsmError :: [Error] {
+    /// The line, from 1.
+    pub line: int,
+    pub text: string,
+
+    pub fn message(): string {
+        return f"line {this.line}: {this.text}";
+    }
+}
+
+/// One instruction line before its operands are resolved.
+struct Pending {
+    line: int,
+    op: Op,
+    operands: string[],
+}
+
+/// One function before its instructions are resolved.
+class Draft {
+    name: string,
+    line: int,
+    paramsS: int,
+    paramsR: int,
+    scalars: int,
+    refs: int,
+    returns: ReturnKind,
+    body: List<Pending>,
+    labels: Map<string, int>,
+}
+
+/// Reads `text` into a module named `name`.
+pub fn assemble(text: string, name: string): Module throws AsmError {
+    let types = List<TypeDesc>.new();
+    let drafts = List<Draft>.new();
+    var current: ?Draft = null;
+    var lineNo = 0;
+    for (raw in text.lines()) {
+        lineNo += 1;
+        let line = stripComment(raw).trim();
+        if (line.isEmpty()) {
+            continue;
+        }
+        if (let d = current) {
+            if (line == "end") {
+                drafts.push(d);
+                current = null;
+            } else if (line.endsWith(":")) {
+                let label = line[0..line.length() - 1].trim().toString();
+                if (d.labels.containsKey(label)) {
+                    throw AsmError { line = lineNo, text = f"label '{label}' twice" };
+                }
+                d.labels[label] = d.body.length();
+            } else {
+                d.body.push(try instruction(line.toString(), lineNo));
+            }
+        } else if (line.startsWith("type ")) {
+            types.push(try typeLine(line.toString(), lineNo));
+        } else if (line.startsWith("fn ")) {
+            current = try header(line.toString(), lineNo);
+        } else {
+            throw AsmError { line = lineNo, text = f"expected 'type' or 'fn', got '{line}'" };
+        }
+    }
+    if (let d = current) {
+        throw AsmError { line = d.line, text = f"function '{d.name}' has no 'end'" };
+    }
+    let functions = List<Function>.new();
+    for (d in drafts) {
+        functions.push(try resolve(d, drafts, types));
+    }
+    return Module { name = name, functions = functions.toArray(), types = types.toArray() };
+}
+
+fn stripComment(line: StringView): StringView {
+    var inString = false;
+    for ((i, c) in line.charIndices()) {
+        if (c == '"') {
+            inString = !inString;
+        } else if (c == '#' && !inString) {
+            return line[0..i];
+        }
+    }
+    return line;
+}
+
+/// `type Name scalar a b ref c`
+fn typeLine(line: string, lineNo: int): TypeDesc throws AsmError {
+    let words = line.split(' ').filter { !it.isEmpty() }.map { it.toString() }.toArray();
+    if (words.length() < 2) {
+        throw AsmError { line = lineNo, text = "a type needs a name" };
+    }
+    let scalars = List<string>.new();
+    let refs = List<string>.new();
+    var into = 0;
+    var i = 2;
+    while (i < words.length()) {
+        let w = words[i];
+        if (w == "scalar") {
+            into = 1;
+        } else if (w == "ref") {
+            into = 2;
+        } else if (into == 1) {
+            scalars.push(w);
+        } else if (into == 2) {
+            refs.push(w);
+        } else {
+            throw AsmError { line = lineNo, text = f"expected 'scalar' or 'ref', got '{w}'" };
+        }
+        i += 1;
+    }
+    return TypeDesc {
+        name = words[1],
+        scalarFields = scalars.toArray(),
+        refFields = refs.toArray(),
+    };
+}
+
+/// `fn name(s, r) -> s regs 4 2`
+fn header(line: string, lineNo: int): Draft throws AsmError {
+    let open = line.find('(');
+    let close = line.find(')');
+    if (open == null || close == null) {
+        throw AsmError {
+            line = lineNo,
+            text = "a function header is 'fn name(kinds) [-> s|r] regs S R'",
+        };
+    }
+    if (close < open) {
+        throw AsmError {
+            line = lineNo,
+            text = "a function header is 'fn name(kinds) [-> s|r] regs S R'",
+        };
+    }
+    let name = line[3..open].trim().toString();
+    var paramsS = 0;
+    var paramsR = 0;
+    for (k in line[open + 1..close].split(',')) {
+        let kind = k.trim();
+        if (kind == "s") {
+            paramsS += 1;
+        } else if (kind == "r") {
+            paramsR += 1;
+        } else if (!kind.isEmpty()) {
+            throw AsmError { line = lineNo, text = f"a parameter is 's' or 'r', got '{kind}'" };
+        }
+    }
+    let rest = line[close + 1..line.length()].split(' ').filter { !it.isEmpty() }.map {
+        it.toString()
+    }.toArray();
+    var returns: ReturnKind = .Void;
+    var i = 0;
+    if (i < rest.length() && rest[i] == "->") {
+        if (i + 1 >= rest.length()) {
+            throw AsmError { line = lineNo, text = "'->' needs 's' or 'r'" };
+        }
+        returns = match (rest[i + 1]) {
+            "s" => .Scalar,
+            "r" => .Ref,
+            _ => throw AsmError {
+                line = lineNo,
+                text = f"a result is 's' or 'r', got '{rest[i + 1]}'",
+            },
+        };
+        i += 2;
+    }
+    if (i + 3 != rest.length() || rest[i] != "regs") {
+        throw AsmError { line = lineNo, text = "a function header ends in 'regs S R'" };
+    }
+    let scalars = try number(rest[i + 1], lineNo);
+    let refs = try number(rest[i + 2], lineNo);
+    return Draft {
+        name = name,
+        line = lineNo,
+        paramsS = paramsS,
+        paramsR = paramsR,
+        scalars = scalars,
+        refs = refs,
+        returns = returns,
+        body = List<Pending>.new(),
+        labels = Map<string, int>.new(),
+    };
+}
+
+fn number(text: string, lineNo: int): int throws AsmError {
+    return try int.parse(text) catch (_: ParseError) throw AsmError {
+        line = lineNo,
+        text = f"expected a number, got '{text}'",
+    };
+}
+
+/// `mnemonic a, b, c`
+fn instruction(line: string, lineNo: int): Pending throws AsmError {
+    let space = line.find(' ');
+    var mnemonic = line;
+    if (let at = space) {
+        mnemonic = line[0..at].toString();
+    }
+    let op = opOf(mnemonic);
+    if (op == null) {
+        throw AsmError { line = lineNo, text = f"no operation '{mnemonic}'" };
+    }
+    let operands = List<string>.new();
+    if (let at = space) {
+        for (o in splitOperands(line[at + 1..line.length()].toString())) {
+            operands.push(o);
+        }
+    }
+    let want = info(op).operands.length();
+    if (operands.length() != want) {
+        throw AsmError {
+            line = lineNo,
+            text = f"'{mnemonic}' takes {want} operands, got {operands.length()}",
+        };
+    }
+    return Pending { line = lineNo, op = op, operands = operands.toArray() };
+}
+
+/// The operands of a line, split at commas outside string literals and trimmed.
+fn splitOperands(text: string): string[] {
+    let out = List<string>.new();
+    let piece = StringBuilder.new();
+    var inString = false;
+    var escaped = false;
+    for (c in text.chars()) {
+        if (inString) {
+            piece.appendChar(c);
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                inString = false;
+            }
+        } else if (c == ',') {
+            out.push(piece.toString().trim().toString());
+            piece.clear();
+        } else {
+            if (c == '"') {
+                inString = true;
+            }
+            piece.appendChar(c);
+        }
+    }
+    let last = piece.toString().trim().toString();
+    if (!last.isEmpty() || out.length() > 0) {
+        out.push(last);
+    }
+    return out.toArray();
+}
+
+fn resolve(d: Draft, drafts: List<Draft>, types: List<TypeDesc>): Function throws AsmError {
+    let code = List<Instr>.new();
+    let lines = List<int>.new();
+    let constants = List<uint64>.new();
+    let strings = List<string>.new();
+    for (p in d.body) {
+        let kinds = info(p.op).operands;
+        var values = [0, 0, 0];
+        var i = 0;
+        while (i < kinds.length()) {
+            values[i] = try operand(
+                p,
+                kinds[i],
+                p.operands[i],
+                d,
+                drafts,
+                types,
+                constants,
+                strings
+            );
+            i += 1;
+        }
+        code.push(
+            Instr {
+                op = p.op,
+                a = values[0] as uint16,
+                b = values[1] as uint16,
+                c = values[2] as uint16,
+            }
+        );
+        lines.push(p.line);
+    }
+    return Function {
+        name = d.name,
+        paramsS = d.paramsS,
+        paramsR = d.paramsR,
+        scalars = d.scalars,
+        refs = d.refs,
+        returns = d.returns,
+        code = code.toArray(),
+        constants = constants.toArray(),
+        strings = strings.toArray(),
+        lines = lines.toArray(),
+    };
+}
+
+fn operand(
+    p: Pending,
+    kind: Operand,
+    text: string,
+    d: Draft,
+    drafts: List<Draft>,
+    types: List<TypeDesc>,
+    constants: List<uint64>,
+    strings: List<string>
+): int throws AsmError {
+    return match (kind) {
+        .Scalar | .ScalarBase => try register(text, 's', p.line),
+        .Ref | .RefBase => try register(text, 'r', p.line),
+        .Imm => {
+            let v = try number(text, p.line);
+            if (v < -32768 || v > 32767) {
+                throw AsmError { line = p.line, text = f"immediate {v} does not fit 16 bits" };
+            }
+            v & 0xFFFF
+        }
+        .Const => if (p.op == .LoadStr) {
+            strings.push(try stringLiteral(text, p.line));
+            strings.length() - 1
+        } else {
+            constants.push(try scalarLiteral(text, p.line));
+            constants.length() - 1
+        },
+        .Label => {
+            if (!text.startsWith("@")) {
+                throw AsmError { line = p.line, text = f"a jump target is '@label', got '{text}'" };
+            }
+            let label = text[1..text.length()].toString();
+            let at = d.labels.get(label);
+            if (at == null) {
+                throw AsmError { line = p.line, text = f"no label '{label}'" };
+            }
+            at
+        }
+        .Func => {
+            var i = 0;
+            while (i < drafts.length()) {
+                if (drafts[i].name == text) {
+                    return i;
+                }
+                i += 1;
+            }
+            throw AsmError { line = p.line, text = f"no function '{text}'" }
+        }
+        .Type => {
+            var i = 0;
+            while (i < types.length()) {
+                if (types[i].name == text) {
+                    return i;
+                }
+                i += 1;
+            }
+            throw AsmError { line = p.line, text = f"no type '{text}'" }
+        }
+        .Field => try field(p, text, types),
+    };
+}
+
+fn register(text: string, file: char, lineNo: int): int throws AsmError {
+    if (text.isEmpty() || text[0] != file) {
+        throw AsmError { line = lineNo, text = f"expected a '{file}' register, got '{text}'" };
+    }
+    return try number(text[1..text.length()].toString(), lineNo);
+}
+
+fn scalarLiteral(text: string, lineNo: int): uint64 throws AsmError {
+    if (text.contains('.') || text.contains('e')) {
+        let v = try float.parse(text) catch (_: ParseError) throw AsmError {
+            line = lineNo,
+            text = f"no float '{text}'",
+        };
+        return v.toBits();
+    }
+    let v = try int.parse(text) catch (_: ParseError) throw AsmError {
+        line = lineNo,
+        text = f"no int '{text}'",
+    };
+    return v as uint64;
+}
+
+fn stringLiteral(text: string, lineNo: int): string throws AsmError {
+    if (text.length() < 2 || !text.startsWith("\"") || !text.endsWith("\"")) {
+        throw AsmError { line = lineNo, text = f"expected a string literal, got '{text}'" };
+    }
+    let out = StringBuilder.new();
+    var escaped = false;
+    for (c in text[1..text.length() - 1].chars()) {
+        if (escaped) {
+            out.appendChar(
+                match (c) {
+                    'n' => '\n',
+                    't' => '\t',
+                    _ => c,
+                }
+            );
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else {
+            out.appendChar(c);
+        }
+    }
+    return out.toString();
+}
+
+/// `Type.field` — the field's index among the type's scalar or reference fields, by the
+/// operation — or `.index`.
+fn field(p: Pending, text: string, types: List<TypeDesc>): int throws AsmError {
+    if (text.startsWith(".")) {
+        return try number(text[1..text.length()].toString(), p.line);
+    }
+    let parts = text.splitOnce('.');
+    if (parts == null) {
+        throw AsmError {
+            line = p.line,
+            text = f"a field is 'Type.field' or '.index', got '{text}'",
+        };
+    }
+    let typeName = parts.0.toString();
+    let fieldName = parts.1.toString();
+    for (t in types) {
+        if (t.name == typeName) {
+            let fields = if (p.op == .GetS || p.op == .SetS) t.scalarFields else t.refFields;
+            var i = 0;
+            while (i < fields.length()) {
+                if (fields[i] == fieldName) {
+                    return i;
+                }
+                i += 1;
+            }
+            throw AsmError {
+                line = p.line,
+                text = f"type '{typeName}' has no such field '{fieldName}'",
+            };
+        }
+    }
+    throw AsmError { line = p.line, text = f"no type '{typeName}'" };
+}
+
+/// The text form of `module`: types, then functions with their instructions, jump targets as
+/// labels `@L<pc>`, constants as literals and fields as `.index`.
+pub fn disassemble(module: Module): string {
+    let out = StringBuilder.new();
+    for (t in module.types) {
+        out.appendStr(f"type {t.name}");
+        if (t.scalarFields.length() > 0) {
+            out.appendStr(" scalar");
+            for (f in t.scalarFields) {
+                out.appendStr(f" {f}");
+            }
+        }
+        if (t.refFields.length() > 0) {
+            out.appendStr(" ref");
+            for (f in t.refFields) {
+                out.appendStr(f" {f}");
+            }
+        }
+        out.appendStr("\n");
+    }
+    for (f in module.functions) {
+        out.appendStr(f"\nfn {f.name}(");
+        var k = 0;
+        while (k < f.paramsS + f.paramsR) {
+            if (k > 0) {
+                out.appendStr(", ");
+            }
+            out.appendStr(if (k < f.paramsS) "s" else "r");
+            k += 1;
+        }
+        out.appendStr(")");
+        out.appendStr(
+            match (f.returns) {
+                .Void => "",
+                .Scalar => " -> s",
+                .Ref => " -> r",
+            }
+        );
+        out.appendStr(f" regs {f.scalars} {f.refs}\n");
+        let targets = jumpTargets(f);
+        var pc = 0;
+        while (pc < f.code.length()) {
+            if (targets.contains(pc)) {
+                out.appendStr(f"L{pc}:\n");
+            }
+            let ins = f.code[pc];
+            let i = info(ins.op);
+            out.appendStr(f"    {i.mnemonic}");
+            var n = 0;
+            while (n < i.operands.length()) {
+                out.appendStr(if (n == 0) " " else ", ");
+                let v = match (n) {
+                    0 => ins.a as int,
+                    1 => ins.b as int,
+                    _ => ins.c as int,
+                };
+                out.appendStr(operandText(module, f, ins.op, i.operands[n], v));
+                n += 1;
+            }
+            out.appendStr("\n");
+            pc += 1;
+        }
+        out.appendStr("end\n");
+    }
+    return out.toString();
+}
+
+fn jumpTargets(f: Function): Set<int> {
+    var out: Set<int> = [];
+    for (ins in f.code) {
+        let kinds = info(ins.op).operands;
+        var n = 0;
+        while (n < kinds.length()) {
+            if (kinds[n] == .Label) {
+                out.insert(
+                    match (n) {
+                        0 => ins.a as int,
+                        1 => ins.b as int,
+                        _ => ins.c as int,
+                    }
+                );
+            }
+            n += 1;
+        }
+    }
+    return out;
+}
+
+fn operandText(module: Module, f: Function, op: Op, kind: Operand, v: int): string {
+    return match (kind) {
+        .Scalar | .ScalarBase => f"s{v}",
+        .Ref | .RefBase => f"r{v}",
+        .Imm => f"{signed16(v)}",
+        .Const => if (op == .LoadStr) quoted(f.strings[v]) else constantText(f.constants[v]),
+        .Label => f"@L{v}",
+        .Func => module.functions[v].name,
+        .Type => module.types[v].name,
+        .Field => f".{v}",
+    };
+}
+
+fn signed16(v: int): int {
+    return if (v >= 32768) v - 65536 else v;
+}
+
+/// A scalar constant as the literal that reads back to the same bits: an `int` unless the bits
+/// are only a float's.
+fn constantText(bits: uint64): string {
+    return f"{bits as int}";
+}
+
+fn quoted(s: string): string {
+    let out = StringBuilder.new();
+    out.appendChar('"');
+    for (c in s.chars()) {
+        match (c) {
+            '"' => out.appendStr("\\\""),
+            '\\' => out.appendStr("\\\\"),
+            '\n' => out.appendStr("\\n"),
+            '\t' => out.appendStr("\\t"),
+            _ => out.appendChar(c),
+        }
+    }
+    out.appendChar('"');
+    return out.toString();
+}

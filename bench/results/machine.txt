@@ -1,0 +1,13 @@
+date: 2026-10-28T17:48:54+01:00
+cpu: Intel(R) Core(TM) Ultra 5 228V
+vcpus: 8
+kernel: 6.18.54.1-microsoft-standard-WSL2
+os: "Arch Linux"
+dotnet runtimes: Microsoft.NETCore.App 10.0.12 [/home/Olivier/.dotnet/shared/Microsoft.NETCore.App]
+lyrc: lyrc 4.6.0
+lyrvm: lyrvm 4.6.0 (.lyrbc 4.0)
+4.6 commit: 33339164f0a9785336ece22deec4b933d2101260 (v4.6-final)
+zig: 0.16.0
+lyric5: lyric 5.0.0+c2e88a9 (pin c2e88a9620b1ae37bd1c9a35c415a243121eeefa)
+lyric-script: lyric-script 1.0.0-dev (bytecode format 0), worktree commit 85b4651b50140913bab6e78ed3efbe9039cefc53 (s1/vm-core; src unchanged), built with 'lyric5 build --profile release'
+lyric-script binary: 3519200 bytes, 2026-10-28 17:29:52.835781130 +0100

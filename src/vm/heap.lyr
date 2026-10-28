@@ -1,0 +1,70 @@
+//! What a reference register holds (design/v1, 11 V3): an interface every kind of heap value
+//! conforms to — objects of script types, strings, and the one `nil` that stands for `null`.
+//! A string is wrapped once when it is made; converting a Lyric 5 string to an interface would
+//! box it at every conversion (value probe W1).
+import lyric_script.vm.module { TypeDesc };
+
+/// A value in a reference register.
+pub interface HeapRef {
+    /// The script type of the value; `null` for the built-in kinds.
+    fn desc(): ?TypeDesc;
+}
+
+/// The `null` of the reference registers: one shared object, so that a register always holds a
+/// plain interface value (value probe W2: an optional interface slot is larger and slower).
+pub class Nil :: [HeapRef] {
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// The one `null`.
+pub let nil: Nil = Nil { };
+
+/// The one `null`, as a register value.
+pub fn nilRef(): HeapRef {
+    return nil;
+}
+
+/// Whether `x` and `y` are one object. An interface value is a value of its own in Lyric 5 and
+/// has no identity; the identity is the object's behind it, kind by kind.
+pub fn sameRef(x: HeapRef, y: HeapRef): bool {
+    if (x is ScriptObject) {
+        if (y is ScriptObject) {
+            return same(x, y);
+        }
+        return false;
+    }
+    if (x is ScriptString) {
+        if (y is ScriptString) {
+            return same(x, y);
+        }
+        return false;
+    }
+    return x is Nil && y is Nil;
+}
+
+/// A string of the script: a Lyric 5 string, wrapped once.
+pub class ScriptString :: [HeapRef] {
+    pub text: string,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// An object of a script type: its scalar and its reference fields apart (11 V2), behind the
+/// object so that a reload can rebuild them in place (01 S7a).
+pub class ScriptObject :: [HeapRef] {
+    pub typeDesc: TypeDesc,
+    pub scalars: uint64[],
+    pub refs: HeapRef[],
+    /// The instance the object belongs to (01 S9); set from S8.
+    pub var owner: int = 0,
+    /// The version of its type the object was built for (01 S7a); set from S9.
+    pub var version: int = 0,
+
+    pub fn desc(): ?TypeDesc {
+        return this.typeDesc;
+    }
+}

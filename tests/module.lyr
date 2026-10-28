@@ -1,0 +1,129 @@
+// The structure check of a module: a sound one passes; registers, jump targets, constants,
+// calls and returns out of their bounds are named with the function and the instruction.
+import std.test { assertEq, assertTrue };
+import lyric_script.vm.op { Instr, Op };
+import lyric_script.vm.module { Function, Module, TypeDesc, check };
+
+fn ins(op: Op, a: int, b: int, c: int): Instr {
+    return Instr { op = op, a = a as uint16, b = b as uint16, c = c as uint16 };
+}
+
+/// `twice(n) = n + n` and a caller of it.
+fn sound(): Module {
+    let twice = Function {
+        name = "twice",
+        paramsS = 1,
+        paramsR = 0,
+        scalars = 2,
+        refs = 0,
+        returns = .Scalar,
+        code = [ins(.AddI, 1, 0, 0), ins(.RetS, 1, 0, 0)],
+        constants = [],
+        strings = [],
+        lines = [1, 1],
+    };
+    let main = Function {
+        name = "main",
+        paramsS = 0,
+        paramsR = 0,
+        scalars = 1,
+        refs = 0,
+        returns = .Scalar,
+        code = [ins(.LoadI, 0, 21, 0), ins(.Call, 0, 0, 0), ins(.RetS, 0, 0, 0)],
+        constants = [],
+        strings = [],
+        lines = [2, 2, 2],
+    };
+    return Module { name = "m", functions = [twice, main], types = [] };
+}
+
+@Test
+fn aSoundModulePasses(): void {
+    assertEq(check(sound()).length(), 0);
+}
+
+@Test
+fn aRegisterOutOfItsFileIsNamed(): void {
+    let f = Function {
+        name = "f",
+        paramsS = 0,
+        paramsR = 0,
+        scalars = 1,
+        refs = 0,
+        returns = .Void,
+        code = [ins(.AddI, 0, 0, 5), ins(.Ret, 0, 0, 0)],
+        constants = [],
+        strings = [],
+        lines = [1, 1],
+    };
+    let errors = check(Module { name = "m", functions = [f], types = [] });
+    assertEq(errors.length(), 1);
+    assertEq(errors[0].pc, 0);
+    assertTrue(errors[0].message.contains("scalar register 5"));
+}
+
+@Test
+fn aJumpTargetPastTheCodeIsNamed(): void {
+    let f = Function {
+        name = "f",
+        paramsS = 0,
+        paramsR = 0,
+        scalars = 1,
+        refs = 0,
+        returns = .Void,
+        code = [ins(.Jump, 9, 0, 0), ins(.Ret, 0, 0, 0)],
+        constants = [],
+        strings = [],
+        lines = [1, 1],
+    };
+    let errors = check(Module { name = "m", functions = [f], types = [] });
+    assertEq(errors.length(), 1);
+    assertTrue(errors[0].message.contains("jump target 9"));
+}
+
+@Test
+fn aCallPastTheRegistersIsNamed(): void {
+    let m = sound();
+    let caller = Function {
+        name = "caller",
+        paramsS = 0,
+        paramsR = 0,
+        scalars = 1,
+        refs = 0,
+        returns = .Void,
+        code = [ins(.Call, 0, 1, 0), ins(.Ret, 0, 0, 0)],
+        constants = [],
+        strings = [],
+        lines = [1, 1],
+    };
+    let errors = check(Module { name = "m", functions = [m.functions[0], caller], types = [] });
+    assertEq(errors.length(), 1);
+    assertTrue(errors[0].message.contains("'twice'"));
+}
+
+@Test
+fn aReturnOfTheWrongKindIsNamed(): void {
+    let f = Function {
+        name = "f",
+        paramsS = 0,
+        paramsR = 0,
+        scalars = 1,
+        refs = 0,
+        returns = .Void,
+        code = [ins(.RetS, 0, 0, 0)],
+        constants = [],
+        strings = [],
+        lines = [1],
+    };
+    let errors = check(Module { name = "m", functions = [f], types = [] });
+    assertEq(errors.length(), 1);
+    assertTrue(errors[0].message.contains("ret.s"));
+}
+
+@Test
+fn aTypeIsItsDescriptor(): void {
+    let a = TypeDesc { name = "Point", scalarFields = ["x", "y"], refFields = [] };
+    let b = TypeDesc { name = "Point", scalarFields = ["x", "y"], refFields = [] };
+    assertTrue(same(a, a));
+    assertTrue(!same(a, b));
+}

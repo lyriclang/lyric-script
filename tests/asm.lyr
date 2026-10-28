@@ -1,0 +1,91 @@
+// The text assembler: a program reads into a sound module, its text form reads back to the same
+// module, and a faulty line is named with its number.
+import std.test { assertEq, assertThrows, assertTrue };
+import lyric_script.vm.asm { assemble, disassemble };
+import lyric_script.vm.module { check };
+
+let fib: string = """
+    # fib(n), the slow way
+    type Pair scalar left right ref next
+
+    fn fib(s) -> s regs 4 0
+        load.i s1, 2
+        jump.lt.i s0, s1, @small
+        add.imm s2, s0, -1
+        call fib, s2, r0
+        add.imm s3, s0, -2
+        call fib, s3, r0
+        add.i s0, s2, s3
+        ret.s s0
+    small:
+        ret.s s0
+    end
+
+    fn main() -> s regs 1 1
+        load.k s0, 20
+        call fib, s0, r0
+        load.str r0, "done, \\"fib\\""
+        new r0, Pair
+        set.s r0, Pair.left, s0
+        ret.s s0
+    end
+    """;
+
+@Test
+fn aProgramReadsIntoASoundModule(): void {
+    let m = try! assemble(fib, "demo");
+    assertEq(m.functions.length(), 2);
+    assertEq(m.types.length(), 1);
+    assertEq(m.functions[0].name, "fib");
+    assertEq(m.functions[0].code.length(), 9);
+    assertEq(m.functions[1].strings[0], "done, \"fib\"");
+    assertEq(check(m).length(), 0);
+}
+
+@Test
+fn theTextFormReadsBackToTheSameModule(): void {
+    let once = disassemble(try! assemble(fib, "demo"));
+    let twice = disassemble(try! assemble(once, "demo"));
+    assertEq(twice, once);
+}
+
+@Test
+fn anUnknownOperationIsNamedWithItsLine(): void {
+    let e = assertThrows(
+        () => {
+            try assemble("fn f() regs 1 0\n    frob s0\n    ret\nend\n", "m");
+        }
+    );
+    assertTrue(e.message().contains("line 2"));
+    assertTrue(e.message().contains("frob"));
+}
+
+@Test
+fn aMissingLabelIsNamed(): void {
+    let e = assertThrows(
+        () => {
+            try assemble("fn f() regs 1 0\n    jump @nowhere\nend\n", "m");
+        }
+    );
+    assertTrue(e.message().contains("no label 'nowhere'"));
+}
+
+@Test
+fn aWrongOperandCountIsNamed(): void {
+    let e = assertThrows(
+        () => {
+            try assemble("fn f() regs 2 0\n    add.i s0, s1\n    ret\nend\n", "m");
+        }
+    );
+    assertTrue(e.message().contains("takes 3 operands"));
+}
+
+@Test
+fn aFunctionWithoutEndIsNamed(): void {
+    let e = assertThrows(
+        () => {
+            try assemble("fn f() regs 1 0\n    ret\n", "m");
+        }
+    );
+    assertTrue(e.message().contains("no 'end'"));
+}

@@ -1,0 +1,16 @@
+# B2 loop: N iterations of acc = (acc + i * i) % 1000003 — dispatch and int arithmetic.
+# The loop is rotated (test at the bottom, the fused compare-and-jump); N > 0 is known.
+# The same algorithm as v46/loop.lyr.
+fn main() -> s regs 5 0
+    load.i s0, 0                # i
+    load.k s1, 10000000         # N
+    load.i s2, 0                # acc
+    load.k s3, 1000003          # modulus
+body:
+    mul.i s4, s0, s0
+    add.i s2, s2, s4
+    rem.i s2, s2, s3
+    add.imm s0, s0, 1
+    jump.lt.i s0, s1, @body
+    ret.s s2
+end

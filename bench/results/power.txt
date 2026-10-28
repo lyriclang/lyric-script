@@ -1,0 +1,10 @@
+# Win32_Battery.BatteryStatus: 1 = on battery (discharging), 2 = on AC. Power scheme "Ausbalanciert".
+2026-10-28T17:38:18 BatteryStatus=1 Charge=21%
+2026-10-28T17:38:28 BatteryStatus=1 Charge=21%   (first attempt; ended in prepare.sh before any timing)
+2026-10-28T17:42:20 BatteryStatus=2 Charge=23%   (AC plugged in during the idle wait)
+2026-10-28T17:46:52 run1 start BatteryStatus=2 Charge=27%
+2026-10-28T17:47:28 after run1 BatteryStatus=2 Charge=28%
+2026-10-28T17:48:47 run2 queued BatteryStatus=2 Charge=29%
+2026-10-28T17:51:10 after run2 BatteryStatus=2 Charge=31%
+# Windows host CPU (Win32_PerfFormattedData_PerfOS_Processor, _Total) sampled at run1 start: 30, 53, 42 %;
+# at run2 queue: 44, 55, 65 % (other sessions, Defender). WSL loadavg during both runs 0.67-0.88.

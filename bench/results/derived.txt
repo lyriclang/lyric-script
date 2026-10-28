@@ -1,0 +1,20 @@
+== /mnt/c/Users/Olivier/CLionProjects/lyric-worktrees/script-s1/bench/results/run1.json
+script       empty    2.1 ms | fib   28.0 ns/call  5.09 ns/instr | loop   16.1 ns/iter  3.21 ns/instr | objects   33.7 ns/visit(all)
+v46-release  empty   90.2 ms | fib   85.4 ns/call 12.20 ns/instr | loop   88.3 ns/iter  5.52 ns/instr | objects  117.3 ns/visit(all)
+v46-debug    empty   91.7 ms | fib   80.5 ns/call 11.51 ns/instr | loop   78.4 ns/iter  7.13 ns/instr | objects  124.1 ns/visit(all)
+v46-release/script: fib 3.47/3.05  loop 5.98/5.50  objects 3.96/3.48  geomean 4.35/3.88 (gross/net)
+v46-debug/script: fib 3.31/2.88  loop 5.38/4.88  objects 4.17/3.68  geomean 4.20/3.73 (gross/net)
+script empty:1.79 fib:1.56 loop:1.44 objects:1.29
+v46-release empty:1.76 fib:1.37 loop:1.42 objects:1.25
+v46-debug empty:1.52 fib:1.86 loop:1.60 objects:1.33
+== /mnt/c/Users/Olivier/CLionProjects/lyric-worktrees/script-s1/bench/results/run2.json
+script       empty    2.5 ms | fib   27.1 ns/call  4.93 ns/instr | loop   14.9 ns/iter  2.99 ns/instr | objects   31.4 ns/visit(all) | walk   27.6 ns/node  5.52 ns/instr | build   19.1 ms =  191.0 ns/node
+v46-release  empty   91.3 ms | fib   73.6 ns/call 10.51 ns/instr | loop   81.4 ns/iter  5.09 ns/instr | objects  116.0 ns/visit(all) | walk  103.3 ns/node  5.74 ns/instr | build   63.5 ms =  635.2 ns/node
+v46-debug    empty   99.9 ms | fib   73.2 ns/call 10.46 ns/instr | loop   68.6 ns/iter  6.24 ns/instr | objects  119.0 ns/visit(all) | walk  107.8 ns/node  5.99 ns/instr | build   56.2 ms =  561.7 ns/node
+v46-release/script: fib 3.15/2.71  loop 5.96/5.45  objects 4.20/3.69  geomean 4.29/3.79 (gross/net)
+v46-debug/script: fib 3.18/2.70  loop 5.18/4.60  objects 4.35/3.79  geomean 4.16/3.61 (gross/net)
+v46-release/script B3 split: walk 3.74, build 3.33
+v46-debug/script B3 split: walk 3.90, build 2.94
+script empty:1.76 fib:1.14 loop:1.25 objects:1.13 objects1:1.28
+v46-release empty:1.58 fib:1.18 loop:1.16 objects:1.55 objects1:1.30
+v46-debug empty:1.28 fib:1.22 loop:1.26 objects:1.25 objects1:1.55

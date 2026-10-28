@@ -797,6 +797,11 @@ class Parser {
 
     mut fn parseBlock(): Block throws SyntaxError {
         let open = try this.expect(.LBrace, "LYS-PAR0017", "'{'");
+        return try this.parseBlockAfter(open);
+    }
+
+    /// A block's statements after its `{`, to its `}`.
+    mut fn parseBlockAfter(open: Token): Block throws SyntaxError {
         try this.enter(open);
         defer {
             this.depth -= 1;
@@ -945,6 +950,24 @@ class Parser {
             if (this.at(.LParen)) {
                 let args = try this.parseArgs();
                 e = Expr.Call(boxed(e), args, this.since(first));
+            } else if (this.at(.LBrace) && takesTrailing(e)) {
+                // `xs.map { it * 2 }`, `run { … }`: the call's last argument (Lyric 5 03 §8.2)
+                let block = try this.parseTrailing();
+                e = match (e) {
+                    .Call(callee, args, _) => {
+                        let all = List<Arg>.new();
+                        for (a in args) {
+                            all.push(a);
+                        }
+                        all.push(Arg { name = null, value = block });
+                        Expr.Call(callee, all.toArray(), this.since(first))
+                    }
+                    _ => Expr.Call(
+                        boxed(e),
+                        [Arg { name = null, value = block }],
+                        this.since(first)
+                    ),
+                };
             } else if (this.at(.LBracket)) {
                 this.advance();
                 let index = try this.parseExpr();
@@ -1214,6 +1237,54 @@ class Parser {
         try this.expect(.FatArrow, "LYS-PAR0034", "'=>' before the lambda's body");
         let body = try this.lambdaBody();
         return Expr.Lambda(params.toArray(), result, boxed(body), false, this.since(first));
+    }
+
+    /// `{ a, b => … }` or `{ … }`: a trailing block, its parameters named before `=>`, or `it`.
+    mut fn parseTrailing(): Expr throws SyntaxError {
+        let open = this.advance();
+        // the names before a `=>`, if the block begins so
+        var k = 0;
+        while (this.peek(k).kind == .Newline) {
+            k += 1;
+        }
+        var named = false;
+        var j = k;
+        loop {
+            if (this.peek(j).kind != .Ident) {
+                break;
+            }
+            let next = this.peek(j + 1).kind;
+            if (next == .FatArrow) {
+                named = true;
+                break;
+            }
+            if (next != .Comma) {
+                break;
+            }
+            j += 2;
+        }
+        let params = List<LambdaParam>.new();
+        if (named) {
+            this.skipNewlines();
+            while (!this.at(.FatArrow)) {
+                let pt = this.advance();
+                params.push(
+                    LambdaParam { name = this.text(pt), type = null, span = this.since(pt) }
+                );
+                if (this.at(.Comma)) {
+                    this.advance();
+                }
+            }
+            this.advance();
+        }
+        let body = try this.parseBlockAfter(open);
+        return Expr.Lambda(
+            params.toArray(),
+            null,
+            boxed(Expr.Block(body, body.span)),
+            !named,
+            this.since(open)
+        );
     }
 
     /// A lambda's body: a value block, or an expression.
@@ -1761,6 +1832,17 @@ fn boxedStmt(s: Stmt): Box<Stmt> {
 
 /// Whether a name is a type's, by its form: a capital first letter. `Name {` opens an initializer
 /// only after one; after any other name the brace is a block's (spec 2 D-init).
+/// Whether a `{` after `e` is a trailing block: after a call, a member, or a name that is no
+/// type's (after a type's name it is an initializer).
+fn takesTrailing(e: Expr): bool {
+    return match (e) {
+        .Call(_, _, _) => true,
+        .Member(_, name, _, _) => !isTypeName(name),
+        .Name(name, _) => !isTypeName(name),
+        _ => false,
+    };
+}
+
 fn isTypeName(name: string): bool {
     for (c in name.chars()) {
         return c >= 'A' && c <= 'Z';

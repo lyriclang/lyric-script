@@ -191,6 +191,8 @@ class Checker {
     var mainIndex: int = -1,
     // the function value of each function named without a call: its thunk's index
     thunks: Map<int, int>,
+    // the function value of each method named without a call: its function's index
+    bound: Map<int, int>,
     // what the statement just checked lets the rest of its block know (an `if` whose one branch
     // never comes out)
     var postFacts: List<Fact> = List<Fact>.new(),
@@ -210,6 +212,7 @@ class Checker {
             globals = List<GlobalInfo>.new(),
             globalIndex = Map<string, int>.new(),
             thunks = Map<int, int>.new(),
+            bound = Map<int, int>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -907,6 +910,15 @@ class Checker {
         }
         for (target in stale) {
             this.thunks.remove(target);
+        }
+        let staleBound = List<int>.new();
+        for (m in this.bound.keys()) {
+            if ((this.bound.get(m) ?? -1) >= n) {
+                staleBound.push(m);
+            }
+        }
+        for (m in staleBound) {
+            this.bound.remove(m);
         }
     }
 
@@ -3616,6 +3628,11 @@ class Checker {
                         if (k >= 0) {
                             return this.unitVariant(index, k, at);
                         }
+                        // a static function named through its type is a value (§8.4 rule 1)
+                        let m = this.types[index].methods.get(name);
+                        if (m != null && this.functions[m].isStatic) {
+                            return this.thunk(m, at);
+                        }
                         this.error("LYS-SEM0012", f"'{typeName}' has no member '{name}'", at);
                         return TExpr.Unknown;
                     }
@@ -3627,6 +3644,13 @@ class Checker {
         match (typeOf(o)) {
             .Tuple(tt) => {
                 return this.element(o, tt, name, at);
+            }
+            // a method without a call: bound to the object (§8.4 rule 2)
+            .Named(i) => {
+                let m = this.types[i].methods.get(name);
+                if (m != null && !this.functions[m].isStatic) {
+                    return this.boundMethod(o, m, at);
+                }
             }
             _ => { }
         }
@@ -4291,6 +4315,57 @@ class Checker {
         return this.thunk(pick, at);
     }
 
+    /// `obj.method` without a call: a function value holding `obj`, whose function calls the
+    /// method on it with the rest (Lyric 5 03 §8.4 rule 2); one such function per method.
+    mut fn boundMethod(o: TExpr, m: int, at: Span): TExpr {
+        let method = this.functions[m];
+        let rt = this.returnsOf(m, at);
+        let tys = List<Ty>.new();
+        for (p in method.params) {
+            tys.push(p.ty);
+        }
+        let fnTy = Ty.Fn(FnTy { params = tys.toArray(), result = boxTy(rt) });
+        let known = this.bound.get(m);
+        if (known != null) {
+            return TExpr.Closure(known, [o], fnTy);
+        }
+        let ot = typeOf(o);
+        let index = this.functions.length();
+        this.functions.push(
+            FnInfo { name = method.name + "#bound", owner = -1, isStatic = true, line = at.line }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let info = this.functions[index];
+        let params = List<ParamInfo>.new();
+        let locals = List<Ty>.new();
+        let args = List<TExpr>.new();
+        locals.push(fnTy);
+        args.push(TExpr.Captured(0, ot));
+        var k = 0;
+        for (p in method.params) {
+            params.push(ParamInfo { name = p.name, ty = p.ty, default = null });
+            locals.push(p.ty);
+            args.push(TExpr.Local(k + 1, p.ty));
+            k += 1;
+        }
+        info.params = params.toArray();
+        info.env = true;
+        info.returns = rt;
+        info.locals = locals.toArray();
+        let flags = List<bool>.new();
+        for (_ in locals) {
+            flags.push(false);
+        }
+        info.boxed = flags.toArray();
+        info.captures = [CaptureInfo { ty = ot, isCell = false }];
+        let call = TExpr.Call(m, args.toArray(), rt);
+        info.body = if (rt == .Void) [TStmt.Expr(call, at.line), TStmt.Return(null, at.line)]
+            else [TStmt.Return(call, at.line)];
+        this.bound.insert(m, index);
+        return TExpr.Closure(index, [o], fnTy);
+    }
+
     /// The function value of function `target`: a function of its own that takes the value
     /// first and calls `target` with the rest, made once.
     mut fn thunk(target: int, at: Span): TExpr {
@@ -4362,6 +4437,18 @@ class Checker {
             .Named(i) => {
                 let m = this.types[i].methods.get(method);
                 if (m == null) {
+                    // a field that holds a function value is called by its name
+                    var k = 0;
+                    for (f in this.types[i].fields) {
+                        let isFn = match (f.ty) {
+                            .Fn(_) => true,
+                            _ => false,
+                        };
+                        if (f.name == method && isFn) {
+                            return this.callValue(TExpr.Field(boxE(receiver), k, f.ty), args, at);
+                        }
+                        k += 1;
+                    }
                     this.error(
                         "LYS-SEM0012",
                         f"'{this.types[i].name}' has no method '{method}'",

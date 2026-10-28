@@ -115,3 +115,40 @@ fn whatFunctionValuesRefuse(): void {
     assertEq(errs("let f = (x: int): int => x\nprintln(f(1, 2))"), ["LYS-SEM0014"]);
     assertEq(errs("let f = (x: int) => {\n    return x\n}"), ["LYS-SEM0010"]);
 }
+
+@Test
+fn trailingBlocksBoundMethodsAndFields(): void {
+    let each = "fn each(n: int, f: fn(int) -> void): void {\n    var i = 0\n    while (i < n) {\n        f(i)\n        i += 1\n    }\n}\n";
+    // `it`, and a block of statements
+    assertEq(
+        value(
+            each
+                + "fn s(): int {\n    var sum = 0\n    each(4) {\n        sum += it\n    }\n    return sum\n}",
+            "s"
+        ),
+        6
+    );
+    // parameters named before `=>`
+    let fold = "fn fold(n: int, start: int, f: fn(int, int) -> int): int {\n    var acc = start\n    var i = 1\n    while (i <= n) {\n        acc = f(acc, i)\n        i += 1\n    }\n    return acc\n}\n";
+    assertEq(value(fold + "fn fs(): int = fold(4, 0) { acc, x => acc + x }", "fs"), 10);
+    // a trailing block right after the name is the call's one argument
+    assertEq(value("fn run(f: fn() -> int): int = f() * 2\nfn rr(): int = run { 21 }", "rr"), 42);
+    // a method without a call is bound to its object; a static is named through its type
+    let acc = "class Acc {\n    var total: int = 0\n    fn add(n: int): void {\n        this.total += n\n    }\n    static fn make(): Acc = Acc { }\n}\n";
+    assertEq(
+        value(
+            acc
+                + "fn b(): int {\n    let a = Acc { }\n    let f = a.add\n    f(5)\n    f(6)\n    let mk = Acc.make\n    let other = mk()\n    other.add(1)\n    return a.total + other.total\n}",
+            "b"
+        ),
+        12
+    );
+    // a field that holds a function is called by its name
+    assertEq(
+        value(
+            "struct H {\n    f: fn(int) -> int\n}\nfn hf(): int {\n    let h = H { f = x => x + 1 }\n    return h.f(41)\n}",
+            "hf"
+        ),
+        42
+    );
+}

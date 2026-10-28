@@ -104,6 +104,7 @@ enum TypeKind :: [Equatable, Debug] {
     Struct,
     Class,
     Enum,
+    Interface,
 }
 
 struct FieldInfo :: [Debug] {
@@ -126,6 +127,15 @@ class TypeInfo {
     // whether a variant carries a payload: the enum's values are then objects, else `int`s
     var payload: bool = false,
     methods: Map<string, int>,
+    // an interface's: its parents, its members' names in order and the slot of each
+    var parents: int[] = [],
+    var memberNames: string[] = [],
+    var slotOf: Map<string, int> = Map<string, int>.new(),
+    var sealed: bool = false,
+    // a conformer's: every interface it conforms to, parents included, and the function each of
+    // their slots runs on it
+    var ifaces: int[] = [],
+    var witness: Map<int, int> = Map<int, int>.new(),
 }
 
 struct ParamInfo :: [Debug] {
@@ -152,6 +162,8 @@ class FnInfo {
     var boxed: bool[] = [],
     // what a lambda's function value holds after its function's index
     var captures: CaptureInfo[] = [],
+    // an interface's member without a body
+    var abstract: bool = false,
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).
@@ -216,6 +228,8 @@ fn typeOf(e: TExpr): Ty {
         .CapturedCell(_, t) => t,
         .CellOf(_, t) => t,
         .CallValue(_, _, t) => t,
+        .Upcast(_, t) => t,
+        .CallIface(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
 }
@@ -297,6 +311,10 @@ enum TExpr :: [Debug] {
     CellOf(int, Ty),
     /// A call through a function value.
     CallValue(Box<TExpr>, TExpr[], Ty),
+    /// A value as a value of an interface it conforms to, or of a parent of its interface.
+    Upcast(Box<TExpr>, Ty),
+    /// A call through an interface value: the method's slot, the receiver and the arguments.
+    CallIface(int, TExpr[], Ty),
     Unknown,
 }
 
@@ -323,6 +341,8 @@ struct Program {
     functions: FnInfo[],
     globals: GlobalInfo[],
     main: int,
+    // the interface methods' slots, numbered across the program
+    slots: int,
 }
 
 /// How many scalar and reference slots a value of the type holds (11 V2): one of its file for a

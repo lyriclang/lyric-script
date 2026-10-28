@@ -1,0 +1,92 @@
+// Interfaces (S3f, Lyric 5 05 §1–§4, §11): declarations, conformance in a type's list, defaults
+// that call through `this` again, interface values and the calls through them (`call.i`), a
+// child interface's value as a parent's — run in the VM.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let shapes = "interface Shape {\n    fn area(): int\n    fn describe(): string {\n        return if (this.area() > 10) \"big\" else \"small\"\n    }\n}\nstruct Sq :: [Shape] {\n    side: int\n    fn area(): int = this.side * this.side\n}\nclass Box :: Shape {\n    var w: int = 1\n    var h: int = 1\n    fn area(): int = this.w * this.h\n    fn describe(): string = \"box\"\n}\n";
+
+@Test
+fn aCallThroughAnInterfaceRunsTheConformersMethod(): void {
+    assertEq(
+        value(
+            shapes
+                + "fn total(a: Shape, b: Shape): int = a.area() + b.area()\nfn t(): int = total(Sq { side = 3 }, Box { w = 2, h = 5 })",
+            "t"
+        ),
+        19
+    );
+}
+
+@Test
+fn aDefaultCallsThroughThisAgain(): void {
+    let d = "fn d(): int {\n    let s: Shape = Sq { side = 4 }\n    let b: Shape = Box { }\n    return (if (s.describe() == \"big\") 1 else 0) + (if (b.describe() == \"box\") 10 else 0)\n}";
+    assertEq(value(shapes + d, "d"), 11);
+    // a default called on the conformer itself
+    assertEq(
+        value(shapes + "fn c(): int = if (Sq { side = 1 }.describe() == \"small\") 1 else 0", "c"),
+        1
+    );
+}
+
+@Test
+fn aChildsValueIsAParentsValue(): void {
+    let pets = "interface Named {\n    fn name(): string\n}\ninterface Pet :: [Named] {\n    fn sound(): string\n}\nstruct Dog :: [Pet] {\n    fn name(): string = \"rex\"\n    fn sound(): string = \"woof\"\n}\nfn greet(n: Named): string = n.name()\n";
+    assertEq(
+        value(
+            pets
+                + "fn p(): int {\n    let pet: Pet = Dog { }\n    return if (greet(pet) == \"rex\" && pet.sound() == \"woof\") 1 else 0\n}",
+            "p"
+        ),
+        1
+    );
+}
+
+@Test
+fn whatConformanceRefuses(): void {
+    let i = "interface I {\n    fn m(): int\n}\n";
+    assertEq(errs(i + "struct S :: [I] {\n    x: int\n}"), ["LYS-SEM0020"]);
+    assertEq(errs(i + "struct S :: [I] {\n    fn m(): string = \"a\"\n}"), ["LYS-SEM0042"]);
+    assertEq(errs("struct P {\n    x: int\n}\nstruct S :: [P] {\n    y: int\n}"), ["LYS-SEM0078"]);
+    assertEq(errs(i + "fn f(a: I, b: I): bool = a == b"), ["LYS-SEM0059"]);
+}

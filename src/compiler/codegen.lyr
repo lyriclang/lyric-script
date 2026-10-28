@@ -118,7 +118,27 @@ struct Placement {
         let variantType = List<int[]>.new();
         let variantLoc = List<Loc[][]>.new();
         let descs = List<TypeDesc>.new();
+        // each type's table of interface methods: the function in each slot, -1 where none
+        let rows = List<int[]>.new();
         for (t in p.types) {
+            let row = List<int>.new();
+            var k = 0;
+            while (k < p.slots) {
+                row.push(t.witness.get(k) ?? -1);
+                k += 1;
+            }
+            rows.push(row.toArray());
+        }
+        var ti = -1;
+        for (t in p.types) {
+            ti += 1;
+            if (t.kind == .Interface) {
+                moduleType.push(-1);
+                fieldLoc.push([]);
+                variantType.push([]);
+                variantLoc.push([]);
+                continue;
+            }
             if (t.kind == .Enum) {
                 moduleType.push(-1);
                 fieldLoc.push([]);
@@ -132,13 +152,14 @@ struct Placement {
                         let refs = List<string>.new();
                         vlocs.push(layOut(fields, scalars, refs, p.types));
                         vtypes.push(descs.length());
-                        descs.push(
-                            TypeDesc {
-                                name = f"{t.name}.{t.variants[k]}",
-                                scalarFields = scalars.toArray(),
-                                refFields = refs.toArray(),
-                            }
-                        );
+                        let d = TypeDesc {
+                            name = f"{t.name}.{t.variants[k]}",
+                            scalarFields = scalars.toArray(),
+                            refFields = refs.toArray(),
+                        };
+                        d.methods = rows[ti];
+                        d.family = ti;
+                        descs.push(d);
                         k += 1;
                     }
                 }
@@ -167,13 +188,14 @@ struct Placement {
             }
             moduleType.push(descs.length());
             fieldLoc.push(locs.toArray());
-            descs.push(
-                TypeDesc {
-                    name = t.name,
-                    scalarFields = scalars.toArray(),
-                    refFields = refs.toArray(),
-                }
-            );
+            let d = TypeDesc {
+                name = t.name,
+                scalarFields = scalars.toArray(),
+                refFields = refs.toArray(),
+            };
+            d.methods = rows[ti];
+            d.family = ti;
+            descs.push(d);
         }
         // the function values of lambdas, and the boxes of the `var`s they capture
         let closureType = List<int>.new();
@@ -992,6 +1014,17 @@ class FnGen {
                 let (rs, rr) = this.slots(t);
                 this.need(bs + rs, br + rr);
                 this.emit(Op.CallV, bs, br, 0);
+                this.move(dst, Loc { s = bs, r = br }, t);
+            }
+            // an interface value is the conformer's own reference
+            .Upcast(x, _) => this.to(x.value, dst),
+            .CallIface(slot, args, t) => {
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.arguments(args, bs, br);
+                let (rs, rr) = this.slots(t);
+                this.need(bs + rs, br + rr);
+                this.emit(Op.CallI, slot, bs, br);
                 this.move(dst, Loc { s = bs, r = br }, t);
             }
             .Unreachable(_) => {

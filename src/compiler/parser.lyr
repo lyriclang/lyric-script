@@ -12,14 +12,17 @@ import lyric_script.compiler.ast {
     Arg,
     BinaryOp,
     Block,
+    Conformance,
     Decl,
     EnumDecl,
     Expr,
+    ExtendDecl,
     FieldDecl,
     FieldInit,
     FieldPattern,
     FnBody,
     FnDecl,
+    InterfaceDecl,
     Item,
     MapEntry,
     LambdaParam,
@@ -102,6 +105,8 @@ class Parser {
     var halfShr: bool = false,
     // in a match arm's guard, which a `=>` ends: no lambda begins there (Lyric 5 does likewise)
     var inGuard: bool = false,
+    // in an interface's body, where a member without a body is abstract
+    var inInterface: bool = false,
 
     static fn new(source: string, tokens: Token[]): Parser {
         return Parser {
@@ -312,6 +317,14 @@ class Parser {
         if (this.atWord("type") && this.peek(1).kind == .Ident) {
             return Item.Decl(Decl.Alias(try this.parseAlias(isPub, first)));
         }
+        // `sealed` is a word only before `interface`
+        if (this.atWord("interface")
+            || (this.atWord("sealed") && this.isWord(this.peek(1), "interface"))) {
+            return Item.Decl(Decl.Interface(try this.parseInterface(isPub, first)));
+        }
+        if (this.atWord("extend") && this.peek(1).kind == .Ident) {
+            return Item.Decl(Decl.Extend(try this.parseExtend(first)));
+        }
         if (this.pos > 0 && this.tokens[this.pos - 1].start == first.start) {
             throw this.failure(
                 "LYS-PAR0053",
@@ -335,6 +348,8 @@ class Parser {
         let body = if (this.at(.Assign)) {
             this.advance();
             FnBody.Expr(try this.parseExpr())
+        } else if (this.inInterface && !this.at(.LBrace)) {
+            FnBody.None
         } else {
             this.skipNewlines();
             FnBody.Block(try this.parseBlock())
@@ -379,6 +394,7 @@ class Parser {
         let isClass = this.atWord("class");
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "the type's name");
+        let conforms = try this.parseConformances(true);
         this.skipNewlines();
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the type's body");
         let fields = List<FieldDecl>.new();
@@ -399,6 +415,7 @@ class Parser {
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the type's body");
         return TypeDecl {
             name = this.text(name),
+            conforms = conforms,
             isClass = isClass,
             fields = fields.toArray(),
             methods = methods.toArray(),
@@ -461,6 +478,7 @@ class Parser {
     mut fn parseEnum(isPub: bool, first: Token): EnumDecl throws SyntaxError {
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "the enum's name");
+        let conforms = try this.parseConformances(false);
         this.skipNewlines();
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the enum's body");
         let variants = List<Variant>.new();
@@ -522,6 +540,7 @@ class Parser {
         }
         return EnumDecl {
             name = this.text(name),
+            conforms = conforms,
             variants = variants.toArray(),
             methods = methods.toArray(),
             isPub = isPub,
@@ -530,6 +549,132 @@ class Parser {
     }
 
     /// `type Name = T`.
+    /// `:: I`, `:: [I, J by field]`: the interfaces a type conforms to — one may stand bare,
+    /// several stand in brackets; `by` only where `delegates` (a struct or a class).
+    mut fn parseConformances(delegates: bool): Conformance[] throws SyntaxError {
+        let out = List<Conformance>.new();
+        if (!this.at(.ColonColon)) {
+            return [];
+        }
+        this.advance();
+        let bracketed = this.at(.LBracket);
+        if (bracketed) {
+            this.advance();
+        }
+        loop {
+            let first = this.current();
+            let name = try this.expect(.Ident, "LYS-PAR0026", "an interface's name");
+            var by: ?string = null;
+            if (this.atWord("by")) {
+                let word = this.advance();
+                if (!delegates) {
+                    throw this.failure(
+                        "LYS-PAR0047",
+                        "an enum delegates nothing: 'by' stands in a struct's or a class's list",
+                        word
+                    );
+                }
+                by = this.text(try this.expect(.Ident, "LYS-PAR0026", "the field it delegates to"));
+            }
+            out.push(Conformance { name = this.text(name), by = by, span = this.since(first) });
+            if (!bracketed || !this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        if (bracketed) {
+            try this.expect(.RBracket, "LYS-PAR0004", "']' after the interfaces");
+        }
+        return out.toArray();
+    }
+
+    /// `interface I :: [P] { … }`, `sealed` before it: members with a body are defaults, the
+    /// others abstract.
+    mut fn parseInterface(isPub: bool, first: Token): InterfaceDecl throws SyntaxError {
+        let sealed = this.atWord("sealed");
+        if (sealed) {
+            this.advance();
+        }
+        this.advance();
+        let name = try this.expect(.Ident, "LYS-PAR0026", "the interface's name");
+        let parents = try this.parseConformances(false);
+        this.skipNewlines();
+        try this.expect(.LBrace, "LYS-PAR0017", "'{' before the interface's body");
+        let members = List<FnDecl>.new();
+        this.inInterface = true;
+        defer {
+            this.inInterface = false;
+        }
+        loop {
+            while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
+                this.advance();
+            }
+            if (this.at(.RBrace) || this.at(.Eof)) {
+                break;
+            }
+            try {
+                let at = this.current();
+                if (!this.atWord("fn")) {
+                    throw this.failure(
+                        "LYS-PAR0001",
+                        f"an interface holds methods: found {this.shown(at)}",
+                        at
+                    );
+                }
+                members.push(this.parseFn(false, false, at));
+            } catch (_: SyntaxError) {
+                this.synchronize();
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the interface's body");
+        return InterfaceDecl {
+            name = this.text(name),
+            parents = parents,
+            members = members.toArray(),
+            sealed = sealed,
+            isPub = isPub,
+            span = this.since(first),
+        };
+    }
+
+    /// `extend T { … }`, `extend T :: [I] { … }`: methods, and conformances, for a type.
+    mut fn parseExtend(first: Token): ExtendDecl throws SyntaxError {
+        this.advance();
+        let target = try this.parseType();
+        let conforms = try this.parseConformances(false);
+        this.skipNewlines();
+        try this.expect(.LBrace, "LYS-PAR0017", "'{' before the block's body");
+        let fields = List<FieldDecl>.new();
+        let methods = List<FnDecl>.new();
+        loop {
+            while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
+                this.advance();
+            }
+            if (this.at(.RBrace) || this.at(.Eof)) {
+                break;
+            }
+            try {
+                this.parseMember(fields, methods);
+            } catch (_: SyntaxError) {
+                this.synchronize();
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the block");
+        for (f in fields) {
+            this.report(
+                "LYS-PAR0901",
+                f"an extend block adds methods, no field: '{f.name}'",
+                this.current()
+            );
+        }
+        return ExtendDecl {
+            target = target,
+            conforms = conforms,
+            methods = methods.toArray(),
+            span = this.since(first),
+        };
+    }
+
     /// `(int, Point)`: a tuple variant's payload.
     mut fn parsePayloadTypes(): TypeExpr[] throws SyntaxError {
         let open = this.advance();

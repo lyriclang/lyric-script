@@ -382,6 +382,12 @@ severity = "error"
 area = "02-grammar"
 summary = "Expressions, blocks and prefix operators nest at most 64 levels: the parser recurses on its caller's stack. Lyric 5's LYR-PAR0045."
 
+[LYS-PAR0047]
+title = "'by' in an enum's list"
+severity = "error"
+area = "05-interfaces"
+summary = "An enum delegates nothing: `I by field` stands in a struct's or a class's list. Lyric 5's LYR-PAR0047."
+
 [LYS-PAR0053]
 title = "a visibility word where none belongs"
 severity = "error"
@@ -523,6 +529,12 @@ severity = "error"
 area = "07-statements"
 summary = "A `let`, a struct's field, or a class's field that is no `var`; or a field reached through `?.`, which narrows first. Lyric 5's LYR-SEM0019."
 
+[LYS-SEM0020]
+title = "a conformance that leaves an interface member unimplemented"
+severity = "error"
+area = "05-interfaces"
+summary = "A type that conforms to an interface implements every member of its chain that has no default. Lyric 5's LYR-SEM0020."
+
 [LYS-SEM0022]
 title = "an expression statement without an effect"
 severity = "error"
@@ -552,6 +564,12 @@ title = "alternatives that bind different names"
 severity = "error"
 area = "09-patterns"
 summary = "Every alternative of `P | Q` binds the same names at the same types. Lyric 5's LYR-SEM0032."
+
+[LYS-SEM0042]
+title = "an implementation whose signature differs from the member's"
+severity = "error"
+area = "05-interfaces"
+summary = "A conformer's method takes the member's parameters and gives its result, exactly. Lyric 5's LYR-SEM0042."
 
 [LYS-SEM0045]
 title = "a lambda parameter whose type nothing gives"
@@ -606,6 +624,12 @@ title = "a static member called on a value"
 severity = "error"
 area = "05-interfaces"
 summary = "A static function is called through its type. Lyric 5's LYR-SEM0074."
+
+[LYS-SEM0078]
+title = "a name in a conformance list that is no interface"
+severity = "error"
+area = "05-interfaces"
+summary = "A type's list and an interface's parents name interfaces only, and an interface does not extend itself. Lyric 5's LYR-SEM0078."
 
 [LYS-SEM0085]
 title = "two functions of one name taking the same number of arguments"

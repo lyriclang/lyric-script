@@ -37,6 +37,12 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
         w.text(t.name);
         w.texts(t.scalarFields);
         w.texts(t.refFields);
+        // the slots' functions and the family, each one up so that none is 0
+        w.word(t.methods.length());
+        for (m in t.methods) {
+            w.word(m + 1);
+        }
+        w.word(t.family + 1);
     }
     w.word(module.functions.length());
     for (f in module.functions) {
@@ -101,7 +107,17 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         let tname = try r.text();
         let scalarFields = try r.texts();
         let refFields = try r.texts();
-        types.push(TypeDesc { name = tname, scalarFields = scalarFields, refFields = refFields });
+        let methods = List<int>.new();
+        var m = try r.word();
+        while (m > 0) {
+            methods.push(try r.word() - 1);
+            m -= 1;
+        }
+        let family = try r.word() - 1;
+        let t = TypeDesc { name = tname, scalarFields = scalarFields, refFields = refFields };
+        t.methods = methods.toArray();
+        t.family = family;
+        types.push(t);
         n -= 1;
     }
     let functions = List<Function>.new();

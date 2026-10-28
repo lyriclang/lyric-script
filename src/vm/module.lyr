@@ -22,6 +22,10 @@ pub class TypeDesc :: [Identity] {
     name: string,
     scalarFields: string[],
     refFields: string[],
+    /// The function of each interface method by its slot, -1 where the type has none (S3f).
+    var methods: int[] = [],
+    /// The type of the program this descriptor is one of, for `is`; -1 for none.
+    var family: int = -1,
 }
 
 /// A compiled function. Its first `paramsS` scalar registers and first `paramsR` reference

@@ -16,12 +16,15 @@ import lyric_script.compiler.ast {
     Arg,
     BinaryOp,
     Block,
+    Conformance,
     EnumDecl,
+    ExtendDecl,
     Expr,
     FieldDecl,
     FieldInit,
     FieldPattern,
     FnDecl,
+    InterfaceDecl,
     Item,
     LambdaParam,
     MatchArm,
@@ -189,6 +192,8 @@ class Checker {
     globalIndex: Map<string, int>,
     var ctx: FnCtx,
     var mainIndex: int = -1,
+    // the interface methods' slots given so far
+    var slotCount: int = 0,
     // the function value of each function named without a call: its thunk's index
     thunks: Map<int, int>,
     // the function value of each method named without a call: its function's index
@@ -223,6 +228,7 @@ class Checker {
             functions = this.functions.toArray(),
             globals = this.globals.toArray(),
             main = this.mainIndex,
+            slots = this.slotCount,
         };
     }
 
@@ -287,6 +293,8 @@ class Checker {
                             t.span
                         ),
                         .Enum(e) => this.declareTypeName(e.name, TypeKind.Enum, e.span),
+                        .Interface(i) => this.declareTypeName(i.name, TypeKind.Interface, i.span),
+                        .Extend(_) => { }
                         .Alias(a) => {
                             if (this.typeIndex.containsKey(a.name)
                                 || this.aliases.containsKey(a.name)) {
@@ -308,6 +316,8 @@ class Checker {
                     match (d) {
                         .Type(t) => this.declareMembers(t),
                         .Enum(e) => this.declareEnum(e),
+                        .Interface(i) => this.declareInterface(i),
+                        .Extend(x) => this.declareExtend(x),
                         .Alias(a) => {
                             this.resolveAlias(a);
                         }
@@ -326,6 +336,25 @@ class Checker {
                     match (d) {
                         .Type(t) => this.checkFieldDefaults(t),
                         .Enum(e) => this.checkVariantDefaults(e),
+                        _ => { }
+                    }
+                }
+                .Stmt(_) => { }
+            }
+        }
+        // the conformances, now that every type and method is known
+        for (item in module.items) {
+            match (item) {
+                .Decl(d) => {
+                    match (d) {
+                        .Type(t) => this.conform(t.name, t.conforms),
+                        .Enum(e) => this.conform(e.name, e.conforms),
+                        .Extend(x) => {
+                            match (x.target) {
+                                .Named(name, _, _) => this.conform(name, x.conforms),
+                                _ => { }
+                            }
+                        }
                         _ => { }
                     }
                 }
@@ -419,6 +448,220 @@ class Checker {
         }
     }
 
+    /// `interface I :: [P] { … }` (Lyric 5 05 §1): its members, each a slot of the program; a
+    /// default's `this` is the interface value.
+    mut fn declareInterface(i: InterfaceDecl): void {
+        let index = this.typeIndex.get(i.name);
+        if (index == null) {
+            return;
+        }
+        let info = this.types[index];
+        if (info.kind != .Interface || info.name != i.name) {
+            return;
+        }
+        info.sealed = i.sealed;
+        let parents = List<int>.new();
+        for (p in i.parents) {
+            let pi = this.typeIndex.get(p.name);
+            if (pi == null || this.types[pi].kind != .Interface || pi == index) {
+                this.error(
+                    "LYS-SEM0078",
+                    f"'{p.name}' is no interface {i.name} can extend",
+                    p.span
+                );
+                continue;
+            }
+            parents.push(pi);
+        }
+        info.parents = parents.toArray();
+        let names = List<string>.new();
+        for (m in i.members) {
+            if (info.methods.containsKey(m.name)) {
+                this.error("LYS-SEM0121", f"'{i.name}' has a second member '{m.name}'", m.span);
+                continue;
+            }
+            let fi = this.declareFn(m, index);
+            match (m.body) {
+                .None => {
+                    this.functions[fi].abstract = true;
+                }
+                _ => { }
+            }
+            info.methods.insert(m.name, fi);
+            info.slotOf.insert(m.name, this.slotCount);
+            this.slotCount += 1;
+            names.push(m.name);
+        }
+        info.memberNames = names.toArray();
+    }
+
+    /// `extend T { … }`: methods added to a type of the program (on a built-in type with S3f's
+    /// boxes); its conformances are checked with the others.
+    mut fn declareExtend(x: ExtendDecl): void {
+        let name = match (x.target) {
+            .Named(n, _, _) => n,
+            _ => "",
+        };
+        let index = this.typeIndex.get(name);
+        if (index == null || this.types[index].kind == .Interface) {
+            this.notYet("an extend block on this type", "S3f (extend on built-in types)", x.span);
+            return;
+        }
+        let info = this.types[index];
+        for (m in x.methods) {
+            if (info.methods.containsKey(m.name)) {
+                this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
+                continue;
+            }
+            info.methods.insert(m.name, this.declareFn(m, index));
+        }
+    }
+
+    /// Interface `ii` and its parents, each once.
+    mut fn ancestry(ii: int): int[] {
+        let out = List<int>.new();
+        let todo = List<int>.new();
+        todo.push(ii);
+        while (todo.length() > 0) {
+            let next = todo.pop() ?? -1;
+            var seen = false;
+            for (x in out) {
+                seen = seen || x == next;
+            }
+            if (next < 0 || seen) {
+                continue;
+            }
+            out.push(next);
+            for (p in this.types[next].parents) {
+                todo.push(p);
+            }
+        }
+        return out.toArray();
+    }
+
+    /// The conformances of type `name` (Lyric 5 05 §1 rule 2): every abstract member of each
+    /// interface's chain implemented with its exact signature, or taken from a default.
+    mut fn conform(name: string, conforms: Conformance[]): void {
+        if (conforms.length() == 0) {
+            return;
+        }
+        let index = this.typeIndex.get(name);
+        if (index == null) {
+            return;
+        }
+        let info = this.types[index];
+        if (info.kind == .Enum && !info.payload) {
+            this.notYet(
+                "an enum without payloads as an interface value",
+                "S3f (boxes)",
+                conforms[0].span
+            );
+            return;
+        }
+        let added = List<int>.new();
+        for (c in conforms) {
+            let ii = this.typeIndex.get(c.name);
+            if (ii == null || this.types[ii].kind != .Interface) {
+                this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
+                continue;
+            }
+            if (c.by != null) {
+                this.notYet("a conformance by delegation", "S3f (by)", c.span);
+                continue;
+            }
+            for (a in this.ancestry(ii)) {
+                var known = false;
+                for (x in info.ifaces) {
+                    known = known || x == a;
+                }
+                for (x in added) {
+                    known = known || x == a;
+                }
+                if (!known) {
+                    added.push(a);
+                }
+            }
+        }
+        let all = List<int>.new();
+        for (x in info.ifaces) {
+            all.push(x);
+        }
+        for (ii in added) {
+            all.push(ii);
+            let iface = this.types[ii];
+            for (member in iface.memberNames) {
+                let slot = iface.slotOf.get(member) ?? -1;
+                let declared = iface.methods.get(member) ?? -1;
+                let own = info.methods.get(member);
+                if (own != null) {
+                    if (!this.sameSignature(own, declared)) {
+                        this.error(
+                            "LYS-SEM0042",
+                            f"'{info.name}.{member}' does not take and give what '{iface.name}.{member}' declares",
+                            conforms[0].span
+                        );
+                    }
+                    info.witness.insert(slot, own);
+                } else if (!this.functions[declared].abstract) {
+                    // the default, its `this` the interface value
+                    info.witness.insert(slot, declared);
+                } else {
+                    this.error(
+                        "LYS-SEM0020",
+                        f"'{info.name}' does not implement '{iface.name}.{member}'",
+                        conforms[0].span
+                    );
+                }
+            }
+        }
+        info.ifaces = all.toArray();
+    }
+
+    /// Whether functions `a` and `b` take the same parameters and give the same result.
+    mut fn sameSignature(a: int, b: int): bool {
+        let fa = this.functions[a];
+        let fb = this.functions[b];
+        if (fa.params.length() != fb.params.length() || fa.returns != fb.returns) {
+            return false;
+        }
+        var k = 0;
+        while (k < fa.params.length()) {
+            if (fa.params[k].ty != fb.params[k].ty) {
+                return false;
+            }
+            k += 1;
+        }
+        return true;
+    }
+
+    /// The member `name` of interface `ii` or of a parent: its function and its slot.
+    mut fn ifaceMember(ii: int, name: string): ?(int, int) {
+        for (a in this.ancestry(ii)) {
+            let fi = this.types[a].methods.get(name);
+            if (fi != null) {
+                return (fi, this.types[a].slotOf.get(name) ?? -1);
+            }
+        }
+        return null;
+    }
+
+    /// Whether a value of type `t` is a value of interface `ii`: its type conforms, or it is an
+    /// interface value of a child.
+    mut fn conformsTo(t: Ty, ii: int): bool {
+        return match (t) {
+            .Named(i) => {
+                let kinds = if (this.types[i].kind == .Interface) this.ancestry(i)
+                    else this.types[i].ifaces;
+                var found = false;
+                for (x in kinds) {
+                    found = found || x == ii;
+                }
+                found
+            }
+            _ => false,
+        };
+    }
+
     mut fn declareEnum(e: EnumDecl): void {
         let index = this.typeIndex.get(e.name);
         if (index == null) {
@@ -509,7 +752,7 @@ class Checker {
         } else {
             match (f.body) {
                 // Kotlin's rule (09 Ret): a block without a written type gives nothing
-                .Block(_) => info.returns = Ty.Void,
+                .Block(_) | .None => info.returns = Ty.Void,
                 .Expr(_) => {
                     info.returns = Ty.Unknown;
                     state = FnState.Declared;
@@ -777,6 +1020,15 @@ class Checker {
                 _ => TExpr.ToFloat(boxE(e)),
             };
         }
+        // a conformer's value, or a child interface's, as an interface value (05 §2, §11)
+        match (target) {
+            .Named(ii) => {
+                if (this.types[ii].kind == .Interface && this.conformsTo(actual, ii)) {
+                    return TExpr.Upcast(boxE(e), target);
+                }
+            }
+            _ => { }
+        }
         match (target) {
             .Optional(inner) => {
                 if (actual == .NullLit) {
@@ -961,6 +1213,8 @@ class Checker {
                     TStmt.Return(if (typeOf(value) == .Void) null else value, decl.span.line)
                 );
             }
+            // an interface's abstract member: never run, its conformer's runs
+            .None => { }
         }
         return body.toArray();
     }
@@ -1750,7 +2004,8 @@ class Checker {
     /// `null` and a value, one for a tuple, a struct or a class; -1 for an open type.
     mut fn ctorCount(t: Ty): int {
         return match (t) {
-            .Named(i) => if (this.types[i].kind == .Enum) this.types[i].variants.length() else 1,
+            .Named(i) => if (this.types[i].kind == .Enum) this.types[i].variants.length()
+                else if (this.types[i].kind == .Interface) -1 else 1,
             .Bool => 2,
             .Optional(_) => 2,
             .Tuple(_) => 1,
@@ -3043,10 +3298,15 @@ class Checker {
         }
         let isFn = match (ta) {
             .Fn(_) => true,
+            .Named(i) => this.types[i].kind == .Interface,
             _ => false,
         };
         if (isFn) {
-            this.error("LYS-SEM0059", "two function values are not compared", at);
+            this.error(
+                "LYS-SEM0059",
+                "two function values, or interface values, are not compared",
+                at
+            );
             return TExpr.Unknown;
         }
         if (ta == tb) {
@@ -4272,6 +4532,7 @@ class Checker {
             .Expr(e) => {
                 body = e;
             }
+            .None => { }
         }
         if (written != null) {
             rt = this.resolveType(written);
@@ -4435,7 +4696,39 @@ class Checker {
                 return TExpr.Unknown;
             }
             .Named(i) => {
+                if (this.types[i].kind == .Interface) {
+                    // through the interface value: the conformer's function in the slot
+                    let found = this.ifaceMember(i, method);
+                    if (found == null) {
+                        this.error(
+                            "LYS-SEM0012",
+                            f"'{this.types[i].name}' has no method '{method}'",
+                            memberAt
+                        );
+                        return TExpr.Unknown;
+                    }
+                    let (fi, slot) = found;
+                    let call = this.callAmong(method, [fi], receiver, args, at);
+                    return match (call) {
+                        .Call(_, all, rt) => TExpr.CallIface(slot, all, rt),
+                        _ => call,
+                    };
+                }
                 let m = this.types[i].methods.get(method);
+                // a default of a conformance, called on the conformer
+                if (m == null) {
+                    for (ii in this.types[i].ifaces) {
+                        let found = this.ifaceMember(ii, method);
+                        if (found != null && m == null) {
+                            let (fi, _) = found;
+                            if (!this.functions[fi].abstract) {
+                                let owner = this.functions[fi].owner;
+                                let up = TExpr.Upcast(boxE(receiver), Ty.Named(owner));
+                                return this.callAmong(method, [fi], up, args, at);
+                            }
+                        }
+                    }
+                }
                 if (m == null) {
                     // a field that holds a function value is called by its name
                     var k = 0;
@@ -4689,6 +4982,8 @@ fn itemLine(item: Item): int {
             .Type(t) => t.span.line,
             .Enum(e) => e.span.line,
             .Alias(a) => a.span.line,
+            .Interface(i) => i.span.line,
+            .Extend(x) => x.span.line,
         },
     };
 }
@@ -4752,6 +5047,7 @@ fn fnDeclaresNull(decl: FnDecl): bool {
     return match (decl.body) {
         .Block(b) => declaresNull(b.stmts),
         .Expr(e) => exprAny(e, (t: Stmt) => isNullVar(t), (_: Expr) => false),
+        .None => false,
     };
 }
 
@@ -5067,6 +5363,7 @@ fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
             match (f.body) {
                 .Block(b) => blockAny(b, onStmt, onExpr),
                 .Expr(e) => exprAny(e, onStmt, onExpr),
+                .None => false,
             }
         }
         .Destructure(_, _, v, e, _) => exprAny(v, onStmt, onExpr)

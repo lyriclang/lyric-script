@@ -3,6 +3,7 @@
 import std.collections { List };
 import lyric_script.compiler.ast {
     Block,
+    Conformance,
     Decl,
     Expr,
     FnDecl,
@@ -42,7 +43,7 @@ fn showDecl(d: Decl): string {
         .Type(t) => {
             let parts = List<string>.new();
             parts.push(if (t.isClass) "class" else "struct");
-            parts.push(t.name);
+            parts.push(t.name + showConforms(t.conforms));
             for (f in t.fields) {
                 let dflt = f.default;
                 let kept = if (dflt != null) " = " + showExpr(dflt) else "";
@@ -81,6 +82,24 @@ fn showDecl(d: Decl): string {
             "(" + parts.toArray().join(" ") + ")"
         }
         .Alias(a) => "(type " + a.name + " " + showType(a.type) + ")",
+        .Interface(i) => {
+            let parts = List<string>.new();
+            parts.push(if (i.sealed) "sealed-interface" else "interface");
+            parts.push(i.name + showConforms(i.parents));
+            for (m in i.members) {
+                parts.push(showFn(m));
+            }
+            "(" + parts.toArray().join(" ") + ")"
+        }
+        .Extend(x) => {
+            let parts = List<string>.new();
+            parts.push("extend");
+            parts.push(showType(x.target) + showConforms(x.conforms));
+            for (m in x.methods) {
+                parts.push(showFn(m));
+            }
+            "(" + parts.toArray().join(" ") + ")"
+        }
     };
 }
 
@@ -94,6 +113,7 @@ fn showFn(f: FnDecl): string {
     let body = match (f.body) {
         .Block(b) => showBlock(b),
         .Expr(e) => "= " + showExpr(e),
+        .None => "abstract",
     };
     let words = if (f.isStatic) "static fn" else "fn";
     return "("
@@ -120,6 +140,18 @@ fn showBlock(b: Block): string {
         parts.push(showStmt(s));
     }
     return "{" + parts.toArray().join("; ") + "}";
+}
+
+fn showConforms(conforms: Conformance[]): string {
+    if (conforms.length() == 0) {
+        return "";
+    }
+    let parts = List<string>.new();
+    for (c in conforms) {
+        let by = c.by;
+        parts.push(if (by != null) c.name + " by " + by else c.name);
+    }
+    return " :: [" + parts.toArray().join(", ") + "]";
 }
 
 fn showPattern(p: Pattern): string {

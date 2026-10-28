@@ -222,6 +222,33 @@ struct Param :: [Debug] {
 enum FnBody :: [Debug] {
     Block(Block),
     Expr(Expr),
+    /// An interface's abstract member: no body.
+    None,
+}
+
+/// An interface a type conforms to in its list, and the field it delegates to (`I by f`).
+struct Conformance :: [Debug] {
+    name: string,
+    by: ?string,
+    span: Span,
+}
+
+/// `interface I :: [Parents] { fn m(): T  fn d(): U { … } }`, `sealed` before it or not.
+struct InterfaceDecl :: [Debug] {
+    name: string,
+    parents: Conformance[],
+    members: FnDecl[],
+    sealed: bool,
+    isPub: bool,
+    span: Span,
+}
+
+/// `extend T { … }` or `extend T :: [I] { … }`: methods, and conformances, added to a type.
+struct ExtendDecl :: [Debug] {
+    target: TypeExpr,
+    conforms: Conformance[],
+    methods: FnDecl[],
+    span: Span,
 }
 
 struct FnDecl :: [Debug] {
@@ -247,6 +274,7 @@ struct FieldDecl :: [Debug] {
 /// A struct or, with the flag, a class: its fields and its methods.
 struct TypeDecl :: [Debug] {
     name: string,
+    conforms: Conformance[],
     isClass: bool,
     fields: FieldDecl[],
     methods: FnDecl[],
@@ -266,6 +294,7 @@ struct Variant :: [Debug] {
 
 struct EnumDecl :: [Debug] {
     name: string,
+    conforms: Conformance[],
     variants: Variant[],
     methods: FnDecl[],
     isPub: bool,
@@ -285,6 +314,8 @@ enum Decl :: [Debug] {
     Type(TypeDecl),
     Enum(EnumDecl),
     Alias(AliasDecl),
+    Interface(InterfaceDecl),
+    Extend(ExtendDecl),
 }
 
 /// What stands at the top of a module: a declaration, or a statement of the script (07 Top).

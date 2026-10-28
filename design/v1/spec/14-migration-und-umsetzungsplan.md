@@ -349,3 +349,17 @@ jetzt gespeicherte Interface-Werte nach anderer Arbeit. 142 Tests, 82 Konformanz
   `Self` und statische Member in Interfaces, Objektsicherheit (§7) mit ihnen.
 - Teile: g1 generische Funktionen (Inferenz, Constraints, Kopien, Deskriptoren); g2 generische
   Typen; g3 `Self`, Statics, Objektsicherheit; Bytecode-Goldtests der Kopien.
+
+*S3g, g1 Ergebnis:* generische Funktionen wie präzisiert, noch ohne Deskriptor (die geteilte
+Kopie ruft Constraint-Member über die Tabelle des Werts — alle geteilten Typen sind
+VM-Objekte); ein `string` bekommt eine eigene Kopie wie die Skalare (sein Wert trägt keine
+Tabelle; Abweichung von 11 Gen, bis der Deskriptor kommt). Eine generische Funktion als Wert
+und geschriebene Typargumente am Aufruf kommen mit g2/g3.
+
+*g2, Entwurf:* ein generischer Typ ist eine Schablone, deren Eintrag zugleich die Instanz mit
+den eigenen Parametern ist; `Pair<int, string>` legt einen Eintrag je Argumentliste an (Felder,
+Varianten ersetzt; Instanz und Schablone merken sich Schablone und Argumente). Methoden sind
+Schablonen mit den Parametern des Typs; ein Aufruf auf einer Instanz ist ein `CallGeneric`,
+die Tabelle einer Instanz entsteht in der Kopierphase. Der Ersatz kennt Instanzen: in
+`Named(Instanz mit Parametern)` werden die Argumente ersetzt. Ein Initialisierer ohne
+Typargumente bindet sie aus den Feldwerten, `.None` aus dem erwarteten Typ.

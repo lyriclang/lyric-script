@@ -62,9 +62,9 @@ Exit criterion: hand-written bytecode runs in CI on every Tier 1 target; measure
 
 | Slice | State |
 |---|---|
-| S2a the delta chapters 01/02, the case format, the runner | in progress — chapter 01, the format and the runner on lyric-spec `s2/lexical-grammar`; CI runs the suite at `spec.pin` |
-| S2b the lexer | in progress — Lyric 5's tokens and codes, the line end as a token (09 NL; `>` and `>>` kept out of rule 2), `lyric-script check` lexes |
-| S2c the parser | open |
+| S2a the delta chapters 01/02, the case format, the runner | done for the core — lyric-spec#382 (chapter 1, chapter 2's core, the format, the runner, 16 cases); CI runs the suite at `spec.pin` |
+| S2b the lexer | done — Lyric 5's tokens and codes, the line end as a token (09 NL; `>` and `>>` kept out of rule 2) |
+| S2c the parser | done for the core — `lyric-script check` parses; nesting bounded at 64 (measured on a test's task) |
 | S2d names and types (core) | open |
 | S2e code generation | open |
 | S2f diagnostics | open |

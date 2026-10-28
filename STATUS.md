@@ -12,14 +12,15 @@ Lyric 4.x status up to the 4.6 cut is archived at
 - **The design round is complete** (2026-10-28, lyric-script#1): areas 00–14, two probes.
 - **The 4.x line ends**: tag `v4.6-final` and branch `archive/4.x` hold the C# toolchain and the
   .NET VM; `main` is Lyric-Script 1.0 in development, written in Lyric 5, version `1.0.0-dev`.
-- **Open milestone: S0** — the cut and the scaffold.
+- **S0 done** (2026-10-28, lyric-script#2, tag `s0-complete`): `lyric-script --version` built and run in CI on every Tier 1 target against Lyric 5 `c2e88a96`.
+- **Open milestone: S1** — the VM core.
 
 ## Milestones
 
 | M | Name | Size | State |
 |---|---|---|---|
-| S0 | Cut and scaffold | M | **open** |
-| S1 | VM core | L | — |
+| S0 | Cut and scaffold | M | **done** 2026-10-28 |
+| S1 | VM core | L | **open** |
 | S2 | Front-end core | XL | — |
 | S3 | Type system complete | L | — |
 | S4 | Errors and control | M | — |
@@ -38,18 +39,20 @@ Lyric 4.x status up to the 4.6 cut is archived at
 Sizes are sessions, not dates: S days, M 1–2 weeks, L 3–4 weeks, XL more. A milestone more than
 100 % over its size is re-cut here (CONTRIBUTING, scope check).
 
-### S0 — open
+### S1 — open
 
 | Slice | State |
 |---|---|
-| S0a the plan | done |
-| S0b the cut (`v4.6-final`, `archive/4.x`, `docs/archive/4.x/`, new root files) | done |
-| S0c scaffold (`lyric_script` package, `lyric-script --version`, C-ABI stub, `diagnostics.toml`) | done — built, tested and run under WSL against the pin |
-| S0d CI against pinned Lyric 5 on every Tier 1 target | done — this PR's run |
-| S0e specification skeleton (`lyric-spec` branch `script`, `spec.pin`) | done — lyric-spec#380 |
-| S0f value probe evaluated into 11 | done — V2 and Gen hold, V3 = A' with lyric#610 (A4) |
+| S1a the instruction set | done — the opcode enum folds into one jump table (checked on the pin) |
+| S1b modules, functions, types, the structure check | done |
+| S1c the text assembler and disassembler | done |
+| S1d the interpreter | done — two register stacks, the VM's own frames, the script's panics with frames, `execute` on a task |
+| S1e objects | done — `HeapRef`, `ScriptObject`, `ScriptString`, one `nil` |
+| S1f the fuel scaffold | done — a loop stops at the same backward jump |
+| S1g `lyric-script asm` | open |
+| S1h measurement point 1 against 4.6; decide V3 | open |
 
-Exit criterion: `lyric-script --version` built and run in CI on every Tier 1 target.
+Exit criterion: hand-written bytecode runs in CI on every Tier 1 target; measurement point 1 recorded.
 
 ## Working mode
 

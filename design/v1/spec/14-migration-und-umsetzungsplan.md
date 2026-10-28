@@ -161,3 +161,9 @@ Diagnosekatalog.
 | **S1g Kommandozeile** | `lyric-script asm <datei.lyrsasm>` — führt Bytecode-Text aus; in `help` als vorläufig markiert, entfällt mit `run` in S2 | Ende-zu-Ende in der CI |
 | **S1h Messpunkt 1** | Mikro-Bench (fib, Schleifen, Felder in Objekten) in `bench/`, dieselben Programme für 4.6 (aus `v4.6-final`), dieselbe Maschine, Netzbetrieb; Ratchet ≥ 5×; **Entscheidung V3** (A4 = lyric#610 behoben? sonst Referenz-Moves messen, ggf. `Obj`) | Bericht `bench/README.md` mit Erwartung vorab und Kontrolle |
 | **Abschluss** | STATUS, PR, CI grün, Merge, Tag `s1-complete` | handgeschriebener Bytecode läuft in der CI auf allen Tier-1-Zielen |
+
+**Ergebnis Messpunkt 1 (2026-10-28, `bench/README.md`):** 4,3× im geometrischen Mittel (fib
+3,2–3,5×, loop 6,0×, objects 4,0–4,2×) — Ziel ≥ 5× verfehlt, nicht um mehr als 2×, also kein
+Neuzuschnitt; V3 bleibt A' (11). **Folge für den Plan:** S7 bekommt vor Messpunkt 3 einen Slice
+„Aufrufpfad der VM" (Frames ohne `List`, aufgelöste Funktionstabelle, eine Wachstumsprüfung je
+Aufruf, Fuel an Rücksprüngen statt je Aufruf), gemessen mit diesem Bench.

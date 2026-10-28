@@ -1,0 +1,20 @@
+# B1 fib: fib(N) recursive, the slow way — two calls per step; call heavy.
+# The same algorithm as v46/fib.lyr. `lyric-script asm bench/fib.lyrsasm`
+fn fib(s) -> s regs 4 0
+    load.i s1, 2
+    jump.lt.i s0, s1, @small
+    add.imm s2, s0, -1
+    call fib, s2, r0
+    add.imm s3, s0, -2
+    call fib, s3, r0
+    add.i s0, s2, s3
+    ret.s s0
+small:
+    ret.s s0
+end
+
+fn main() -> s regs 1 0
+    load.i s0, 32
+    call fib, s0, r0
+    ret.s s0
+end

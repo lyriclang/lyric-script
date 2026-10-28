@@ -1,0 +1,7 @@
+// The empty program: start-up and teardown only. Prints 0, like ../empty.lyrsasm.
+import std.io.console { println };
+
+fn main(): int {
+    println(0);
+    return 0;
+}

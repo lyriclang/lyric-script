@@ -79,3 +79,26 @@ fn theDescriptorsSurviveTheCache(): void {
     let back = try! decode(bytes, 3, "1.0.0-test", "abc");
     assertEq(valueOf(back, "e"), 7);
 }
+
+let printing = "interface Shape {\n    fn area(): int\n}\nstruct Circle :: Shape {\n    r: int\n\n    fn area(): int = this.r\n}\nenum E {\n    A, B\n}\nfn shapeOf(r: int): Shape = Circle { r = r }\nfn show<T>(x: T): string = f\"{x}\"\nfn wrap<T>(x: T): Pair<T> = Pair { a = x }\nfn nestsOf<T>(x: T): Nests = Pair { a = x }\n";
+
+@Test
+fn interfaceValuesPrintTheirValue(): void {
+    // through the slot every table fills; a scalar's, a string's and an enum's out of the box
+    let d = "fn d(): int {\n    let s = hide(\"hi\")\n    let all = f\"{shapeOf(2)}|{hide(7)}|{s}|{hide(E.B)}\"\n    return if (all == \"Circle { r = 2 }|7|\\\"hi\\\"|E.B\") 1 else 0\n}";
+    assertEq(value(types + printing + d, "d"), 1);
+}
+
+@Test
+fn aTypeParameterPrintsItsArgument(): void {
+    // alone a string is itself; inside another value it is quoted
+    let d = "fn d(): int {\n    let raw = show(\"raw\")\n    let x = wrap(\"x\")\n    let all = f\"{show(Foo { })}|{show(3)}|{raw}|{wrap(Foo { })}|{x}\"\n    return if (all == \"Foo { n = 1 }|3|raw|Pair { a = Foo { n = 1 } }|Pair { a = \\\"x\\\" }\") 1 else 0\n}";
+    assertEq(value(types + printing + d, "d"), 1);
+}
+
+@Test
+fn aTypeMadeAtRunTimeHasItsTable(): void {
+    // `Pair<Baz>` is written nowhere: its table is the shared copy's, called and printed
+    let d = "fn d(): int {\n    let all = f\"{nestsOf(Baz { }).nested()}\"\n    return if (all == \"Pair { a = Pair { a = Baz { n = 3 } } }\") 1 else 0\n}";
+    assertEq(value(types + printing + d, "d"), 1);
+}

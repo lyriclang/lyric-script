@@ -111,8 +111,8 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | 02 | **Leitbild**: Beispielprogramme in Stilvarianten, Katalog der Skript-Merkmale |
 | 03 | **Werte und Typen** (Wertmodell und Typsystem zusammen, 2026-10-28) |
 | 04 | — in 03 aufgegangen |
-| 05 | Abstraktion: Klassen, Vererbung?, Interfaces, strukturelle Typen? |
-| 06 | Fehler |
+| 05 | **Abstraktion und Fehler** (zusammen, 2026-10-28) |
+| 06 | — in 05 aufgegangen |
 | 07 | Nebenläufigkeit: Koroutinen, vom Host gepumpte Event-Loop |
 | 08 | Programmstruktur und Module: Top-Level-Code, Shebang, Abhängigkeiten, Manifest |
 | 09 | Syntax und Grammatik, Abweichungstabelle |

@@ -1,0 +1,11 @@
+runtime: .NET 10.0.14, no debugger, server GC False
+
+[Profile { Name = release, Optimize = True, SourceMap = True, DebugInfo = False, DenyWarnings = False }] control n=100000000: acc=663007437317834240 executed=2800000019
+[Profile { Name = release, Optimize = True, SourceMap = True, DebugInfo = False, DenyWarnings = False }] full runs (s): 19.518 20.453 21.198 22.784 23.679  median 21.198  => 7.57 ns/instr, 211.98 ns/iteration
+[Profile { Name = release, Optimize = True, SourceMap = True, DebugInfo = False, DenyWarnings = False }] differenced (10000000 iterations, 9 trials, minima): 28.0 instr/iter, 255.74 ns/iter, 9.13 ns/instr
+
+[Profile { Name = debug, Optimize = False, SourceMap = True, DebugInfo = True, DenyWarnings = False }] control n=100000000: acc=663007437317834240 executed=1900000014
+[Profile { Name = debug, Optimize = False, SourceMap = True, DebugInfo = True, DenyWarnings = False }] full runs (s): 20.998 21.067 21.695 21.699 21.926  median 21.695  => 11.42 ns/instr, 216.95 ns/iteration
+[Profile { Name = debug, Optimize = False, SourceMap = True, DebugInfo = True, DenyWarnings = False }] differenced (10000000 iterations, 9 trials, minima): 19.0 instr/iter, 200.81 ns/iter, 10.57 ns/instr
+
+[jit release] result=1623557632 runs (s): 26.090 26.098 26.644 27.934 29.260  median 26.644  => 266.44 ns/iteration

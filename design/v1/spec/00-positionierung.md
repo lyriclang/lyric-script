@@ -96,10 +96,10 @@ Schnittstelle ist ein Mechanismus, typsicher, und als Ganzes per Capability sper
 | # | Anforderung | Betrifft | Wann nötig |
 |---|---|---|---|
 | A1 | **Mehrere Lyric-5-Bibliotheken in einem Prozess** (geteiltes Runtime): ein `lyric-script`-Prozess, der zwei native Module lädt, hätte heute zwei Runtimes — 11 H1 erlaubt eines, H7 lässt `--shared-runtime` als Tür. Alternative ohne Änderung an 5: native Module statisch in ein eigenes `lyric-script`-Binary linken. | 11 H1, H7 | erst bei dynamisch geladenen nativen Modulen |
-| A2a | **Dispatch**: `match` über Ganzzahl/Enum wird heute zu einer `if`-Kette (IR ohne Switch-Terminator); eine VM braucht einen C-`switch`/eine Sprungtabelle — oder den Messbeleg, dass clang `-O2` die Kette umwandelt | IR, C-Emitter | Dispatch-Probe (vorgezogen) |
+| A2a | ~~Dispatch-Senkung~~ — **gemessen 2026-10-28: nicht nötig** für `match` über `uint8` mit Literal-Mustern: clang `-O2` faltet die `if`-Kette zu einer Sprungtabelle (48 Einträge, ein indirekter Sprung; heiß zuerst/zuletzt gleich schnell). Nicht gemessen: Enum-/Guard-`match`, `-O0`, gcc (`design/v1/probes/dispatch/`) | IR, C-Emitter | erledigt, sofern Bereich 11 bei dieser Form bleibt |
 | A2b | **Anhalten aus verschachtelten Aufrufen**: öffentliches `park`/`unpark` oder typisiertes Yield aus Hilfsfunktionen (heute `park` in std privat) — für Budget-Anhalten und Skript-Koroutinen (01 S5b) | 06, std.task | Bereich 11 |
 | A2c | **Exakter Toolchain-Pin** (heute nur Mindestversion; `lyric toolchain install` kommt mit M15); bis dahin baut die CI von Lyric-Script Lyric 5 aus einem festen Commit | 11 W9, M15 | Umsetzungsbeginn |
-| A2d | Kosten der stets aktiven Indexprüfung im heißen Pfad — erst nach Messung zu stellen (Alternative heute: `Ptr` in `unsafe {}`) | 03 N5 | nach der Probe |
+| A2d | **Indexprüfung im heißen Pfad: gemessen 24 %** der Dispatch-Zeit (1,26 → 0,96 ns/Befehl, wenn nur `LYR_CHECK_INDEX` entfällt — praktisch der ganze Abstand zu C); der `Ptr`-Weg ist **kein** Ausweg (ohne LTO 3× langsamer, mit LTO +27 %, weil `offset` geprüft rechnet). Anforderung, falls Bereich 11 die 24 % holen will: ein ungeprüfter, inline gehender Elementzugriff (z. B. `getUnchecked` in `unsafe {}`) oder Elimination der Prüfung in Schleifen | 03 N5, std.ffi | Bereich 11 |
 | A3 | **Instanz-Zuordnung im GC** (Heap-Partitionen oder Abrechnung beim Markieren) für eine Live-Speichergrenze pro Instanz (01 S6, Tür) | 01 S6; Lyric 5 01, M11 | erst wenn die Tür geöffnet wird |
 
 ## Fahrplan der Runde

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    P6 of the dispatch probe: the same loop as a plain Lyric 4.6 program, compiled and run
+    in-process by the 4.6 interpreter, measured the way lyric-script's tools/Bench measures
+    (minima, two iteration counts differenced, instruction counts from an ExecutionBudget).
+    Build it OUTSIDE the worktree (copy this directory), so no bin/obj lands in the tree:
+      dotnet build -c Release -p:LyricScript=C:\path\to\lyric-script
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>p6harness</AssemblyName>
+    <TieredPGO>true</TieredPGO>
+    <LyricScript Condition="'$(LyricScript)' == ''">C:\Users\Olivier\CLionProjects\lyric-script</LyricScript>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(LyricScript)\src\Lyric.Embedding\Lyric.Embedding.csproj" />
+  </ItemGroup>
+
+</Project>

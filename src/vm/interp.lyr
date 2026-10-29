@@ -126,6 +126,28 @@ pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcom
     };
 }
 
+/// A task of the script (07 N4, 11 Co): its registers, its frames and where it stands, kept while
+/// another task runs.
+class TaskState {
+    var s: uint64[],
+    var r: HeapRef[],
+    frames: List<CallFrame>,
+    var fi: int,
+    var pc: int = 0,
+    var bs: int = 0,
+    var br: int = 0,
+    var report: ?Report = null,
+}
+
+/// What every task of one run shares: the module, its globals, the descriptors made, the budget.
+class RunShared {
+    module: Module,
+    gs: uint64[],
+    gr: HeapRef[],
+    interning: Interning,
+    var budget: int,
+}
+
 /// Runs `entry` of `module` on the current task; see `execute`.
 pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     var fi = -1;
@@ -141,27 +163,49 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             ScriptPanic { code = "LYS-ICE0001", message = f"no function '{entry}'", trace = [] }
         );
     }
-    var f = module.functions[fi];
-    var s: uint64[] = [0 as uint64] * grown(0, f.scalars);
-    var r: HeapRef[] = refArray(grown(0, f.refs));
+    let first = module.functions[fi];
+    let main = TaskState {
+        s = [0 as uint64] * grown(0, first.scalars),
+        r = refArray(grown(0, first.refs)),
+        frames = List<CallFrame>.new(),
+        fi = fi,
+    };
     var k = 0;
-    while (k < args.length() && k < f.paramsS) {
-        s[k] = args[k];
+    while (k < args.length() && k < first.paramsS) {
+        main.s[k] = args[k];
         k += 1;
     }
+    let shared = RunShared {
+        module = module,
+        gs = [0 as uint64] * module.globalsS,
+        gr = refArray(module.globalsR),
+        interning = Interning.of(module),
+        budget = fuel,
+    };
     // the script's top-level bindings (07 Top), alive for this run
-    var gs: uint64[] = [0 as uint64] * module.globalsS;
-    var gr: HeapRef[] = refArray(module.globalsR);
+
     // the descriptors of this run: the compiler's, and those shared copies make (S3i)
-    let interning = Interning.of(module);
-    let frames = List<CallFrame>.new();
+
+    return runTask(main, shared);
+}
+
+/// Runs task `t` from where it stands until it ends — its outcome — or waits.
+fn runTask(t: TaskState, shared: RunShared): Outcome {
+    let module = shared.module;
+    let interning = shared.interning;
+    let gs = shared.gs;
+    let gr = shared.gr;
+    var fi = t.fi;
+    var f = module.functions[fi];
+    var s = t.s;
+    var r = t.r;
+    let frames = t.frames;
     // the report of an error no frame took, once one is asked (S4a)
-    var report: ?Report = null;
+    var report = t.report;
     var code: Instr[] = f.code;
-    var pc = 0;
-    var bs = 0;
-    var br = 0;
-    var budget = fuel;
+    var pc = t.pc;
+    var bs = t.bs;
+    var br = t.br;
     while (true) {
         let ins = code[pc];
         let a = ins.a as int;
@@ -322,8 +366,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             }
             .Jump => {
                 if (a <= pc) {
-                    budget = spend(budget);
-                    if (budget == -2) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
                         return Outcome.Suspended;
                     }
                 }
@@ -333,8 +377,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 let taken = (s[bs + a] != 0) == (ins.op == .JumpIf);
                 if (taken) {
                     if (b <= pc) {
-                        budget = spend(budget);
-                        if (budget == -2) {
+                        shared.budget = spend(shared.budget);
+                        if (shared.budget == -2) {
                             return Outcome.Suspended;
                         }
                     }
@@ -346,8 +390,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             .JumpLtI => {
                 if ((s[bs + a] as int) < (s[bs + b] as int)) {
                     if (c <= pc) {
-                        budget = spend(budget);
-                        if (budget == -2) {
+                        shared.budget = spend(shared.budget);
+                        if (shared.budget == -2) {
                             return Outcome.Suspended;
                         }
                     }
@@ -357,8 +401,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 }
             }
             .Call => {
-                budget = spend(budget);
-                if (budget == -2) {
+                shared.budget = spend(shared.budget);
+                if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 if (frames.length() >= maxDepth) {
@@ -641,8 +685,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             // a call through a function value: the value is the callee's first reference argument,
             // and its first scalar field names the function
             .CallV => {
-                budget = spend(budget);
-                if (budget == -2) {
+                shared.budget = spend(shared.budget);
+                if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 if (frames.length() >= maxDepth) {
@@ -681,8 +725,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             // a call through an interface value: the receiver is the callee's first reference
             // argument, and its type's table names the function of slot `a`
             .CallI => {
-                budget = spend(budget);
-                if (budget == -2) {
+                shared.budget = spend(shared.budget);
+                if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 if (frames.length() >= maxDepth) {
@@ -724,8 +768,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             // S3i: a static member through a type's descriptor: the function in slot `a` of the
             // descriptor in reference register `c`, its arguments after it
             .CallS => {
-                budget = spend(budget);
-                if (budget == -2) {
+                shared.budget = spend(shared.budget);
+                if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 if (frames.length() >= maxDepth) {

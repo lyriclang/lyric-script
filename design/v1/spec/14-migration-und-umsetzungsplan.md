@@ -444,5 +444,7 @@ geteilter Kopien mit deren Deskriptoren, i5 Literal-Protokolle als Prelude in Ly
 (Member nach Art benannt), i6 generische Extend-Blöcke mit bedingter Konformanz und Kohärenz.
 Drei Fehler seit S3g behoben (geteilte Kopie baute `Pair<Any>`; weitergereichtes eingeschränktes
 `T` gab SEM0028; Lambda einer geteilten Kopie löschte `T`). Mit S7: Konstanten generischer
-Typen, Blöcke auf einer Instanz, auf eingebauten Konstruktoren und Blanket-Blöcke. 189 Tests,
-113 Konformanzfälle.
+Typen, Blöcke auf einer Instanz, auf eingebauten Konstruktoren und Blanket-Blöcke, ein Name je
+Interface getrennt implementiert (05 §3 Regel 4). Beim Abgleich der Bereichsdokumente gegen den Code
+fehlte 05 D2/D3 eine Uhr: zwei Defaults eines Namens nahmen still den ersten — jetzt
+`LYS-SEM0043`, dazu der qualifizierte Aufruf `I.m(x)`. 191 Tests, 115 Konformanzfälle.

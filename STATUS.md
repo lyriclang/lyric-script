@@ -137,7 +137,7 @@ dependencies, rights classes from imports (07).
 | S5c2 the lock | done — `lyric-script.lock` with commit and content hash (`h1:`), a locked revision read at its commit and checked (`LYS-PKG0008`), `--locked` (`LYS-PKG0011`), `lyric-script update [package…]` (`LYS-CLI0006`). Found: `run` took a cached module before the loader's errors were reported (since S5a) |
 | S5c3 versions, overrides, content | done — version lines and minimal version selection over the versions read on the way, `[override]` with a folder, package cycles (`LYS-PKG0010`), `include`/`exclude` for a git package's content (a module outside it is not there), `update` raising a root tag within its line |
 | S5d a script's frontmatter | done — `[dependencies]`, `[override]` and `toolchain` in a script's `---` frontmatter, its own modules by the path rule and its dependencies by their names; resolved at the first run and kept in a lock in the cache under the frontmatter's hash; `lyric-script lock tool.lyrs` writes `tool.lyrs.lock` beside it |
-| S5e | open |
+| S5e rights from imports | done — the classes `file`, `net`, `process`, `os`, `native`; each import of a module of a class asks for it, recorded with its place in the bytecode (format 9); `run` checks before the start: `--allow`, `-A`, the one question at a terminal, else `LYS-CAP0001` for all at once (exit 2); the table for `std` provisional until S7, `LYRIC_SCRIPT_RIGHTS` its stand-in in tests. Found: lyriclang/lyric#624 (an ICE of `?? null`) |
 
 Exit criterion: a script project of several files with a Git dependency; a single script with
 frontmatter.

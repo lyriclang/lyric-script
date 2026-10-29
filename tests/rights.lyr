@@ -1,0 +1,53 @@
+// Rights (S5e; Script 01 S1–S4, 12 Rechte): the classes a module asks for, what `--allow` names,
+// what a run was not given; the rights travel with the bytecode.
+import std.test { assertEq, assertTrue };
+import lyric_script { version };
+import lyric_script.rights { allowed, classOf, classesOf, missing };
+import lyric_script.vm { bytecodeFormat };
+import lyric_script.vm.bytecode { decode, encode };
+import lyric_script.vm.module { Module, RightUse };
+
+fn use(right: string, module: string, line: int): RightUse {
+    return RightUse { right = right, module = module, path = "main.lyrs", line = line };
+}
+
+@Test
+fn theStandardLibrarysModulesAskForTheirClass(): void {
+    // the plan's table until S7: a module below one counts as it; a script's own asks for none
+    assertEq(classOf("std.fs"), "file");
+    assertEq(classOf("std.fs.walk"), "file");
+    assertEq(classOf("std.http"), "net");
+    assertEq(classOf("std.process"), "process");
+    assertEq(classOf("std.time"), "os");
+    assertEq(classOf("std.fsx"), null);
+    assertEq(classOf("helper"), null);
+}
+
+@Test
+fn allowNamesClassesAndARunLacksTheRest(): void {
+    assertEq(allowed("file,net"), ["file", "net"]);
+    assertEq(allowed(" os "), ["os"]);
+    assertEq(allowed("disk"), null);
+    assertEq(allowed("file,"), null);
+    let uses = [use("file", "a", 1), use("net", "b", 2), use("file", "c", 3)];
+    assertEq(missing(uses, ["file"], false), [use("net", "b", 2)]);
+    assertEq(missing(uses, [], true).length(), 0);
+    assertEq(missing(uses, [], false).length(), 3);
+    assertEq(classesOf(uses), ["file", "net"]);
+}
+
+@Test
+fn aModulesRightsTravelWithItsBytecode(): void {
+    let m = Module { name = "t", functions = [], types = [] };
+    m.rights = [use("net", "web", 4), use("file", "files", 2)];
+    let back = try decode(
+        encode(m, bytecodeFormat, version, "k"),
+        bytecodeFormat,
+        version,
+        "k"
+    ) catch (_) {
+        assertTrue(false, "the module reads back");
+        return;
+    };
+    assertEq(back.rights, [use("net", "web", 4), use("file", "files", 2)]);
+}

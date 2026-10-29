@@ -28,6 +28,8 @@ import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.cache { cacheRoot };
 import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
+import lyric_script.rights { classOf };
+import lyric_script.vm.module { RightUse };
 import lyric_script.package {
     Dep,
     Manifest,
@@ -89,6 +91,8 @@ class Loaded {
     var raised: List<Raise> = List<Raise>.new(),
     // a single script whose frontmatter names dependencies: the root package is the script (S5d)
     var script: bool = false,
+    // the rights the imports ask for, each with where (S5e)
+    var rights: List<RightUse> = List<RightUse>.new(),
 
     /// The text the cache keys the program by: the entry's alone where it is the one file, else
     /// every file's module name and text.
@@ -191,6 +195,18 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
                 }
             };
             let name = im.path.join(".");
+            // a module of a class of rights asks for it, here (01 S1)
+            let right = classOf(name);
+            if (right != null) {
+                l.rights.push(
+                    RightUse {
+                        right = right,
+                        module = name,
+                        path = l.paths[i],
+                        line = im.span.line,
+                    }
+                );
+            }
             let where = Diagnostic {
                 code = "LYS-RES0003",
                 message = "",

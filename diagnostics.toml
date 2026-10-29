@@ -4,6 +4,12 @@
 # explanation, example. Codes carry the prefix LYS-; a guard that holds this file against the
 # toolchain comes with S11.
 
+[LYS-CAP0001]
+title = "a right the run was not given"
+severity = "error"
+area = "17-host"
+summary = "A module the script imports belongs to a class of rights — file, net, process, os, native — that the run was not given. Every missing right is reported at once, with the import that asks; `--allow` gives classes, `-A` all, and at a terminal the run asks once before the start. The exit code is 2. Lyric-Script's own (design/v1, 01 S1, S4)."
+
 [LYS-CLI0001]
 title = "an unknown command"
 severity = "error"
@@ -1184,3 +1190,9 @@ title = "an update of a package not read from git"
 severity = "error"
 area = "14-cli"
 summary = "`lyric-script update` names a package that no git dependency of the program is. The exit code is 2."
+
+[LYS-CLI0007]
+title = "an --allow of no rights"
+severity = "error"
+area = "14-cli"
+summary = "`--allow` names classes of rights between commas — file, net, process, os, native —; another word is refused. The exit code is 2."

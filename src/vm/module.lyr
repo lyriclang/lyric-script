@@ -99,6 +99,17 @@ pub class Module :: [Identity] {
     /// frame for its report (S4a); -1 in a module without `Error`.
     errorMessage: int = -1,
     errorCause: int = -1,
+    /// The rights its imports ask for, each with where (01 S1, S5e): checked when it is loaded.
+    var rights: RightUse[] = [],
+}
+
+/// A right a module's import asks for: its class — `file`, `net`, `process`, `os`, `native` —,
+/// the module imported, and the file and line of the import.
+pub struct RightUse :: [Equatable, Debug] {
+    pub right: string,
+    pub module: string,
+    pub path: string,
+    pub line: int,
 }
 
 /// A fault in the structure of a module: the function, the instruction and what is wrong.

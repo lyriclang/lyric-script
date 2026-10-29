@@ -712,3 +712,20 @@ deren Paket. Aufgelöst beim ersten Lauf, gemerkt als Lock im Nutzer-Cache unter
 Runner baut auch einen Programmordner mit `repos/` aus einer Kopie. Spec 15 Regel 13, drei Fälle,
 alle rot gegen S5c3; Mutanten wie vorhergesagt, nachdem ein eigener Mutant falsch gebaut war (die
 Vorrangregel machte jeden Import pfadbasiert — kein Befund über die Tests). Fälle 223 → 226.
+
+**S5e, Ergebnis (2026-10-29).** Rechte aus Importen (`src/rights.lyr`): die Klassen `file`, `net`,
+`process`, `os`, `native`; der Lader vermerkt je Import eines Moduls einer Klasse das Recht mit
+Pfad und Zeile, das Bytecode-Modul trägt sie (`Module.rights`, Format 9), so dass
+ein Lauf aus dem Cache sie ebenso verlangt. Vor dem Start prüft `run`: `--allow file,net` (auch
+`--allow=…`, wiederholbar) und `-A` geben; was fehlt, wird am Terminal einmal mit Herkunft
+erfragt, sonst alles auf einmal als `CAP0001` gemeldet, Exit 2; `CLI0007` für ein Wort, das
+keine Klasse ist. Die Tabelle für `std` steht vorläufig im Code (`std.fs` → `file`, `std.net`/
+`std.http` → `net`, `std.process` → `process`, `std.os`/`std.time`/`std.random` → `os`); S7
+legt sie mit `std` fest. Weil `std` bis dahin nicht importierbar ist, steht `LYRIC_SCRIPT_RIGHTS`
+als Testtabelle für sie (kann Rechte nur verlangen, nie geben). Gefunden: ein Lyric-5-ICE bei
+`(try? f()) ?? null` (lyriclang/lyric#624, umgangen); `eprint` ohne Zeilenende erschien am
+Terminal erst nach der Antwort — die Frage steht jetzt auf eigener Zeile (über ein
+Pseudo-Terminal geprüft). Spec 17 Regel 1, vier Fälle (Runner: `env:`, `stderr-has:`), alle rot
+gegen S5d. Mutanten: ein eigener Mutant baute nicht; eine Vorhersage verfehlt, weil zwei
+Mutanten im selben Lauf sich maskierten (ohne gesammelte Rechte ist `-A` gleichgültig) — allein
+fiel der zweite wie vorhergesagt. Tests 275 → 278, Fälle 226 → 230.

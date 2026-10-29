@@ -570,6 +570,15 @@ class Checker {
         }
     }
 
+    /// The file of module `m` as its frames name it: its path below the root, `a/b.lyrs`; empty
+    /// for the entry's and the prelude's (S5a2).
+    mut fn fileText(m: int): string {
+        if (m <= 0) {
+            return "";
+        }
+        return (this.modNames.get(m) ?? "").replace(".", "/") + ".lyrs";
+    }
+
     /// Whether module `m` declares `name` itself.
     mut fn declaresOwn(m: int, name: string): bool {
         let key = keyIn(this.modNames.get(m) ?? "", m, name);
@@ -2536,6 +2545,7 @@ class Checker {
             owner = owner,
             isStatic = f.isStatic || owner < 0,
             line = f.span.line,
+            file = this.fileText(fileModule(f.span.file)),
         };
         // `Self` in its signature: its type's (S3i)
         let savedSelf = this.selfTyIs;
@@ -3305,6 +3315,7 @@ class Checker {
                 owner = generic.owner,
                 isStatic = generic.isStatic,
                 line = generic.line,
+                file = generic.file,
             }
         );
         this.fnDecls.push(null);
@@ -9261,7 +9272,13 @@ class Checker {
     ): TExpr {
         let index = this.functions.length();
         this.functions.push(
-            FnInfo { name = selfName, owner = -1, isStatic = true, line = at.line }
+            FnInfo {
+                name = selfName,
+                owner = -1,
+                isStatic = true,
+                line = at.line,
+                file = this.fileText(fileModule(at.file)),
+            }
         );
         this.fnDecls.push(null);
         this.fnStates.push(FnState.Done);
@@ -9326,12 +9343,12 @@ class Checker {
                     rt = typeOf(v);
                 }
                 let want = rt ?? Ty.Void;
-                stmts.push(
-                    TStmt.Return(
-                        if (want == .Void) null else this.coerce(v, want, spanOf(body)),
-                        at.line
-                    )
-                );
+                if (want == .Void) {
+                    // `() => say()`: the call runs, and the lambda gives nothing
+                    stmts.push(TStmt.Expr(v, at.line));
+                } else {
+                    stmts.push(TStmt.Return(this.coerce(v, want, spanOf(body)), at.line));
+                }
             }
         }
         let resultTy = rt ?? Ty.Void;

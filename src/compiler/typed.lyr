@@ -201,6 +201,8 @@ class FnInfo {
     owner: int,
     isStatic: bool,
     line: int,
+    // the file of an imported module's function, relative to the root; empty for the entry's
+    var file: string = "",
     var params: ParamInfo[] = [],
     var returns: Ty = Ty.Void,
     var locals: Ty[] = [],

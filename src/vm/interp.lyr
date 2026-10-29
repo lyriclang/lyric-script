@@ -1238,5 +1238,6 @@ fn traceOf(module: Module, frames: List<CallFrame>, fi: int, pc: int): string[] 
 
 fn frameText(f: Function, pc: int): string {
     let line = if (pc >= 0 && pc < f.lines.length()) f.lines[pc] else 0;
-    return f"at {f.name} (line {line})";
+    // an imported module's frame names its file (S5a2)
+    return if (f.file == "") f"at {f.name} (line {line})" else f"at {f.name} ({f.file}:{line})";
 }

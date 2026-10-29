@@ -107,6 +107,7 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
             w.word(h.reg);
             w.word(h.rec);
         }
+        w.text(f.file);
     }
     return w.out.toArray();
 }
@@ -259,6 +260,7 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
             );
             k -= 1;
         }
+        let file = try r.text();
         functions.push(
             Function {
                 name = fname,
@@ -274,6 +276,7 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
                 retS = retS,
                 retR = retR,
                 handlers = handlers.toArray(),
+                file = file,
             }
         );
         n -= 1;

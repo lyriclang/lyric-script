@@ -665,6 +665,7 @@ class FnGen {
             retS = if (returns == .Slots) retS else 0,
             retR = if (returns == .Slots) retR else 0,
             handlers = this.handlers.toArray(),
+            file = info.file,
         };
     }
 

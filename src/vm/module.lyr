@@ -82,6 +82,9 @@ pub class Function :: [Identity] {
     retR: int = 0,
     /// The regions whose errors the function handles (S4a).
     handlers: Handler[] = [],
+    /// The file of an imported module's function, relative to the root, which its frames name;
+    /// empty for the entry's (S5a2).
+    file: string = "",
 }
 
 /// A compiled module: its functions, the object types they create, and how many scalar and

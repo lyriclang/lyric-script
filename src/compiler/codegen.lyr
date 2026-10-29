@@ -25,6 +25,7 @@ import lyric_script.compiler.typed {
 };
 import lyric_script.vm.module {
     Function,
+    Handler,
     Module,
     ReturnKind,
     TypeDesc,
@@ -61,6 +62,8 @@ fn generate(p: Program, name: string): Module {
         types = types.toArray(),
         globalsS = layout.globalsS,
         globalsR = layout.globalsR,
+        errorMessage = p.errorMessage,
+        errorCause = p.errorCause,
     };
 }
 
@@ -521,11 +524,22 @@ fn anyParam(ts: Ty[]): bool {
 }
 
 /// A loop being generated: the jumps its `break`s and `continue`s leave to patch, and where a
-/// `loop`'s value goes (`nowhere` for none).
+/// `loop`'s value goes (`nowhere` for none); how many defers' regions stood open around it.
 class LoopGen {
     result: Loc,
     breaks: List<int>,
     continues: List<int>,
+    var finallyDepth: int = 0,
+}
+
+/// A defer's region being generated (S4e): the defer's body, the region's segments so far as
+/// start and end pairs, and where the open one starts. An exit through the region closes it,
+/// so that the defer's copy on that way runs outside it — under the regions around, not its own
+/// (06 §5 rule 4).
+class FinallyGen {
+    body: TStmt[],
+    segments: List<int>,
+    var openAt: int,
 }
 
 /// The temporaries' tops of both files, to give back what a part took.
@@ -544,6 +558,10 @@ class FnGen {
     strings: List<string>,
     localLoc: List<Loc>,
     loops: List<LoopGen>,
+    // the regions whose errors the function handles, innermost first (S4a)
+    handlers: List<Handler>,
+    // the defers' regions open here, outermost first (S4e)
+    finallies: List<FinallyGen>,
     var nextS: int = 0,
     var nextR: int = 0,
     var maxS: int = 0,
@@ -564,6 +582,8 @@ class FnGen {
             strings = List<string>.new(),
             localLoc = List<Loc>.new(),
             loops = List<LoopGen>.new(),
+            handlers = List<Handler>.new(),
+            finallies = List<FinallyGen>.new(),
         };
     }
 
@@ -644,6 +664,7 @@ class FnGen {
             lines = this.lines.toArray(),
             retS = if (returns == .Slots) retS else 0,
             retR = if (returns == .Slots) retR else 0,
+            handlers = this.handlers.toArray(),
         };
     }
 
@@ -868,6 +889,18 @@ class FnGen {
                     this.patch(toElse, this.here());
                 }
             }
+            // the block, then the test: a `continue` goes to the test (07 §1 rule 5)
+            .DoWhile(body, c, line) => {
+                this.line = line;
+                let top = this.here();
+                let loop = this.openLoop(nowhere);
+                this.stmts(body);
+                let test = this.here();
+                this.line = line;
+                let cond = this.any(c).s;
+                this.emit(Op.JumpIf, cond, top, 0);
+                this.closeLoop(loop, test);
+            }
             .While(c, body, line) => {
                 this.line = line;
                 let toTest = this.emit(Op.Jump, 0, 0, 0);
@@ -918,24 +951,35 @@ class FnGen {
                     this.closeLoop(loop, next);
                 }
             }
-            .Break(v, line) => {
+            .Break(v, outward, line) => {
                 this.line = line;
-                let loop = this.loops[this.loops.length() - 1];
+                let loop = this.loops[this.loops.length() - 1 - outward];
                 if (v != null && (loop.result.s >= 0 || loop.result.r >= 0)) {
                     this.into(v, loop.result);
                 }
+                this.leaveFinallies(loop.finallyDepth);
                 loop.breaks.push(this.emit(Op.Jump, 0, 0, 0));
+                this.reopenFinallies(loop.finallyDepth);
             }
-            .Continue(line) => {
+            .Continue(outward, line) => {
                 this.line = line;
-                let loop = this.loops[this.loops.length() - 1];
+                let loop = this.loops[this.loops.length() - 1 - outward];
+                this.leaveFinallies(loop.finallyDepth);
                 loop.continues.push(this.emit(Op.Jump, 0, 0, 0));
+                this.reopenFinallies(loop.finallyDepth);
             }
             .Return(v, line) => {
                 this.line = line;
-                if (v != null) {
+                // what does not return leaves by its own way: no `ret` follows it
+                if (v != null && typeOf(v) == .Never) {
+                    this.effect(v);
+                } else if (v != null) {
                     let t = typeOf(v);
-                    let at = this.any(v);
+                    // the value first, then the defers on the way out (06 §5 rule 2): in a
+                    // temporary of its own where a defer may run, which no defer writes
+                    let at = if (this.finallies.length() > 0) this.valueIn(v, t) else this.any(v);
+                    this.leaveFinallies(0);
+                    this.line = line;
                     let (ns, nr) = this.slots(t);
                     if (ns == 1 && nr == 0) {
                         this.emit(Op.RetS, at.s, 0, 0);
@@ -952,12 +996,142 @@ class FnGen {
                         );
                     }
                 } else {
+                    this.leaveFinallies(0);
+                    this.line = line;
                     this.emit(Op.Ret, 0, 0, 0);
+                }
+                // after a `ret` the regions open again; what did not return left none
+                if (v == null || typeOf(v) != .Never) {
+                    this.reopenFinallies(0);
                 }
             }
             .Block(list, _) => this.stmts(list),
+            // the rest of a scope with its defer: the region, the defer on the normal way out,
+            // and on the error path the defer under a region of its own whose errors go with the
+            // first, which then goes on (06 §5 rules 2–5)
+            .Finally(body, d, c1, r1, c2, r2, line) => {
+                this.line = line;
+                let fg = FinallyGen { body = d, segments = List<int>.new(), openAt = this.here() };
+                this.finallies.push(fg);
+                this.stmts(body);
+                this.finallies.pop();
+                fg.segments.push(fg.openAt);
+                fg.segments.push(this.here());
+                this.stmts(d);
+                let toEnd = this.emit(Op.Jump, 0, 0, 0);
+                let target = this.here();
+                var k = 0;
+                while (k < fg.segments.length()) {
+                    if (fg.segments[k + 1] > fg.segments[k]) {
+                        this.handlers.push(
+                            Handler {
+                                start = fg.segments[k],
+                                end = fg.segments[k + 1],
+                                target = target,
+                                reg = this.localLoc[c1].r,
+                                rec = this.localLoc[r1].r,
+                            }
+                        );
+                    }
+                    k += 2;
+                }
+                let d0 = this.here();
+                this.stmts(d);
+                let d1 = this.here();
+                let toOn = this.emit(Op.Jump, 0, 0, 0);
+                if (d1 > d0) {
+                    this.handlers.push(
+                        Handler {
+                            start = d0,
+                            end = d1,
+                            target = this.here(),
+                            reg = this.localLoc[c2].r,
+                            rec = this.localLoc[r2].r,
+                        }
+                    );
+                }
+                this.line = line;
+                this.emit(Op.Suppress, this.localLoc[r1].r, this.localLoc[c2].r, 0);
+                this.patch(toOn, this.here());
+                this.emit(Op.Rethrow, this.localLoc[c1].r, this.localLoc[r1].r, 0);
+                this.patch(toEnd, this.here());
+            }
+            // the body's region sends its errors to the clauses' tests, in order; what none
+            // takes is thrown on (06 §4, §5); a block without a clause is refused before
+            .Try(body, caught, record, clauses, line) => {
+                this.line = line;
+                if (clauses.length() == 0) {
+                    this.stmts(body);
+                } else {
+                    let start = this.here();
+                    this.stmts(body);
+                    let end = this.here();
+                    let toEnd = List<int>.new();
+                    toEnd.push(this.emit(Op.Jump, 0, 0, 0));
+                    let reg = this.localLoc[caught].r;
+                    let rec = this.localLoc[record].r;
+                    this.handlers.push(
+                        Handler {
+                            start = start,
+                            end = end,
+                            target = this.here(),
+                            reg = reg,
+                            rec = rec,
+                        }
+                    );
+                    for (c in clauses) {
+                        this.line = line;
+                        var skip = -1;
+                        if (let test = c.test) {
+                            let cm = this.mark();
+                            skip = this.emit(Op.JumpIfNot, this.any(test).s, 0, 0);
+                            this.release(cm);
+                        }
+                        this.stmts(c.body);
+                        toEnd.push(this.emit(Op.Jump, 0, 0, 0));
+                        if (skip >= 0) {
+                            this.patch(skip, this.here());
+                        }
+                    }
+                    // the same error goes on, with its record (S4b)
+                    this.line = line;
+                    this.emit(Op.Rethrow, reg, rec, 0);
+                    for (j in toEnd) {
+                        this.patch(j, this.here());
+                    }
+                }
+            }
         }
         this.release(m);
+    }
+
+    /// An exit through the defers' regions from `depth` on: each closed here, and its defer's
+    /// copy run outside it, innermost first.
+    mut fn leaveFinallies(depth: int): void {
+        var k = this.finallies.length() - 1;
+        while (k >= depth) {
+            let fg = this.finallies[k];
+            fg.segments.push(fg.openAt);
+            fg.segments.push(this.here());
+            this.stmts(fg.body);
+            k -= 1;
+        }
+    }
+
+    /// `v` in temporaries of its own.
+    mut fn valueIn(v: TExpr, t: Ty): Loc {
+        let at = this.temp(t);
+        this.to(v, at);
+        return at;
+    }
+
+    /// After the exit: the regions open again for what follows it.
+    mut fn reopenFinallies(depth: int): void {
+        var k = depth;
+        while (k < this.finallies.length()) {
+            this.finallies[k].openAt = this.here();
+            k += 1;
+        }
     }
 
     mut fn openLoop(result: Loc): LoopGen {
@@ -965,6 +1139,7 @@ class FnGen {
             result = result,
             breaks = List<int>.new(),
             continues = List<int>.new(),
+            finallyDepth = this.finallies.length(),
         };
         this.loops.push(loop);
         return loop;
@@ -1333,6 +1508,18 @@ class FnGen {
             .CallGeneric(_, _, _, _) | .CallConstraint(_, _, _, _, _, _) | .IsParam(_, _, _) => { }
             .DebugParam(_, _, _) | .TextParam(_, _, _) | .CallStatic(_, _, _, _, _, _) => { }
             .CallBound(_, _, _, _, _, _) | .GenericValue(_, _, _) => { }
+            // the error leaves for the handler that takes it (S4a); nothing lands in `dst`
+            .Throw(x) => {
+                let at = this.any(x.value);
+                this.emit(Op.Throw, at.r, 0, 0);
+            }
+            .Rethrow(caught, record) => {
+                this.emit(Op.Rethrow, this.localLoc[caught].r, this.localLoc[record].r, 0);
+            }
+            .Panic(x, code) => {
+                let at = this.any(x.value);
+                this.emit(Op.PanicC, at.r, code, 0);
+            }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)
             .CallStaticD(slot, d, args, t) => {
@@ -1752,5 +1939,6 @@ fn nativeFn(n: Native): NativeFn {
         .CharToStr => NativeFn.CharToStr,
         .StrEq => NativeFn.StrEq,
         .StrCmp => NativeFn.StrCmp,
+        .TraceText => NativeFn.TraceText,
     };
 }

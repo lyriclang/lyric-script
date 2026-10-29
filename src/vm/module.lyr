@@ -50,6 +50,17 @@ pub let tupleKind: int = -3;
 
 pub let optionalKind: int = -4;
 
+/// A region of a function's code, `start` up to before `end`, whose errors go to `target`: the
+/// error arrives in reference register `reg` (S4a), its record in `rec` (S4b). A function's
+/// regions are listed innermost first, so the first that covers an instruction takes its errors.
+pub struct Handler {
+    start: int,
+    end: int,
+    target: int,
+    reg: int,
+    rec: int,
+}
+
 /// A compiled function. Its first `paramsS` scalar registers and first `paramsR` reference
 /// registers hold the arguments.
 pub class Function :: [Identity] {
@@ -69,6 +80,8 @@ pub class Function :: [Identity] {
     /// For `Slots`: how many scalar and reference slots the result has.
     retS: int = 0,
     retR: int = 0,
+    /// The regions whose errors the function handles (S4a).
+    handlers: Handler[] = [],
 }
 
 /// A compiled module: its functions, the object types they create, and how many scalar and
@@ -79,6 +92,10 @@ pub class Module :: [Identity] {
     types: TypeDesc[],
     globalsS: int = 0,
     globalsR: int = 0,
+    /// The slots of `Error`'s `message` and `cause`: what the VM asks an error that leaves every
+    /// frame for its report (S4a); -1 in a module without `Error`.
+    errorMessage: int = -1,
+    errorCause: int = -1,
 }
 
 /// A fault in the structure of a module: the function, the instruction and what is wrong.
@@ -114,6 +131,29 @@ fn checkFunction(module: Module, f: Function, errors: List<CheckError>): void {
     }
     if (f.code.length() == 0) {
         errors.push(CheckError { function = f.name, pc = -1, message = "no instructions" });
+    }
+    for (h in f.handlers) {
+        if (h.start < 0 || h.start > h.end || h.end > f.code.length()) {
+            errors.push(
+                CheckError { function = f.name, pc = h.start, message = "a handler's region" }
+            );
+        }
+        if (h.target < 0 || h.target >= f.code.length()) {
+            errors.push(
+                CheckError { function = f.name, pc = h.start, message = "a handler's target" }
+            );
+        }
+        for (x in [h.reg, h.rec]) {
+            if (x < 0 || x >= f.refs) {
+                errors.push(
+                    CheckError {
+                        function = f.name,
+                        pc = h.start,
+                        message = f"a handler's register {x} of {f.refs}",
+                    }
+                );
+            }
+        }
     }
     var pc = 0;
     while (pc < f.code.length()) {

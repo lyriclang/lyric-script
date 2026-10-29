@@ -172,3 +172,25 @@ fn whatOneMethodSetRefuses(): void {
         ["LYS-SEM0231"]
     );
 }
+
+@Test
+fn aCopyAtAScalarBoxesItForAnInterface(): void {
+    // a type parameter's value where an interface is taken: a copy at an `int` or at an enum
+    // without payloads boxes it (S4a; since S3g such a copy moved a scalar as a reference)
+    let source = """
+interface Show {
+    fn show(): int
+}
+enum F :: Show {
+    One
+    fn show(): int = 1
+}
+extend int :: Show {
+    fn show(): int = this * 10
+}
+fn describe(s: Show): int = s.show()
+fn f<T :: [Show]>(x: T): int = describe(x)
+fn t(): int = f(F.One) + f(4)
+""";
+    assertEq(value(source, "t"), 41);
+}

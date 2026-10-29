@@ -101,6 +101,21 @@ fn withIsAPostfix(): void {
 }
 
 @Test
+fn throwAndTry(): void {
+    assertEq(show("throw E { }"), "(throw (init E))");
+    assertEq(show("let x = y ?? throw E { }"), "(let x (?? y (throw (init E))))");
+    assertEq(
+        show("try {\n    f()\n} catch (e: A) {\n    g()\n} catch (_) {\n    h()\n}"),
+        "(try {(call f)} (catch e: A {(call g)}) (catch _ {(call h)}))"
+    );
+    // a clause on the next line, and the set form
+    assertEq(
+        show("try {\n    f()\n}\ncatch (e in [A, B]) {\n    g()\n}"),
+        "(try {(call f)} (catch e in [A, B] {(call g)}))"
+    );
+}
+
+@Test
 fn ifWhereAValueStands(): void {
     assertEq(show("let x = if (a) 1 else 2"), "(let x (if a 1 2))");
     assertEq(
@@ -198,4 +213,29 @@ fn nestingHasABound(): void {
     assertEq(errs(nested(60)), []);
     assertEq(errs(nested(300)), ["LYS-PAR0045"]);
     assertEq(errs("let x = " + repeatText("!", 300) + "true"), ["LYS-PAR0045"]);
+}
+
+@Test
+fn throwsAndTheMark(): void {
+    assertEq(show("fn f(): int throws [A, B] = 1"), "(fn f () : int throws [A, B] = 1)");
+    assertEq(show("fn f(): int throws A = 1"), "(fn f () : int throws [A] = 1)");
+    // the bare form, before the body
+    assertEq(show("fn f() throws = 1"), "(fn f () throws [] = 1)");
+    assertEq(errs("fn f() throws A, B = 1"), ["LYS-PAR0049"]);
+    // the mark covers what stands to its right
+    assertEq(show("let x = a + try b * c"), "(let x (+ a (try (* b c))))");
+}
+
+@Test
+fn theExpressionFormsOfTry(): void {
+    assertEq(show("let x = try? f()"), "(let x (try? (call f)))");
+    assertEq(show("let x = try! f()"), "(let x (try! (call f)))");
+    // the sign against the keyword: apart from it, the mark over a negation
+    assertEq(show("let x = try !f()"), "(let x (try (! (call f))))");
+    assertEq(show("let y = try f() catch (_: A) 1"), "(let y (try (call f) (catch _: A {1})))");
+    // a clause belongs to the nearest `try` on its left
+    assertEq(
+        show("let z = try f() catch (_: A) try g() catch (_: B) 0"),
+        "(let z (try (call f) (catch _: A {(try (call g) (catch _: B {0}))})))"
+    );
 }

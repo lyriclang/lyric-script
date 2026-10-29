@@ -269,3 +269,54 @@ fn anAbsentValueUnwrappedIsTheScriptsPanic(): void {
     assertEq(panicOf(runText(optional, "absent", [], -1)).code, "LYS-RT0004");
     assertEq(panicOf(runText(optional, "nilTest", [], -1)).code, "LYS-RT0004");
 }
+
+let throwing: string = """
+    type Oops
+    fn inner() -> s regs 1 1
+        new r0, Oops
+        throw r0
+    end
+    fn outer() -> s regs 1 2
+    from:
+        call inner, s0, r1
+    to:
+        load.i s0, 1
+        ret.s s0
+    handler:
+        load.i s0, 42
+        ret.s s0
+        catch @from, @to, @handler, r0, r1
+    end
+    fn missed() -> s regs 1 2
+        call inner, s0, r1
+    from:
+        load.i s0, 1
+    to:
+        ret.s s0
+    handler:
+        load.i s0, 42
+        ret.s s0
+        catch @from, @to, @handler, r0, r1
+    end
+    """;
+
+@Test
+fn anErrorLeavesFramesForTheRegionThatCoversTheCall(): void {
+    // the callee throws; in the caller the call stands where it was thrown (06 §5 rule 1)
+    assertEq(scalar(runText(throwing, "outer", [], -1)), 42);
+}
+
+@Test
+fn anErrorNoRegionCoversLeavesTheRun(): void {
+    // `missed`'s region starts after the call; a module without `Error` names the error by its
+    // type
+    match (runText(throwing, "missed", [], -1)) {
+        .Error(e) => {
+            assertEq(e.typeName, "Oops");
+            assertEq(e.message, "Oops");
+            assertEq(e.causes.length(), 0);
+            assertEq(e.trace, ["at inner (line 4)", "at missed (line 18)"]);
+        }
+        _ => assertTrue(false, "an error leaves the run"),
+    }
+}

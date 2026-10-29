@@ -388,6 +388,30 @@ severity = "error"
 area = "05-interfaces"
 summary = "An enum delegates nothing: `I by field` stands in a struct's or a class's list. Lyric 5's LYR-PAR0047."
 
+[LYS-PAR0049]
+title = "several thrown types not in brackets"
+severity = "error"
+area = "06-errors"
+summary = "A `throws` names two or more types without brackets: `throws [A, B]`. Lyric 5's LYR-PAR0049."
+
+[LYS-PAR0050]
+title = "a 'try?', 'try!' or 'try' with clauses right of an operator"
+severity = "error"
+area = "06-errors"
+summary = "The forms that give a value of their own stand at the start of what they cover — a binding's value, an argument, the right of `=` — not right of an operator; put them in parentheses. Lyric 5's LYR-PAR0050."
+
+[LYS-PAR0051]
+title = "a clause after 'try?' or 'try!'"
+severity = "error"
+area = "06-errors"
+summary = "`try?` and `try!` take every error themselves; a `catch` belongs to a plain `try`. Lyric 5's LYR-PAR0051."
+
+[LYS-PAR0052]
+title = "a 'using' that is not one 'let' with a value"
+severity = "error"
+area = "06-errors"
+summary = "`using var` is written, or a `using` binding takes a pattern or has no value: a `using` is one `let` with a name and a value. Lyric 5's LYR-PAR0052."
+
 [LYS-PAR0053]
 title = "a visibility word where none belongs"
 severity = "error"
@@ -565,6 +589,12 @@ severity = "error"
 area = "09-patterns"
 summary = "`null` against a value that is never null, a literal or range of another type, a tuple pattern of another arity, a variant the enum does not have, the dotted form or a field pattern against another type. Lyric 5's LYR-SEM0029."
 
+[LYS-SEM0030]
+title = "a thrown or caught type that is not an Error"
+severity = "error"
+area = "06-errors"
+summary = "A `throw` throws a value, or a `catch` clause names a type, that does not conform to `Error`: a struct, class or enum with `:: Error` and its `fn message(): string`, an interface that extends `Error`, or a type parameter constrained to it. A number or a string is not thrown. Lyric 5's LYR-SEM0030."
+
 [LYS-SEM0031]
 title = "an enum variant used against its shape"
 severity = "error"
@@ -577,11 +607,29 @@ severity = "error"
 area = "09-patterns"
 summary = "Every alternative of `P | Q` binds the same names at the same types. Lyric 5's LYR-SEM0032."
 
+[LYS-SEM0034]
+title = "a throw the function's written 'throws' does not cover"
+severity = "error"
+area = "06-errors"
+summary = "A function writes `throws`, and its body may throw a type the list does not cover — by a `throw`, by a call, or anything through a function value or an interface member without `throws`. Script infers what a function throws and holds a written `throws` as a contract (05 Th); the diagnostic names the type and the line it comes from. Lyric 5's LYR-SEM0034."
+
+[LYS-SEM0035]
+title = "a clause without a type that is not last"
+severity = "error"
+area = "06-errors"
+summary = "`catch (e)` or `catch (_)` takes every error, so a clause below it takes nothing: it stands last. Lyric 5's LYR-SEM0035."
+
+[LYS-SEM0036]
+title = "a try block without a catch"
+severity = "error"
+area = "06-errors"
+summary = "A `try { … }` block has no `catch` clause: it takes none of its body's errors. Lyric 5's LYR-SEM0036."
+
 [LYS-SEM0042]
 title = "an implementation whose signature differs from the member's"
 severity = "error"
 area = "05-interfaces"
-summary = "A conformer's method takes the member's parameters and gives its result, exactly — its own type where the interface writes `Self` —, and is static where the member is. Lyric 5's LYR-SEM0042."
+summary = "A conformer's method takes the member's parameters and gives its result, exactly — its own type where the interface writes `Self` —, and is static where the member is; where the member writes `throws`, the method throws at most that. Lyric 5's LYR-SEM0042."
 
 [LYS-SEM0043]
 title = "two defaults of one name, which the type does not write"
@@ -679,6 +727,24 @@ severity = "error"
 area = "09-patterns"
 summary = "A `let` takes apart only what cannot fail; a pattern that tests goes in a `match`. Lyric 5's LYR-SEM0098."
 
+[LYS-SEM0101]
+title = "a jump to a label no loop around carries"
+severity = "error"
+area = "07-statements"
+summary = "`break outer` or `continue outer` names a label no loop around the jump carries — in this function: a lambda's body is a function of its own. Lyric 5's LYR-SEM0101."
+
+[LYS-SEM0102]
+title = "a label repeating one around it"
+severity = "error"
+area = "07-statements"
+summary = "A loop carries the label of a loop around it; a jump to it would be ambiguous. Lyric 5's LYR-SEM0102."
+
+[LYS-SEM0103]
+title = "a label nothing jumps to"
+severity = "warning"
+area = "07-statements"
+summary = "A loop's label is named by no `break` or `continue`. Lyric 5's LYR-SEM0103."
+
 [LYS-SEM0104]
 title = "an if let whose pattern matches every value"
 severity = "warning"
@@ -775,6 +841,54 @@ severity = "error"
 area = "05-interfaces"
 summary = "`x is T` and a type pattern ask an interface value what it holds; on a value of a known type, and against a type no interface value holds, they are refused. Lyric 5's LYR-SEM0131."
 
+[LYS-SEM0137]
+title = "a type named twice in one 'throws'"
+severity = "error"
+area = "06-errors"
+summary = "A function's `throws [ … ]` names the same error type more than once. Lyric 5's LYR-SEM0137."
+
+[LYS-SEM0140]
+title = "'try?' over what gives no value, where a value is wanted"
+severity = "error"
+area = "06-errors"
+summary = "`try? e` gives `e`'s value or `null`; over an `e` without a value it only drops the error, and stands as a statement. Lyric 5's LYR-SEM0140."
+
+[LYS-SEM0141]
+title = "a type caught twice in one try"
+severity = "error"
+area = "06-errors"
+summary = "Two clauses of one `try`, or one set, name the same error type; the second takes nothing. Lyric 5's LYR-SEM0141."
+
+[LYS-SEM0142]
+title = "a clause no error can reach"
+severity = "error"
+area = "06-errors"
+summary = "A clause's type is covered by a type a clause above it catches — `catch (e: IoError)` above `catch (e: Disk)` where `Disk` conforms to `IoError`, or `Error` above anything —, so no error reaches it. Lyric 5's LYR-SEM0142."
+
+[LYS-SEM0143]
+title = "'using' on a value that is not Closeable"
+severity = "error"
+area = "06-errors"
+summary = "`using let` binds a value whose type does not conform to `Closeable`, the prelude's `interface Closeable { fn close() }`. Lyric 5's LYR-SEM0143."
+
+[LYS-SEM0144]
+title = "a Closeable value nothing closes"
+severity = "warning"
+area = "06-errors"
+summary = "An expression statement makes a value of a `Closeable` type and drops it: nothing closes it. Bind it with `using let`. Lyric 5's LYR-SEM0144; its half for a plain `let` comes with the lints (S11)."
+
+[LYS-SEM0145]
+title = "'never' where a value of it would have to exist"
+severity = "error"
+area = "06-errors"
+summary = "The type `never` stands somewhere other than a return type — a parameter, a binding, a field, an element, an optional, a type argument: it would type a value that cannot exist. Lyric 5's LYR-SEM0145."
+
+[LYS-SEM0146]
+title = "a 'return' in a function returning 'never'"
+severity = "error"
+area = "06-errors"
+summary = "A function whose return type is `never` does not return; a `return` in it is refused, other than one returning what itself does not return. Lyric 5's LYR-SEM0146."
+
 [LYS-SEM0147]
 title = "'break' or 'continue' outside a loop"
 severity = "error"
@@ -861,6 +975,12 @@ summary = "A `let` or `var` of the script's outermost code takes its value where
 
 # What the plan builds later, and the toolchain's own faults.
 
+[LYS-SEM0904]
+title = "a jump out of a defer's body"
+severity = "error"
+area = "06-errors"
+summary = "A `return`, or a `break` or `continue` to a loop outside it, stands in a defer's body. A defer runs where its scope is left — on an error too — and goes on from there; a jump out of it would drop that way. Script's own; Lyric 5 does not say."
+
 [LYS-NYI0001]
 title = "a form a later milestone builds"
 severity = "error"
@@ -878,6 +998,30 @@ title = "a conversion to char of no Unicode scalar value"
 severity = "panic"
 area = "08-expressions"
 summary = "An `int` converted with `as char` is negative, beyond 0x10FFFF, or a surrogate. The code and its meaning are Lyric 5's LYR-RT0009."
+
+[LYS-RT0010]
+title = "'try!' on an error"
+severity = "panic"
+area = "06-errors"
+summary = "Something under `try!` threw: the script ends with a panic that gives the error's message, exit code 101. The code and its meaning are Lyric 5's LYR-RT0010."
+
+[LYS-RT0011]
+title = "an assertion that fails"
+severity = "panic"
+area = "06-errors"
+summary = "`assert(condition) { message }` found the condition false: `assertion failed:`, the condition as written and the message. The code and its meaning are Lyric 5's LYR-RT0011."
+
+[LYS-RT0012]
+title = "unreachable reached"
+severity = "panic"
+area = "06-errors"
+summary = "`unreachable(message)` ran: `unreachable`, and the message where one is given. The code and its meaning are Lyric 5's LYR-RT0012."
+
+[LYS-RT0013]
+title = "not implemented"
+severity = "panic"
+area = "06-errors"
+summary = "`todo(message)` ran: `not implemented`, and the message where one is given. The code and its meaning are Lyric 5's LYR-RT0013."
 
 [LYS-CLI0004]
 title = "an unknown option"

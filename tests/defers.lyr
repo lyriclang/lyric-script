@@ -1,0 +1,175 @@
+// `defer` and `using` (S4e; Lyric 5 06 §5 rules 2–5, §7): a defer runs on every way out of its
+// scope, the last registered first; on the error path too, the error going on after it; a defer
+// that throws on a normal exit sends its error out, one that throws while an error is in flight
+// is suppressed into it; `using let` closes what it binds.
+import std.collections { List };
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.heap { ScriptString };
+import lyric_script.vm.interp { ScriptError, run };
+import lyric_script.vm.module { Module, check };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "t");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn text(source: string, entry: string): string {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Ref(v) => if (v is ScriptString) v.text else "<no string>",
+        .Error(e) => f"<error {e.message}>",
+        .Panic(p) => f"<panic {p.code}>",
+        _ => "<none>",
+    };
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errorOf(source: string, entry: string): ScriptError {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Error(e) => e,
+        _ => ScriptError { typeName = "none", message = "", causes = [], trace = [] },
+    };
+}
+
+fn diagnostics(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    if (out.length() > 0) {
+        return out.toArray();
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        out.push(e.code);
+    }
+    for (w in checked.warnings) {
+        out.push(w.code);
+    }
+    return out.toArray();
+}
+
+let log: string = """
+class Log {
+    var text: string = ""
+    fn add(s: string) {
+        this.text = this.text + s
+    }
+}
+struct Oops :: Error {
+    fn message(): string = "oops"
+}
+struct Late :: Error {
+    fn message(): string = "late"
+}
+"""
+    + "\n";
+
+@Test
+fn defersRunLastFirstOnEveryWayOut(): void {
+    let source = log
+        + "fn order(): string {\n    let l = Log { }\n    inner(l)\n    return l.text\n}\nfn inner(l: Log) {\n    defer l.add(\"1\")\n    defer l.add(\"2\")\n    l.add(\"b\")\n}\nfn early(l: Log, n: int): int {\n    defer l.add(\"e\")\n    if (n > 0) {\n        return n\n    }\n    return 0\n}\nfn ways(): string {\n    let l = Log { }\n    l.add(f\"{early(l, 3)}\")\n    l.add(f\"{early(l, 0)}\")\n    for (i in 0..4) {\n        defer l.add(f\"/{i}\")\n        if (i == 1) {\n            continue\n        }\n        if (i == 2) {\n            break\n        }\n        l.add(f\"t{i}\")\n    }\n    return l.text\n}";
+    assertEq(text(source, "order"), "b21");
+    // a return and its value, then the defer; a continue and a break run the turn's defer
+    assertEq(text(source, "ways"), "e3e0t0/0/1/2");
+}
+
+@Test
+fn aDeferRunsOnTheErrorPathAndTheErrorGoesOn(): void {
+    let source = log
+        + "fn failing(l: Log) {\n    defer l.add(\"d\")\n    l.add(\"a\")\n    throw Oops { }\n}\nfn go(): string {\n    let l = Log { }\n    try {\n        failing(l)\n    } catch (e) {\n        l.add(\":\" + e.message())\n    }\n    return l.text\n}";
+    assertEq(text(source, "go"), "ad:oops");
+}
+
+@Test
+fn anErrorOfADeferOnANormalExitLeaves(): void {
+    // the defers registered before it run all the same (06 §5 rule 5)
+    let source = log
+        + "fn deferThrows(l: Log) {\n    defer l.add(\"outer\")\n    defer {\n        throw Late { }\n    }\n    l.add(\"body \")\n}\nfn go(): string {\n    let l = Log { }\n    try {\n        deferThrows(l)\n    } catch (e) {\n        l.add(\" \" + e.message())\n    }\n    return l.text\n}";
+    assertEq(text(source, "go"), "body outer late");
+}
+
+@Test
+fn anErrorOfADeferWithOneInFlightIsSuppressed(): void {
+    // the first wins; the second goes with it, and the report says it
+    let source = log
+        + "fn f() {\n    defer {\n        throw Late { }\n    }\n    throw Oops { }\n}\nfn go() {\n    f()\n}";
+    let e = errorOf(source, "go");
+    assertEq(e.message, "oops");
+    assertEq(e.suppressed, ["late"]);
+}
+
+@Test
+fn theValueIsTakenBeforeTheDefersRun(): void {
+    let source = "fn r(): int {\n    var x = 1\n    defer {\n        x = 100\n    }\n    return x\n}";
+    assertEq(value(source, "r"), 1);
+}
+
+@Test
+fn usingClosesWithTheDefersLastFirst(): void {
+    let source = log
+        + "class Res :: Closeable {\n    name: string\n    log: Log\n    fn close() {\n        this.log.add(\"close \" + this.name + \" \")\n    }\n}\nfn go(): string {\n    let l = Log { }\n    useBoth(l)\n    return l.text\n}\nfn useBoth(l: Log) {\n    using let a = Res { name = \"a\", log = l }\n    defer l.add(\"between \")\n    using let b = Res { name = \"b\", log = l }\n    l.add(\"both \")\n}";
+    assertEq(text(source, "go"), "both close b between close a ");
+}
+
+@Test
+fn aValueBlockIsAScope(): void {
+    let source = log
+        + "fn go(): string {\n    let l = Log { }\n    let v = {\n        defer l.add(\"end \")\n        l.add(\"in \")\n        41 + 1\n    }\n    l.add(f\"{v}\")\n    return l.text\n}";
+    assertEq(text(source, "go"), "in end 42");
+}
+
+@Test
+fn whatADeferAndAUsingRefuse(): void {
+    assertEq(
+        diagnostics("fn g(): int {\n    defer {\n        return 1\n    }\n    return 2\n}"),
+        ["LYS-SEM0904"]
+    );
+    assertEq(
+        diagnostics(
+            "fn h() {\n    for (i in 0..2) {\n        defer {\n            continue\n        }\n    }\n}"
+        ),
+        ["LYS-SEM0904"]
+    );
+    // a loop inside the body is the body's own
+    assertEq(
+        diagnostics(
+            "fn h() {\n    defer {\n        for (i in 0..2) {\n            break\n        }\n    }\n}"
+        ),
+        []
+    );
+    assertEq(diagnostics("fn h() {\n    using let n = 5\n}"), ["LYS-SEM0143"]);
+    assertEq(diagnostics("fn h() {\n    using var n = 5\n}"), ["LYS-PAR0052"]);
+    assertEq(
+        diagnostics(
+            "class Res :: Closeable {\n    fn close() {\n    }\n}\nfn make(): Res = Res { }\nfn h() {\n    make()\n}"
+        ),
+        ["LYS-SEM0144"]
+    );
+}
+
+@Test
+fn whatADeferThrowsIsThrown(): void {
+    let source = log + "fn f() throws Oops {\n    defer {\n        throw Late { }\n    }\n}";
+    assertEq(diagnostics(source), ["LYS-SEM0034"]);
+}

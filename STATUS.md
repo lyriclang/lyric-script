@@ -27,7 +27,13 @@ Lyric 4.x status up to the 4.6 cut is archived at
   without a list, `with`, `Self` and static members, associated types, the literal protocols,
   generic extend blocks; 191 tests, 115 conformance cases. Three bugs since S3g found and fixed
   on the way, and one silent choice (05 §3 rule 2).
-- **Open milestone: S4** — errors and control.
+- **S4 done (2026-10-29)**: errors and control — throwing and the error path through the VM's
+  frames, an error's record and `e.backtrace()`, inferred thrown sets with a written `throws` as a
+  contract, `try?`/`try!`/`try … catch`, the rules among clauses and a match over a clause's set,
+  `defer` and `using` with suppressed errors, labels, `do … while`, `never` and the prelude's
+  panics; 245 tests, 165 conformance cases. Found on the way: a copy at a scalar handed it to an
+  interface parameter as a reference (since S3g).
+- **Open milestone: S5** — modules and packages.
 
 ## Milestones
 
@@ -37,7 +43,7 @@ Lyric 4.x status up to the 4.6 cut is archived at
 | S1 | VM core | L | **done** 2026-10-28 |
 | S2 | Front-end core | XL | **done** 2026-10-28 |
 | S3 | Type system complete | L | **done** 2026-10-29 |
-| S4 | Errors and control | M | **open** |
+| S4 | Errors and control | M | **done** 2026-10-29 |
 | S5 | Modules and packages | M | — |
 | S6 | Coroutines and tasks | L | — |
 | S7 | std core | XL | — |
@@ -99,11 +105,20 @@ Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; meas
 
 Exit criterion: generic code and interfaces in scripts, in CI; the delta's chapter 03 with its cases.
 
-### S4 — open
+### S4 — done
 
 Errors and control (plan 14, S4): VM exceptions, inferred error sets, a written `throws` checked,
 `try?`/`try!`/`try … catch`, `catch (e in […])`, `defer`/`using`, `loop`/`break value`, `never`
-(05). The slices are made precise in 14 before the work starts.
+(05). The slices are made precise in 14 ("S4 — Slices").
+
+| Slice | State |
+|---|---|
+| S4a throwing and the error path | done — `throw` (a statement, and an expression of type `never`, which now fits every type), the `try` block with typed clauses and the clause without a type; the VM's `throw` and a region table per function (format 4); an error leaves frame after frame to the first region that covers it; one no frame takes is reported through its `message()` and `cause()` in the same run, `error:`/`caused by:` and its frames, exit 1. `Error` and `Exception` in the prelude (from S4b), `LYS-SEM0030`, `LYS-SEM0036`. Found on the way: a copy at a scalar handed it to an interface parameter as a reference (since S3g) |
+| S4b the error's record | done — an error keeps where it was first thrown (the frames as functions and instructions, text only when asked); a region's second register receives it, `rethrow` carries it on — `throw e` of a clause's own binding, and an error no clause takes; `e.backtrace()` at the binding (`?Backtrace` of the prelude), only there (`LYS-SEM0012`), the type's own member first; the report shows the first throw's frames. Format 5. `e.suppressed()` with the arrays (S7) |
+| S4c thrown sets | done — each function's set inferred after the bodies, to a fixpoint over the calls (`throws.lyr`): its `throw`s and its calls' sets less what its clauses take; a function value throws anything, an interface member what it writes or else what its implementations throw (P14); the clause binding's rethrow throws what reached the clause (K7). A written `throws` is a contract (`LYS-SEM0034` naming type and line), an implementation within its member's (`LYS-SEM0042`), `LYS-SEM0137`, `LYS-PAR0049`; the mark `try e` changes nothing; the lint `unmarked-throw` with the lints (S11) |
+| S4d expression forms, clause rules | done — `try?` (not flattened; `LYS-SEM0140` over no value), `try!` (panic `LYS-RT0010` with the error's message; op `panic.c`, format 6), `try e catch (x: A) v` lowered onto the block form, the nearest `try` takes a clause; the set clause `catch (e in [A, B])`; `LYS-SEM0035`, `LYS-SEM0141`, `LYS-SEM0142`, `LYS-PAR0050`, `LYS-PAR0051`; a `match` over a clause's set covers the set (K7, checked after inference). Deviation: the binding stays an `Error` where one type reaches (Lyric 5 M5-6) |
+| S4e `defer`, `using` | done — lowered to `TStmt.Finally`, the rest of the scope the region (value blocks too); the defer on every way out: at the end, on the error path under a region whose errors are suppressed into the first (op `suppress`, format 7) before the first goes on, and at `return`/`break`/`continue` as a copy outside its own region (a gap in it); a `return`'s value taken first; the report's `suppressed:` lines. `using let` closes a `Closeable` (`LYS-SEM0143`, `LYS-PAR0052`); a dropped `Closeable` warns (`LYS-SEM0144`). A jump out of a defer's body is refused (`LYS-SEM0904`, P15) |
+| S4f control and `never` | done — labels before `loop`/`while`/`do`/`for` (and a `loop` where a value stands), `break outer value`, `continue outer` (`LYS-SEM0101`, `LYS-SEM0102`, `LYS-SEM0103`); `do { … } while (c)`; `never` only as a return type (`LYS-SEM0145`), a `never` function does not return (`LYS-SEM0146`); `panic`, `assert { }` (quotes its condition, builds its message only on failure), `unreachable`, `todo` (RT0008/0011/0012/0013). Found: a `return` of what does not return emitted a `ret` of the wrong shape; `never` as an operand (`b || panic(…)`) was refused |
 
 Exit criterion: the error examples run; exit codes 1 and 101.
 
@@ -151,4 +166,8 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P8 | A global of the script takes its value where it is declared (`SEM0903`): definite assignment cannot follow a function that reads it. Allow `var g: T` at the top where no function reads `g`? | S3b |
 | P10 | Arms of a `match` stand apart by `,` or a line end; a line that begins with `.` goes on the line before (09 NL rule 3), so a value arm before a `.Variant` arm needs its `,` (`LYS-PAR0035`, with a hint). Lyric 5 requires the `,` always. Keep the leniency, or require `,` as Lyric 5 does? | S3d |
 | P11 | The bytecode cache's key is the source, the toolchain's version and the format (11 Fmt), so a compiler changed within one version gets the old bytecode back: a control in S3h stayed green until the cache was fresh (the check script now sets one). Only a development build meets it; add the build's identity (its binary's hash) to the key, or keep the design's key? | S3h |
+| P12 | A type parameter whose constraints declare associated types is never shared: each argument gets a copy of its own, since an answer's slots differ by type (`IntBox`'s `Item` an `int`, `StrBox`'s a `string`). A deviation from 11 Gen's sharing for reference types, recorded in 05 rule 11; sharing by the answers' shapes would need descriptors for the answers in the copy. Keep, or share by shape later? | S3i |
+| P13 | `id<int>` as a value: a `<` after a name opens type arguments where its `>` is followed by what no comparison goes on with — `(`, a closer, `,`, a line end, `.`, `==`, `!=` (C#'s set, narrowed; 03 rule 12). Lyric 5 writes the rule for a call only. Keep the set? | S3i |
+| P14 | A call through an interface member that writes no `throws` throws what the member's implementations in the script throw (S4c). 05 K names `Error` for function values, host and native modules only; "anything" for members would make `e.message()` break every written `throws`. A host-provided implementation (S8) is not in the union — it would have to write its set. Keep the union, or ask members to write `throws`? | S4c |
+| P15 | A `return`, or a `break`/`continue` to a loop outside it, in a defer's body is refused (`LYS-SEM0904`, S4e): the defer runs on the error path too, where the jump would drop the error. Lyric 5's spec does not say what such a jump does (its 06 §5 is silent, its compiler treats a defer's jumps as not the loop's). Keep the refusal, or take Lyric 5's answer once it gives one? | S4e |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

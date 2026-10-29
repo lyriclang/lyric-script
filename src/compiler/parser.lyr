@@ -14,6 +14,7 @@ import lyric_script.compiler.ast {
     FixedAnswer,
     BinaryOp,
     Block,
+    CatchClause,
     Conformance,
     Decl,
     EnumDecl,
@@ -39,6 +40,7 @@ import lyric_script.compiler.ast {
     TypeAnswer,
     TypeDecl,
     TypeParam,
+    ThrowsClause,
     TypeExpr,
     UnaryOp,
     Variant,
@@ -113,6 +115,10 @@ class Parser {
     var inGuard: bool = false,
     // in an interface's body, where a member without a body is abstract
     var inInterface: bool = false,
+    // the labels of the loops around, "" for one without (07 §1 rule 3), and the label written
+    // before the loop the parser is about to read
+    var loopLabels: List<string> = List<string>.new(),
+    var pendingLabel: ?string = null,
 
     static fn new(source: string, tokens: Token[]): Parser {
         return Parser {
@@ -301,7 +307,7 @@ class Parser {
             }
             this.skipTerminators();
         }
-        return Module { frontmatter = frontmatter, items = items.toArray() };
+        return Module { frontmatter = frontmatter, items = items.toArray(), text = this.source };
     }
 
     mut fn parseItem(): Item throws SyntaxError {
@@ -355,6 +361,10 @@ class Parser {
             this.advance();
             returns = try this.parseType();
         }
+        var throws: ?ThrowsClause = null;
+        if (this.atWord("throws")) {
+            throws = try this.parseThrows();
+        }
         let body = if (this.at(.Assign)) {
             this.advance();
             FnBody.Expr(try this.parseExpr())
@@ -373,7 +383,44 @@ class Parser {
             isPub = isPub,
             isStatic = isStatic,
             span = this.since(first),
+            throws = throws,
         };
+    }
+
+    /// `throws E`, `throws [A, B]`, or the bare `throws` before the body or a line end; several
+    /// types stand in brackets (Lyric 5 06 §2 rule 1).
+    mut fn parseThrows(): ThrowsClause throws SyntaxError {
+        let first = this.advance();
+        let types = List<TypeExpr>.new();
+        if (this.at(.LBracket)) {
+            this.advance();
+            loop {
+                types.push(try this.parseType());
+                if (!this.at(.Comma)) {
+                    break;
+                }
+                this.advance();
+            }
+            try this.expect(.RBracket, "LYS-PAR0004", "']' after the thrown types");
+        } else if (!this.at(.LBrace)
+            && !this.at(.Assign)
+            && !this.at(.Newline)
+            && !this.at(.RBrace)
+            && !this.at(.Eof)) {
+            types.push(try this.parseType());
+            if (this.at(.Comma)) {
+                this.report(
+                    "LYS-PAR0049",
+                    "several thrown types stand in brackets: 'throws [A, B]'",
+                    this.peek(0)
+                );
+                while (this.at(.Comma)) {
+                    this.advance();
+                    types.push(try this.parseType());
+                }
+            }
+        }
+        return ThrowsClause { types = types.toArray(), span = this.since(first) };
     }
 
     mut fn parseParams(): Param[] throws SyntaxError {
@@ -937,6 +984,11 @@ class Parser {
     // --- statements ------------------------------------------------------------------------------
 
     mut fn parseStmt(): Stmt throws SyntaxError {
+        // `outer: loop { … }`: a label names the loop after it (07 §1 rule 3)
+        if (this.at(.Ident) && this.peek(1).kind == .Colon && this.loopWordAt(2)) {
+            this.pendingLabel = this.text(this.advance());
+            this.advance();
+        }
         let first = this.current();
         if (this.atWord("let") || this.atWord("var")) {
             return try this.parseLet();
@@ -950,31 +1002,58 @@ class Parser {
         }
         if (this.atWord("while")) {
             this.advance();
+            let label = this.takeLabel();
             if (this.peek(1).kind == .Keyword && this.isWord(this.peek(1), "let")) {
                 let (pattern, value) = try this.parseLetCondition("while");
                 this.skipNewlines();
-                let body = try this.parseBlock();
-                return Stmt.WhileLet(pattern, value, body, null, this.since(first));
+                let body = try this.loopBody(label);
+                return Stmt.WhileLet(pattern, value, body, label, this.since(first));
             }
             let cond = try this.parseCondition("while");
             this.skipNewlines();
-            let body = try this.parseBlock();
-            return Stmt.While(cond, body, null, this.since(first));
+            let body = try this.loopBody(label);
+            return Stmt.While(cond, body, label, this.since(first));
+        }
+        // `do { … } while (c)`: the block at least once (07 §1)
+        if (this.atWord("do") && this.peek(1).kind == .LBrace) {
+            this.advance();
+            let label = this.takeLabel();
+            let body = try this.loopBody(label);
+            if (!this.atWord("while")) {
+                let t = this.current();
+                throw this.failure(
+                    "LYS-PAR0001",
+                    f"a 'do' loop ends in 'while (condition)': found {this.shown(t)}",
+                    t
+                );
+            }
+            this.advance();
+            let cond = try this.parseCondition("while");
+            return Stmt.DoWhile(body, cond, label, this.since(first));
         }
         if (this.atWord("for")) {
             return try this.parseFor();
         }
         if (this.atWord("break")) {
             this.advance();
+            // a name a loop around carries is its label; any other the start of the value
+            var label: ?string = null;
+            if (this.at(.Ident) && this.labelAround(this.text(this.current()))) {
+                label = this.text(this.advance());
+            }
             var value: ?Expr = null;
             if (!this.atStatementEnd()) {
                 value = try this.parseExpr();
             }
-            return Stmt.Break(null, value, this.since(first));
+            return Stmt.Break(label, value, this.since(first));
         }
         if (this.atWord("continue")) {
             this.advance();
-            return Stmt.Continue(null, this.since(first));
+            var label: ?string = null;
+            if (this.at(.Ident)) {
+                label = this.text(this.advance());
+            }
+            return Stmt.Continue(label, this.since(first));
         }
         if (this.atWord("return")) {
             this.advance();
@@ -984,12 +1063,127 @@ class Parser {
             }
             return Stmt.Return(value, this.since(first));
         }
+        // `throw e` (06 §1 rule 3)
+        if (this.atWord("throw")) {
+            this.advance();
+            let value = try this.parseExpr();
+            return Stmt.Throw(value, this.since(first));
+        }
+        // `defer { … }`, `defer e` (06 §5 rule 2)
+        if (this.atWord("defer")) {
+            this.advance();
+            if (this.at(.LBrace)) {
+                let b = try this.parseBlock();
+                return Stmt.Defer(b, this.since(first));
+            }
+            let vt = this.current();
+            let e = try this.parseExpr();
+            let at = this.since(vt);
+            return Stmt.Defer(Block { stmts = [Stmt.Expr(e, at)], span = at }, this.since(first));
+        }
+        // `using let f = e` (06 §7 rule 1); `using` is a word only before `let` or `var`
+        if (this.atWord("using")
+            && (this.isWord(this.peek(1), "let") || this.isWord(this.peek(1), "var"))) {
+            this.advance();
+            let bound = try this.parseLet();
+            return match (bound) {
+                .Let(isVar, name, written, value, at) => {
+                    if (isVar || value == null) {
+                        this.report(
+                            "LYS-PAR0052",
+                            "a 'using' is one 'let' with a name and a value: 'using let f = open(…)'",
+                            first
+                        );
+                    }
+                    Stmt.Using(name, written, value ?? Expr.Null(at), this.since(first))
+                }
+                _ => {
+                    this.report(
+                        "LYS-PAR0052",
+                        "a 'using' is one 'let' with a name and a value: 'using let f = open(…)'",
+                        first
+                    );
+                    bound
+                }
+            };
+        }
+        // `try { … } catch (e: T) { … }` (06 §4)
+        if (this.atWord("try") && this.peek(1).kind == .LBrace) {
+            return try this.parseTry();
+        }
         if (this.at(.LBrace)) {
             let b = try this.parseBlock();
             return Stmt.Block(b, b.span);
         }
         let e = try this.parseExpr();
         return Stmt.Expr(e, this.since(first));
+    }
+
+    /// `try { … }` and its clauses, each `catch (e)`, `catch (e: T)` or `catch (e in [A, B])`.
+    mut fn parseTry(): Stmt throws SyntaxError {
+        let first = this.advance();
+        let body = try this.parseBlock();
+        let clauses = List<CatchClause>.new();
+        while (this.catchAhead()) {
+            clauses.push(try this.parseCatch(false));
+        }
+        return Stmt.Try(body, clauses.toArray(), this.since(first));
+    }
+
+    /// Whether a clause follows, on this line or the next.
+    mut fn catchAhead(): bool {
+        var k = 0;
+        while (this.peek(k).kind == .Newline) {
+            k += 1;
+        }
+        return this.isWord(this.peek(k), "catch");
+    }
+
+    /// A clause: its head, and its body — a block, or in the expression form a value, whose
+    /// block is the clause's body (06 §6 rule 4).
+    mut fn parseCatch(valued: bool): CatchClause throws SyntaxError {
+        this.skipNewlines();
+        let at = this.advance();
+        try this.expect(.LParen, "LYS-PAR0019", "'(' after 'catch'");
+        let name = try this.expect(.Ident, "LYS-PAR0026", "the clause's binding, or '_'");
+        let types = List<TypeExpr>.new();
+        var isSet = false;
+        if (this.at(.Colon)) {
+            this.advance();
+            types.push(try this.parseType());
+        } else if (this.atWord("in")) {
+            this.advance();
+            isSet = true;
+            if (this.at(.LBracket)) {
+                this.advance();
+                loop {
+                    types.push(try this.parseType());
+                    if (!this.at(.Comma)) {
+                        break;
+                    }
+                    this.advance();
+                }
+                try this.expect(.RBracket, "LYS-PAR0004", "']' after the clause's types");
+            } else {
+                types.push(try this.parseType());
+            }
+        }
+        try this.expect(.RParen, "LYS-PAR0008", "')' after the clause");
+        var clauseBody = Block { stmts = [], span = this.spanOf(at) };
+        if (valued) {
+            let vt = this.current();
+            let value = try this.parseExpr();
+            clauseBody = valueBody(value, this.since(vt));
+        } else {
+            clauseBody = try this.parseBlock();
+        }
+        return CatchClause {
+            name = this.text(name),
+            types = types.toArray(),
+            isSet = isSet,
+            body = clauseBody,
+            span = this.since(at),
+        };
     }
 
     /// `let name: T = value`, `var name = value`; the type or the value may be left out.
@@ -1109,8 +1303,44 @@ class Parser {
         let iterable = try this.parseExpr();
         try this.expect(.RParen, "LYS-PAR0008", "')' after the iterable");
         this.skipNewlines();
-        let body = try this.parseBlock();
-        return Stmt.For(this.text(name), iterable, body, null, this.since(first));
+        let label = this.takeLabel();
+        let body = try this.loopBody(label);
+        return Stmt.For(this.text(name), iterable, body, label, this.since(first));
+    }
+
+    /// Whether token `k` ahead begins a loop: `loop {`, `while`, `do {`, `for`.
+    mut fn loopWordAt(k: int): bool {
+        let t = this.peek(k);
+        return (this.isWord(t, "loop") && this.peek(k + 1).kind == .LBrace)
+            || this.isWord(t, "while")
+            || (this.isWord(t, "do") && this.peek(k + 1).kind == .LBrace)
+            || this.isWord(t, "for");
+    }
+
+    /// The label written before the loop being read, once.
+    mut fn takeLabel(): ?string {
+        let label = this.pendingLabel;
+        this.pendingLabel = null;
+        return label;
+    }
+
+    /// A loop's block, read with its label among the labels around.
+    mut fn loopBody(label: ?string): Block throws SyntaxError {
+        this.loopLabels.push(label ?? "");
+        defer {
+            this.loopLabels.pop();
+        }
+        return try this.parseBlock();
+    }
+
+    /// Whether a loop around carries the label `name`.
+    mut fn labelAround(name: string): bool {
+        for (l in this.loopLabels) {
+            if (l == name) {
+                return true;
+            }
+        }
+        return false;
     }
 
     mut fn parseBlock(): Block throws SyntaxError {
@@ -1198,7 +1428,20 @@ class Parser {
                 left = try this.typeOperator(left, t, first);
                 continue;
             }
+            let startsWithTry = this.atWord("try");
             let right = try this.parseBinary(r);
+            // `try?`, `try!` and a `try` with clauses stand at the start of what they cover; the
+            // right of an assignment is such a start (06 §3 rule 2)
+            if (startsWithTry && t.kind != .Assign && assignmentOp(t.kind) == null) {
+                match (right) {
+                    .TryOpt(_, _) | .TryBang(_, _) | .TryCatch(_, _, _) => this.report(
+                        "LYS-PAR0050",
+                        "a 'try?', 'try!' or 'try' with clauses right of an operator: put it at the start, or in parentheses",
+                        t
+                    ),
+                    _ => { }
+                }
+            }
             left = try this.infix(left, t, l, right, first);
         }
         return left;
@@ -1531,16 +1774,62 @@ class Parser {
         if (w == "match") {
             return try this.parseMatch();
         }
+        // `try e`: the mark, which covers what stands to its right; without effect (05 Th).
+        // `try?` and `try!` with the sign against the keyword, `try e catch …` (06 §6)
+        if (w == "try") {
+            this.advance();
+            let sign = this.current();
+            if ((sign.kind == .Question || sign.kind == .Bang) && sign.start == t.end) {
+                this.advance();
+                let operand = try this.parseExpr();
+                if (this.catchAhead()) {
+                    this.report(
+                        "LYS-PAR0051",
+                        f"'try{this.text(sign)}' takes no clause: a clause belongs to a plain 'try'",
+                        this.current()
+                    );
+                    // the clauses read and left, so that nothing follows from them
+                    while (this.catchAhead()) {
+                        let _ = try this.parseCatch(true);
+                    }
+                }
+                return if (sign.kind == .Question) Expr.TryOpt(boxed(operand), this.since(t))
+                    else Expr.TryBang(boxed(operand), this.since(t));
+            }
+            let marked = try this.parseExpr();
+            if (this.catchAhead()) {
+                let clauses = List<CatchClause>.new();
+                while (this.catchAhead()) {
+                    clauses.push(try this.parseCatch(true));
+                }
+                return Expr.TryCatch(boxed(marked), clauses.toArray(), this.since(t));
+            }
+            return Expr.TryMark(boxed(marked), this.since(t));
+        }
+        // `throw e` where a value stands, of type `never` (06 §1 rule 3)
+        if (w == "throw") {
+            this.advance();
+            let value = try this.parseExpr();
+            return Expr.Throw(boxed(value), this.since(t));
+        }
         return null;
     }
 
     /// A name, `loop { … }`, `x => …` (a lambda of one parameter, its type from the position), or
     /// `Name { … }`, an initializer.
     mut fn nameValue(t: Token): Expr throws SyntaxError {
+        // `found = search: loop { … }`: a label before a loop where a value stands
+        if (this.peek(1).kind == .Colon
+            && this.isWord(this.peek(2), "loop")
+            && this.peek(3).kind == .LBrace) {
+            this.pendingLabel = this.text(this.advance());
+            this.advance();
+        }
         if (this.atWord("loop") && this.peek(1).kind == .LBrace) {
             this.advance();
-            let body = try this.parseBlock();
-            return Expr.Loop(body, null, this.since(t));
+            let label = this.takeLabel();
+            let body = try this.loopBody(label);
+            return Expr.Loop(body, label, this.since(t));
         }
         let name = this.text(t);
         let span = this.spanOf(t);
@@ -2455,4 +2744,13 @@ fn endsTypeArgs(k: TokenKind): bool {
         || k == .Dot
         || k == .EqEq
         || k == .NotEq;
+}
+
+/// A clause's value as its body: a value block is its own block; any other value the block
+/// that gives it.
+fn valueBody(value: Expr, at: Span): Block {
+    return match (value) {
+        .Block(b, _) => b,
+        _ => Block { stmts = [Stmt.Expr(value, at)], span = at },
+    };
 }

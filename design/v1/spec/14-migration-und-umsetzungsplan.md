@@ -448,3 +448,119 @@ Typen, Blöcke auf einer Instanz, auf eingebauten Konstruktoren und Blanket-Blö
 Interface getrennt implementiert (05 §3 Regel 4). Beim Abgleich der Bereichsdokumente gegen den Code
 fehlte 05 D2/D3 eine Uhr: zwei Defaults eines Namens nahmen still den ersten — jetzt
 `LYS-SEM0043`, dazu der qualifizierte Aufruf `I.m(x)`. 191 Tests, 115 Konformanzfälle.
+
+## S4 — Slices (Plan, Entwurf 2026-10-29)
+
+Ziel aus der Meilensteintabelle: Fehler und Kontrolle — VM-Ausnahmen, erschlossene Fehlermengen,
+geprüftes `throws`, `try?`/`try!`/`try … catch`, `catch (e in […])`, `defer`/`using`,
+`loop`/`break value`, `never` (05). Grundlage Lyric 5 06 (gepinnt 38ea610e) mit Scripts
+Abweichungen 05 Th, K, K7 (erschlossene statt deklarierte Mengen, `try` wirkungslos). Der Parser
+kennt `throw`/`try`/`defer`/`catch` noch nicht; S4 ist ganz neu. Spec-first in den Kapiteln 06
+und 07 des Deltas.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S4a Werfen und Fehlerpfad** | `throw e` (Anweisung und Ausdruck vom Typ `never`); in der VM verlässt ein Fehler jeden Rahmen wie eine Rückkehr ohne Wert (06 §5 R1), Handler-Tabelle je Funktion; der `try`-Block mit Klauseln als Typtests über den Deskriptor (`is.t`/`is.i`/`is.d`, 06 §4 R7); ungefangen aus `main`: `error:` mit `caused by:`/`suppressed:`, Exit 1 (§5 R3); Paniken bleiben 101 und unfangbar | Fehlerbeispiele; Exit 1/101 |
+| **S4b Der Datensatz eines Fehlers** | wo er zuerst geworfen wurde, `e.backtrace()` an der Bindung einer Klausel (06 §4 R4, Lyric 5 M5-3); `throw e` der eigenen Bindung in ihrer Klausel ist derselbe Fehler und behält ihn, jeder andere Wurf beginnt einen neuen. `Error` und `Exception` kamen schon mit S4a; `e.suppressed()` ist ein `Error[]` und kommt mit den Arrays (S7), das Anhängen mit S4e | Konformanzfälle |
+| **S4c Fehlermengen** | je Funktion erschlossen (Fixpunkt über den Aufrufgraphen); geschriebenes `throws [A, B]` als geprüfter Vertrag; Teilmengenregel nur bei deklariertem Interface-Member; Funktionswerte, Host und native Module werfen `Error` (05 K); Lint `unmarked-throw` | Fehler am Vertrag |
+| **S4d Ausdrucksformen und Klauselregeln** | `try?` (nicht abgeflacht), `try!` (Panik `RT0010`), `try e catch (x: A) v` (06 §6); `catch (e in [A, B])`, Regeln E9 (kein Typ doppelt, unerreichbare Klausel, Catch-all zuletzt), `catch (e)` trägt die Menge (K7), präzises Weiterwerfen | Konformanzfälle |
+| **S4e `defer` und `using`** | `defer` statisch auf jeden Ausgang gelegt, auf dem Fehlerpfad als Catch-all-Bereich, LIFO; wirft er unterwegs, gewinnt der erste Fehler, der zweite hängt als unterdrückt an (§5 R4–R5); `using let` für `Closeable` (§7) | Reihenfolge-Fälle |
+| **S4f Kontrolle und `never`** | `loop`/`break value` und Labels prüfen (Codes 0101/0102), `do-while`; `never` passt überall und endet nur seinen Pfad, nur als Rückgabetyp schreibbar (§9, `LYS-SEM0145`); `panic`, `assert { }`, `unreachable`, `todo` im Prelude | Konformanzfälle |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s4-complete` | Fehlerbeispiele in der CI |
+
+Reihenfolge: a vor b (das Werfen braucht noch keine Hierarchie, die Klauseln testen Typen), b vor
+c–d, e nach a, f unabhängig.
+
+**S4a, Ergebnis (2026-10-29).** `throw e` als Anweisung und als Ausdruck vom Typ `never`; `never`
+passt jetzt in `fit` zu jedem Typ, also auch rechts von `??` und als Rumpf eines Lambdas. Der
+`try`-Block mit getypten Klauseln und der Klausel ohne Typ; eine Klausel testet wie ein
+Typmuster (`typeTest`, `heldAs`) und bindet den Fehler als ihren Typ. In der VM die Op `throw`
+und eine Bereichstabelle je Funktion, innerste zuerst (Bytecode-Format 4; im Text-Assembler die
+Zeile `catch @von, @bis, @handler, rN`); ein Fehler verlässt Rahmen um Rahmen bis zum ersten
+Bereich, der ihn abdeckt — beim Aufrufer am Aufruf. Ungefangen fragt die VM im selben Lauf
+`message()` und `cause()` (die Kette bis 64, ein Zyklus endet dort; wirft `message()`, nennt
+der Typ den Fehler) und endet mit `Outcome.Error`; die CLI druckt `error:`, `  caused by:` und
+die Rahmen, Exit 1. `Error` und `Exception` stehen als Lyric-Script-Quelle im Prelude (aus S4b
+vorgezogen), dazu `LYS-SEM0030` und `LYS-SEM0036` (ein Block ohne Klausel, wie Lyric 5). Die
+Zuweisungsanalyse: eine Klausel kennt nur, was vor dem `try` zugewiesen war. Der Runner kann
+Lyric 5s `stderr:`. Nebenbei behoben: eine Kopie an einem Skalar gab ihn einem
+Interface-Parameter als Referenz weiter (seit S3g, `f<T :: [Show]>(x: T) = describe(x)` mit
+`int`: fehlerhafter Bytecode) — jetzt eine Box wie bei `fit`. 208 Tests, 123 Konformanzfälle.
+
+**S4b, Ergebnis (2026-10-29).** Ein Fehler trägt seinen Datensatz: die Rahmen seines ersten
+Wurfs als Funktionen und Instruktionen (`ErrorRecord`, ein Wert der VM), gemacht bei jedem
+`throw`, als Text erst auf Nachfrage (Native `error.trace`). Ein Bereich bekommt ein zweites
+Register für ihn; die neue Op `rethrow` wirft mit dem Datensatz weiter — `throw e` der eigenen
+Bindung in ihrer Klausel und der Weiterwurf, wenn keine Klausel nimmt; jeder andere Wurf
+beginnt einen neuen. `e.backtrace()` an der Bindung gibt ein `?Backtrace` des Prelude (`show()`
+die Rahmen in der Spurform `    at <function> (line <n>)`), nur an der Bindung selbst
+(`LYS-SEM0012` sonst), ein eigenes Member des Typs geht vor. Der Bericht zeigt die Rahmen des
+Datensatzes, also den ersten Wurfort. Bytecode-Format 5. `e.suppressed()` kommt mit den Arrays
+(S7), das Anhängen mit S4e. 214 Tests, 126 Konformanzfälle.
+
+**S4c, Ergebnis (2026-10-29).** Die Mengen werden nach dem Prüfen der Rümpfe in einem eigenen
+Lauf über den getypten Baum erschlossen (`throws.lyr`): je Funktion die Typen ihrer `throw`s und
+die Mengen ihrer Aufrufe, weniger was die Klauseln nehmen, in Runden bis kein Satz mehr wächst
+(Rekursion). Ein Funktionswert wirft alles (02 K2); ein Interface-Member wirft, was es schreibt,
+sonst die Vereinigung der Mengen seiner Implementierungen im Skript (entschieden beim Bau: 05 K
+nennt nur Funktionswerte, Host und native Module `Error`; mit „alles“ bräche schon
+`e.message()` jeden Vertrag — offener Punkt P14). Der Weiterwurf der Bindung trägt, was die
+Klausel erreichte (K7, präzises Weiterwerfen); eine generische Menge steht in den Begriffen des
+Aufrufs. Ein geschriebenes `throws` ist Vertrag (`LYS-SEM0034` am `throws`, mit Typ und Zeile
+jedes Verstoßes), die Teilmengenregel für Implementierungen eines Members mit `throws`
+(`LYS-SEM0042`), `LYS-SEM0137`, `LYS-PAR0049`. Die Marke `try e` wird geparst und ändert nichts;
+der Lint `unmarked-throw` kommt mit den Lints (S11). Neu in `typed.lyr`: Kinder-Läufe über den
+getypten Baum (`exprsIn`, `stmtsIn`, …). 222 Tests, 133 Konformanzfälle.
+
+**S4d, Ergebnis (2026-10-29).** Die Ausdrucksformen ohne neue VM-Mechanik: `try?`, `try!` und
+`try e catch (x: A) v` werden zum Block mit Ergebnis-Lokaler um das vorhandene `TStmt.Try`
+gesenkt. `try?` ist nicht abgeflacht (`??int`), über `void` nur als Anweisung (`LYS-SEM0140`);
+`try!` panisch mit `LYS-RT0010` und der Meldung des Fehlers (neue Op `panic.c` mit Code,
+Format 6 — S4f braucht sie für `panic`/`assert`/…); die Teile der Ausdrucksform vereinigen sich
+wie die Arme eines `match`; eine Klausel gehört zum nächsten `try` links. Die Regeln zwischen
+Klauseln (`LYS-SEM0035`, `LYS-SEM0141`, `LYS-SEM0142`) teilen Block- und Ausdrucksform über
+einen gemeinsamen Klauselkopf; die Mengenklausel `catch (e in [A, B])`. K7: ein `match (e)` über
+die Bindung einer Mengen- oder typlosen Klausel deckt die erreichende Menge — die Prüfung wartet
+bis nach der Inferenz (`LYS-SEM0050` nennt den fehlenden Typ). Abweichung, entschieden beim
+Bau: die Bindung bleibt ein `Error`, auch wo nur ein Typ ankommt (Lyric 5 M5-6), da die Mengen
+erst nach den Rümpfen feststehen. `LYS-PAR0050`/`PAR0051` im Parser. 229 Tests, 145
+Konformanzfälle.
+
+**S4e, Ergebnis (2026-10-29).** `defer` und `using let` werden im Checker zu `TStmt.Finally`
+gesenkt: der Rest des Gültigkeitsbereichs ist die Region des `defer`, auch in Wertblöcken. Der
+Codegen legt den `defer` auf jeden Ausgang: am Ende, auf dem Fehlerpfad im Handler (unter einer
+eigenen Region, deren Fehler mit der neuen Op `suppress` an den Datensatz des ersten gehen; dann
+`rethrow`), und bei `return`/`break`/`continue` als Kopie — die Region bekommt dort eine Lücke,
+damit die Kopie unter den äußeren Regionen läuft, nicht unter der eigenen (06 §5 R4); der Wert
+eines `return` liegt vorher in eigenen Registern. Der Bericht nennt `  suppressed:` (Format 7).
+`using` bindet ein `Closeable` des Prelude (`LYS-SEM0143`, `LYS-PAR0052`); ein fallengelassenes
+`Closeable` warnt (`LYS-SEM0144`, die `let`-Hälfte mit den Lints S11). Ein Sprung aus einem
+`defer`-Rumpf (`return`, `break`/`continue` nach außen) ist abgelehnt (`LYS-SEM0904`, eigener
+Code; Lyric 5 sagt nichts — offener Punkt P15). 238 Tests, 153 Konformanzfälle.
+
+**S4f, Ergebnis (2026-10-29).** Labels werden jetzt geparst — vor `loop`, `while`, `do` und
+`for`, vor einem `loop` auch mitten im Ausdruck; der Parser führt die Labels der umgebenden
+Schleifen, damit nach `break` ein Name das Label ist, wo eine Schleife es trägt, sonst der
+Anfang des Werts. `TStmt.Break`/`Continue` tragen, wie viele Schleifen nach außen ihr Ziel steht;
+`LYS-SEM0101`, `LYS-SEM0102`, `LYS-SEM0103` (Warnung). `do { … } while (c)` mit eigenem
+`TStmt.DoWhile` (`continue` zum Test). `never` nur als Rückgabetyp (`LYS-SEM0145`, auch im
+Funktionstyp das Ergebnis), eine `never`-Funktion kehrt nicht zurück (`LYS-SEM0146`,
+`LYS-SEM0017`); ein `return` dessen, was nicht zurückkehrt, erzeugt kein `ret` (vorher
+fehlerhafter Bytecode bei `fn f(): int = todo()`). `panic`, `assert { }`, `unreachable`, `todo`
+als Built-ins auf `TExpr.Panic` (RT0008/0011/0012/0013); `assert` steht an der Stelle, zitiert
+die Bedingung aus dem Quelltext (den der Parser jetzt im Modul hält) und baut die Meldung nur
+beim Fehlschlag. Der Fall aus Lyric 5s Beispiel (`ok || fail("why")` ist ein `bool`) fand eine Lücke: `never` als Operand — rechts von `&&`/`||` bestimmt die linke Seite den Typ, unter jedem anderen Operator ergibt das Ganze `never`; `println` eines `never` ebenso. 245 Tests, 165 Konformanzfälle.
+
+**S4, Abschluss (2026-10-29).** Abgleich der Bereichszeilen 05 E3–E12, K, K7, Th, Pn gegen den
+Code: gebaut, oder mit Uhr — Task-Ergebnisse tragen den Fehler mit S6 (E10); `e.suppressed()`
+(ein `Error[]`), `Result<T, E>` als Bibliothekstyp, Iteratoren ohne Fehlertyp und das Schließen
+eines `Closeable`-Iterators durch `for` (E7) mit S7; `.Error` an der Host-Grenze mit S8 (E6,
+01 S11); der Lint `unmarked-throw` und die `let`-Hälfte von `LYS-SEM0144` mit den Lints (S11).
+Abweichungen gegenüber Lyric 5, im Delta-Kapitel 06 geführt: erschlossene Mengen samt
+Interface-Member ohne `throws` (P14), die Bindung einer typlosen Klausel bleibt `Error` (M5-6),
+der Sprung aus einem `defer` ist abgelehnt (P15), Rahmen immer im Bericht. Je Slice
+Mutantenkontrollen mit vorher geschriebener Vorhersage. Verfehlt nur in S4a: die Vorsuche
+`caught` und die Abwicklung rechnen beide `back.pc - 1`, ein Mutant auf der einen traf den Test
+der anderen nicht (2 statt 3, dann 3 statt 2). Vor den Läufen geschärft, weil sie den Mutanten
+sonst nicht gesehen hätten: je ein Test in S4b (Aufrufer-Rahmen), S4c (Fixpunkt) und S4e
+(Wertblock).

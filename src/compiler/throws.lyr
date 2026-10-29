@@ -1,0 +1,444 @@
+//! Thrown sets (S4c; Script 05 K, Th; Lyric 5 06 §2–§4): what each function may throw, inferred
+//! from its body — the types its `throw`s throw and the sets of what it calls, less what the
+//! clauses of its `try`s take — as a fixpoint over the call graph, which closes a recursion. A
+//! call through a function value may throw anything: an `Error` (02 K2). A call through an
+//! interface member throws what the member writes, or else what its implementations in the
+//! program throw — a script knows every conformer. A clause's `throw e` of its binding throws
+//! what reached the clause (05 K7). The sets are the checker's to hold the written `throws`
+//! against.
+import std.collections { List, Map };
+import lyric_script.compiler.typed {
+    FnInfo,
+    TExpr,
+    TStmt,
+    Ty,
+    TypeInfo,
+    exprsIn,
+    exprsOfStmt,
+    stmtLine,
+    stmtsIn,
+    stmtsOfStmt,
+    typeOf,
+};
+
+/// What a function may throw: anything — where `any`, with the line that makes it so —, or the
+/// types listed, each with the line of the first site that throws it.
+class Thrown {
+    var any: bool = false,
+    var anyLine: int = 0,
+    types: List<Ty>,
+    lines: List<int>,
+
+    static fn none(): Thrown {
+        return Thrown { types = List<Ty>.new(), lines = List<int>.new() };
+    }
+
+    /// Adds `t`, thrown at `line`; whether the set grew.
+    mut fn add(t: Ty, line: int): bool {
+        if (this.any) {
+            return false;
+        }
+        for (x in this.types) {
+            if (x == t) {
+                return false;
+            }
+        }
+        this.types.push(t);
+        this.lines.push(line);
+        return true;
+    }
+
+    /// Makes it anything; whether it grew.
+    mut fn addAny(line: int): bool {
+        if (this.any) {
+            return false;
+        }
+        this.any = true;
+        this.anyLine = line;
+        return true;
+    }
+
+    mut fn addAll(o: Thrown): bool {
+        var grew = false;
+        if (o.any) {
+            grew = this.addAny(o.anyLine);
+        }
+        var k = 0;
+        while (k < o.types.length()) {
+            grew = this.add(o.types[k], o.lines[k]) || grew;
+            k += 1;
+        }
+        return grew;
+    }
+}
+
+/// The thrown sets of a program's functions, by their index.
+class ThrowSets {
+    types: TypeInfo[],
+    functions: FnInfo[],
+    // `Error`'s entry
+    errorIndex: int,
+    sets: List<Thrown>,
+    // the interface member each slot is, and the functions that implement it in the program
+    members: Map<int, int>,
+    impls: Map<int, List<int>>,
+    // while a clause is walked: what reached it, by the local its `try` receives the error in;
+    // and what reached each clause, by "<fn>:<local>:<k>", for a match over its set (05 K7)
+    reaching: Map<int, Thrown>,
+    reached: Map<string, Thrown>,
+    var line: int = 0,
+    var current: int = -1,
+
+    static fn of(types: TypeInfo[], functions: FnInfo[], errorIndex: int): ThrowSets {
+        let sets = List<Thrown>.new();
+        for (_ in functions) {
+            sets.push(Thrown.none());
+        }
+        let members = Map<int, int>.new();
+        let impls = Map<int, List<int>>.new();
+        for (t in types) {
+            if (t.kind == .Interface) {
+                for (name in t.slotOf.keys()) {
+                    let slot = t.slotOf.get(name);
+                    let m = t.methods.get(name);
+                    if (slot != null && m != null) {
+                        members.insert(slot, m);
+                    }
+                }
+            } else {
+                for (slot in t.witness.keys()) {
+                    let f = t.witness.get(slot);
+                    if (f != null) {
+                        var list = impls.get(slot) ?? List<int>.new();
+                        list.push(f);
+                        impls.insert(slot, list);
+                    }
+                }
+            }
+        }
+        return ThrowSets {
+            types = types,
+            functions = functions,
+            errorIndex = errorIndex,
+            sets = sets,
+            members = members,
+            impls = impls,
+            reaching = Map<int, Thrown>.new(),
+            reached = Map<string, Thrown>.new(),
+        };
+    }
+
+    /// Every function's set: rounds over all functions until none grows. A set only grows, and a
+    /// program's types are finite but for those generics make on the way; past a hundred rounds the
+    /// sets stay what they are.
+    mut fn infer(): void {
+        var grew = true;
+        var rounds = 0;
+        while (grew && rounds < 100) {
+            grew = false;
+            rounds += 1;
+            var k = 0;
+            while (k < this.functions.length()) {
+                this.current = k;
+                let f = this.functions[k];
+                let body = if (f.typeParams.length() > 0 || f.templateOf >= 0) f.template
+                    else f.body;
+                let found = this.stmtsSet(body);
+                grew = this.sets[k].addAll(found) || grew;
+                k += 1;
+            }
+        }
+        this.current = -1;
+    }
+
+    /// The set of function `k`.
+    fn setOf(k: int): Thrown {
+        return this.sets[k];
+    }
+
+    /// What reached the clause of a key, once the sets are inferred; nothing for a clause never
+    /// walked.
+    fn reachedAt(key: string): Thrown {
+        return this.reached.get(key) ?? Thrown.none();
+    }
+
+    /// Whether `t`, reaching the clause of `key`, is covered by one of `by`.
+    mut fn coveredWithin(t: Ty, by: Ty[], key: string): bool {
+        let saved = this.current;
+        this.current = parseInt(key);
+        let out = this.coveredBy(t, by);
+        this.current = saved;
+        return out;
+    }
+
+    /// What of `set` the types of `by` do not cover: none where they name `Error` (06 §3 rule 4).
+    mut fn left(set: Thrown, by: Ty[], fnIndex: int): Thrown {
+        let saved = this.current;
+        this.current = fnIndex;
+        let out = this.passes(set, by);
+        this.current = saved;
+        return out;
+    }
+
+    // --- the walk --------------------------------------------------------------------------------
+
+    mut fn stmtsSet(list: TStmt[]): Thrown {
+        let out = Thrown.none();
+        for (s in list) {
+            out.addAll(this.stmtSet(s));
+        }
+        return out;
+    }
+
+    mut fn stmtSet(s: TStmt): Thrown {
+        this.line = stmtLine(s);
+        return match (s) {
+            // the clauses are asked in order: each takes what it covers of what is left, and its
+            // binding's `throw` throws that; what none takes goes on (06 §4 rules 1–3)
+            .Try(body, caught, _, clauses, _) => {
+                var rest = this.stmtsSet(body);
+                let out = Thrown.none();
+                var k = 0;
+                for (c in clauses) {
+                    let took = this.taken(rest, c.types);
+                    rest = this.passes(rest, c.types);
+                    this.reached.insert(f"{this.current}:{caught}:{k}", took);
+                    k += 1;
+                    this.reaching.insert(caught, took);
+                    out.addAll(this.stmtsSet(c.body));
+                    this.reaching.remove(caught);
+                }
+                out.addAll(rest);
+                out
+            }
+            _ => {
+                let out = Thrown.none();
+                for (e in exprsOfStmt(s)) {
+                    out.addAll(this.exprSet(e));
+                }
+                out.addAll(this.stmtsSet(stmtsOfStmt(s)));
+                out
+            }
+        };
+    }
+
+    mut fn exprSet(e: TExpr): Thrown {
+        let out = Thrown.none();
+        match (e) {
+            .Throw(x) => this.addType(out, thrownType(x.value)),
+            .Rethrow(caught, _) => {
+                let reached = this.reaching.get(caught);
+                if (reached != null) {
+                    out.addAll(reached);
+                } else {
+                    out.addAny(this.line);
+                }
+            }
+            .Call(fi, _, _) => out.addAll(this.sets[fi]),
+            .CallGeneric(fi, binds, _, _) => out.addAll(this.substituted(this.sets[fi], binds)),
+            .CallIface(slot, _, _) | .CallConstraint(_, _, _, slot, _, _) => out.addAll(
+                this.memberSet(slot)
+            ),
+            .CallBound(_, _, _, slot, _, _) | .CallStatic(_, _, _, slot, _, _) => out.addAll(
+                this.memberSet(slot)
+            ),
+            // a function value says nothing of what it throws (02 K2)
+            .CallValue(_, _, _) | .CallStaticD(_, _, _, _) => out.addAny(this.line),
+            _ => { }
+        }
+        for (x in exprsIn(e)) {
+            out.addAll(this.exprSet(x));
+        }
+        out.addAll(this.stmtsSet(stmtsIn(e)));
+        return out;
+    }
+
+    /// What a call through the member of `slot` may throw: what it writes, or else what its
+    /// implementations throw.
+    mut fn memberSet(slot: int): Thrown {
+        let out = Thrown.none();
+        let m = this.members.get(slot);
+        let written = if (m != null) this.functions[m].throws else null;
+        if (written != null) {
+            for (t in written) {
+                this.addType(out, t);
+            }
+        } else if (let fs = this.impls.get(slot)) {
+            for (f in fs) {
+                out.addAll(this.sets[f]);
+            }
+        }
+        return out;
+    }
+
+    mut fn addType(out: Thrown, t: Ty): void {
+        if (t == .Unknown) {
+            return;
+        }
+        if (t == Ty.Named(this.errorIndex)) {
+            out.addAny(this.line);
+        } else {
+            out.add(t, this.line);
+        }
+    }
+
+    /// A generic's set at its call: its type parameters the call's arguments.
+    mut fn substituted(set: Thrown, binds: Ty[]): Thrown {
+        let out = Thrown.none();
+        if (set.any) {
+            out.addAny(set.anyLine);
+        }
+        var k = 0;
+        while (k < set.types.length()) {
+            let t = set.types[k];
+            let bound = match (t) {
+                .Param(p) => if (p < binds.length()) binds[p] else t,
+                _ => t,
+            };
+            if (bound == Ty.Named(this.errorIndex)) {
+                out.addAny(set.lines[k]);
+            } else if (bound != .Unknown) {
+                out.add(bound, set.lines[k]);
+            }
+            k += 1;
+        }
+        return out;
+    }
+
+    // --- coverage --------------------------------------------------------------------------------
+
+    /// What of `set` a clause of types `by` takes; all of it for a clause without a type or one
+    /// of `Error`.
+    fn taken(set: Thrown, by: Ty[]): Thrown {
+        let out = Thrown.none();
+        if (this.takesAll(by)) {
+            out.addAll(set);
+            return out;
+        }
+        // anything may be any of the clause's types
+        if (set.any) {
+            for (t in by) {
+                out.add(t, set.anyLine);
+            }
+        }
+        var k = 0;
+        while (k < set.types.length()) {
+            if (this.coveredBy(set.types[k], by)) {
+                out.add(set.types[k], set.lines[k]);
+            }
+            k += 1;
+        }
+        return out;
+    }
+
+    /// What of `set` goes past a clause of types `by`.
+    fn passes(set: Thrown, by: Ty[]): Thrown {
+        let out = Thrown.none();
+        if (this.takesAll(by)) {
+            return out;
+        }
+        if (set.any) {
+            out.addAny(set.anyLine);
+        }
+        var k = 0;
+        while (k < set.types.length()) {
+            if (!this.coveredBy(set.types[k], by)) {
+                out.add(set.types[k], set.lines[k]);
+            }
+            k += 1;
+        }
+        return out;
+    }
+
+    fn takesAll(by: Ty[]): bool {
+        if (by.length() == 0) {
+            return true;
+        }
+        for (t in by) {
+            if (t == Ty.Named(this.errorIndex)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn coveredBy(t: Ty, by: Ty[]): bool {
+        for (b in by) {
+            if (this.covers(b, t)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Whether `by` covers `t` (06 §3 rule 4): it is `t`, or an interface `t` conforms to.
+    fn covers(by: Ty, t: Ty): bool {
+        if (by == t || by == Ty.Named(this.errorIndex)) {
+            return true;
+        }
+        return match (by) {
+            .Named(ii) => this.types[ii].kind == .Interface && this.conforms(t, ii),
+            _ => false,
+        };
+    }
+
+    fn conforms(t: Ty, ii: int): bool {
+        return match (t) {
+            .Named(i) => {
+                if (i == ii || this.hasParent(i, ii)) {
+                    true
+                } else {
+                    var found = false;
+                    for (x in this.types[i].ifaces) {
+                        found = found || x == ii;
+                    }
+                    found
+                }
+            }
+            // a type parameter conforms to what its constraints are
+            .Param(k) => {
+                var found = false;
+                if (this.current >= 0) {
+                    let params = this.functions[this.current].typeParams;
+                    if (k < params.length()) {
+                        for (c in params[k].constraints) {
+                            found = found || c == ii || this.hasParent(c, ii);
+                        }
+                    }
+                }
+                found
+            }
+            _ => false,
+        };
+    }
+
+    /// Whether interface `i` extends `ii`, through any of its parents.
+    fn hasParent(i: int, ii: int): bool {
+        for (p in this.types[i].parents) {
+            if (p == ii || this.hasParent(p, ii)) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+/// The type a `throw` throws: its value's before it became an `Error`.
+fn thrownType(x: TExpr): Ty {
+    return match (x) {
+        .Upcast(v, _) | .BoxOf(v, _, _) => typeOf(v.value),
+        _ => typeOf(x),
+    };
+}
+
+/// The function of a clause's key, "<fn>:<local>:<k>".
+fn parseInt(key: string): int {
+    var n = 0;
+    for (c in key.chars()) {
+        if (c == ':') {
+            break;
+        }
+        n = n * 10 + ((c as uint32) as int - ('0' as uint32) as int);
+    }
+    return n;
+}

@@ -1,0 +1,158 @@
+// The expression forms of `try` and the rules among clauses (S4d; Lyric 5 06 §4 rules 2, 5, §6):
+// `try?` gives `null` where something throws, not flattened; `try!` panics with `LYS-RT0010`;
+// `try e catch …` gives the value of the clause that took the error; a clause belongs to the
+// nearest `try` on its left; a match over a clause's set covers the set (05 K7).
+import std.collections { List };
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { Outcome, run };
+import lyric_script.vm.module { Module };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    return generate(checked.program, "t");
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    if (out.length() > 0) {
+        return out.toArray();
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let kinds: string = """
+struct A :: Error {
+    fn message(): string = "a"
+}
+struct B :: Error {
+    fn message(): string = "b"
+}
+interface Io :: Error {
+}
+struct Disk :: Io {
+    fn message(): string = "disk"
+}
+fn f(n: int): int {
+    if (n == 1) {
+        throw A { }
+    }
+    if (n == 2) {
+        throw B { }
+    }
+    return n
+}
+"""
+    + "\n";
+
+@Test
+fn tryOptGivesNullWhereSomethingThrows(): void {
+    let source = kinds
+        + "fn a(): int = (try? f(0)) ?? -1\nfn b(): int = (try? f(1)) ?? -1\nfn c(): int {\n    let w: ?int = null\n    let x = try? w\n    if (let inner = x) {\n        return if (inner == null) 2 else 3\n    }\n    return 1\n}";
+    assertEq(value(source, "a"), 0);
+    assertEq(value(source, "b"), -1);
+    // not flattened: present, and what it holds is null
+    assertEq(value(source, "c"), 2);
+}
+
+@Test
+fn tryBangPanicsWithTheMessage(): void {
+    let source = kinds + "fn a(): int = try! f(3)\nfn b(): int = try! f(1)";
+    assertEq(value(source, "a"), 3);
+    match (run(compiled(source), "b", [], -1)) {
+        .Panic(p) => {
+            assertEq(p.code, "LYS-RT0010");
+            assertEq(p.message, "'try!' on an error: a");
+        }
+        _ => assertEq("no panic", "a panic"),
+    }
+}
+
+@Test
+fn theExpressionFormGivesTheClausesValue(): void {
+    let source = kinds
+        + "fn d(n: int): int = try f(n) catch (_: A) -1 catch (_) -2\nfn e(): int = try f(1) catch (_: B) 1 catch (_: A) try f(2) catch (_: A) 5 catch (_) 6\nfn g(): int = try f(1) catch (e) {\n    let n = 40\n    n + 2\n}";
+    assertEq(value(source + "\nfn d0(): int = d(0)", "d0"), 0);
+    assertEq(value(source + "\nfn d1(): int = d(1)", "d1"), -1);
+    assertEq(value(source + "\nfn d2(): int = d(2)", "d2"), -2);
+    // the clauses after the inner `try` are the inner `try`'s: `f(2)`'s `B` goes to its `_`
+    assertEq(value(source, "e"), 6);
+    // a value block gives its tail
+    assertEq(value(source, "g"), 42);
+}
+
+@Test
+fn aSetClauseTakesEachOfItsTypes(): void {
+    let source = kinds
+        + "fn s(n: int): int {\n    try {\n        return f(n)\n    } catch (_ in [A, B]) {\n        return -1\n    } catch (_) {\n        return -2\n    }\n}\nfn s1(): int = s(1)\nfn s2(): int = s(2)\nfn s0(): int = s(0)";
+    assertEq(value(source, "s1"), -1);
+    assertEq(value(source, "s2"), -1);
+    assertEq(value(source, "s0"), 0);
+}
+
+@Test
+fn theRulesAmongClauses(): void {
+    assertEq(errs(kinds + "try {\n    f(1)\n} catch (e) {\n} catch (_: A) {\n}"), ["LYS-SEM0035"]);
+    assertEq(
+        errs(kinds + "try {\n    f(1)\n} catch (_: A) {\n} catch (_: A) {\n}"),
+        ["LYS-SEM0141"]
+    );
+    assertEq(errs(kinds + "try {\n    f(1)\n} catch (_ in [A, B, A]) {\n}"), ["LYS-SEM0141"]);
+    assertEq(
+        errs(kinds + "try {\n    f(1)\n} catch (_: Io) {\n} catch (_: Disk) {\n}"),
+        ["LYS-SEM0142"]
+    );
+    assertEq(
+        errs(kinds + "try {\n    f(1)\n} catch (_: Error) {\n} catch (_: A) {\n}"),
+        ["LYS-SEM0142"]
+    );
+    // below the clause without a type its own error is the one said
+    assertEq(
+        errs(kinds + "try {\n    f(1)\n} catch (_) {\n} catch (_: A) {\n} catch (_: A) {\n}"),
+        ["LYS-SEM0035"]
+    );
+    assertEq(errs(kinds + "let t = try? println(\"x\")"), ["LYS-SEM0140"]);
+    assertEq(errs(kinds + "let v = 1 + try? f(1)"), ["LYS-PAR0050"]);
+    assertEq(errs(kinds + "let v = 1 + ((try? f(1)) ?? 0)"), []);
+    assertEq(errs(kinds + "let u = try? f(1) catch (_) 0"), ["LYS-PAR0051"]);
+}
+
+@Test
+fn aMatchOverAClausesSetCoversTheSet(): void {
+    let h = kinds
+        + "fn g(n: int) {\n    if (n == 1) {\n        throw A { }\n    }\n    if (n == 2) {\n        throw B { }\n    }\n}\n";
+    let both = "fn h(n: int): string {\n    try {\n        g(n)\n        return \"ok\"\n    } catch (e) {\n        return match (e) {\n            a: A => \"A\",\n            b: B => \"B\",\n        }\n    }\n}";
+    assertEq(errs(h + both), []);
+    let one = "fn h(n: int): string {\n    try {\n        g(n)\n        return \"ok\"\n    } catch (e) {\n        return match (e) {\n            a: A => \"A\",\n        }\n    }\n}";
+    assertEq(errs(h + one), ["LYS-SEM0050"]);
+    // a clause above takes the `B`: one arm covers what is left
+    let rest = "fn h(n: int): string {\n    try {\n        g(n)\n        return \"ok\"\n    } catch (_: B) {\n        return \"B\"\n    } catch (e) {\n        return match (e) {\n            a: A => \"A\",\n        }\n    }\n}";
+    assertEq(errs(h + rest), []);
+    // anything may reach: only `_` covers it
+    let any = "fn k(f: fn() -> int): string {\n    try {\n        f()\n        return \"ok\"\n    } catch (e) {\n        return match (e) {\n            a: A => \"A\",\n        }\n    }\n}";
+    assertEq(errs(h + any), ["LYS-SEM0050"]);
+    assertEq(value(h + both + "\nfn r(): int = if (h(2) == \"B\") 1 else 0", "r"), 1);
+}

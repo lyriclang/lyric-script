@@ -2,6 +2,7 @@
 //! conforms to — objects of script types, strings, and the one `nil` that stands for `null`.
 //! A string is wrapped once when it is made; converting a Lyric 5 string to an interface would
 //! box it at every conversion (value probe W1).
+import std.collections { List };
 import lyric_script.vm.module { TypeDesc };
 
 /// A value in a reference register.
@@ -42,6 +43,19 @@ pub fn sameRef(x: HeapRef, y: HeapRef): bool {
         return false;
     }
     return x is Nil && y is Nil;
+}
+
+/// Where an error was first thrown (S4b): its frames, innermost first, each a function and the
+/// instruction it stood at. Made at every `throw`, carried by `rethrow`; shown only when asked.
+/// And the errors a defer threw while it was in flight, in order (S4e).
+pub class ErrorRecord :: [HeapRef] {
+    pub functions: int[],
+    pub pcs: int[],
+    pub suppressed: List<HeapRef>,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
 }
 
 /// A string of the script: a Lyric 5 string, wrapped once.

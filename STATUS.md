@@ -166,7 +166,11 @@ Exit criterion: a concurrent example.
   a cooperative FIFO scheduler per run; the top level a scope (every task awaited, the first to
   fail by end order ends the run: exit 1, a panic 101); a deadlock panics (`RT0018`). Bytecode
   format 10. Cancelling the siblings on the first failure: S6c.
-- Next: **S6b** coroutines.
+- **S6b1 done** — coroutines: contexts of their own within the pulling task (a wait parks the
+  task), coroutine functions, `yield`, `return` as the result, `next()`, `result()`, `isDone()`;
+  bytecode format 11.
+- Next: **S6b2** — generator lambdas, `sequence`, `for` over a coroutine, `close()` and `using`,
+  a `yield` in a called function, identity.
 
 ## Working mode
 

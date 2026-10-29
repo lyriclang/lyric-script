@@ -797,3 +797,31 @@ ersten rot gegen S5 geprüft, die End-Reihenfolge nageln die VM-Tests fest. Sieb
 Läufen (`join` ohne Scheitern, `Failed` als `Done`, `spawn(42)` still, `await` ohne Menge; `yield`
 ohne Wechsel, kein `join`; `await` ohne erneutes Werfen), alle wie vorher aufgeschrieben gefangen.
 Tests 278 → 292, Fälle 230 → 241.
+
+**S6b, Schnitt (2026-10-29).** Zwei Teile, je mit eigenem Ergebnis. **S6b1**: Koroutinen in der VM
+— eigene Kontexte im ziehenden Task, Ops `co.new`, `co.next`, `yield.v`, `co.res`, `co.done`,
+Format 11 — und Koroutinen-Funktionen mit `yield`, Ergebnis über `return`, `next()`, `result()`,
+`isDone()` (Lyric 5 10 §1 Regeln 1–6). **S6b2**: Generator-Lambdas und `sequence { }` (Regeln
+11–12), `close()` mit `Cancelled` am `yield`, `using let` (Regeln 9–10), `for` über eine Koroutine,
+ein `yield` in einer gerufenen Funktion (Regel 13), Identität (Regel 14). `Coroutine :: Iterator`
+kommt mit dem Iterator-`for` in **S7**; bis dahin kennt `for` nur Ranges und, ab S6b2, Koroutinen.
+
+**S6b1, Ergebnis (2026-10-29).** Eine Koroutine läuft auf eigenen Registern und Rahmen im Task,
+der sie zieht: der Task hält den laufenden Kontext und einen Stapel der ziehenden (`Pull`), so
+dass ein Warten in der Koroutine — `yieldNow()`, `await` — den ganzen Task samt Kette parkt (N3,
+Lyric 5 §2 Regel 6). Ops `co.new` (die Slots von `Y` als Immediate, die von `R` aus der
+Rumpffunktion), `co.next` (Antwort in der Form von `?Y`: erst der Wert, dann das Flag — dieselbe
+Belegung wie jedes Optional, so dass der Code sie unverändert übernimmt), `yield.v`, `co.res`,
+`co.done`; Format 11. Ein Fehler, den der Rumpf nicht fängt, geht an den `co.next`, der ihn traf,
+und wird dort erneut geworfen; eine Panik geht an den Task. Ziehen einer laufenden Koroutine und
+ein `yield` ohne Koroutine paniken (`RT0014`). Im Checker: `Coroutine<Y, R>` in der Prelude,
+`Coroutine<Y>` = `Coroutine<Y, void>`; eine Funktion mit diesem Ergebnis und eigenem `yield`
+(außerhalb ihrer Lambdas — die AST-Läufe bekamen dafür `deep`) oder ohne Rückgabewert ist eine
+Koroutinen-Funktion: ihr Rumpf wird ein parameterloses Lambda, das Parameter und Empfänger
+einfängt, die Funktion gibt `co.new` davon zurück. `yield` (`SEM0038`), `return` (`SEM0039`,
+`SEM0017`), `next()` als `?Y`/`bool`/`??T`, `result()` (`SEM0012` ohne `R`), `isDone()`; ein Pull
+wirft für die Mengen jedes `Error` (03, wie `Task<T>`). Ein `yield` außerhalb des eigenen Rumpfs
+ist bis S6b2 `NYI`. Spec 10 Regeln 4–6, 13 Fälle, alle rot gegen S6a; acht Mutanten in drei
+Läufen (Flag des Yields, Referenzen am Ende, Fehler ans Ziehen, kein Ergebnis; `SEM0038`,
+`SEM0039`, `deep`, kein erneutes Werfen), alle wie vorher aufgeschrieben. Der Katalog-Check fing
+`RT0014` vor dem ersten Lauf. Tests 292 → 306, Fälle 241 → 254.

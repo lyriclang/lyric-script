@@ -347,8 +347,8 @@ fn aCoroutinesBodyIsChecked(): void {
 @Test
 fn aYieldOfItsOwnMakesTheCoroutineFunction(): void {
     // a yield in a lambda makes the lambda a generator (S6b2): the function that returns a value
-    // stays a factory; a yield in a function a coroutine calls comes with S6b3
-    assertEq(errs("fn f() {\n    yield 1\n}"), ["LYS-NYI0001"]);
+    // stays a factory; a yield in a function a coroutine calls is met at run time (S6b3)
+    assertEq(errs("fn f() {\n    yield 1\n}"), []);
     assertEq(
         errs(
             count
@@ -415,4 +415,68 @@ fn generatorsAreChecked(): void {
     assertEq(errs("let c = sequence { 1 }"), ["LYS-SEM0001"]);
     assertEq(errs("let c = sequence {\n    yield 1\n    return 2\n}"), ["LYS-SEM0039"]);
     assertEq(errs("fn t(): Coroutine<void> {\n    yield\n}\nfor (x in t()) {\n}"), ["LYS-SEM0007"]);
+}
+
+// Closing and called yields (S6b3): `close()` throws `Cancelled` at the yield the coroutine parked
+// at; a yield in a function a coroutine calls meets its `Y` at run time; a coroutine is an identity.
+let box: string = "class B {\n    var n: int = 0\n}\n";
+
+@Test
+fn closeRunsTheBodysDefers(): void {
+    let src = box
+        + "fn g(b: B): Coroutine<int> {\n    defer {\n        b.n += 10\n    }\n    yield 1\n    yield 2\n}\n"
+        + "fn f(): int {\n    let b = B { }\n    let c = g(b)\n    c.next()\n    c.close()\n"
+        + "    return b.n + (if (c.isDone()) 1 else 0)\n}";
+    assertEq(value(src, "f"), 11);
+}
+
+@Test
+fn closeOfAnUnpulledCoroutineRunsNothing(): void {
+    let src = box
+        + "fn g(b: B): Coroutine<int> {\n    b.n = 5\n    yield 1\n}\n"
+        + "fn f(): int {\n    let b = B { }\n    let c = g(b)\n    c.close()\n    return b.n * 10 + (if (c.isDone()) 1 else 0)\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn aCaughtCancelMayEndWithAResult(): void {
+    let src = "fn g(): Coroutine<int, int> {\n    try {\n        yield 1\n    } catch (e: Cancelled) {\n        return 5\n    }\n    return 0\n}\n"
+        + "fn f(): int {\n    let c = g()\n    c.next()\n    c.close()\n    return c.result() ?? -1\n}";
+    assertEq(value(src, "f"), 5);
+}
+
+@Test
+fn closeThrowsWhatADeferThrew(): void {
+    let src = "fn g(): Coroutine<int> {\n    defer {\n        throw Exception(\"in defer\")\n    }\n    yield 1\n}\n"
+        + "fn f(): int {\n    let c = g()\n    c.next()\n    try {\n        c.close()\n    } catch (e) {\n"
+        + "        return if (e.message() == \"in defer\") 1 else 2\n    }\n    return 0\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn aYieldInACalledFunctionSuspendsTheCoroutine(): void {
+    let src = "fn emit(x: int) {\n    yield x\n}\nfn g(): Coroutine<int> {\n    emit(1)\n    emit(2)\n}\n"
+        + "fn f(): int {\n    var s = 0\n    for (x in g()) {\n        s += x\n    }\n    return s\n}";
+    assertEq(value(src, "f"), 3);
+}
+
+@Test
+fn aCoroutineIsAnIdentity(): void {
+    let src = count
+        + "fn f(): int {\n    let c = count(1)\n    let d = c\n"
+        + "    return (if (c == d) 10 else 0) + (if (c == count(1)) 1 else 0)\n}";
+    assertEq(value(src, "f"), 10);
+}
+
+@Test
+fn closingAndCalledYieldsAreChecked(): void {
+    // every yield throws `Cancelled` at a close: a written `throws` covers it (rule 13)
+    assertEq(errs("fn emit(x: int) throws Exception {\n    yield x\n}"), ["LYS-SEM0034"]);
+    // no interface value of a coroutine or a task until they have descriptors (S7)
+    assertEq(errs(count + "let x: Closeable = count(1)"), ["LYS-SEM0001"]);
+    assertEq(errs("let t: Any = spawn { 1 }"), ["LYS-SEM0001"]);
+    assertEq(errs(count + "fn f() {\n    using let c = count(1)\n}"), []);
+    // a coroutine may be dropped unclosed, without a warning (rule 10)
+    let dropped = checkModule(parse(count + "fn f() {\n    count(1)\n}").module);
+    assertEq(dropped.warnings.length(), 0);
 }

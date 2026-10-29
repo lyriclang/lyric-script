@@ -123,6 +123,8 @@ struct Placement {
     captureLoc: Loc[][],
     // a captured `var`'s box: its module type by the slots of the value it holds, "s,r"
     cellType: Map<string, int>,
+    // the key of each type a yield outside a coroutine's body meets at run time (S6b3)
+    typeKeys: Map<string, int>,
     // a scalar's or a string's box as an interface value: its module type by its type's entry
     boxType: int[],
     // each program type's fields: where their slots start in the object
@@ -397,6 +399,7 @@ struct Placement {
             boxType = boxType.toArray(),
             captureLoc = captureLoc.toArray(),
             cellType = cellType,
+            typeKeys = Map<string, int>.new(),
             fieldLoc = fieldLoc.toArray(),
             descs = all,
             typeDescOf = typeDescOf.toArray(),
@@ -725,6 +728,18 @@ class FnGen {
         return slotsOf(t, this.p.types);
     }
 
+    /// The key of a type, the same for one type throughout the program (S6b3).
+    mut fn typeKey(t: Ty): int {
+        let text = t.debug();
+        let known = this.layout.typeKeys.get(text);
+        if (known != null) {
+            return known;
+        }
+        let k = this.layout.typeKeys.length();
+        this.layout.typeKeys.insert(text, k);
+        return k;
+    }
+
     /// The type arguments of a `Coroutine<Y, R>`, `[Y, R]` (S6b).
     fn coArgs(t: Ty): Ty[] {
         return match (t) {
@@ -857,8 +872,9 @@ class FnGen {
             // the top level's end (07 End): every task awaited, the first that failed thrown
             // again — where the program spawns at all
             // S6b: the value to the context that pulled; the coroutine parks (Lyric 5 10 §1 rule 2)
-            .Yield(v, line) => {
+            .Yield(v, _, dynamic, line) => {
                 this.line = line;
+                let vt = if (v != null) typeOf(v) else Ty.Void;
                 var sAt = 0;
                 var rAt = 0;
                 if (v != null) {
@@ -872,7 +888,12 @@ class FnGen {
                     }
                 }
                 this.need(1, 1);
-                this.emit(Op.YieldV, sAt, rAt, 0);
+                if (dynamic) {
+                    // its value's type meets the running coroutine's `Y` there (rule 13)
+                    this.emit(Op.YieldD, sAt, rAt, this.typeKey(vt));
+                } else {
+                    this.emit(Op.YieldV, sAt, rAt, 0);
+                }
             }
             .Join(line) => {
                 if (this.p.spawns && this.index == this.p.main) {
@@ -1594,6 +1615,9 @@ class FnGen {
                 let args = this.coArgs(t);
                 let (ns, nr) = if (args.length() == 2) this.slots(args[0]) else (0, 0);
                 this.emit(Op.CoNew, dst.r, at.r, ns * 256 + nr);
+                if (args.length() == 2) {
+                    this.emit(Op.CoKey, dst.r, this.typeKey(args[0]), 0);
+                }
             }
             // a pull: its error thrown again; `?Y` where the VM leaves it — the value, its
             // presence after its scalars
@@ -1627,6 +1651,21 @@ class FnGen {
             .CoDone(x) => {
                 let co = this.any(x.value);
                 this.emit(Op.CoDone, dst.s, co.r, 0);
+            }
+            // S6b3: a close, the `Cancelled` handed in; what it throws thrown again
+            .CoClose(x, c) => {
+                let co = this.any(x.value);
+                let cancel = this.any(c.value);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 1;
+                this.nextR += 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.MoveR, br, cancel.r, 0);
+                this.emit(Op.CoClose, bs, br, co.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
             }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)

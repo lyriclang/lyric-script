@@ -86,7 +86,7 @@ struct Checked {
 /// static member that builds the conforming type from a literal of its kind; `Error`, the root of
 /// what is thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was
 /// first thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core).
-let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nenum TaskStatus {\n    Running,\n    Done,\n    Failed,\n    Panicked,\n    Cancelled,\n}\nclass Coroutine<Y, R> {\n}\n";
+let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nenum TaskStatus {\n    Running,\n    Done,\n    Failed,\n    Panicked,\n    Cancelled,\n}\nclass Coroutine<Y, R> :: [Identity, Closeable] {\n    fn close() {\n    }\n}\nclass Cancelled :: Error {\n    fn message(): string = \"cancelled\"\n}\n";
 
 /// A file of a program (S5a): its module's dotted path below the root, what it parsed to, and its
 /// place among the program's files — 0 the entry.
@@ -3075,10 +3075,13 @@ class Checker {
                 _ => TExpr.ToFloat(boxE(e)),
             };
         }
-        // a conformer's value, or a child interface's, as an interface value (05 §2, §11)
+        // a conformer's value, or a child interface's, as an interface value (05 §2, §11) — not a
+        // task's or a coroutine's, which the VM holds without a descriptor (S6b3)
         match (target) {
             .Named(ii) => {
-                if (this.types[ii].kind == .Interface && this.conformsTo(actual, ii)) {
+                if (this.types[ii].kind == .Interface
+                    && this.conformsTo(actual, ii)
+                    && !this.heldWithoutDescriptor(actual)) {
                     // a scalar or a string goes into a box; a reference is its own
                     if (this.boxed(actual)) {
                         return TExpr.BoxOf(boxE(e), this.entryOf(actual), target);
@@ -3644,7 +3647,7 @@ class Checker {
     mut fn specStmt(s: TStmt, a: Ty[]): TStmt {
         return match (s) {
             .Join(_) => s,
-            .Yield(v, l) => TStmt.Yield(this.specOpt(v, a), l),
+            .Yield(v, c, d, l) => TStmt.Yield(this.specOpt(v, a), c, d, l),
             .Expr(e, l) => TStmt.Expr(this.specExpr(e, a), l),
             .SetLocal(id, e, l) => TStmt.SetLocal(id, this.specExpr(e, a), l),
             .SetGlobal(g, e, l) => TStmt.SetGlobal(g, this.specExpr(e, a), l),
@@ -3726,6 +3729,7 @@ class Checker {
             .CoNext(x, t) => TExpr.CoNext(this.specBox(x, a), this.subst(t, a)),
             .CoResult(x, t) => TExpr.CoResult(this.specBox(x, a), this.subst(t, a)),
             .CoDone(x) => TExpr.CoDone(this.specBox(x, a)),
+            .CoClose(x, c) => TExpr.CoClose(this.specBox(x, a), this.specBox(c, a)),
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -5311,7 +5315,13 @@ class Checker {
         let ci = this.typeIndex.get("Closeable");
         if (ci != null && effect) {
             let rt = typeOf(checked);
-            if (rt != .Void && rt != .Unknown && rt != .Never && this.conformsTo(rt, ci)) {
+            // a coroutine may be dropped unclosed: nothing of it runs any more (Lyric 5 10 §1
+            // rule 10)
+            if (rt != .Void
+                && rt != .Unknown
+                && rt != .Never
+                && this.conformsTo(rt, ci)
+                && this.coroutineArgs(rt).length() != 2) {
                 this.warn(
                     "LYS-SEM0144",
                     f"this {this.tyName(rt)} is Closeable and nothing closes it: bind it with 'using let'",
@@ -6967,20 +6977,23 @@ class Checker {
     /// against the coroutine's `Y`; a bare `yield` only in a `Coroutine<void>` (`LYS-SEM0038`).
     mut fn yieldStmt(value: ?Expr, at: Span): TStmt {
         let y = this.ctx.yields;
+        let cancelled = this.cancelledTy();
         if (y == null) {
-            this.notYet("a yield in a function a coroutine calls", "S6b3", at);
-            return TStmt.Expr(TExpr.Unknown, at.line);
+            // a yield in a function a coroutine calls (Lyric 5 10 §1 rule 13): typed as what it
+            // is, met with the running coroutine's `Y` where it runs
+            let v: ?TExpr = if (value != null) this.expr(value, null) else null;
+            return TStmt.Yield(v, cancelled, true, at.line);
         }
         // a generator lambda's without a type for it: the yields unify into it (rule 11)
         if (this.ctx.yieldsInferred) {
             if (value == null) {
                 this.ctx.yields = this.unify(y, Ty.Void, at, "the yields");
-                return TStmt.Yield(null, at.line);
+                return TStmt.Yield(null, cancelled, false, at.line);
             }
             let v = this.expr(value, if (y == .Unknown) null else y);
             let t = this.unify(y, typeOf(v), spanOf(value), "the yields");
             this.ctx.yields = t;
-            return TStmt.Yield(this.coerce(v, t, spanOf(value)), at.line);
+            return TStmt.Yield(this.coerce(v, t, spanOf(value)), cancelled, false, at.line);
         }
         if (value == null) {
             if (y != .Void && y != .Unknown) {
@@ -6990,10 +7003,10 @@ class Checker {
                     at
                 );
             }
-            return TStmt.Yield(null, at.line);
+            return TStmt.Yield(null, cancelled, false, at.line);
         }
         let v = this.expr(value, y);
-        return TStmt.Yield(this.coerce(v, y, spanOf(value)), at.line);
+        return TStmt.Yield(this.coerce(v, y, spanOf(value)), cancelled, false, at.line);
     }
 
     // --- expressions -----------------------------------------------------------------------------
@@ -8451,6 +8464,27 @@ class Checker {
         return TExpr.Unknown;
     }
 
+    /// The prelude's `Cancelled`, what a yield throws where its coroutine is closed (S6b3).
+    fn cancelledTy(): Ty {
+        let c = this.typeIndex.get("Cancelled");
+        return if (c != null) Ty.Named(c) else Ty.Unknown;
+    }
+
+    /// Whether `t` is a task's or a coroutine's type: the VM holds them without a descriptor, so
+    /// they are no interface values (S6b3; their descriptors come with the collections, S7).
+    fn heldWithoutDescriptor(t: Ty): bool {
+        match (t) {
+            .Named(i) => {
+                let tpl = this.types[i].template;
+                let task = this.typeIndex.get("Task") ?? -1;
+                let co = this.typeIndex.get("Coroutine") ?? -1;
+                return (tpl >= 0 && (tpl == task || tpl == co)) || i == task || i == co;
+            }
+            _ => { }
+        }
+        return false;
+    }
+
     /// The yield and the result type of a `Coroutine<Y, R>`, `[Y, R]`; none for another type (S6b).
     fn coroutineArgs(t: Ty): Ty[] {
         let co = this.typeIndex.get("Coroutine") ?? -1;
@@ -8495,7 +8529,11 @@ class Checker {
                 }
             }
             "isDone" => TExpr.CoDone(boxE(receiver)),
-            "close" => this.notYet("a coroutine's close()", "S6b3", at),
+            // its `Cancelled` made here, for the yield it parked at to throw (rule 9)
+            "close" => TExpr.CoClose(
+                boxE(receiver),
+                boxE(this.expr(Expr.StructInit("Cancelled", [], at), null))
+            ),
             _ => {
                 this.error(
                     "LYS-SEM0012",

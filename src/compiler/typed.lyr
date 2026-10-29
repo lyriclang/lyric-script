@@ -262,6 +262,7 @@ fn typeOf(e: TExpr): Ty {
         .YieldNow => Ty.Void,
         .CoNew(_, t) | .CoNext(_, t) | .CoResult(_, t) => t,
         .CoDone(_) => Ty.Bool,
+        .CoClose(_, _) => Ty.Void,
         .Int(_) => Ty.Int,
         .Float(_) => Ty.Float,
         .Bool(_) => Ty.Bool,
@@ -479,6 +480,8 @@ enum TExpr :: [Debug] {
     CoNext(Box<TExpr>, Ty),
     CoResult(Box<TExpr>, Ty),
     CoDone(Box<TExpr>),
+    /// S6b3: a close; the second the `Cancelled` its yield throws (Lyric 5 10 §1 rule 9).
+    CoClose(Box<TExpr>, Box<TExpr>),
     Unknown,
 }
 
@@ -511,8 +514,10 @@ enum TStmt :: [Debug] {
     /// The top level's end (07 End): every task of the run awaited, the first that failed thrown
     /// again (S6a).
     Join(int),
-    /// `yield v` in a coroutine's body: the value to the context that pulled (S6b).
-    Yield(?TExpr, int),
+    /// `yield v`: the value to the context that pulled (S6b); the `Cancelled` type it throws at a
+    /// close, and whether it stands outside a coroutine's own body — its type met at run time
+    /// (S6b3; Lyric 5 10 §1 rules 9, 13).
+    Yield(?TExpr, Ty, bool, int),
 }
 
 /// A clause of a `try`: the test it makes of the error — none where it takes every error —, its
@@ -531,6 +536,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         .Spawn(x, _) | .Await(x, _) | .TaskStatus(x, _) => [x.value],
         .YieldNow => [],
         .CoNew(x, _) | .CoNext(x, _) | .CoResult(x, _) | .CoDone(x) => [x.value],
+        .CoClose(x, c) => [x.value, c.value],
         .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
         .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],
         .CapturedCell(_, _) | .CellOf(_, _) | .DescOfType(_, _) | .GenericValue(_, _, _) => [],
@@ -573,7 +579,7 @@ fn stmtsIn(e: TExpr): TStmt[] {
 fn exprsOfStmt(s: TStmt): TExpr[] {
     return match (s) {
         .Join(_) => [],
-        .Yield(v, _) => if (v != null) [v] else [],
+        .Yield(v, _, _, _) => if (v != null) [v] else [],
         .Expr(e, _) | .SetLocal(_, e, _) | .SetGlobal(_, e, _) | .While(e, _, _) => [e],
         .If(c, _, _, _) => [c],
         .ForRange(_, x, y, _, _, _) => [x, y],
@@ -612,7 +618,7 @@ fn stmtsOfStmt(s: TStmt): TStmt[] {
 /// The line a statement starts on.
 fn stmtLine(s: TStmt): int {
     return match (s) {
-        .Join(l) | .Yield(_, l) => l,
+        .Join(l) | .Yield(_, _, _, l) => l,
         .Expr(_, l) | .SetLocal(_, _, l) | .SetGlobal(_, _, l) | .If(_, _, _, l) => l,
         .While(_, _, l) | .ForRange(_, _, _, _, _, l) | .Break(_, _, l) | .Continue(_, l) => l,
         .DoWhile(_, _, l) => l,

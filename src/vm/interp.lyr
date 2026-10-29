@@ -168,6 +168,8 @@ class Pull {
     co: ScriptCoroutine,
     a: int,
     b: int,
+    // a close's, not a pull's: the answer is only whether an error came (S6b3)
+    closing: bool = false,
 }
 
 /// A coroutine as the script holds it (Lyric 5 10 §1; 07 N2): its closure, its context while it
@@ -184,6 +186,10 @@ pub class ScriptCoroutine :: [HeapRef] {
     var returned: bool = false,
     var resS: uint64[] = [],
     var resR: HeapRef[] = [],
+    // the `Cancelled` a close threw into it, and the key of its `Y` for a yield outside its own
+    // body (S6b3)
+    var cancel: HeapRef = nilRef(),
+    var ykey: int = -1,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -322,6 +328,18 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     );
 }
 
+/// Whether `x` and `y` are one object: `sameRef`'s kinds, and a coroutine and a task, which this
+/// module holds (S6b3: a coroutine is an `Identity`, Lyric 5 10 §1 rule 14).
+fn sameHeld(x: HeapRef, y: HeapRef): bool {
+    if (x is ScriptCoroutine) {
+        return y is ScriptCoroutine && same(x, y);
+    }
+    if (x is ScriptTask) {
+        return y is ScriptTask && same(x, y);
+    }
+    return sameRef(x, y);
+}
+
 /// A pull's answer that the coroutine has ended: no error, no value — its slots cleared, its
 /// presence 0 (S6b).
 fn ended(s: uint64[], r: HeapRef[], a: int, b: int, ns: int, nr: int): void {
@@ -355,8 +373,13 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
     var pc = t.pc;
     var bs = t.bs;
     var br = t.br;
+    // S6b3: a close's `Cancelled`, thrown at the yield the coroutine parked at, from the register
+    // above the frame's
+    var inject = false;
     while (true) {
-        let ins = code[pc];
+        let ins = if (inject) Instr { op = .Throw, a = f.refs as uint16, b = 0, c = 0 }
+            else code[pc];
+        inject = false;
         let a = ins.a as int;
         let b = ins.b as int;
         let c = ins.c as int;
@@ -498,7 +521,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc += 1;
             }
             .Same => {
-                s[bs + a] = truth(sameRef(r[br + b], r[br + c]));
+                s[bs + a] = truth(sameHeld(r[br + b], r[br + c]));
                 pc += 1;
             }
             .Not => {
@@ -620,7 +643,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         bs = x.bs;
                         br = x.br;
                         report = x.report;
-                        ended(s, r, p.a, p.b, co.ns, co.nr);
+                        if (p.closing) {
+                            s[p.a] = 0 as uint64;
+                        } else {
+                            ended(s, r, p.a, p.b, co.ns, co.nr);
+                        }
                         continue;
                     }
                     return match (ins.op) {
@@ -1193,6 +1220,22 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         s[p.a] = 1 as uint64;
                         r[p.b] = value;
                         r[p.b + 1] = record;
+                        // a close's own `Cancelled` ends there; what a defer threw on the way out
+                        // comes out of the close, the first, the rest suppressed into it (rule 9)
+                        if (p.closing && sameRef(value, co.cancel)) {
+                            s[p.a] = 0 as uint64;
+                            if (record.suppressed.length() > 0) {
+                                let again = recordOf(frames, fi, pc);
+                                var k = 1;
+                                while (k < record.suppressed.length()) {
+                                    again.suppressed.push(record.suppressed[k]);
+                                    k += 1;
+                                }
+                                s[p.a] = 1 as uint64;
+                                r[p.b] = record.suppressed[0];
+                                r[p.b + 1] = again;
+                            }
+                        }
                         continue;
                     }
                     if (t.handle != null) {
@@ -1351,7 +1394,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             }
             // S6b: the running coroutine hands the value at `s[a]…`/`r[b]…` to the context that
             // pulled it and parks (Lyric 5 10 §1 rule 2); where none pulled, a panic
-            .YieldV => {
+            .YieldV | .YieldD => {
                 let p = t.pullers.pop();
                 if (p == null) {
                     return panicOut(
@@ -1361,6 +1404,27 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         pc,
                         "LYS-RT0014",
                         "a yield where no coroutine runs"
+                    );
+                }
+                if (p.closing) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a yield after the coroutine was closed"
+                    );
+                }
+                // S6b3: a yield in a function the coroutine calls meets its `Y` here (rule 13)
+                if (ins.op == .YieldD && c != p.co.ykey) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a yield of another type than the running coroutine's"
                     );
                 }
                 let co = p.co;
@@ -1427,6 +1491,83 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 while (k < o.rr) {
                     r[br + b + k] = if (o.returned) o.resR[k] else nil;
                     k += 1;
+                }
+                pc += 1;
+            }
+            // S6b3: a close (Lyric 5 10 §1 rule 9): one never pulled or ended ends; one parked at a
+            // yield runs on from it with that yield throwing the `Cancelled` in `r[b]`; `s[a]` 1
+            // and the error at `r[b]`, its record at `r[b+1]`, where the close throws
+            .CoClose => {
+                let o = r[br + c];
+                if (!(o is ScriptCoroutine)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a close of no coroutine"
+                    );
+                }
+                if (o.state == 2) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a coroutine closed while it runs"
+                    );
+                }
+                let x = o.ctx;
+                if (o.state == 1 && x != null) {
+                    o.cancel = r[br + b];
+                    t.pullers.push(
+                        Pull {
+                            ctx = Context {
+                                s = s,
+                                r = r,
+                                frames = frames,
+                                fi = fi,
+                                pc = pc + 1,
+                                bs = bs,
+                                br = br,
+                                report = report,
+                            },
+                            co = o,
+                            a = bs + a,
+                            b = br + b,
+                            closing = true,
+                        }
+                    );
+                    o.state = 2;
+                    s = x.s;
+                    r = x.r;
+                    frames = x.frames;
+                    fi = x.fi;
+                    f = module.functions[fi];
+                    code = f.code;
+                    pc = x.pc;
+                    bs = x.bs;
+                    br = x.br;
+                    report = x.report;
+                    pc -= 1;
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = o.cancel;
+                    inject = true;
+                } else {
+                    o.state = 3;
+                    o.ctx = null;
+                    s[bs + a] = 0 as uint64;
+                    pc += 1;
+                }
+            }
+            .CoKey => {
+                let o = r[br + a];
+                if (o is ScriptCoroutine) {
+                    o.ykey = b;
                 }
                 pc += 1;
             }

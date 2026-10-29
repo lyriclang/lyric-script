@@ -117,6 +117,11 @@ pub enum Op :: [Variants, Equatable] {
     YieldV,
     CoRes,
     CoDone,
+    // S6b3: a close of a coroutine (`b` holds the `Cancelled` its yield throws); a yield outside
+    // the coroutine's own body, `c` the key of its value's type; the key of a coroutine's `Y`.
+    CoClose,
+    YieldD,
+    CoKey,
 }
 
 /// What an operand of an operation names.
@@ -258,6 +263,9 @@ pub fn info(op: Op): OpInfo {
         .YieldV => OpInfo { mnemonic = "yield.v", operands = [.Scalar, .Ref] },
         .CoRes => OpInfo { mnemonic = "co.res", operands = [.Scalar, .Ref, .Ref] },
         .CoDone => OpInfo { mnemonic = "co.done", operands = [.Scalar, .Ref] },
+        .CoClose => OpInfo { mnemonic = "co.close", operands = [.Scalar, .Ref, .Ref] },
+        .YieldD => OpInfo { mnemonic = "yield.d", operands = [.Scalar, .Ref, .Imm] },
+        .CoKey => OpInfo { mnemonic = "co.key", operands = [.Ref, .Imm] },
     };
 }
 

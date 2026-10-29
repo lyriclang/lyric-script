@@ -1201,7 +1201,7 @@ summary = "`todo(message)` ran: `not implemented`, and the message where one is 
 title = "a coroutine misused"
 severity = "panic"
 area = "10-concurrency"
-summary = "A coroutine is used against its rules: pulled while it runs, or a `yield` where no coroutine runs. The code and its meaning are Lyric 5's LYR-RT0014."
+summary = "A coroutine is used against its rules: pulled or closed while it runs, a `yield` where no coroutine runs or after the coroutine was closed, or a yield of another type than the running coroutine's. The code and its meaning are Lyric 5's LYR-RT0014."
 
 [LYS-RT0018]
 title = "a deadlock"

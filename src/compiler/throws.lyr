@@ -211,6 +211,17 @@ class ThrowSets {
                 out.addAll(rest);
                 out
             }
+            // a yield throws `Cancelled` where its coroutine is closed (Lyric 5 10 §1 rules 9, 13)
+            .Yield(v, cancelled, _, _) => {
+                let out = Thrown.none();
+                if (v != null) {
+                    out.addAll(this.exprSet(v));
+                }
+                if (cancelled != .Unknown) {
+                    out.add(cancelled, this.line);
+                }
+                out
+            }
             _ => {
                 let out = Thrown.none();
                 for (e in exprsOfStmt(s)) {
@@ -248,6 +259,8 @@ class ThrowSets {
             .Await(_, _) => out.addAny(this.line),
             // a pull throws what the body throws: any error, the type says none (S6b; 03)
             .CoNext(_, _) => out.addAny(this.line),
+            // a close throws what the body throws on its way out (S6b3)
+            .CoClose(_, _) => out.addAny(this.line),
             _ => { }
         }
         for (x in exprsIn(e)) {

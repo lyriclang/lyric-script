@@ -220,8 +220,12 @@ VM's call path, S7k measurement point 3.
 - **S7b1 done** (S7b split in three) — lists: `T[]` native in the VM, its elements' slots apart;
   literals, indexing with the bound (`LYS-RT0003`), `length`/`push`/`pop`, a `for` over a list,
   the Debug form; bytecode format 21.
-- Next: **S7b2** — the rest of the list's methods, slices, `+`, `*`, `in`, `==`, the empty
-  literal's first use, a list as an interface value.
+- **S7b2a done** (S7b2 split in two) — `extend<T> T[]`; the list's methods (in the prelude, or
+  written by the checker per element type where they compare), `+`, `*`, `in`, `==`, slices; a
+  walk over a list panics after a change of its length (`LYS-RT0016`, Lyric 5's), which S7b1 got
+  wrong; bytecode format 22.
+- Next: **S7b2b** — `^n`, open ranges, the empty literal's first use, `FromArrayLiteral`, a list as
+  an interface value, `typeOf`, `e.suppressed()`.
 
 ## Working mode
 

@@ -1096,3 +1096,31 @@ nicht“ retirierte mit seiner Regel. Spec 03 Regeln 16–17, 07 Regel 6, 08 Reg
 alle rot gegen S7a; drei VM-Tests in Assembler halten die Konvention der Basen fest. Vier
 Mutanten in einem Lauf, alle wie vorhergesagt gefangen; ein fünfter (`pop` ohne die Kennung der
 schlichten Referenz) ist äquivalent. Tests 348 → 351, Fälle 336 → 344.
+
+**S7b2, geteilt (2026-10-29).** **S7b2a** `extend<T> T[]` (eine Sprachlücke: der Block meldete
+`SEM0124`, obwohl 03 ihn entschieden hat), die Methoden in Script, Operatoren, Slices; **S7b2b**
+`^n` und offene Bereiche, das leere Literal mit der ersten Verwendung (03 Leer),
+`FromArrayLiteral`, eine Liste als Interfacewert mit Deskriptor, `typeOf([1, 2])`,
+`e.suppressed()`.
+
+**S7b2a, Ergebnis (2026-10-29).** Ein eingebauter Typeintrag `List` mit einem Typparameter trägt
+die Methoden aller Listen; `extend<T> T[] { … }` (auch `List<T>`) fügt hinzu, `this` ist die
+Liste, der Empfänger bindet das Element, und die Kopien bekommen ihre Deskriptoren als versteckte
+Parameter, weil eine Liste keinen hält. Die Methoden, die nicht vergleichen, stehen in Script in
+der Prelude (`isEmpty`, `get`, `first`, `last`, `pushAll`, `insert`, `removeAt`, `removeWhere`,
+`clear`, `truncate`, `swap`, `reverse`, `reversed`, `fill`), ebenso die Helfer von `+`, `*` und
+Slices; drei Intrinsics dazu (`__listTruncate`, `__listChanges`, `__listCheck`) und
+`__boundsPanic` für `RT0003` aus Script. `__`-Namen nennt nur die Bibliothek. **Abweichung vom
+Plan:** `Equatable` gibt es in Script noch nicht als Interface (S3h synthetisiert Gleichheit je
+Typ), also schreibt der Checker `contains`, `indexOf`, `remove`, `dedup`, `==` und `in` je
+konkretem Elementtyp; über einem Typparameter erst mit S7d. Kostenregeln für `+` und `xs * n`
+entfallen: sie sind Bytecode, den das Fuel zählt, kein Native. **Korrektur an S7b1:** dessen `for`
+besuchte nachgeschobene Elemente — eine Erfindung; Lyric 5s `List`-Iterator paniert nach einer
+Längenänderung (`RT0016`), also zählt die Liste jetzt ihre Änderungen (`list.changes`,
+`list.check`, Format 22) und jeder Schritt prüft. Typnamen klammern `(?int)[]` und
+`(fn() -> int)[]`. Spec 03 Regel 16, 05 Regel 12, 07 Regel 6, 08 Regel 3; elf Fälle neu, einer
+umgeschrieben; alle rot gegen S7b1 außer dem umgeschriebenen `for` (dessen andere Hälfte). Vier
+Mutanten: einer überlebte wie vorhergesagt (Element an Index 0), einer gegen die Vorhersage (der
+Deskriptor-Fall brauchte den Deskriptor gar nicht — der Text eines `T` geht über die Tabelle des
+Werts); beide Fälle geschärft, beide Mutanten danach gefangen; ein Unit-Test fing einen dritten
+mit, den die Vorhersage nur dem Fall zugeschrieben hatte. Tests 351 → 353, Fälle 344 → 355.

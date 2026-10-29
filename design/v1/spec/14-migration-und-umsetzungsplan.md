@@ -751,3 +751,21 @@ verfehlt: ein Reihenfolgetest mit zu wenigen Einträgen (S5a), eine `--locked`-P
 andere verdeckte (S5c2), zwei sich maskierende Mutanten (S5e); jeweils geschärft oder getrennt
 nachgeprüft. Neue Werkzeugfalle: Lyric 5s Map ist bis etwa acht Einträge geordnet. 278 Tests,
 230 Fälle; Bytecode-Format 9.
+
+## S6 — Slices (Plan, Entwurf 2026-10-29)
+
+Ziel aus der Meilensteintabelle: Koroutinen und Tasks — Tasks auf VM-Frames, Scheduler je Instanz,
+Generatoren, `spawn`/`await`/`TaskScope` (Top-Level), Channels, `select`, `sleep`, `Timer`,
+`Semaphore`, Abbruch, `withTimeout`, I/O über Lyric-5-Tasks (07 End, Wait, N2–N9; 11 Co; Lyric 5
+10 §1–§7). N1, N7, N10 entfallen (eine Instanz, ein Thread).
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S6a Tasks in der VM** | die Frames des Interpreters je Task, eine Warteschlange je Instanz; `spawn { }` → `Task<T>`, `await()`, `status()` (`Running`/`Done`/`Failed`/`Panicked`/`Cancelled`), `yieldNow()`; kooperativ (N8); der Top-Level-Code ist ein `TaskScope` (End): Kinder am Ende abgewartet, der Fehler eines Kindes bricht die Geschwister ab und endet mit Exit 1 | Konformanzfälle |
+| **S6b Koroutinen** | `Coroutine<Y, R>`: `next(): ?Y`, `result()`, `isDone()`, `close()` (wirft drinnen `Cancelled`); Generator-Lambdas, `sequence { yield }`; `Coroutine :: Iterator`, `for` darüber; Warten im Generator parkt dessen Task (N3) | Konformanzfälle |
+| **S6c Abbruch und Scopes** | `task.cancel()` → `Cancelled` am nächsten Wartepunkt (N9), fangbar; `TaskScope { }`, `scope.cancel()`, `spawnDetached`, `withTimeout(d) { }`; Panik im Task → `Panicked`, `await()` paniert erneut (N4) | Konformanzfälle |
+| **S6d Channels, select, Zeit** | `Channel<T>` gepuffert und ungepuffert, senden/empfangen/schließen; `select` als Builder; `sleep`, `Timer.after`; `Semaphore` (kein Mutex, N5); die Hauptschleife *standalone* wartet auf Zeitgeber | Konformanzfälle |
+| **S6e I/O über Lyric-5-Tasks** | ein wartendes Native startet einen Lyric-5-Task und parkt den Skript-Task (N6, 11 Co); die ersten Natives, die das brauchen (`readLine` von stdin, `sleep` auf der Uhr); ein Callback aus einem Native darf nicht warten (Fehler) | Konformanzfälle |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s6-complete`; Bereichszeilen gegen den Code | nebenläufiges Beispiel in der CI |
+
+Reihenfolge: a vor b vor c vor d vor e. Austrittskriterium: ein nebenläufiges Beispiel in der CI.

@@ -154,6 +154,14 @@ platforms (the runner builds the git repositories), and by `examples/project` an
 `readLine`, `args`, `exit` and the fixed rights table (S7); scopes on rights and host rights (S8);
 `[lints]`, `test`, the note of a local hiding a module (S11).
 
+### S6 — open
+
+Coroutines and tasks (plan 14, "S6 — Slices"): tasks on VM frames, a scheduler per instance,
+generators, `spawn`/`await`/`TaskScope` (the top level), channels, `select`, `sleep`, `Timer`,
+`Semaphore`, cancellation, `withTimeout`, I/O through Lyric 5 tasks (07, 11).
+
+Exit criterion: a concurrent example.
+
 ## Working mode
 
 Decided 2026-10-28 (14): **autonomous, as on the Lyric 5 line** — Claude plans each slice and

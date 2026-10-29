@@ -487,6 +487,12 @@ severity = "error"
 area = "04-modules"
 summary = "A top-level declaration is named like a builtin type: `struct int`, `fn string()`, `let bool = …` at the top of a module. Lyric 5's LYR-RES0011."
 
+[LYS-RES0012]
+title = "a name that is also a submodule"
+severity = "error"
+area = "04-modules"
+summary = "A module declares or imports a name that is also the last segment of one of its submodules: `x` in `a.b` beside the file `a/b/x.lyrs`. Reported whether or not the submodule is imported. Lyric 5's LYR-RES0012."
+
 [LYS-SEM0001]
 title = "a value of another type than the place takes"
 severity = "error"

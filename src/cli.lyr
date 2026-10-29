@@ -2,7 +2,7 @@
 //! `check`, `--version`, `help`, and, until the debugging tools come, `asm`, which runs bytecode in
 //! its text form.
 import std.collections { List };
-import std.fs { readText };
+import std.fs { DirEntry, readDir, readText };
 import std.io { eprintln, println };
 import std.os { args };
 import std.path { join, parent, stem };
@@ -141,6 +141,8 @@ class Loaded {
     paths: List<string>,
     texts: List<string>,
     names: List<string>,
+    // each module's submodules: the `.lyrs` files in the folder of its name
+    subs: List<string[]>,
     parses: List<Parsed>,
     order: List<int>,
     errors: List<Diagnostic>,
@@ -170,6 +172,7 @@ fn loadProgram(path: string, text: string): Loaded {
         paths = List<string>.new(),
         texts = List<string>.new(),
         names = List<string>.new(),
+        subs = List<string[]>.new(),
         parses = List<Parsed>.new(),
         order = List<int>.new(),
         errors = List<Diagnostic>.new(),
@@ -177,6 +180,8 @@ fn loadProgram(path: string, text: string): Loaded {
     l.paths.push(path);
     l.texts.push(text);
     l.names.push(stem(path));
+    // the entry is the root: the modules beside it are no submodules of it
+    l.subs.push([]);
     // each module's imports: the module, and the import's place for a cycle through it
     let edges = List<List<int>>.new();
     let edgeAt = List<List<Diagnostic>>.new();
@@ -207,7 +212,7 @@ fn loadProgram(path: string, text: string): Loaded {
             var j = indexOf(l.names, name);
             if (j < 0) {
                 let rel = im.path.join("/") + ".lyrs";
-                let file = if (folder == ".") rel else join(folder, rel);
+                let file = below(folder, rel);
                 let found = try? readText(file);
                 if (found == null) {
                     l.errors.push(
@@ -217,10 +222,21 @@ fn loadProgram(path: string, text: string): Loaded {
                     );
                     continue;
                 }
+                // the path names its file exactly, where the file system would take another case
+                let differs = misnamed(folder, im.path);
+                if (differs != null) {
+                    l.errors.push(
+                        where with {
+                            message = f"no module '{name}': the file is named '{differs}', not '{rel}'",
+                        }
+                    );
+                    continue;
+                }
                 j = l.paths.length();
                 l.paths.push(file);
                 l.texts.push(found);
                 l.names.push(name);
+                l.subs.push(lyrsIn(below(folder, im.path.join("/"))));
             }
             deps.push(j);
             at.push(where);
@@ -279,6 +295,69 @@ fn visit(
     stack.pop();
     state[k] = 2;
     l.order.push(k);
+}
+
+/// `rel` below the folder `folder`, the entry's.
+fn below(folder: string, rel: string): string {
+    return if (folder == ".") rel else join(folder, rel);
+}
+
+/// The path below `folder` as the folders name it, where it differs from `segments` — a module
+/// path — in case: `A/b.lyrs` for `a.b`; `null` where each name is exact (Lyric 5 04 §2 rule 4).
+fn misnamed(folder: string, segments: string[]): ?string {
+    var dir = folder;
+    let shown = List<string>.new();
+    var k = 0;
+    while (k < segments.length()) {
+        let want = if (k == segments.length() - 1) segments[k] + ".lyrs" else segments[k];
+        var exact = false;
+        var other: ?string = null;
+        for (e in entriesOf(dir)) {
+            if (e.name == want) {
+                exact = true;
+            } else if (e.name.toLower() == want.toLower()) {
+                other = e.name;
+            }
+        }
+        if (!exact && other != null) {
+            shown.push(other);
+            k += 1;
+            while (k < segments.length()) {
+                shown.push(if (k == segments.length() - 1) segments[k] + ".lyrs" else segments[k]);
+                k += 1;
+            }
+            return shown.toArray().join("/");
+        }
+        shown.push(want);
+        dir = below(dir, segments[k]);
+        k += 1;
+    }
+    return null;
+}
+
+/// The modules in folder `dir`: its `.lyrs` files' names without the extension; none where it is
+/// no folder.
+fn lyrsIn(dir: string): string[] {
+    let out = List<string>.new();
+    for (e in entriesOf(dir)) {
+        if (e.isFile && e.name.endsWith(".lyrs")) {
+            out.push(stem(e.name));
+        }
+    }
+    return out.toArray();
+}
+
+/// The entries of folder `dir`; none where it cannot be read.
+fn entriesOf(dir: string): DirEntry[] {
+    let out = List<DirEntry>.new();
+    try {
+        for (e in readDir(dir)) {
+            out.push(e);
+        }
+    } catch (_) {
+        return [];
+    }
+    return out.toArray();
 }
 
 fn indexOf(xs: List<string>, x: string): int {
@@ -379,7 +458,14 @@ fn compile(l: Loaded, json: bool): Compiled {
     let imported = List<ProgramUnit>.new();
     for (k in l.order) {
         if (k != 0) {
-            imported.push(ProgramUnit { name = l.names[k], module = l.parses[k].module, file = k });
+            imported.push(
+                ProgramUnit {
+                    name = l.names[k],
+                    module = l.parses[k].module,
+                    file = k,
+                    submodules = l.subs[k],
+                }
+            );
         }
     }
     let checked = checkModule(l.parses[0].module, imported.toArray());

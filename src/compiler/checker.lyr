@@ -91,6 +91,8 @@ struct ProgramUnit {
     name: string,
     module: Module,
     file: int,
+    /// The last segments of its submodules: the modules in the folder of its name (S5a2).
+    submodules: string[] = [],
 }
 
 /// Checks a program: its entry, file 0, with the modules it imports, given in the order their
@@ -104,6 +106,11 @@ fn checkModule(parsed: Module, imported: ProgramUnit[] = []): Checked {
     }
     for (u in imported) {
         c.modNames.insert(u.file, u.name);
+        let subs = Set<string>.new();
+        for (n in u.submodules) {
+            subs.insert(n);
+        }
+        c.submodules.insert(u.file, Names { names = subs });
         c.modByName.insert(u.name, u.file);
         c.sources.insert(u.file, u.module.text);
         for (item in u.module.items) {
@@ -155,6 +162,12 @@ struct LaterMatch {
 /// `Map<int, Map<…>>` does not lower yet (as lyriclang/lyric#612).
 class View {
     names: Map<string, string>,
+}
+
+/// A set of names, a module's submodules (a class: a map of sets as a field of the checker is
+/// one Lyric 5 does not compile).
+class Names {
+    names: Set<string>,
 }
 
 /// The modules a module's qualified and aliased imports bind, by name.
@@ -331,6 +344,8 @@ class Checker {
     var imported: List<ImportCheck> = List<ImportCheck>.new(),
     // the keys of what is `private`: its file's alone (02 V)
     var privateKeys: Set<string> = Set<string>.new(),
+    // each module's submodules, by its file (S5a2)
+    var submodules: Map<int, Names> = Map<int, Names>.new(),
     // a `pub import`'s names: the key under the passing module to the key it passes on
     var reexports: Map<string, string> = Map<string, string>.new(),
     // the module's source, which an assertion quotes as written (S4f)
@@ -444,6 +459,7 @@ class Checker {
             return;
         }
         this.viewOf(this.mod).insert(name, this.declKey(name));
+        this.notASubmodule(name, at);
         if (isBuiltinType(name)) {
             this.error("LYS-RES0011", f"'{name}' is a builtin type's name", at);
         } else if (this.inPrelude(name)) {
@@ -459,6 +475,20 @@ class Checker {
             || this.globalIndex.containsKey(name)
             || this.aliases.containsKey(name)
             || isPreludeFn(name);
+    }
+
+    /// A name the current module declares or imports is not also one of its submodules (Lyric 5
+    /// 04 §4 rule 7, `LYS-RES0012`).
+    mut fn notASubmodule(name: string, at: Span): void {
+        let subs = this.submodules.get(this.mod);
+        if (subs != null && subs.names.contains(name)) {
+            let path = this.modNames.get(this.mod) ?? "";
+            this.error(
+                "LYS-RES0012",
+                f"'{name}' is also the name of the submodule '{path}.{name}'",
+                at
+            );
+        }
     }
 
     mut fn hidesPrelude(name: string, at: Span): void {
@@ -645,6 +675,7 @@ class Checker {
                 if (this.inPrelude(bound)) {
                     this.hidesPrelude(bound, it.span);
                 }
+                this.notASubmodule(bound, it.span);
                 if (im.isPub) {
                     this.reexports.insert(this.declKey(bound), key);
                 }
@@ -666,6 +697,7 @@ class Checker {
         if (!this.noteImport(bound, im.span, im.isPub)) {
             return;
         }
+        this.notASubmodule(bound, im.span);
         let known = this.modAliases.get(this.mod);
         let aliases = if (known != null) known
             else ModuleNames { modules = Map<string, int>.new() };

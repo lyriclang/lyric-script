@@ -2,11 +2,11 @@
 // `try` test the error by type in order; what none takes leaves frame after frame; an error no
 // frame takes ends the run with its report — its message, its causes, its frames.
 import std.collections { List };
-import std.test { assertEq, assertTrue };
+import std.test { assertEq };
 import lyric_script.compiler.checker { checkModule };
 import lyric_script.compiler.codegen { generate };
 import lyric_script.compiler.parser { parse };
-import lyric_script.vm.interp { Outcome, ScriptError, maxCauses, run };
+import lyric_script.vm.interp { ScriptError, maxCauses, run };
 import lyric_script.vm.module { Module, check };
 
 fn compiled(source: string): Module {
@@ -313,9 +313,8 @@ fn go() {
     assertEq(e.typeName, "Exception");
     assertEq(e.message, "config");
     assertEq(e.causes, ["disk"]);
-    // the frames it was thrown from: `outer`'s throw, then `main`'s call
-    assertEq(e.trace.length(), 2);
-    assertTrue(e.trace[0].startsWith("at outer (line "), e.trace[0]);
+    // the frames it was thrown from: `outer`'s throw, then `go`'s call
+    assertEq(e.trace, ["at outer (line 8)", "at go (line 12)"]);
 }
 
 @Test

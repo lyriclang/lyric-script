@@ -1,7 +1,7 @@
 // The cache's bytecode: a module reads back as it was written, and a file of another format,
 // another compiler, another source or with missing bytes is none of ours.
 import std.collections { List };
-import std.test { assertEq, assertThrows };
+import std.test { assertEq, assertThrows, assertTrue };
 import lyric_script.compiler.checker { checkModule };
 import lyric_script.compiler.codegen { generate };
 import lyric_script.compiler.parser { parse };
@@ -87,4 +87,22 @@ fn aDamagedFileIsNoneOfOurs(): void {
         ).message(),
         "no bytecode file"
     );
+}
+
+@Test
+fn handlersAndTheErrorSlotsReadBack(): void {
+    let m = generate(
+        checkModule(
+            parse(
+                "fn f(): int {\n    try {\n        throw Exception(\"x\")\n    } catch (_) {\n        return 1\n    }\n}\n"
+            ).module
+        ).program,
+        "demo"
+    );
+    assertTrue(m.errorMessage >= 0 && m.errorCause >= 0);
+    let back = try! decode(encode(m, 4, "1.0.0-test", "abc"), 4, "1.0.0-test", "abc");
+    assertTrue(disassemble(m).contains("    catch @L"), disassemble(m));
+    assertEq(disassemble(back), disassemble(m));
+    assertEq(back.errorMessage, m.errorMessage);
+    assertEq(back.errorCause, m.errorCause);
 }

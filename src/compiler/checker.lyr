@@ -2938,7 +2938,14 @@ class Checker {
                 this.specAll(xs, a),
                 this.subst(t, a)
             ),
-            .Upcast(x, t) => TExpr.Upcast(this.specBox(x, a), this.subst(t, a)),
+            // a type parameter's value as an interface value: a copy at a scalar or a string boxes
+            // it, as `fit` does for a type known where it is written
+            .Upcast(x, t) => {
+                let v = this.specExpr(x.value, a);
+                let vt = typeOf(v);
+                if (this.boxed(vt)) TExpr.BoxOf(boxE(v), this.entryOf(vt), this.subst(t, a))
+                    else TExpr.Upcast(boxE(v), this.subst(t, a))
+            }
             .CallIface(slot, xs, t) => TExpr.CallIface(slot, this.specAll(xs, a), this.subst(t, a)),
             .BoxOf(x, k, t) => TExpr.BoxOf(this.specBox(x, a), k, this.subst(t, a)),
             .Unbox(x, t) => TExpr.Unbox(this.specBox(x, a), this.subst(t, a)),

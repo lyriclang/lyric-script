@@ -2,7 +2,7 @@
 // calls and returns out of their bounds are named with the function and the instruction.
 import std.test { assertEq, assertTrue };
 import lyric_script.vm.op { Instr, Op };
-import lyric_script.vm.module { Function, Module, TypeDesc, check };
+import lyric_script.vm.module { Function, Handler, Module, TypeDesc, check };
 
 fn ins(op: Op, a: int, b: int, c: int): Instr {
     return Instr { op = op, a = a as uint16, b = b as uint16, c = c as uint16 };
@@ -126,4 +126,29 @@ fn aTypeIsItsDescriptor(): void {
     let b = TypeDesc { name = "Point", scalarFields = ["x", "y"], refFields = [] };
     assertTrue(same(a, a));
     assertTrue(!same(a, b));
+}
+
+@Test
+fn aHandlerOutOfTheFunctionIsNamed(): void {
+    let f = Function {
+        name = "f",
+        paramsS = 0,
+        paramsR = 0,
+        scalars = 0,
+        refs = 1,
+        returns = .Void,
+        code = [ins(.Ret, 0, 0, 0)],
+        constants = [],
+        strings = [],
+        lines = [1],
+        handlers = [
+            Handler { start = 0, end = 2, target = 0, reg = 0 },
+            Handler { start = 0, end = 1, target = 1, reg = 3 },
+        ],
+    };
+    let errors = check(Module { name = "m", functions = [f], types = [] });
+    assertEq(errors.length(), 3);
+    assertEq(errors[0].message, "a handler's region");
+    assertEq(errors[1].message, "a handler's target");
+    assertEq(errors[2].message, "a handler's register 3 of 1");
 }

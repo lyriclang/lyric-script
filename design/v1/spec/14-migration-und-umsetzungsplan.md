@@ -763,7 +763,7 @@ Generatoren, `spawn`/`await`/`TaskScope` (Top-Level), Channels, `select`, `sleep
 |---|---|---|
 | **S6a Tasks in der VM** | die Frames des Interpreters je Task, eine Warteschlange je Instanz; `spawn { }` → `Task<T>`, `await()`, `status()` (`Running`/`Done`/`Failed`/`Panicked`/`Cancelled`), `yieldNow()`; kooperativ (N8); der Top-Level-Code ist ein `TaskScope` (End): Kinder am Ende abgewartet, der Fehler eines Kindes bricht die Geschwister ab und endet mit Exit 1 | Konformanzfälle |
 | **S6b Koroutinen** | `Coroutine<Y, R>`: `next(): ?Y`, `result()`, `isDone()`, `close()` (wirft drinnen `Cancelled`); Generator-Lambdas, `sequence { yield }`; `Coroutine :: Iterator`, `for` darüber; Warten im Generator parkt dessen Task (N3) | Konformanzfälle |
-| **S6c Abbruch und Scopes** | `task.cancel()` → `Cancelled` am nächsten Wartepunkt (N9), fangbar; `TaskScope { }`, `scope.cancel()`, `spawnDetached`, `withTimeout(d) { }`; Panik im Task → `Panicked`, `await()` paniert erneut (N4) | Konformanzfälle |
+| **S6c Abbruch und Scopes** | `task.cancel()` → `Cancelled` am nächsten Wartepunkt (N9), fangbar; `TaskScope { }`, `scope.cancel()`, `spawnDetached`, `withTimeout(d) { }`; Panik im Task → `Panicked`, `await()` paniert erneut (N4); `TaskStatus<T>` mit Wert, Fehler und `PanicInfo`, `isDone()` (Lyric 5 10 §2 Regeln 10–11; aus S6a) | Konformanzfälle |
 | **S6d Channels, select, Zeit** | `Channel<T>` gepuffert und ungepuffert, senden/empfangen/schließen; `select` als Builder; `sleep`, `Timer.after`; `Semaphore` (kein Mutex, N5); die Hauptschleife *standalone* wartet auf Zeitgeber | Konformanzfälle |
 | **S6e I/O über Lyric-5-Tasks** | ein wartendes Native startet einen Lyric-5-Task und parkt den Skript-Task (N6, 11 Co); die ersten Natives, die das brauchen (`readLine` von stdin, `sleep` auf der Uhr); ein Callback aus einem Native darf nicht warten (Fehler) | Konformanzfälle |
 | **Abschluss** | STATUS, PR, CI, Merge, Tag `s6-complete`; Bereichszeilen gegen den Code | nebenläufiges Beispiel in der CI |
@@ -785,10 +785,14 @@ Fehler und Panik gleich (Exit 1 bzw. 101), auch wo es erwartet und gefangen wurd
 den Lauf (`RT0900`); Lyric 5 §2 Regel 12 lässt den ältesten wartenden Task panieren — da eine
 Panik nicht fangbar ist, kommt beides zum selben Ende. Vorgezogen aus S6c: `Panicked` und das
 erneute Panieren in `await()`, die der Scope braucht. Mit Uhr **S6c**: das Abbrechen der
-Geschwister beim ersten Scheitern; bis dahin laufen sie zu Ende. Gefunden: `join` nahm den ersten
+Geschwister beim ersten Scheitern, bis dahin laufen sie zu Ende; `TaskStatus<T>` mit Wert, Fehler
+und `PanicInfo` (Lyric 5 §2 Regel 11 — N4 nennt nur die Zustände, eine Abweichung ist nicht
+entschieden, also gilt Lyric 5) und `isDone()` (Regel 10). Gefunden: `join` nahm den ersten
 *gestarteten* gescheiterten Task und ließ eine Panik immer gewinnen — gegen Lyric 5s Scope, zwei
 VM-Tests rot gegen den alten Stand; `spawn(42)` lief ohne Diagnose durch; `SEM0023` stand in
 keinem Katalog (der Katalog-Check fing es) → `SEM0014`, ein Block mit Parametern `SEM0001` statt
 `SEM0045`, beim Lambda nicht mehr doppelt gemeldet. Spec 10 Regeln 1–3, elf Fälle; die neun
-ersten rot gegen S5 geprüft, die End-Reihenfolge nageln die VM-Tests fest. Tests 278 → 292,
-Fälle 230 → 241.
+ersten rot gegen S5 geprüft, die End-Reihenfolge nageln die VM-Tests fest. Sieben Mutanten in drei
+Läufen (`join` ohne Scheitern, `Failed` als `Done`, `spawn(42)` still, `await` ohne Menge; `yield`
+ohne Wechsel, kein `join`; `await` ohne erneutes Werfen), alle wie vorher aufgeschrieben gefangen.
+Tests 278 → 292, Fälle 230 → 241.

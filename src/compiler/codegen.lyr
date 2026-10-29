@@ -1741,6 +1741,15 @@ class FnGen {
             .ParkWatched => {
                 this.emit(Op.ParkW, 0, 0, 0);
             }
+            // S6d3: the prelude's sleep and timers
+            .Sleep(x) => {
+                let d = this.any(x.value);
+                this.emit(Op.Sleep, d.s, 0, 0);
+            }
+            .TimerAfter(x, _) => {
+                let d = this.any(x.value);
+                this.emit(Op.TimerAfter, dst.r, d.s, 0);
+            }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);
                 this.emit(Op.TaskSt, dst.s, task.r, 0);

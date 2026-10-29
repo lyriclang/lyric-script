@@ -151,6 +151,9 @@ pub enum Op :: [Variants, Equatable] {
     ChanReady,
     ChanWatch,
     ParkW,
+    // S6d3: the task sleeps `s[a]` nanoseconds; a channel that closes once `s[b]` nanoseconds passed.
+    Sleep,
+    TimerAfter,
 }
 
 /// What an operand of an operation names.
@@ -316,6 +319,8 @@ pub fn info(op: Op): OpInfo {
         .ChanReady => OpInfo { mnemonic = "chan.ready", operands = [.Scalar, .Ref] },
         .ChanWatch => OpInfo { mnemonic = "chan.watch", operands = [.Ref] },
         .ParkW => OpInfo { mnemonic = "park.w", operands = [] },
+        .Sleep => OpInfo { mnemonic = "sleep", operands = [.Scalar] },
+        .TimerAfter => OpInfo { mnemonic = "timer.after", operands = [.Ref, .Scalar] },
     };
 }
 

@@ -562,3 +562,30 @@ fn aSelectWakesOnABufferedSend(): void {
 fn theSelectsIntrinsicsAreThePreludesAlone(): void {
     assertEq(errs("let a = Channel<int>.new()\nlet r = __chanReady(a)"), ["LYS-SEM0002"]);
 }
+
+// Time (S6d3): sleeps on the run's clock, timers, `withTimeout`.
+@Test
+fn sleepersWakeByTheirDeadlines(): void {
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let x = spawn {\n        sleep(Duration.ofMillis(30))\n"
+        + "        b.n = b.n * 10 + 2\n    }\n    let y = spawn {\n        sleep(Duration.ofMillis(10))\n"
+        + "        b.n = b.n * 10 + 3\n    }\n    x.await()\n    y.await()\n    return b.n\n}";
+    assertEq(value(src, "f"), 32);
+}
+
+@Test
+fn withTimeoutGivesTheValueOrThrowsTimedOut(): void {
+    let src = "fn f(): int {\n    let v = withTimeout(Duration.ofMillis(500)) { 40 }\n    var late = 0\n    try {\n"
+        + "        withTimeout(Duration.ofMillis(5)) {\n            sleep(Duration.ofSecs(5))\n            1\n        }\n"
+        + "    } catch (e: TimedOut) {\n        late = 2\n    }\n    return v + late\n}";
+    assertEq(value(src, "f"), 42);
+}
+
+@Test
+fn timeIsChecked(): void {
+    assertEq(errs("let d = Duration { nanosCount = 1 }"), ["LYS-RES0009"]);
+    assertEq(
+        errs("fn f() throws Exception {\n    sleep(Duration.ofMillis(1))\n}"),
+        ["LYS-SEM0034"]
+    );
+}

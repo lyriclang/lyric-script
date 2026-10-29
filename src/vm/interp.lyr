@@ -18,7 +18,8 @@
 import std.collections { List };
 import std.core { arrayOf };
 import std.io { print, println };
-import std.task { spawn, yieldNow };
+import std.task { sleep, spawn, yieldNow };
+import std.time { Duration, Monotonic };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
@@ -108,6 +109,10 @@ pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcom
     let task = spawn(() => run(module, entry, args, fuel));
     while (!task.isDone()) {
         try? yieldNow();
+        // a VM that sleeps until a timer leaves this task nothing to wait for: no spinning (S6d3)
+        if (!task.isDone()) {
+            try? sleep(Duration.ofMillis(1));
+        }
     }
     return match (task.status()) {
         .Done(outcome) => outcome,
@@ -156,6 +161,9 @@ class TaskState {
     // S6d2: the channels a select of it watches, and whether one of them stirred
     watching: List<ScriptChannel> = List<ScriptChannel>.new(),
     var woken: bool = false,
+    // S6d3: the timer it sleeps on, and whether it slept
+    var sleeping: ?TimerEntry = null,
+    var slept: bool = false,
     // what an error that left the task threw, and its record: what `await` throws again
     var thrown: HeapRef = nilRef(),
     var record: HeapRef = nilRef(),
@@ -313,6 +321,76 @@ class RunShared {
     // the first task to end with an error or a panic: what the top level's end gives (07 End;
     // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
     var failed: ?ScriptTask = null,
+    // S6d3: the run's timers, on its own monotonic clock
+    timers: List<TimerEntry> = List<TimerEntry>.new(),
+    var timerSeq: int = 0,
+    clock: Monotonic = Monotonic.now(),
+}
+
+/// A timer of the run (S6d3): its deadline, in nanoseconds of the run's clock — its sequence
+/// number orders timers of one deadline —, and what it does then: wake a sleeping task, or close
+/// a timer's channel.
+class TimerEntry {
+    deadline: int,
+    seq: int,
+    task: ?TaskState = null,
+    channel: ?ScriptChannel = null,
+}
+
+/// The run's clock now, in nanoseconds (S6d3).
+fn nowNs(shared: RunShared): int {
+    return shared.clock.elapsed().nanos();
+}
+
+/// The timers whose time came, in the order of their deadlines: a sleeper wakes behind the ready
+/// tasks, a timer's channel closes (Lyric 5 10 §2 rule 5, §7 rule 5).
+fn fireDueTimers(shared: RunShared): void {
+    if (shared.timers.length() == 0) {
+        return;
+    }
+    let now = nowNs(shared);
+    while (true) {
+        var best = -1;
+        var k = 0;
+        while (k < shared.timers.length()) {
+            let e = shared.timers[k];
+            if (e.deadline <= now) {
+                if (best < 0) {
+                    best = k;
+                } else {
+                    let b = shared.timers[best];
+                    if (e.deadline < b.deadline || (e.deadline == b.deadline && e.seq < b.seq)) {
+                        best = k;
+                    }
+                }
+            }
+            k += 1;
+        }
+        if (best < 0) {
+            return;
+        }
+        let e = shared.timers.removeAt(best);
+        let st = e.task;
+        if (st != null) {
+            st.sleeping = null;
+            shared.queue.push(st);
+        }
+        let ch = e.channel;
+        if (ch != null) {
+            closeChannel(ch, shared);
+        }
+    }
+}
+
+/// The earliest deadline of the run's timers (S6d3).
+fn earliestDeadline(shared: RunShared): int {
+    var best = shared.timers[0].deadline;
+    for (e in shared.timers) {
+        if (e.deadline < best) {
+            best = e.deadline;
+        }
+    }
+    return best;
 }
 
 /// Runs `entry` of `module` on the current task; see `execute`.
@@ -355,7 +433,20 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     };
     // the scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits
     shared.queue.push(main);
-    while (shared.head < shared.queue.length()) {
+    while (true) {
+        // S6d3: the timers whose time came wake behind the ready tasks; with none ready, the run
+        // waits for the earliest — without timers that is a deadlock
+        fireDueTimers(shared);
+        if (shared.head >= shared.queue.length()) {
+            if (shared.timers.length() == 0) {
+                break;
+            }
+            let wait = earliestDeadline(shared) - nowNs(shared);
+            if (wait > 0) {
+                try? sleep(Duration.ofNanos(wait));
+            }
+            continue;
+        }
         let t = shared.queue[shared.head];
         shared.head += 1;
         let out = runTask(t, shared);
@@ -496,6 +587,40 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
         unwatchAll(st);
         shared.queue.push(st);
     }
+    // S6d3: and a sleep
+    let e = st.sleeping;
+    if (e != null) {
+        var k = 0;
+        while (k < shared.timers.length()) {
+            if (same(shared.timers[k], e)) {
+                shared.timers.removeAt(k);
+                break;
+            }
+            k += 1;
+        }
+        st.sleeping = null;
+        shared.queue.push(st);
+    }
+}
+
+/// Closes `ch` (Lyric 5 10 §6 rule 4): its receivers get none, its senders throw, its watchers
+/// look again; a closed channel stays as it is.
+fn closeChannel(ch: ScriptChannel, shared: RunShared): void {
+    if (ch.closed) {
+        return;
+    }
+    ch.closed = true;
+    wakeWatchers(ch, shared);
+    for (w in ch.receivers) {
+        wake(w, shared);
+    }
+    ch.receivers.clear();
+    for (w in ch.senders) {
+        w.sendItem = null;
+        w.sendState = 2;
+        wake(w, shared);
+    }
+    ch.senders.clear();
 }
 
 /// Takes `st` off the watch of every channel its select watches (S6d2).
@@ -2073,20 +2198,77 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // S6d1: the channel in `a` closes (rule 4): its receivers get none, its senders throw
             .ChanClose => {
                 let ch = r[br + a];
-                if (ch is ScriptChannel && !ch.closed) {
-                    ch.closed = true;
-                    wakeWatchers(ch, shared);
-                    for (w in ch.receivers) {
-                        wake(w, shared);
-                    }
-                    ch.receivers.clear();
-                    for (w in ch.senders) {
-                        w.sendItem = null;
-                        w.sendState = 2;
-                        wake(w, shared);
-                    }
-                    ch.senders.clear();
+                if (ch is ScriptChannel) {
+                    closeChannel(ch, shared);
                 }
+                pc += 1;
+            }
+            // S6d3: the task sleeps `s[a]` nanoseconds on the run's clock (Lyric 5 10 §2 rule 5) — a
+            // wait; zero or less lets the ready tasks run first
+            .Sleep => {
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    t.slept = false;
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (t.slept) {
+                    t.slept = false;
+                    pc += 1;
+                    continue;
+                }
+                let d = s[bs + a] as int;
+                t.slept = true;
+                if (d <= 0) {
+                    shared.queue.push(t);
+                } else {
+                    let e = TimerEntry {
+                        deadline = nowNs(shared) + d,
+                        seq = shared.timerSeq,
+                        task = t,
+                    };
+                    shared.timerSeq += 1;
+                    shared.timers.push(e);
+                    t.sleeping = e;
+                }
+                t.s = s;
+                t.r = r;
+                t.fi = fi;
+                t.pc = pc;
+                t.bs = bs;
+                t.br = br;
+                t.report = report;
+                t.frames = frames;
+                return Outcome.Switch;
+            }
+            // S6d3: a channel without values that closes once `s[b]` nanoseconds passed (§7 rule 5)
+            .TimerAfter => {
+                let ch = ScriptChannel {
+                    capacity = 0,
+                    ns = 0,
+                    nr = 0,
+                    buffer = List<Item>.new(),
+                    receivers = List<TaskState>.new(),
+                    senders = List<TaskState>.new(),
+                };
+                let d = s[bs + b] as int;
+                if (d <= 0) {
+                    closeChannel(ch, shared);
+                } else {
+                    shared.timers.push(
+                        TimerEntry {
+                            deadline = nowNs(shared) + d,
+                            seq = shared.timerSeq,
+                            channel = ch,
+                        }
+                    );
+                    shared.timerSeq += 1;
+                }
+                r[br + a] = ch;
                 pc += 1;
             }
             // S6d1: a semaphore of `s[b]` permits (Lyric 5 10 §10 rule 7)

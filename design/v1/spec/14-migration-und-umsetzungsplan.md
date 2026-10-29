@@ -511,3 +511,17 @@ jedes Verstoßes), die Teilmengenregel für Implementierungen eines Members mit 
 (`LYS-SEM0042`), `LYS-SEM0137`, `LYS-PAR0049`. Die Marke `try e` wird geparst und ändert nichts;
 der Lint `unmarked-throw` kommt mit den Lints (S11). Neu in `typed.lyr`: Kinder-Läufe über den
 getypten Baum (`exprsIn`, `stmtsIn`, …). 222 Tests, 133 Konformanzfälle.
+
+**S4d, Ergebnis (2026-10-29).** Die Ausdrucksformen ohne neue VM-Mechanik: `try?`, `try!` und
+`try e catch (x: A) v` werden zum Block mit Ergebnis-Lokaler um das vorhandene `TStmt.Try`
+gesenkt. `try?` ist nicht abgeflacht (`??int`), über `void` nur als Anweisung (`LYS-SEM0140`);
+`try!` panisch mit `LYS-RT0010` und der Meldung des Fehlers (neue Op `panic.c` mit Code,
+Format 6 — S4f braucht sie für `panic`/`assert`/…); die Teile der Ausdrucksform vereinigen sich
+wie die Arme eines `match`; eine Klausel gehört zum nächsten `try` links. Die Regeln zwischen
+Klauseln (`LYS-SEM0035`, `LYS-SEM0141`, `LYS-SEM0142`) teilen Block- und Ausdrucksform über
+einen gemeinsamen Klauselkopf; die Mengenklausel `catch (e in [A, B])`. K7: ein `match (e)` über
+die Bindung einer Mengen- oder typlosen Klausel deckt die erreichende Menge — die Prüfung wartet
+bis nach der Inferenz (`LYS-SEM0050` nennt den fehlenden Typ). Abweichung, entschieden beim
+Bau: die Bindung bleibt ein `Error`, auch wo nur ein Typ ankommt (Lyric 5 M5-6), da die Mengen
+erst nach den Rümpfen feststehen. `LYS-PAR0050`/`PAR0051` im Parser. 229 Tests, 145
+Konformanzfälle.

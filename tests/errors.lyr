@@ -1,0 +1,404 @@
+// Throwing and catching (S4a, Lyric 5 06 §1, §4, §5): `throw` gives `never`; the clauses of a
+// `try` test the error by type in order; what none takes leaves frame after frame; an error no
+// frame takes ends the run with its report — its message, its causes, its frames.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { Outcome, ScriptError, maxCauses, run };
+import lyric_script.vm.module { Module, check };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        .Error(e) => {
+            assertEq(e.message, "", "no error leaves the run");
+            -999
+        }
+        _ => -999,
+    };
+}
+
+fn errorOf(source: string, entry: string): ScriptError {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Error(e) => e,
+        _ => ScriptError { typeName = "none", message = "", causes = [], trace = [] },
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let kinds = """
+struct NotFound :: Error {
+    key: int
+    fn message(): string = f"no {this.key}"
+}
+enum Oops :: Error {
+    Bad
+    Worse(int)
+    fn message(): string = "oops"
+}
+enum Plain :: Error {
+    One
+    Two
+    fn message(): string = "plain"
+}
+fn find(k: int): int {
+    if (k == 1) {
+        throw NotFound { key = k }
+    }
+    if (k == 2) {
+        throw Oops.Worse(7)
+    }
+    if (k == 3) {
+        throw Plain.Two
+    }
+    if (k == 4) {
+        throw Exception("four")
+    }
+    return 100
+}
+fn pick(k: int): int {
+    try {
+        return find(k)
+    } catch (e: NotFound) {
+        return 10 + e.key
+    } catch (e: Oops) {
+        return match (e) {
+            .Bad => 20,
+            .Worse(n) => 20 + n,
+        }
+    } catch (e: Plain) {
+        return if (e == .Two) 32 else 31
+    } catch (e) {
+        return if (e.message() == "four") 40 else 49
+    }
+}
+fn p0(): int = pick(0)
+fn p1(): int = pick(1)
+fn p2(): int = pick(2)
+fn p3(): int = pick(3)
+fn p4(): int = pick(4)
+""";
+
+@Test
+fn aClauseTakesTheErrorsOfItsType(): void {
+    // a struct, an enum with a payload (an object), one without (an `int` in a box), the catch-all
+    assertEq(value(kinds, "p0"), 100);
+    assertEq(value(kinds, "p1"), 11);
+    assertEq(value(kinds, "p2"), 27);
+    assertEq(value(kinds, "p3"), 32);
+    assertEq(value(kinds, "p4"), 40);
+}
+
+let layers = """
+struct A :: Error {
+    fn message(): string = "A"
+}
+struct B :: Error {
+    fn message(): string = "B"
+}
+fn thrower(n: int): int {
+    if (n == 1) {
+        throw A { }
+    }
+    if (n == 2) {
+        throw B { }
+    }
+    return n
+}
+fn mid(n: int): int {
+    try {
+        return thrower(n)
+    } catch (_: A) {
+        return 10
+    }
+}
+fn top(n: int): int {
+    try {
+        return mid(n)
+    } catch (_: B) {
+        return 20
+    }
+}
+fn t0(): int = top(0)
+fn t1(): int = top(1)
+fn t2(): int = top(2)
+fn deep(n: int): int {
+    if (n == 0) {
+        throw B { }
+    }
+    return deep(n - 1) + 1
+}
+fn caughtDeep(): int {
+    try {
+        return deep(50)
+    } catch (_) {
+        return 7
+    }
+}
+fn fromClause(): int {
+    try {
+        try {
+            throw A { }
+        } catch (_: A) {
+            throw B { }
+        }
+    } catch (_: B) {
+        return 2
+    }
+    return 0
+}
+fn passesOn(): int {
+    var seen = 0
+    try {
+        try {
+            throw B { }
+        } catch (_: A) {
+            seen = 1
+        }
+        seen = 2
+    } catch (_) {
+        seen += 10
+    }
+    return seen
+}
+""";
+
+@Test
+fn whatNoClauseTakesGoesOn(): void {
+    assertEq(value(layers, "t0"), 0);
+    assertEq(value(layers, "t1"), 10);
+    // `mid` takes no `B`: it leaves `mid` for `top`'s clause
+    assertEq(value(layers, "t2"), 20);
+    // through fifty frames
+    assertEq(value(layers, "caughtDeep"), 7);
+    // an error of a clause goes to the try around it
+    assertEq(value(layers, "fromClause"), 2);
+    // nothing after the inner try runs
+    assertEq(value(layers, "passesOn"), 10);
+}
+
+@Test
+fn throwIsAValueOfTypeNever(): void {
+    let source = """
+fn need(x: ?int): int = x ?? throw Exception("none")
+fn some(): int = need(4)
+fn none(): int {
+    try {
+        return need(null)
+    } catch (e) {
+        return if (e.message() == "none") -1 else -2
+    }
+}
+fn attempt(f: fn() -> int): int {
+    try {
+        return f()
+    } catch (_) {
+        return -1
+    }
+}
+fn viaLambda(): int = attempt { 5 } * 10 + attempt { throw Exception("x") }
+""";
+    assertEq(value(source, "some"), 4);
+    assertEq(value(source, "none"), -1);
+    assertEq(value(source, "viaLambda"), 49);
+}
+
+@Test
+fn aLoopGoesOnFromAClause(): void {
+    let source = """
+fn sum(): int {
+    var total = 0
+    for (i in 0..6) {
+        try {
+            if (i % 3 == 0) {
+                throw Exception("skip")
+            }
+            if (i == 5) {
+                break
+            }
+            total += i
+        } catch (_) {
+            total += 100
+            continue
+        }
+        total += 1000
+    }
+    return total
+}
+""";
+    // 0: 100; 1: 1 + 1000; 2: 2 + 1000; 3: 100; 4: 4 + 1000; 5: break
+    assertEq(value(source, "sum"), 3207);
+}
+
+@Test
+fn aGenericThrowsItsArgument(): void {
+    let source = """
+struct E :: Error {
+    n: int
+    fn message(): string = "e"
+}
+enum F :: Error {
+    One
+    fn message(): string = "f"
+}
+fn fail<T :: [Error]>(e: T): int {
+    throw e
+}
+fn one(): int {
+    try {
+        return fail(E { n = 3 })
+    } catch (e: E) {
+        return e.n
+    }
+}
+fn two(): int {
+    try {
+        return fail(F.One)
+    } catch (e: F) {
+        return 5
+    }
+}
+""";
+    assertEq(value(source, "one"), 3);
+    assertEq(value(source, "two"), 5);
+}
+
+@Test
+fn anErrorNoFrameTakesIsReported(): void {
+    let source = """
+fn inner() {
+    throw Exception("disk")
+}
+fn outer() {
+    try {
+        inner()
+    } catch (e) {
+        throw Exception("config", e)
+    }
+}
+fn go() {
+    outer()
+}
+""";
+    let e = errorOf(source, "go");
+    assertEq(e.typeName, "Exception");
+    assertEq(e.message, "config");
+    assertEq(e.causes, ["disk"]);
+    // the frames it was thrown from: `outer`'s throw, then `main`'s call
+    assertEq(e.trace.length(), 2);
+    assertTrue(e.trace[0].startsWith("at outer (line "), e.trace[0]);
+}
+
+@Test
+fn aReportFollowsABoundedChain(): void {
+    let source = """
+class Loop :: Error {
+    var next: ?Error = null
+    fn message(): string = "loop"
+    fn cause(): ?Error = this.next
+}
+fn go() {
+    let l = Loop { }
+    l.next = l
+    throw l
+}
+""";
+    let e = errorOf(source, "go");
+    assertEq(e.message, "loop");
+    assertEq(e.causes.length(), maxCauses);
+}
+
+@Test
+fn aMessageThatThrowsLeavesTheTypesName(): void {
+    let source = """
+struct Bad :: Error {
+    fn message(): string {
+        throw Exception("inner")
+    }
+}
+fn go() {
+    throw Bad { }
+}
+""";
+    let e = errorOf(source, "go");
+    assertEq(e.message, "Bad");
+    assertEq(e.causes.length(), 0);
+}
+
+@Test
+fn aClauseKnowsAssignedOnlyWhatWasBefore(): void {
+    // the body may have thrown before its assignment
+    assertEq(
+        errs(
+            "fn f(): int {\n    var n: int\n    try {\n        n = 1\n    } catch (_) {\n        return n\n    }\n    return n\n}"
+        ),
+        ["LYS-SEM0018"]
+    );
+    // after the try: assigned on the body's way and on every clause's
+    assertEq(
+        errs(
+            "fn f(): int {\n    var n: int\n    try {\n        n = 1\n    } catch (_) {\n        n = 2\n    }\n    return n\n}"
+        ),
+        []
+    );
+    assertEq(
+        errs(
+            "fn f(): int {\n    var n: int\n    try {\n        n = 1\n    } catch (_: Exception) {\n        return 0\n    }\n    return n\n}"
+        ),
+        []
+    );
+    // a try whose body and every clause return ends the function
+    assertEq(
+        errs(
+            "fn f(): int {\n    try {\n        return 1\n    } catch (_) {\n        return 2\n    }\n}"
+        ),
+        []
+    );
+}
+
+@Test
+fn onlyAnErrorIsThrownOrCaught(): void {
+    assertEq(errs("throw 5"), ["LYS-SEM0030"]);
+    assertEq(errs("throw \"text\""), ["LYS-SEM0030"]);
+    assertEq(errs("let x: ?Exception = null\nthrow x"), ["LYS-SEM0030"]);
+    assertEq(
+        errs("try {\n    println(\"x\")\n} catch (e: int) {\n    println(\"y\")\n}"),
+        ["LYS-SEM0030"]
+    );
+    // an interface that extends Error is thrown and caught
+    assertEq(
+        errs(
+            "interface Io :: Error {\n    fn path(): string\n}\nfn f(e: Io) {\n    try {\n        throw e\n    } catch (x: Io) {\n        println(x.path())\n    }\n}"
+        ),
+        []
+    );
+}

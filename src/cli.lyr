@@ -132,7 +132,8 @@ fn checkScript(path: string, json: bool): int {
     return if (compile(text, path, json).module != null) 0 else 1;
 }
 
-/// Runs a script: 0 at its end, 1 where it does not compile, 101 for a panic.
+/// Runs a script: 0 at its end, 1 where it does not compile or an error leaves it, 101 for a
+/// panic.
 fn runScript(path: string, json: bool): int {
     let text = readScript(path);
     if (text == null) {
@@ -230,10 +231,21 @@ class Reporter {
     }
 }
 
-/// The exit code of a run: 0 at its end, 101 for a panic (reported with its frames).
+/// The exit code of a run: 0 at its end, 1 for an error that left it and 101 for a panic, each
+/// reported with its frames.
 fn finish(outcome: Outcome): int {
     return match (outcome) {
         .Void | .Scalar(_) | .Ref(_) | .Slots(_, _) => 0,
+        .Error(e) => {
+            eprintln(f"error: {e.message}");
+            for (cause in e.causes) {
+                eprintln(f"  caused by: {cause}");
+            }
+            for (frame in e.trace) {
+                eprintln(f"    {frame}");
+            }
+            1
+        }
         .Panic(p) => {
             eprintln(f"panic [{p.code}]: {p.message}");
             for (frame in p.trace) {

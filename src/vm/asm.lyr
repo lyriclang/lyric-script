@@ -13,14 +13,16 @@
 //! end
 //! ```
 //!
-//! A line holds one declaration, label or instruction; `#` starts a comment. Operands by kind:
+//! A line holds one declaration, label or instruction; `#` starts a comment. In a function,
+//! `catch @from, @to, @handler, r2` sends the errors of the instructions from `@from` up to
+//! before `@to` to `@handler`, the error in `r2` (S4a). Operands by kind:
 //! `s3` a scalar register, `r1` a reference register, `-5` an immediate, a literal (`12`,
 //! `1.5`, `"text"`) a constant, `@name` a label, a function or a type by its name, a field as
 //! `Type.field` or `.index`.
 import std.collections { List, Map, Set };
 import std.core { ParseError, StringBuilder };
 import lyric_script.vm.op { Instr, Op, Operand, info, opOf };
-import lyric_script.vm.module { Function, Module, ReturnKind, TypeDesc };
+import lyric_script.vm.module { Function, Handler, Module, ReturnKind, TypeDesc };
 import lyric_script.vm.native { nativeCount, nativeInfo, nativeOf };
 
 /// A line of assembly text that cannot be read.
@@ -54,6 +56,8 @@ class Draft {
     retR: int,
     body: List<Pending>,
     labels: Map<string, int>,
+    // `catch` lines: their operands, resolved with the labels
+    catches: List<Pending>,
 }
 
 /// Reads `text` into a module named `name`.
@@ -80,6 +84,15 @@ pub fn assemble(text: string, name: string): Module throws AsmError {
                     throw AsmError { line = lineNo, text = f"label '{label}' twice" };
                 }
                 d.labels[label] = d.body.length();
+            } else if (line.startsWith("catch ")) {
+                let operands = splitOperands(line[6..line.length()].toString());
+                if (operands.length() != 4) {
+                    throw AsmError {
+                        line = lineNo,
+                        text = "a handler is 'catch @from, @to, @handler, rN'",
+                    };
+                }
+                d.catches.push(Pending { line = lineNo, op = .Throw, operands = operands });
             } else {
                 d.body.push(try instruction(line.toString(), lineNo));
             }
@@ -236,6 +249,7 @@ fn header(line: string, lineNo: int): Draft throws AsmError {
         retR = retR,
         body = List<Pending>.new(),
         labels = Map<string, int>.new(),
+        catches = List<Pending>.new(),
     };
 }
 
@@ -338,6 +352,17 @@ fn resolve(d: Draft, drafts: List<Draft>, types: List<TypeDesc>): Function throw
         );
         lines.push(p.line);
     }
+    let handlers = List<Handler>.new();
+    for (p in d.catches) {
+        handlers.push(
+            Handler {
+                start = try handlerLabel(d, p, 0),
+                end = try handlerLabel(d, p, 1),
+                target = try handlerLabel(d, p, 2),
+                reg = try register(p.operands[3], 'r', p.line),
+            }
+        );
+    }
     return Function {
         name = d.name,
         paramsS = d.paramsS,
@@ -351,7 +376,21 @@ fn resolve(d: Draft, drafts: List<Draft>, types: List<TypeDesc>): Function throw
         lines = lines.toArray(),
         retS = d.retS,
         retR = d.retR,
+        handlers = handlers.toArray(),
     };
+}
+
+/// Operand `k` of a `catch` line: a label, which may stand after the last instruction.
+fn handlerLabel(d: Draft, p: Pending, k: int): int throws AsmError {
+    let text = p.operands[k];
+    if (!text.startsWith("@")) {
+        throw AsmError { line = p.line, text = f"a handler names labels, got '{text}'" };
+    }
+    let at = d.labels.get(text[1..text.length()].toString());
+    if (at == null) {
+        throw AsmError { line = p.line, text = f"no label '{text}'" };
+    }
+    return at;
 }
 
 fn operand(
@@ -574,6 +613,12 @@ pub fn disassemble(module: Module): string {
             out.appendStr("\n");
             pc += 1;
         }
+        if (targets.contains(f.code.length())) {
+            out.appendStr(f"L{f.code.length()}:\n");
+        }
+        for (h in f.handlers) {
+            out.appendStr(f"    catch @L{h.start}, @L{h.end}, @L{h.target}, r{h.reg}\n");
+        }
         out.appendStr("end\n");
     }
     return out.toString();
@@ -581,6 +626,11 @@ pub fn disassemble(module: Module): string {
 
 fn jumpTargets(f: Function): Set<int> {
     var out: Set<int> = [];
+    for (h in f.handlers) {
+        out.insert(h.start);
+        out.insert(h.end);
+        out.insert(h.target);
+    }
     for (ins in f.code) {
         let kinds = info(ins.op).operands;
         var n = 0;

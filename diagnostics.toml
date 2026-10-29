@@ -565,6 +565,12 @@ severity = "error"
 area = "09-patterns"
 summary = "`null` against a value that is never null, a literal or range of another type, a tuple pattern of another arity, a variant the enum does not have, the dotted form or a field pattern against another type. Lyric 5's LYR-SEM0029."
 
+[LYS-SEM0030]
+title = "a thrown or caught type that is not an Error"
+severity = "error"
+area = "06-errors"
+summary = "A `throw` throws a value, or a `catch` clause names a type, that does not conform to `Error`: a struct, class or enum with `:: Error` and its `fn message(): string`, an interface that extends `Error`, or a type parameter constrained to it. A number or a string is not thrown. Lyric 5's LYR-SEM0030."
+
 [LYS-SEM0031]
 title = "an enum variant used against its shape"
 severity = "error"

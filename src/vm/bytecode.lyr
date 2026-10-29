@@ -3,7 +3,7 @@
 //! then the module. Only the toolchain that wrote it reads it back: a head that does not match is
 //! no file of this toolchain, and the reader says so rather than guessing (01 S10).
 import std.collections { List };
-import lyric_script.vm.module { Function, Module, ReturnKind, TypeDesc };
+import lyric_script.vm.module { Function, Handler, Module, ReturnKind, TypeDesc };
 import lyric_script.vm.op { Instr, Op };
 
 /// The first bytes of every file: `LYSB`.
@@ -32,6 +32,9 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
     w.text(module.name);
     w.word(module.globalsS);
     w.word(module.globalsR);
+    // the slots of `Error`'s members, one up so that none is 0 (S4a)
+    w.word(module.errorMessage + 1);
+    w.word(module.errorCause + 1);
     w.word(module.types.length());
     for (t in module.types) {
         w.text(t.name);
@@ -96,6 +99,13 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
         for (n in f.lines) {
             w.word(n);
         }
+        w.word(f.handlers.length());
+        for (h in f.handlers) {
+            w.word(h.start);
+            w.word(h.end);
+            w.word(h.target);
+            w.word(h.reg);
+        }
     }
     return w.out.toArray();
 }
@@ -120,6 +130,8 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
     let name = try r.text();
     let globalsS = try r.word();
     let globalsR = try r.word();
+    let errorMessage = try r.word() - 1;
+    let errorCause = try r.word() - 1;
     let types = List<TypeDesc>.new();
     let links = List<DescLinks>.new();
     var n = try r.word();
@@ -233,6 +245,16 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
             lines.push(try r.word());
             k -= 1;
         }
+        let handlers = List<Handler>.new();
+        k = try r.word();
+        while (k > 0) {
+            let start = try r.word();
+            let end = try r.word();
+            let target = try r.word();
+            let reg = try r.word();
+            handlers.push(Handler { start = start, end = end, target = target, reg = reg });
+            k -= 1;
+        }
         functions.push(
             Function {
                 name = fname,
@@ -247,6 +269,7 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
                 lines = lines.toArray(),
                 retS = retS,
                 retR = retR,
+                handlers = handlers.toArray(),
             }
         );
         n -= 1;
@@ -260,6 +283,8 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         types = types.toArray(),
         globalsS = globalsS,
         globalsR = globalsR,
+        errorMessage = errorMessage,
+        errorCause = errorCause,
     };
 }
 

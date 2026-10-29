@@ -8,12 +8,17 @@
 //! Panics of the script — overflow, division by zero, `null`, a too deep recursion, `panic` —
 //! the VM detects itself and reports as an outcome; a panic of Lyric 5 itself (a fault of the
 //! VM) is caught at a task boundary (`execute`).
+//!
+//! An error the script throws leaves frame after frame, each like a return without a value,
+//! until a region of a function takes it (S4a, 06 §5 rule 1). One that leaves every frame is
+//! reported: the VM calls its `message()` and its `cause()` in the same run, each call returning
+//! to a frame of function `-1`, and the run ends with `Outcome.Error`.
 import std.collections { List };
 import std.core { arrayOf };
 import std.io { print, println };
 import std.task { spawn, yieldNow };
 import lyric_script.vm.op { Instr };
-import lyric_script.vm.module { Function, Module, TypeDesc };
+import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
     HeapRef,
     Nil,
@@ -39,6 +44,8 @@ pub enum Outcome {
     Slots(uint64[], HeapRef[]),
     /// The script panicked.
     Panic(ScriptPanic),
+    /// An error left every frame (06 §5): its report.
+    Error(ScriptError),
     /// The fuel ran out (design/v1, 01 S5); the run stopped at a backward jump or a call.
     Suspended,
 }
@@ -48,6 +55,28 @@ pub struct ScriptPanic {
     pub code: string,
     pub message: string,
     pub trace: string[],
+}
+
+/// An error that left every frame: its type's name, its message, the messages of its causes in
+/// order, and the frames it was thrown from, innermost first (05 E6, 01 S11).
+pub struct ScriptError {
+    pub typeName: string,
+    pub message: string,
+    pub causes: string[],
+    pub trace: string[],
+}
+
+/// The most causes a report follows: a cycle among them ends there (Lyric 5's bound).
+pub let maxCauses: int = 64;
+
+/// The report of an error that left every frame, while the VM asks it: `at` is the error asked,
+/// for its cause where `asksCause`, else for its message.
+class Report {
+    typeName: string,
+    trace: string[],
+    messages: List<string>,
+    var at: HeapRef,
+    var asksCause: bool = false,
 }
 
 /// The deepest recursion the VM runs before it reports a stack overflow.
@@ -117,6 +146,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     // the descriptors of this run: the compiler's, and those shared copies make (S3i)
     let interning = Interning.of(module);
     let frames = List<CallFrame>.new();
+    // the report of an error no frame took, once one is asked (S4a)
+    var report: ?Report = null;
     var code: Instr[] = f.code;
     var pc = 0;
     var bs = 0;
@@ -370,12 +401,61 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                         _ => Outcome.Void,
                     };
                 }
-                fi = back.function;
-                f = module.functions[fi];
-                code = f.code;
-                pc = back.pc;
-                bs = back.baseS;
-                br = back.baseR;
+                if (back.function < 0) {
+                    // a report's call returned: the message, then the cause, then its message
+                    let rep = report;
+                    if (rep == null) {
+                        return panicOut(
+                            module,
+                            frames,
+                            fi,
+                            pc,
+                            "LYS-ICE0001",
+                            "a return to no report"
+                        );
+                    }
+                    var next: HeapRef = nil;
+                    var slot = -1;
+                    if (!rep.asksCause) {
+                        rep.messages.push(textOf(r[br]));
+                        if (rep.messages.length() <= maxCauses) {
+                            next = rep.at;
+                            slot = module.errorCause;
+                            rep.asksCause = true;
+                        }
+                    } else {
+                        let cause = r[br];
+                        if (cause is ScriptObject) {
+                            rep.at = cause;
+                            next = cause;
+                            slot = module.errorMessage;
+                            rep.asksCause = false;
+                        }
+                    }
+                    let target = methodIn(module, next, slot);
+                    if (target < 0) {
+                        return Outcome.Error(errorOf(rep));
+                    }
+                    frames.push(CallFrame { function = -1, pc = 0, baseS = bs, baseR = br });
+                    r[br] = next;
+                    fi = target;
+                    f = module.functions[fi];
+                    code = f.code;
+                    pc = 0;
+                    if (bs + f.scalars > s.length()) {
+                        s = growScalars(s, bs + f.scalars);
+                    }
+                    if (br + f.refs > r.length()) {
+                        r = growRefs(r, br + f.refs);
+                    }
+                } else {
+                    fi = back.function;
+                    f = module.functions[fi];
+                    code = f.code;
+                    pc = back.pc;
+                    bs = back.baseS;
+                    br = back.baseR;
+                }
             }
             .New => {
                 let t = module.types[b];
@@ -810,6 +890,76 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 s[bs + a] = truth(found);
                 pc += 1;
             }
+            // S4a: the error leaves frames until a handler covers where it stands — the throw, or
+            // in a caller the call (06 §5 rule 1)
+            .Throw => {
+                let value = r[br + a];
+                if (caught(module, frames, f, pc)) {
+                    loop {
+                        if (let h = handlerAt(f, pc)) {
+                            r[br + h.reg] = value;
+                            pc = h.target;
+                            break;
+                        }
+                        let back = frames.pop();
+                        if (back == null) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-ICE0001",
+                                "an error caught by no frame"
+                            );
+                        }
+                        fi = back.function;
+                        f = module.functions[fi];
+                        code = f.code;
+                        pc = back.pc - 1;
+                        bs = back.baseS;
+                        br = back.baseR;
+                    }
+                } else {
+                    let rep = report;
+                    if (rep != null) {
+                        // thrown out of a report's call: the report ends with what it has
+                        return Outcome.Error(errorOf(rep));
+                    }
+                    // no frame takes it: the report asks for its message (05 E6)
+                    let o = value;
+                    let typeName = if (o is ScriptObject) (o.typeDesc.parent ?? o.typeDesc).name
+                        else "";
+                    let started = Report {
+                        typeName = typeName,
+                        trace = traceOf(module, frames, fi, pc),
+                        messages = List<string>.new(),
+                        at = value,
+                    };
+                    report = started;
+                    let target = methodIn(module, value, module.errorMessage);
+                    if (target < 0) {
+                        return Outcome.Error(errorOf(started));
+                    }
+                    // the frames are left: the report's call runs where the entry ran
+                    if (frames.length() > 0) {
+                        bs = frames[0].baseS;
+                        br = frames[0].baseR;
+                    }
+                    frames.clear();
+                    frames.push(CallFrame { function = -1, pc = 0, baseS = bs, baseR = br });
+                    r[br] = value;
+                    fi = target;
+                    f = module.functions[fi];
+                    code = f.code;
+                    pc = 0;
+                    if (bs + f.scalars > s.length()) {
+                        s = growScalars(s, bs + f.scalars);
+                    }
+                    if (br + f.refs > r.length()) {
+                        r = growRefs(r, br + f.refs);
+                    }
+                }
+            }
             .CallN => {
                 let x = bs + b;
                 let y = br + c;
@@ -833,6 +983,64 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             }
         }
     }
+}
+
+/// The first region of `f` that covers instruction `pc`.
+fn handlerAt(f: Function, pc: int): ?Handler {
+    for (h in f.handlers) {
+        if (pc >= h.start && pc < h.end) {
+            return h;
+        }
+    }
+    return null;
+}
+
+/// Whether a frame takes an error thrown at `pc` of `f`: `f`'s, or a caller's at its call, down
+/// to the first frame or to a report's call.
+fn caught(module: Module, frames: List<CallFrame>, f: Function, pc: int): bool {
+    if (handlerAt(f, pc) != null) {
+        return true;
+    }
+    var k = frames.length() - 1;
+    while (k >= 0 && frames[k].function >= 0) {
+        if (handlerAt(module.functions[frames[k].function], frames[k].pc - 1) != null) {
+            return true;
+        }
+        k -= 1;
+    }
+    return false;
+}
+
+/// The function in slot `slot` of the object's table; -1 where it has none.
+fn methodIn(module: Module, v: HeapRef, slot: int): int {
+    if (slot < 0) {
+        return -1;
+    }
+    if (v is ScriptObject) {
+        let row = v.typeDesc.methods;
+        if (slot < row.length() && row[slot] < module.functions.length()) {
+            return row[slot];
+        }
+    }
+    return -1;
+}
+
+/// What a report has found: the first message is the error's, the others its causes'. Where
+/// the error gave no message — its `message()` threw, or the module has no `Error` — its type
+/// names it.
+fn errorOf(rep: Report): ScriptError {
+    let causes = List<string>.new();
+    var k = 1;
+    while (k < rep.messages.length()) {
+        causes.push(rep.messages[k]);
+        k += 1;
+    }
+    return ScriptError {
+        typeName = rep.typeName,
+        message = if (rep.messages.length() > 0) rep.messages[0] else rep.typeName,
+        causes = causes.toArray(),
+        trace = rep.trace,
+    };
 }
 
 /// The text of a string reference; the compiler gives a native nothing else.
@@ -924,15 +1132,25 @@ fn panicOut(
     code: string,
     message: string
 ): Outcome {
+    return Outcome.Panic(
+        ScriptPanic { code = code, message = message, trace = traceOf(module, frames, fi, pc) }
+    );
+}
+
+/// The script's frames: the current one first, then its callers; a report's call stands for
+/// none.
+fn traceOf(module: Module, frames: List<CallFrame>, fi: int, pc: int): string[] {
     let trace = List<string>.new();
     trace.push(frameText(module.functions[fi], pc));
     var i = frames.length() - 1;
     while (i >= 0) {
         let fr = frames[i];
-        trace.push(frameText(module.functions[fr.function], fr.pc - 1));
+        if (fr.function >= 0) {
+            trace.push(frameText(module.functions[fr.function], fr.pc - 1));
+        }
         i -= 1;
     }
-    return Outcome.Panic(ScriptPanic { code = code, message = message, trace = trace.toArray() });
+    return trace.toArray();
 }
 
 fn frameText(f: Function, pc: int): string {

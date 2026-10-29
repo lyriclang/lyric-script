@@ -25,6 +25,7 @@ import lyric_script.compiler.typed {
 };
 import lyric_script.vm.module {
     Function,
+    Handler,
     Module,
     ReturnKind,
     TypeDesc,
@@ -61,6 +62,8 @@ fn generate(p: Program, name: string): Module {
         types = types.toArray(),
         globalsS = layout.globalsS,
         globalsR = layout.globalsR,
+        errorMessage = p.errorMessage,
+        errorCause = p.errorCause,
     };
 }
 
@@ -544,6 +547,8 @@ class FnGen {
     strings: List<string>,
     localLoc: List<Loc>,
     loops: List<LoopGen>,
+    // the regions whose errors the function handles, innermost first (S4a)
+    handlers: List<Handler>,
     var nextS: int = 0,
     var nextR: int = 0,
     var maxS: int = 0,
@@ -564,6 +569,7 @@ class FnGen {
             strings = List<string>.new(),
             localLoc = List<Loc>.new(),
             loops = List<LoopGen>.new(),
+            handlers = List<Handler>.new(),
         };
     }
 
@@ -644,6 +650,7 @@ class FnGen {
             lines = this.lines.toArray(),
             retS = if (returns == .Slots) retS else 0,
             retR = if (returns == .Slots) retR else 0,
+            handlers = this.handlers.toArray(),
         };
     }
 
@@ -956,6 +963,43 @@ class FnGen {
                 }
             }
             .Block(list, _) => this.stmts(list),
+            // the body's region sends its errors to the clauses' tests, in order; what none
+            // takes is thrown on (06 §4, §5)
+            .Try(body, caught, clauses, line) => {
+                this.line = line;
+                if (clauses.length() == 0) {
+                    this.stmts(body);
+                } else {
+                    let start = this.here();
+                    this.stmts(body);
+                    let end = this.here();
+                    let toEnd = List<int>.new();
+                    toEnd.push(this.emit(Op.Jump, 0, 0, 0));
+                    let reg = this.localLoc[caught].r;
+                    this.handlers.push(
+                        Handler { start = start, end = end, target = this.here(), reg = reg }
+                    );
+                    for (c in clauses) {
+                        this.line = line;
+                        var skip = -1;
+                        if (let test = c.test) {
+                            let cm = this.mark();
+                            skip = this.emit(Op.JumpIfNot, this.any(test).s, 0, 0);
+                            this.release(cm);
+                        }
+                        this.stmts(c.body);
+                        toEnd.push(this.emit(Op.Jump, 0, 0, 0));
+                        if (skip >= 0) {
+                            this.patch(skip, this.here());
+                        }
+                    }
+                    this.line = line;
+                    this.emit(Op.Throw, reg, 0, 0);
+                    for (j in toEnd) {
+                        this.patch(j, this.here());
+                    }
+                }
+            }
         }
         this.release(m);
     }
@@ -1333,6 +1377,11 @@ class FnGen {
             .CallGeneric(_, _, _, _) | .CallConstraint(_, _, _, _, _, _) | .IsParam(_, _, _) => { }
             .DebugParam(_, _, _) | .TextParam(_, _, _) | .CallStatic(_, _, _, _, _, _) => { }
             .CallBound(_, _, _, _, _, _) | .GenericValue(_, _, _) => { }
+            // the error leaves for the handler that takes it (S4a); nothing lands in `dst`
+            .Throw(x) => {
+                let at = this.any(x.value);
+                this.emit(Op.Throw, at.r, 0, 0);
+            }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)
             .CallStaticD(slot, d, args, t) => {

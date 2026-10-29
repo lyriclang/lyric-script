@@ -1011,8 +1011,14 @@ fn gitPackage(l: Loaded, w: Wanted): ?Fetched {
     if (!exists(dir)) {
         let partial = f"{dir}.{pid()}.partial";
         try? createDirAll(partial);
+        // the commit's bytes as they are: no line ends converted, so that the content's hash is
+        // one on every platform (a Windows git converts by default)
         let done = git(
             [
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.eol=lf",
                 "--git-dir",
                 repo,
                 "--work-tree",

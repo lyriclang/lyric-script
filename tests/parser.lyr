@@ -225,3 +225,17 @@ fn throwsAndTheMark(): void {
     // the mark covers what stands to its right
     assertEq(show("let x = a + try b * c"), "(let x (+ a (try (* b c))))");
 }
+
+@Test
+fn theExpressionFormsOfTry(): void {
+    assertEq(show("let x = try? f()"), "(let x (try? (call f)))");
+    assertEq(show("let x = try! f()"), "(let x (try! (call f)))");
+    // the sign against the keyword: apart from it, the mark over a negation
+    assertEq(show("let x = try !f()"), "(let x (try (! (call f))))");
+    assertEq(show("let y = try f() catch (_: A) 1"), "(let y (try (call f) (catch _: A {1})))");
+    // a clause belongs to the nearest `try` on its left
+    assertEq(
+        show("let z = try f() catch (_: A) try g() catch (_: B) 0"),
+        "(let z (try (call f) (catch _: A {(try (call g) (catch _: B {0}))})))"
+    );
+}

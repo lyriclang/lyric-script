@@ -4216,18 +4216,21 @@ class Checker {
         let caught = this.hidden(this.errorTy(), at);
         let record = this.hidden(Ty.Named(this.anyIndex), at);
         if (t == .Void || t == .Never || t == .Unknown) {
+            // refused where a value stands: what follows takes it as unknown, nothing more said
+            var given = Ty.Void;
             if (t == .Void && !asStmt) {
                 this.error(
                     "LYS-SEM0140",
                     "'try?' over what gives no value stands as a statement",
                     at
                 );
+                given = Ty.Unknown;
             }
             let handler = TClause { test = null, body = [], types = [] };
             return TExpr.Block(
                 [TStmt.Try([TStmt.Expr(v, at.line)], caught, record, [handler], at.line)],
                 boxE(TExpr.Unit),
-                Ty.Void
+                given
             );
         }
         let ot = Ty.Optional(boxTy(t));

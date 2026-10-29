@@ -1678,6 +1678,10 @@ class Parser {
                         f"'try{this.text(sign)}' takes no clause: a clause belongs to a plain 'try'",
                         this.current()
                     );
+                    // the clauses read and left, so that nothing follows from them
+                    while (this.catchAhead()) {
+                        let _ = try this.parseCatch(true);
+                    }
                 }
                 return if (sign.kind == .Question) Expr.TryOpt(boxed(operand), this.since(t))
                     else Expr.TryBang(boxed(operand), this.since(t));

@@ -14,6 +14,7 @@ import lyric_script.compiler.ast {
     FixedAnswer,
     BinaryOp,
     Block,
+    CatchClause,
     Conformance,
     Decl,
     EnumDecl,
@@ -984,12 +985,77 @@ class Parser {
             }
             return Stmt.Return(value, this.since(first));
         }
+        // `throw e` (06 §1 rule 3)
+        if (this.atWord("throw")) {
+            this.advance();
+            let value = try this.parseExpr();
+            return Stmt.Throw(value, this.since(first));
+        }
+        // `try { … } catch (e: T) { … }` (06 §4)
+        if (this.atWord("try") && this.peek(1).kind == .LBrace) {
+            return try this.parseTry();
+        }
         if (this.at(.LBrace)) {
             let b = try this.parseBlock();
             return Stmt.Block(b, b.span);
         }
         let e = try this.parseExpr();
         return Stmt.Expr(e, this.since(first));
+    }
+
+    /// `try { … }` and its clauses, each `catch (e)`, `catch (e: T)` or `catch (e in [A, B])`.
+    mut fn parseTry(): Stmt throws SyntaxError {
+        let first = this.advance();
+        let body = try this.parseBlock();
+        let clauses = List<CatchClause>.new();
+        loop {
+            // a clause may stand on the next line
+            var k = 0;
+            while (this.peek(k).kind == .Newline) {
+                k += 1;
+            }
+            if (!this.isWord(this.peek(k), "catch")) {
+                break;
+            }
+            this.skipNewlines();
+            let at = this.advance();
+            try this.expect(.LParen, "LYS-PAR0019", "'(' after 'catch'");
+            let name = try this.expect(.Ident, "LYS-PAR0026", "the clause's binding, or '_'");
+            let types = List<TypeExpr>.new();
+            var isSet = false;
+            if (this.at(.Colon)) {
+                this.advance();
+                types.push(try this.parseType());
+            } else if (this.atWord("in")) {
+                this.advance();
+                isSet = true;
+                if (this.at(.LBracket)) {
+                    this.advance();
+                    loop {
+                        types.push(try this.parseType());
+                        if (!this.at(.Comma)) {
+                            break;
+                        }
+                        this.advance();
+                    }
+                    try this.expect(.RBracket, "LYS-PAR0004", "']' after the clause's types");
+                } else {
+                    types.push(try this.parseType());
+                }
+            }
+            try this.expect(.RParen, "LYS-PAR0008", "')' after the clause");
+            let clauseBody = try this.parseBlock();
+            clauses.push(
+                CatchClause {
+                    name = this.text(name),
+                    types = types.toArray(),
+                    isSet = isSet,
+                    body = clauseBody,
+                    span = this.since(at),
+                }
+            );
+        }
+        return Stmt.Try(body, clauses.toArray(), this.since(first));
     }
 
     /// `let name: T = value`, `var name = value`; the type or the value may be left out.
@@ -1530,6 +1596,12 @@ class Parser {
         }
         if (w == "match") {
             return try this.parseMatch();
+        }
+        // `throw e` where a value stands, of type `never` (06 §1 rule 3)
+        if (w == "throw") {
+            this.advance();
+            let value = try this.parseExpr();
+            return Expr.Throw(boxed(value), this.since(t));
         }
         return null;
     }

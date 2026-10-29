@@ -3689,6 +3689,10 @@ class Checker {
 
     mut fn stmtOf(s: Stmt): TStmt {
         return match (s) {
+            .Throw(_, at) | .Try(_, _, at) => {
+                this.notYet("throwing and catching", "S4a", at);
+                TStmt.Expr(TExpr.Unknown, at.line)
+            }
             .Expr(e, at) => this.exprStmt(e, at),
             .Let(isVar, name, written, value, at) => this.letStmt(isVar, name, written, value, at),
             .LocalFn(f) => this.localFn(f),
@@ -5305,6 +5309,7 @@ class Checker {
     /// Checks an expression; `expected` is the type its place takes, where one is known.
     mut fn expr(e: Expr, expected: ?Ty): TExpr {
         return match (e) {
+            .Throw(_, at) => this.notYet("throwing", "S4a", at),
             // where the place's type conforms, built by its literal protocol (03 Lit)
             .Int(n, _) => this.literalOf(
                 TExpr.Int(n),
@@ -8745,6 +8750,8 @@ fn itemLine(item: Item): int {
 
 fn stmtSpan(s: Stmt): Span {
     return match (s) {
+        .Throw(_, at) => at,
+        .Try(_, _, at) => at,
         .Expr(_, at) => at,
         .Let(_, _, _, _, at) => at,
         .LocalFn(f) => f.span,
@@ -9315,6 +9322,14 @@ fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
         return true;
     }
     return match (s) {
+        .Throw(e, _) => exprAny(e, onStmt, onExpr),
+        .Try(body, clauses, _) => {
+            var found = blockAny(body, onStmt, onExpr);
+            for (c in clauses) {
+                found = found || blockAny(c.body, onStmt, onExpr);
+            }
+            found
+        }
         .Expr(e, _) => exprAny(e, onStmt, onExpr),
         .Let(_, _, _, v, _) => v != null && exprAny(v, onStmt, onExpr),
         .LocalFn(f) => {
@@ -9451,6 +9466,7 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
 /// Where an expression stands.
 fn spanOf(e: Expr): Span {
     return match (e) {
+        .Throw(_, at) => at,
         .Int(_, at) => at,
         .Float(_, at) => at,
         .Bool(_, at) => at,

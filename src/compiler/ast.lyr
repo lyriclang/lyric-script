@@ -144,6 +144,8 @@ enum Expr :: [Debug] {
     With(Box<Expr>, WithField[], Span),
     /// `f<int>`: a generic with its type arguments written, as a call's callee.
     Instance(Box<Expr>, TypeExpr[], Span),
+    /// `throw e` where a value stands: of type `never` (06 §1 rule 3).
+    Throw(Box<Expr>, Span),
     /// A lambda: its parameters, its result type if written, its body (an expression or a value
     /// block), and whether it is a trailing block without named parameters (`it`, or none).
     Lambda(LambdaParam[], ?TypeExpr, Box<Expr>, bool, Span),
@@ -216,6 +218,20 @@ enum Stmt :: [Debug] {
     IfLet(Pattern, Expr, Block, ?Box<Stmt>, Span),
     /// `while (let name = optional) { … }`: a turn for each value that is there.
     WhileLet(Pattern, Expr, Block, ?string, Span),
+    /// `throw e` (Lyric 5 06 §1 rule 3).
+    Throw(Expr, Span),
+    /// `try { … } catch (e: T) { … } catch (e) { … }`: the body and its clauses (06 §4).
+    Try(Block, CatchClause[], Span),
+}
+
+/// A clause of a `try`: its binding (`_` for none), the types it takes — none for every error,
+/// one for a typed clause, several or one with `in` for a set — and its body.
+struct CatchClause :: [Debug] {
+    name: string,
+    types: TypeExpr[],
+    isSet: bool,
+    body: Block,
+    span: Span,
 }
 
 /// A block: its statements, in order. Where a block gives a value, its last statement does,

@@ -325,7 +325,16 @@ fn runScript(path: string, json: bool): int {
     if (compiled.warnings == 0) {
         store(key, module);
     }
-    return finish(execute(module, scriptEntry, [], -1));
+    return finishScript(execute(module, scriptEntry, [], -1));
+}
+
+/// The exit code of a script: what its `fn main(): int` returns (07 Top, V1 M7), else as `finish`
+/// says.
+fn finishScript(outcome: Outcome): int {
+    return match (outcome) {
+        .Scalar(bits) => bits as int,
+        _ => finish(outcome),
+    };
 }
 
 /// The run of the module cached for `key`, its exit code; `null` where there is none.
@@ -337,7 +346,7 @@ fn runCached(key: string, json: bool): ?int {
     if (json) {
         println(renderSummary(0, 0));
     }
-    return finish(execute(cached, scriptEntry, [], -1));
+    return finishScript(execute(cached, scriptEntry, [], -1));
 }
 
 /// What compiling a script gave: its module, `null` where it has errors, and how many warnings

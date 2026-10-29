@@ -3051,9 +3051,62 @@ class Checker {
             body.push(s);
         }
         let info = this.functions[index];
+        // `fn main` of an entry without statements is its entry, after its bindings (07 Top)
+        let start = this.entryMain(stmts.toArray());
+        if (start != null) {
+            let (call, line) = start;
+            if (typeOf(call) == .Int) {
+                // `fn main(): int` gives the exit code (V1 M7)
+                body.push(TStmt.Return(call, line));
+                info.returns = Ty.Int;
+            } else {
+                body.push(TStmt.Expr(call, line));
+            }
+        }
         info.body = body.toArray();
         info.locals = this.ctx.locals.toArray();
         info.boxed = this.ctx.boxed.toArray();
+    }
+
+    /// The call of the entry's `fn main` where it is the entry, and the line it stands on; `null`
+    /// where the entry declares none, or runs statements beside it (`LYS-SEM0906`), or its form
+    /// is not an entry's (`LYS-SEM0021`).
+    mut fn entryMain(stmts: Stmt[]): ?(TExpr, int) {
+        let mains = this.fnByName.get(keyIn("", 0, "main"));
+        if (mains == null || mains.length() == 0) {
+            return null;
+        }
+        let fi = mains[0];
+        let decl = this.fnDecls[fi];
+        if (decl == null) {
+            return null;
+        }
+        for (st in stmts) {
+            if (fileModule(stmtSpan(st).file) == 0 && !bindsGlobals(st)) {
+                this.error(
+                    "LYS-SEM0906",
+                    "two entries: the script's statements and 'fn main' — keep one",
+                    decl.span
+                );
+                return null;
+            }
+        }
+        let saved = this.mod;
+        this.mod = 0;
+        let rt = this.returnsOf(fi, decl.span);
+        this.mod = saved;
+        if (mains.length() > 1
+            || this.functions[fi].params.length() > 0
+            || this.functions[fi].typeParams.length() > 0
+            || (rt != .Void && rt != .Int && rt != .Unknown)) {
+            this.error(
+                "LYS-SEM0021",
+                "the entry's 'main' takes no parameters and returns void or int",
+                decl.span
+            );
+            return null;
+        }
+        return (TExpr.Call(fi, [], rt), decl.span.line);
     }
 
     mut fn checkBodies(): void {

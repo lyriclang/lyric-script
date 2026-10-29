@@ -595,6 +595,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "A type that conforms to an interface implements every member of its chain that has no default. Lyric 5's LYR-SEM0020."
 
+[LYS-SEM0021]
+title = "an entry's main of another form"
+severity = "error"
+area = "04-modules"
+summary = "The entry module's `fn main`, where it is the entry, takes parameters, is declared twice, or returns another type than `void` or `int`. A script without statements and with `fn main` runs it; `main` is not required. Lyric 5's LYR-SEM0021."
+
 [LYS-SEM0022]
 title = "an expression statement without an effect"
 severity = "error"
@@ -1034,6 +1040,12 @@ title = "a statement of an imported module"
 severity = "warning"
 area = "04-modules"
 summary = "An imported module's statement other than a `let` or a `var` does not run: only the entry module runs its statements; an imported one gives its declarations and its bindings, filled before the entry's code. Script's own; a Lyric 5 module has no statements."
+
+[LYS-SEM0906]
+title = "two entries"
+severity = "error"
+area = "04-modules"
+summary = "The entry module runs statements and declares `fn main`: either is an entry, both are two. Keep the statements, or move them into `main`. Script's own: a Lyric 5 module has no statements."
 
 [LYS-NYI0001]
 title = "a form a later milestone builds"

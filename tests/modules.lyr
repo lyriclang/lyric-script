@@ -147,19 +147,20 @@ fn anImportNothingUsesWarnsInTheOrderWritten(): void {
         said("import lib { a, b, c, d }\nimport lib as l\nlet x = c()", [lib]),
         ["LYS-SEM0072@0:1", "LYS-SEM0072@0:1", "LYS-SEM0072@0:1", "LYS-SEM0072@0:2"]
     );
-    let c = checked("import lib { a, b, c, d }\nlet x = c()", [lib]);
+    // a dozen: a map keeps a few in the order they came, more in an order of each run's own
+    var decls = "";
     let names = List<string>.new();
-    for (w in c.warnings) {
-        names.push(w.message);
+    for (n in ["m", "b", "x", "a", "q", "e", "z", "k", "c", "w", "f", "p"]) {
+        decls = decls + f"fn {n}(): int = 0\n";
+        names.push(n);
     }
-    assertEq(
-        names.toArray(),
-        [
-            "the import 'a' is never used",
-            "the import 'b' is never used",
-            "the import 'd' is never used",
-        ]
-    );
+    let list = names.toArray().join(", ");
+    let c = checked(f"import many {{ {list} }}\nlet used = c()", [("many", decls)]);
+    let unused = List<string>.new();
+    for (w in c.warnings) {
+        unused.push(w.message[12..13].toString());
+    }
+    assertEq(unused.toArray(), ["m", "b", "x", "a", "q", "e", "z", "k", "w", "f", "p"]);
 }
 
 @Test

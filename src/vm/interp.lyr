@@ -51,6 +51,8 @@ pub enum Outcome {
     Error(ScriptError),
     /// The fuel ran out (design/v1, 01 S5); the run stopped at a backward jump or a call.
     Suspended,
+    /// A task waits or gave way (S6a): the scheduler runs another; never the outcome of a run.
+    Switch,
 }
 
 /// A panic of the script: its code, its message and the script's frames, innermost first.
@@ -137,6 +139,23 @@ class TaskState {
     var bs: int = 0,
     var br: int = 0,
     var report: ?Report = null,
+    // the script's handle of a spawned task; none for the run's first
+    var handle: ?ScriptTask = null,
+    // what an error that left the task threw, and its record: what `await` throws again
+    var thrown: HeapRef = nilRef(),
+    var record: HeapRef = nilRef(),
+}
+
+/// A task as the script holds it (07 N4): its state, what it ended with once it has, and the
+/// tasks that wait for it.
+pub class ScriptTask :: [HeapRef] {
+    state: TaskState,
+    var result: ?Outcome = null,
+    waiters: List<TaskState>,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
 }
 
 /// What every task of one run shares: the module, its globals, the descriptors made, the budget.
@@ -146,6 +165,10 @@ class RunShared {
     gr: HeapRef[],
     interning: Interning,
     var budget: int,
+    // the tasks ready to run, from `head` on; every task spawned, in order (S6a)
+    queue: List<TaskState>,
+    var head: int = 0,
+    tasks: List<ScriptTask>,
 }
 
 /// Runs `entry` of `module` on the current task; see `execute`.
@@ -175,18 +198,50 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
         main.s[k] = args[k];
         k += 1;
     }
+    // the script's top-level bindings (07 Top), alive for this run; the descriptors of this run:
+    // the compiler's, and those shared copies make (S3i)
     let shared = RunShared {
         module = module,
         gs = [0 as uint64] * module.globalsS,
         gr = refArray(module.globalsR),
         interning = Interning.of(module),
         budget = fuel,
+        queue = List<TaskState>.new(),
+        tasks = List<ScriptTask>.new(),
     };
-    // the script's top-level bindings (07 Top), alive for this run
-
-    // the descriptors of this run: the compiler's, and those shared copies make (S3i)
-
-    return runTask(main, shared);
+    // the scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits
+    shared.queue.push(main);
+    while (shared.head < shared.queue.length()) {
+        let t = shared.queue[shared.head];
+        shared.head += 1;
+        let out = runTask(t, shared);
+        match (out) {
+            .Switch => { }
+            // the budget holds the whole instance (N8, 01 S5b)
+            .Suspended => {
+                return out;
+            }
+            _ => {
+                let h = t.handle;
+                if (h == null) {
+                    // the run's first task: its end, after its `join`, is the run's
+                    return out;
+                }
+                h.result = out;
+                for (w in h.waiters) {
+                    shared.queue.push(w);
+                }
+                h.waiters.clear();
+            }
+        }
+    }
+    return Outcome.Panic(
+        ScriptPanic {
+            code = "LYS-RT0900",
+            message = "every task waits for another: none can go on",
+            trace = [],
+        }
+    );
 }
 
 /// Runs task `t` from where it stands until it ends — its outcome — or waits.
@@ -993,6 +1048,14 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         br = back.baseR;
                     }
                 } else {
+                    if (t.handle != null) {
+                        // a spawned task fails: `await` and `join` throw its error again (S6a)
+                        t.thrown = value;
+                        t.record = record;
+                        return Outcome.Error(
+                            ScriptError { typeName = "", message = "", causes = [], trace = [] }
+                        );
+                    }
                     let rep = report;
                     if (rep != null) {
                         // thrown out of a report's call: the report ends with what it has
@@ -1034,6 +1097,164 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         r = growRefs(r, br + f.refs);
                     }
                 }
+            }
+            // S6a: a task of the closure in `b`, queued; the spawner goes on (07 N8)
+            .Spawn => {
+                let env = r[br + b];
+                var target = -1;
+                if (env is ScriptObject) {
+                    target = env.scalars[0] as int;
+                }
+                if (target < 0 || target >= module.functions.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a spawn of no function"
+                    );
+                }
+                let callee = module.functions[target];
+                let child = TaskState {
+                    s = [0 as uint64] * grown(0, callee.scalars),
+                    r = refArray(grown(0, callee.refs)),
+                    frames = List<CallFrame>.new(),
+                    fi = target,
+                };
+                child.r[0] = env;
+                let handle = ScriptTask { state = child, waiters = List<TaskState>.new() };
+                child.handle = handle;
+                shared.queue.push(child);
+                shared.tasks.push(handle);
+                r[br + a] = handle;
+                pc += 1;
+            }
+            // S6a: the value of the task in `c` — `s[a]` 0 and the value at `s[a+1]…`/`r[b]…` —,
+            // or its error — `s[a]` 1, the error at `r[b]`, its record at `r[b+1]` —; a task still
+            // running is waited for, the await run again when it ends
+            .Await => {
+                let o = r[br + c];
+                if (!(o is ScriptTask)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an await of no task");
+                }
+                let res = o.result;
+                if (res == null) {
+                    o.waiters.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    return Outcome.Switch;
+                }
+                s[bs + a] = 0 as uint64;
+                match (res) {
+                    .Scalar(v) => {
+                        s[bs + a + 1] = v;
+                    }
+                    .Ref(v) => {
+                        r[br + b] = v;
+                    }
+                    .Slots(xs, ys) => {
+                        var k = 0;
+                        while (k < xs.length()) {
+                            s[bs + a + 1 + k] = xs[k];
+                            k += 1;
+                        }
+                        k = 0;
+                        while (k < ys.length()) {
+                            r[br + b + k] = ys[k];
+                            k += 1;
+                        }
+                    }
+                    .Error(_) => {
+                        s[bs + a] = 1 as uint64;
+                        r[br + b] = o.state.thrown;
+                        r[br + b + 1] = o.state.record;
+                    }
+                    // a panic in a task panics the one that awaits it (07 N4)
+                    .Panic(p) => {
+                        return Outcome.Panic(p);
+                    }
+                    _ => { }
+                }
+                pc += 1;
+            }
+            // S6a: the task gives way, to the queue's back (07 N8)
+            .Yield => {
+                pc += 1;
+                shared.queue.push(t);
+                t.s = s;
+                t.r = r;
+                t.fi = fi;
+                t.pc = pc;
+                t.bs = bs;
+                t.br = br;
+                t.report = report;
+                return Outcome.Switch;
+            }
+            // S6a: the status of the task in `b`, as `TaskStatus` numbers it
+            .TaskSt => {
+                let o = r[br + b];
+                var st = 0;
+                if (o is ScriptTask) {
+                    let res = o.result;
+                    if (res != null) {
+                        st = match (res) {
+                            .Error(_) => 2,
+                            .Panic(_) => 3,
+                            _ => 1,
+                        };
+                    }
+                }
+                s[bs + a] = st as uint64;
+                pc += 1;
+            }
+            // S6a: the end of the top level (07 End) — every task of the run ended, the first
+            // that failed thrown again here (`s[a]` 1, error `r[b]`, record `r[b+1]`), a panic
+            // panicking the run
+            .Join => {
+                var open: ?ScriptTask = null;
+                for (h in shared.tasks) {
+                    if (h.result == null && open == null) {
+                        open = h;
+                    }
+                }
+                let waiting = open;
+                if (waiting != null) {
+                    waiting.waiters.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    return Outcome.Switch;
+                }
+                s[bs + a] = 0 as uint64;
+                for (h in shared.tasks) {
+                    let res = h.result;
+                    if (res != null) {
+                        match (res) {
+                            .Error(_) => {
+                                if (s[bs + a] == 0 as uint64) {
+                                    s[bs + a] = 1 as uint64;
+                                    r[br + b] = h.state.thrown;
+                                    r[br + b + 1] = h.state.record;
+                                }
+                            }
+                            .Panic(p) => {
+                                return Outcome.Panic(p);
+                            }
+                            _ => { }
+                        }
+                    }
+                }
+                pc += 1;
             }
             // S4e: an error a defer threw while the one of record `a` was in flight goes with it
             .Suppress => {

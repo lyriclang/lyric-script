@@ -526,6 +526,10 @@ fn finish(outcome: Outcome): int {
             eprintln("error: the run was suspended");
             1
         }
+        .Switch => {
+            eprintln("error[LYS-ICE0001]: the VM gave way with no task to run");
+            101
+        }
     };
 }
 

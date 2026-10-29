@@ -103,6 +103,13 @@ pub enum Op :: [Variants, Equatable] {
     PanicC,
     // S4e: an error a defer threw while another was in flight, kept with the first's record.
     Suppress,
+    // S6a: a task of a closure; a task's value or error once it has ended (the awaiting task
+    // waits till then); the queue's back; a task's status; every task of the run ended.
+    Spawn,
+    Await,
+    Yield,
+    TaskSt,
+    Join,
 }
 
 /// What an operand of an operation names.
@@ -234,6 +241,11 @@ pub fn info(op: Op): OpInfo {
         .Rethrow => OpInfo { mnemonic = "rethrow", operands = [.Ref, .Ref] },
         .PanicC => OpInfo { mnemonic = "panic.c", operands = [.Ref, .Imm] },
         .Suppress => OpInfo { mnemonic = "suppress", operands = [.Ref, .Ref] },
+        .Spawn => OpInfo { mnemonic = "spawn", operands = [.Ref, .Ref] },
+        .Await => OpInfo { mnemonic = "await", operands = [.Scalar, .Ref, .Ref] },
+        .Yield => OpInfo { mnemonic = "yield", operands = [] },
+        .TaskSt => OpInfo { mnemonic = "task.st", operands = [.Scalar, .Ref] },
+        .Join => OpInfo { mnemonic = "join", operands = [.Scalar, .Ref] },
     };
 }
 

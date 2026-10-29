@@ -1,0 +1,197 @@
+// Tasks in the VM (S6a; Script 07 N4, N8, End; 11 Co): hand-written programs spawn closures as
+// tasks, await their values or errors, give way with `yield`, and end the top level with `join`;
+// tasks run one at a time, each until it ends or waits.
+import std.test { assertEq, assertTrue };
+import lyric_script.vm.asm { assemble };
+import lyric_script.vm.interp { Outcome, execute };
+
+fn runText(text: string): Outcome {
+    return execute(try! assemble(text, "t"), "main", [], -1);
+}
+
+fn scalar(o: Outcome): int {
+    return match (o) {
+        .Scalar(bits) => bits as int,
+        .Panic(p) => -1000,
+        _ => -999999,
+    };
+}
+
+// a function value: its function's index, and a box a task and its spawner share
+let types: string = """
+    type Fn scalar f ref box
+    type Box scalar n
+    type Oops
+    """;
+
+@Test
+fn aTaskGivesItsValueToAwait(): void {
+    let text = types
+        + "\n"
+        + """
+        fn work(r) -> s regs 1 1
+            load.i s0, 21
+            add.i s0, s0, s0
+            ret.s s0
+        end
+
+        fn main() -> s regs 3 3
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            await s0, r2, r1
+            ret.s s1
+        end
+        """;
+    assertEq(scalar(runText(text)), 42);
+}
+
+@Test
+fn tasksTakeTurnsWhereTheyWaitOrGiveWay(): void {
+    // the spawner goes on until it waits; `yield` lets the other run (07 N8)
+    let text = types
+        + "\n"
+        + """
+        fn work(r) regs 2 2
+            get.r r1, r0, Fn.box
+            get.s s0, r1, Box.n
+            load.i s1, 10
+            mul.i s0, s0, s1
+            add.imm s0, s0, 2
+            set.s r1, Box.n, s0
+            ret
+        end
+
+        fn main() -> s regs 4 4
+            new r1, Box
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            set.r r0, Fn.box, r1
+            spawn r2, r0
+            load.i s0, 1
+            set.s r1, Box.n, s0
+            yield
+            get.s s0, r1, Box.n
+            load.i s1, 10
+            mul.i s0, s0, s1
+            add.imm s0, s0, 3
+            set.s r1, Box.n, s0
+            await s2, r3, r2
+            get.s s0, r1, Box.n
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text)), 123);
+}
+
+@Test
+fn aTasksStatusTellsWhetherItEnded(): void {
+    let text = types
+        + "\n"
+        + """
+        fn work(r) regs 0 1
+            ret
+        end
+
+        fn main() -> s regs 4 3
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            task.st s3, r1
+            await s1, r2, r1
+            task.st s2, r1
+            load.i s0, 10
+            mul.i s3, s3, s0
+            add.i s0, s3, s2
+            ret.s s0
+        end
+        """;
+    // running (0) before, done (1) after
+    assertEq(scalar(runText(text)), 1);
+}
+
+@Test
+fn aTasksErrorReachesAwaitAndJoin(): void {
+    // `s[a]` 1 and the error where the value would be; unawaited, `join` gives it at the end
+    let text = types
+        + "\n"
+        + """
+        fn work(r) -> s regs 0 2
+            new r1, Oops
+            throw r1
+        end
+
+        fn main() -> s regs 4 5
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            await s1, r2, r1
+            spawn r4, r0
+            join s2, r2
+            load.i s0, 10
+            mul.i s1, s1, s0
+            add.i s0, s1, s2
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text)), 11);
+}
+
+@Test
+fn aTaskThatWaitsForItselfLeavesNoneToRun(): void {
+    // the child awaits its own handle; the spawner awaits the child: none can go on
+    let text = types
+        + "\n"
+        + """
+        fn work(r) regs 1 3
+            get.r r1, r0, Fn.box
+            await s0, r2, r1
+            ret
+        end
+
+        fn main() regs 2 3
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            set.r r0, Fn.box, r1
+            await s0, r2, r1
+            ret
+        end
+        """;
+    match (runText(text)) {
+        .Panic(p) => assertEq(p.code, "LYS-RT0900"),
+        _ => assertTrue(false, "every task waits"),
+    }
+}
+
+@Test
+fn aPanicInATaskPanicsTheOneThatAwaitsIt(): void {
+    let text = types
+        + "\n"
+        + """
+        fn work(r) -> s regs 2 1
+            load.i s0, 1
+            load.i s1, 0
+            div.i s0, s0, s1
+            ret.s s0
+        end
+
+        fn main() -> s regs 2 3
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            await s0, r2, r1
+            ret.s s1
+        end
+        """;
+    match (runText(text)) {
+        .Panic(p) => assertTrue(p.message.contains("zero"), p.message),
+        _ => assertTrue(false, "the panic reaches the awaiting task"),
+    }
+}

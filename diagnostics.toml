@@ -61,6 +61,12 @@ severity = "panic"
 area = "06-errors"
 summary = "The script called `panic` with a message. The code and its meaning are Lyric 5's LYR-RT0008."
 
+[LYS-RT0900]
+title = "every task waits for another"
+severity = "error"
+area = "10-concurrency"
+summary = "No task of the run can go on: each waits for a task that waits in turn — a deadlock. The run panics with exit code 101. Script's own; Lyric 5's tasks block instead."
+
 [LYS-ASM0001]
 title = "a line of assembly text that cannot be read"
 severity = "error"

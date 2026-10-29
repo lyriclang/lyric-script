@@ -86,7 +86,7 @@ struct Checked {
 /// static member that builds the conforming type from a literal of its kind; `Error`, the root of
 /// what is thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was
 /// first thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core).
-let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nenum TaskStatus {\n    Running,\n    Done,\n    Failed,\n    Panicked,\n    Cancelled,\n}\nclass Coroutine<Y, R> :: [Identity, Closeable] {\n    fn close() {\n    }\n}\nclass Cancelled :: Error {\n    fn message(): string = \"cancelled\"\n}\nclass TaskScope :: Closeable {\n    fn close() {\n    }\n}\n";
+let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nclass PanicInfo {\n    code: string\n    message: string\n    trace: string\n}\nenum TaskStatus<T> {\n    Running,\n    Done(T),\n    Failed(Error),\n    Cancelled,\n    Panicked(PanicInfo),\n}\nclass Coroutine<Y, R> :: [Identity, Closeable] {\n    fn close() {\n    }\n}\nclass Cancelled :: Error {\n    fn message(): string = \"cancelled\"\n}\nclass TaskScope :: Closeable {\n    fn close() {\n    }\n}\n";
 
 /// A file of a program (S5a): its module's dotted path below the root, what it parsed to, and its
 /// place among the program's files — 0 the entry.
@@ -3746,6 +3746,9 @@ class Checker {
             ),
             .ScopeClose(x) => TExpr.ScopeClose(this.specBox(x, a)),
             .ScopeCancel(x) => TExpr.ScopeCancel(this.specBox(x, a)),
+            .TaskValue(x, t) => TExpr.TaskValue(this.specBox(x, a), this.subst(t, a)),
+            .TaskError(x, t) => TExpr.TaskError(this.specBox(x, a), t),
+            .PanicText(x, k) => TExpr.PanicText(this.specBox(x, a), k),
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -8594,6 +8597,66 @@ class Checker {
         return TExpr.SpawnDetached(boxE(closure));
     }
 
+    /// `t.status()` (Lyric 5 10 §2 rule 11): where the task stands, without a wait — a
+    /// `TaskStatus<T>`: `Running`, `Done` with its value, `Failed` with its error, `Cancelled`, or
+    /// `Panicked` with its panic's `PanicInfo` (S6c3). The VM numbers the states 0 running, 1 done,
+    /// 2 failed, 3 panicked, 4 cancelled.
+    mut fn statusOf(receiver: TExpr, value: Ty, at: Span): TExpr {
+        let tsi = this.typeIndex.get("TaskStatus");
+        let pii = this.typeIndex.get("PanicInfo");
+        if (tsi == null || pii == null) {
+            return TExpr.Unknown;
+        }
+        let st = this.typeInstance(tsi, [value]);
+        let stTy = Ty.Named(st);
+        let taskTy = typeOf(receiver);
+        let id = this.hidden(taskTy, at);
+        let task = TExpr.Local(id, taskTy);
+        let stateId = this.hidden(Ty.Int, at);
+        let state = TExpr.Local(stateId, Ty.Int);
+        let panic = TExpr.New(
+            pii,
+            [
+                TExpr.PanicText(boxE(task), 0),
+                TExpr.PanicText(boxE(task), 1),
+                TExpr.PanicText(boxE(task), 2),
+            ]
+        );
+        var chain = TExpr.MakeVariant(st, 4, [panic]);
+        chain = TExpr.If(
+            boxE(isState(state, 4)),
+            boxE(TExpr.MakeVariant(st, 3, [])),
+            boxE(chain),
+            stTy
+        );
+        chain = TExpr.If(
+            boxE(isState(state, 2)),
+            boxE(TExpr.MakeVariant(st, 2, [TExpr.TaskError(boxE(task), this.errorTy())])),
+            boxE(chain),
+            stTy
+        );
+        chain = TExpr.If(
+            boxE(isState(state, 1)),
+            boxE(TExpr.MakeVariant(st, 1, [TExpr.TaskValue(boxE(task), value)])),
+            boxE(chain),
+            stTy
+        );
+        chain = TExpr.If(
+            boxE(isState(state, 0)),
+            boxE(TExpr.MakeVariant(st, 0, [])),
+            boxE(chain),
+            stTy
+        );
+        return TExpr.Block(
+            [
+                TStmt.SetLocal(id, receiver, at.line),
+                TStmt.SetLocal(stateId, TExpr.TaskStatus(boxE(task), Ty.Int), at.line),
+            ],
+            boxE(chain),
+            stTy
+        );
+    }
+
     /// A method of a `TaskScope` (Lyric 5 10 §4): `spawn { … }` a task of it, `close()`, which
     /// waits for its tasks and throws the first failure, `cancel()`; `null` where `i` is no scope.
     mut fn scopeMethod(receiver: TExpr, i: int, method: string, args: Arg[], at: Span): ?TExpr {
@@ -8638,14 +8701,18 @@ class Checker {
             "await" => TExpr.Await(boxE(receiver), value),
             // its waits throw `Cancelled` from now on (Lyric 5 10 §3 rule 1)
             "cancel" => TExpr.TaskCancel(boxE(receiver)),
-            "status" => TExpr.TaskStatus(
-                boxE(receiver),
-                Ty.Named(this.typeIndex.get("TaskStatus") ?? -1)
+            "status" => this.statusOf(receiver, value, at),
+            // whether it has ended, with its value or its error (Lyric 5 10 §2 rule 10)
+            "isDone" => TExpr.Binary(
+                boxE(TExpr.TaskStatus(boxE(receiver), Ty.Int)),
+                BinaryOp.Ne,
+                boxE(TExpr.Int(0)),
+                Ty.Bool
             ),
             _ => {
                 this.error(
                     "LYS-SEM0012",
-                    f"a task has no method '{method}': await, status, cancel",
+                    f"a task has no method '{method}': await, status, isDone, cancel",
                     at
                 );
                 TExpr.Unknown
@@ -11765,6 +11832,11 @@ fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool, deep: bo
         .WhileLet(_, v, b, _, _) => exprAny(v, onStmt, onExpr, deep)
             || blockAny(b, onStmt, onExpr, deep),
     };
+}
+
+/// `state == n`, for a task's state the VM numbers (S6c3).
+fn isState(state: TExpr, n: int): TExpr {
+    return TExpr.Binary(boxE(state), BinaryOp.Eq, boxE(TExpr.Int(n)), Ty.Bool);
 }
 
 /// Whether the block has a `yield` of its own — one outside every lambda and local function in

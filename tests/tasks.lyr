@@ -341,7 +341,7 @@ fn aTasksStatusTellsHowItEnded(): void {
         value(
             boom
                 + "fn f(): int {\n    let t = spawn { boom() }\n    let got = try? t.await()\n"
-                + "    return if (got == null && t.status() == TaskStatus.Failed) 1 else 0\n}",
+                + "    return match (t.status()) {\n        .Failed(e) => if (got == null && e.message() == \"boom\") 1 else 2,\n        _ => 3,\n    }\n}",
             "f"
         ),
         1
@@ -350,7 +350,7 @@ fn aTasksStatusTellsHowItEnded(): void {
     assertEq(
         value(
             "fn f(): int {\n    let t = spawn { 1 / 0 }\n    yieldNow()\n"
-                + "    return if (t.status() == TaskStatus.Panicked) 1 else 0\n}",
+                + "    return match (t.status()) {\n        .Panicked(p) => if (p.code == \"LYS-RT0001\") 1 else 2,\n        _ => 0,\n    }\n}",
             "f"
         ),
         1
@@ -371,7 +371,7 @@ fn onlyAProgramThatSpawnsEndsWithAJoin(): void {
 fn aCancelEndsTheWaitWithCancelled(): void {
     let src = "fn f(): int {\n    let t = spawn {\n        while (true) {\n            yieldNow()\n        }\n    }\n"
         + "    yieldNow()\n    t.cancel()\n    var caught = 0\n    try {\n        t.await()\n    } catch (e: Cancelled) {\n"
-        + "        caught = 1\n    }\n    return caught * 10 + (if (t.status() == TaskStatus.Cancelled) 1 else 0)\n}";
+        + "        caught = 1\n    }\n    let ended = match (t.status()) {\n        .Cancelled => 1,\n        _ => 0,\n    }\n    return caught * 10 + ended\n}";
     assertEq(value(src, "f"), 11);
 }
 
@@ -462,4 +462,19 @@ fn scopesAreChecked(): void {
     assertEq(errs("let scope = TaskScope.new(1)"), ["LYS-SEM0014"]);
     assertEq(errs("let scope = TaskScope.new()\nscope.join()"), ["LYS-SEM0012"]);
     assertEq(errs("let x: Closeable = TaskScope.new()"), ["LYS-SEM0001"]);
+}
+
+// A task's status with its values (S6c3).
+@Test
+fn aDoneStatusHoldsTheValue(): void {
+    let src = "fn f(): int {\n    let t = spawn { 21 * 2 }\n    t.await()\n    return match (t.status()) {\n"
+        + "        .Done(v) => v,\n        _ => -1,\n    }\n}";
+    assertEq(value(src, "f"), 42);
+}
+
+@Test
+fn isDoneSaysWhetherTheTaskEnded(): void {
+    let src = "fn f(): int {\n    let t = spawn { 1 }\n    let before = t.isDone()\n    t.await()\n"
+        + "    return (if (before) 10 else 0) + (if (t.isDone()) 1 else 0)\n}";
+    assertEq(value(src, "f"), 1);
 }

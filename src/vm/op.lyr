@@ -130,6 +130,11 @@ pub enum Op :: [Variants, Equatable] {
     SpawnS,
     ScopeClose,
     ScopeCancel,
+    // S6c3: what an ended task gave — its value, its error, its panic's code, message or trace —,
+    // read without a wait.
+    TaskVal,
+    TaskErr,
+    TaskPInfo,
 }
 
 /// What an operand of an operation names.
@@ -280,6 +285,9 @@ pub fn info(op: Op): OpInfo {
         .SpawnS => OpInfo { mnemonic = "spawn.s", operands = [.Ref, .Ref, .Ref] },
         .ScopeClose => OpInfo { mnemonic = "scope.close", operands = [.Scalar, .Ref, .Ref] },
         .ScopeCancel => OpInfo { mnemonic = "scope.cancel", operands = [.Ref] },
+        .TaskVal => OpInfo { mnemonic = "task.val", operands = [.Scalar, .Ref, .Ref] },
+        .TaskErr => OpInfo { mnemonic = "task.err", operands = [.Ref, .Ref] },
+        .TaskPInfo => OpInfo { mnemonic = "task.pinfo", operands = [.Ref, .Ref, .Imm] },
     };
 }
 

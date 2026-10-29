@@ -265,6 +265,8 @@ fn typeOf(e: TExpr): Ty {
         .CoClose(_, _) | .SpawnDetached(_) | .TaskCancel(_) => Ty.Void,
         .ScopeNew(t) | .ScopeSpawn(_, _, t) => t,
         .ScopeClose(_) | .ScopeCancel(_) => Ty.Void,
+        .TaskValue(_, t) | .TaskError(_, t) => t,
+        .PanicText(_, _) => Ty.Str,
         .Int(_) => Ty.Int,
         .Float(_) => Ty.Float,
         .Bool(_) => Ty.Bool,
@@ -493,6 +495,10 @@ enum TExpr :: [Debug] {
     ScopeSpawn(Box<TExpr>, Box<TExpr>, Ty),
     ScopeClose(Box<TExpr>),
     ScopeCancel(Box<TExpr>),
+    /// S6c3: an ended task's value; its error; its panic's code (0), message (1) or trace (2).
+    TaskValue(Box<TExpr>, Ty),
+    TaskError(Box<TExpr>, Ty),
+    PanicText(Box<TExpr>, int),
     Unknown,
 }
 
@@ -552,6 +558,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         .ScopeNew(_) => [],
         .ScopeSpawn(sc, x, _) => [sc.value, x.value],
         .ScopeClose(x) | .ScopeCancel(x) => [x.value],
+        .TaskValue(x, _) | .TaskError(x, _) | .PanicText(x, _) => [x.value],
         .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
         .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],
         .CapturedCell(_, _) | .CellOf(_, _) | .DescOfType(_, _) | .GenericValue(_, _, _) => [],

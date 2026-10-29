@@ -1645,6 +1645,22 @@ class FnGen {
                 let scope = this.any(x.value);
                 this.emit(Op.ScopeCancel, scope.r, 0, 0);
             }
+            // S6c3: an ended task's value, its error, its panic's texts — read without a wait
+            .TaskValue(x, _) => {
+                let task = this.any(x.value);
+                let sa = if (dst.s >= 0) dst.s else 0;
+                let ra = if (dst.r >= 0) dst.r else 0;
+                this.need(1, 1);
+                this.emit(Op.TaskVal, sa, ra, task.r);
+            }
+            .TaskError(x, _) => {
+                let task = this.any(x.value);
+                this.emit(Op.TaskErr, dst.r, task.r, 0);
+            }
+            .PanicText(x, k) => {
+                let task = this.any(x.value);
+                this.emit(Op.TaskPInfo, dst.r, task.r, k);
+            }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);
                 this.emit(Op.TaskSt, dst.s, task.r, 0);

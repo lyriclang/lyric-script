@@ -1732,6 +1732,58 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 }
                 pc += 1;
             }
+            // S6c3: the value of the ended task in `c` at `s[a]…`/`r[b]…`, without a wait
+            .TaskVal => {
+                let o = r[br + c];
+                if (o is ScriptTask) {
+                    match (o.result ?? Outcome.Void) {
+                        .Scalar(v) => {
+                            s[bs + a] = v;
+                        }
+                        .Ref(v) => {
+                            r[br + b] = v;
+                        }
+                        .Slots(xs, ys) => {
+                            var k = 0;
+                            while (k < xs.length()) {
+                                s[bs + a + k] = xs[k];
+                                k += 1;
+                            }
+                            k = 0;
+                            while (k < ys.length()) {
+                                r[br + b + k] = ys[k];
+                                k += 1;
+                            }
+                        }
+                        _ => { }
+                    }
+                }
+                pc += 1;
+            }
+            // S6c3: the error the task in `b` ended with
+            .TaskErr => {
+                let o = r[br + b];
+                if (o is ScriptTask) {
+                    r[br + a] = o.state.thrown;
+                }
+                pc += 1;
+            }
+            // S6c3: the code (`c` 0), the message (1) or the trace (2) of the task's panic
+            .TaskPInfo => {
+                let o = r[br + b];
+                var text = "";
+                if (o is ScriptTask) {
+                    match (o.result ?? Outcome.Void) {
+                        .Panic(p) => {
+                            text = if (c == 0) p.code
+                                else if (c == 1) p.message else p.trace.join("\n");
+                        }
+                        _ => { }
+                    }
+                }
+                r[br + a] = ScriptString { text = text };
+                pc += 1;
+            }
             .ScopeCancel => {
                 let sc = r[br + a];
                 if (sc is ScriptScope) {

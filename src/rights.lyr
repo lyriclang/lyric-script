@@ -1,0 +1,109 @@
+//! Rights (design/v1, 01 S1–S4; 12 Rechte): each module of the standard library that reaches
+//! outside the script belongs to a class — `file`, `net`, `process`, `os`, `native` —; a program
+//! asks for the classes its imports reach, each with the import that asks, and nothing is allowed
+//! unless given (`--allow`, `-A`, or the one question before the start at a terminal).
+//!
+//! The table of the standard library is the plan's until S7 brings `std` and fixes it; until then
+//! `LYRIC_SCRIPT_RIGHTS` — `module=class` pairs between commas — stands in for it in tests. It can
+//! only ask for rights, never give them.
+import std.collections { List };
+import std.os { env };
+import lyric_script.vm.module { RightUse };
+
+/// The classes of rights (12 Rechte).
+let classes: string[] = ["file", "net", "process", "os", "native"];
+
+/// The class a module asks for, `null` for none: the test table's where it names the module, else
+/// the standard library's — a module below one counts as it.
+fn classOf(module: string): ?string {
+    let tested = env("LYRIC_SCRIPT_RIGHTS");
+    if (tested != null) {
+        for (pair in tested.split(',')) {
+            let p = pair.trim().toString();
+            let eq = p.find('=');
+            if (eq != null) {
+                let name = p[0..eq].toString();
+                if (module == name || module.startsWith(name + ".")) {
+                    return p[eq + 1..p.length()].toString();
+                }
+            }
+        }
+    }
+    for (row in stdTable()) {
+        let (name, right) = row;
+        if (module == name || module.startsWith(name + ".")) {
+            return right;
+        }
+    }
+    return null;
+}
+
+/// The standard library's table as the plan has it (12 Rechte): files, the network, processes,
+/// the system's environment, its clock and unseeded randomness.
+fn stdTable(): (string, string)[] {
+    return [
+        ("std.fs", "file"),
+        ("std.net", "net"),
+        ("std.http", "net"),
+        ("std.process", "process"),
+        ("std.os", "os"),
+        ("std.time", "os"),
+        ("std.random", "os"),
+    ];
+}
+
+/// The classes an `--allow` names, between commas — `null` where one is no class.
+fn allowed(text: string): ?string[] {
+    let out = List<string>.new();
+    for (part in text.split(',')) {
+        let name = part.trim().toString();
+        var known = false;
+        for (c in classes) {
+            if (c == name) {
+                known = true;
+            }
+        }
+        if (!known) {
+            return null;
+        }
+        out.push(name);
+    }
+    return out.toArray();
+}
+
+/// What `uses` asks for that `granted` does not give — everything given where `all` (`-A`).
+fn missing(uses: RightUse[], granted: string[], all: bool): RightUse[] {
+    let out = List<RightUse>.new();
+    if (all) {
+        return [];
+    }
+    for (u in uses) {
+        var given = false;
+        for (g in granted) {
+            if (g == u.right) {
+                given = true;
+            }
+        }
+        if (!given) {
+            out.push(u);
+        }
+    }
+    return out.toArray();
+}
+
+/// The classes among `uses`, each once, in the order they are first asked for.
+fn classesOf(uses: RightUse[]): string[] {
+    let out = List<string>.new();
+    for (u in uses) {
+        var seen = false;
+        for (c in out) {
+            if (c == u.right) {
+                seen = true;
+            }
+        }
+        if (!seen) {
+            out.push(u.right);
+        }
+    }
+    return out.toArray();
+}

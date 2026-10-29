@@ -1,0 +1,203 @@
+//! The lock file, `lyric-script.lock` (design/v1, 07 Man; Lyric 5 15 §3): what a build read from
+//! git, so that the next build reads the same — each revision with its package's name and version,
+//! its repository, the revision as asked, the commit it was and the hash of its package content.
+import std.collections { List };
+import std.crypto { sha256 };
+import std.toml { TomlError, parse as parseToml };
+
+/// The lock's file name, beside the root manifest.
+let lockName: string = "lyric-script.lock";
+
+/// One revision read from git: the package's name and version, its repository's URL in its
+/// normal form, the revision as the manifest asks for it — `tag v1.0.0`, `branch main`,
+/// `rev 0123abc`, `HEAD` —, the commit it was, and its content's hash.
+struct LockEntry :: [Equatable] {
+    name: string,
+    version: string,
+    repository: string,
+    revision: string,
+    commit: string,
+    hash: string,
+}
+
+/// What reading a lock gave: its entries, or why it does not read, at a line.
+struct LockRead {
+    entries: LockEntry[],
+    fault: ?string,
+    line: int,
+}
+
+/// Reads a lock's text; a lock that does not read is refused, not repaired (Lyric 5 15 §3).
+fn readLock(text: string): LockRead {
+    let doc = try parseToml(text) catch (e: TomlError) {
+        return LockRead { entries = [], fault = f"the lock is no TOML: {e.detail}", line = e.line };
+    };
+    let root = match (doc) {
+        .Table(t) => t,
+        _ => {
+            return LockRead { entries = [], fault = "the lock is no TOML table", line = 1 };
+        }
+    };
+    let out = List<LockEntry>.new();
+    match (root.get("package")) {
+        .Array(xs) => {
+            for (x in xs) {
+                let t = match (x) {
+                    .Table(t) => t,
+                    _ => {
+                        return LockRead {
+                            entries = [],
+                            fault = "a [[package]] is a table",
+                            line = 1,
+                        };
+                    }
+                };
+                let fields = List<string>.new();
+                for (key in ["name", "version", "repository", "revision", "commit", "hash"]) {
+                    match (t.get(key)) {
+                        .String(s) => fields.push(s),
+                        _ => {
+                            return LockRead {
+                                entries = [],
+                                fault = f"a [[package]] of the lock has no '{key}'",
+                                line = 1,
+                            };
+                        }
+                    }
+                }
+                out.push(
+                    LockEntry {
+                        name = fields[0],
+                        version = fields[1],
+                        repository = fields[2],
+                        revision = fields[3],
+                        commit = fields[4],
+                        hash = fields[5],
+                    }
+                );
+            }
+        }
+        null => { }
+        _ => {
+            return LockRead { entries = [], fault = "'package' is an array of tables", line = 1 };
+        }
+    }
+    return LockRead { entries = out.toArray(), fault = null, line = 0 };
+}
+
+/// A lock's text for `entries`, in the order of their repositories and revisions, so that one
+/// set of entries is one text.
+fn writeLock(entries: LockEntry[]): string {
+    let copy = List<LockEntry>.new();
+    for (e in entries) {
+        copy.push(e);
+    }
+    let sorted = copy.toArray();
+    sorted[..].sortBy(
+        (a, b) => if (before(a, b)) Ordering.Less
+            else if (before(b, a)) Ordering.Greater else Ordering.Equal
+    );
+    let out = List<string>.new();
+    out.push(
+        "# What the build read from git, written by lyric-script: check it in with the manifest."
+    );
+    out.push("version = 1");
+    for (e in sorted) {
+        out.push("");
+        out.push("[[package]]");
+        out.push(f"name = {quoted(e.name)}");
+        out.push(f"version = {quoted(e.version)}");
+        out.push(f"repository = {quoted(e.repository)}");
+        out.push(f"revision = {quoted(e.revision)}");
+        out.push(f"commit = {quoted(e.commit)}");
+        out.push(f"hash = {quoted(e.hash)}");
+    }
+    out.push("");
+    return out.toArray().join("\n");
+}
+
+/// Whether entry `a` stands before `b`: by repository, then by revision.
+fn before(a: LockEntry, b: LockEntry): bool {
+    if (a.repository != b.repository) {
+        return a.repository < b.repository;
+    }
+    return a.revision < b.revision;
+}
+
+/// A TOML basic string.
+fn quoted(s: string): string {
+    return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+}
+
+/// The hash of a package's content (Lyric 5 15 §3 rule 1): SHA-256 over one line per file — the
+/// file's SHA-256 in hexadecimal, two spaces, its path with `/` between folders, a line end —, the
+/// lines sorted by path; written `h1:` and Base64. `files` are each path and its bytes.
+fn contentHash(files: (string, uint8[])[]): string {
+    let lines = List<(string, string)>.new();
+    for (f in files) {
+        let (path, bytes) = f;
+        lines.push((path, f"{hexOf(sha256(bytes[..]))}  {path}\n"));
+    }
+    let sorted = lines.toArray();
+    sorted[..].sortBy(
+        (a, b) => {
+            let (pa, _) = a;
+            let (pb, _) = b;
+            if (pa < pb) Ordering.Less else if (pb < pa) Ordering.Greater else Ordering.Equal
+        }
+    );
+    let text = List<string>.new();
+    for (l in sorted) {
+        let (_, line) = l;
+        text.push(line);
+    }
+    return "h1:" + base64Of(sha256(text.toArray().join("").toBytes()[..]));
+}
+
+/// Bytes as lowercase hexadecimal digits.
+fn hexOf(bytes: uint8[32]): string {
+    let digits = "0123456789abcdef";
+    let out = List<string>.new();
+    for (b in bytes) {
+        let v = b as int;
+        out.push(digits[v / 16..v / 16 + 1].toString());
+        out.push(digits[v % 16..v % 16 + 1].toString());
+    }
+    return out.toArray().join("");
+}
+
+/// Bytes as padded Base64 with RFC 4648's alphabet.
+fn base64Of(bytes: uint8[32]): string {
+    let digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let out = List<string>.new();
+    var k = 0;
+    let n = bytes.length();
+    while (k < n) {
+        let b0 = bytes[k] as int;
+        let b1 = if (k + 1 < n) bytes[k + 1] as int else 0;
+        let b2 = if (k + 2 < n) bytes[k + 2] as int else 0;
+        let triple = b0 * 65536 + b1 * 256 + b2;
+        var j = 0;
+        while (j < 4) {
+            let six = (triple / pow64(3 - j)) % 64;
+            if (k + j - 1 < n || j < 2) {
+                out.push(digits[six..six + 1].toString());
+            } else {
+                out.push("=");
+            }
+            j += 1;
+        }
+        k += 3;
+    }
+    return out.toArray().join("");
+}
+
+/// 64 to the power `e`, for `e` from 0 to 3.
+fn pow64(e: int): int {
+    return match (e) {
+        0 => 1,
+        1 => 64,
+        2 => 4096,
+        _ => 262144,
+    };
+}

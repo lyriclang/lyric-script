@@ -4,6 +4,12 @@
 # explanation, example. Codes carry the prefix LYS-; a guard that holds this file against the
 # toolchain comes with S11.
 
+[LYS-CAP0001]
+title = "a right the run was not given"
+severity = "error"
+area = "17-host"
+summary = "A module the script imports belongs to a class of rights — file, net, process, os, native — that the run was not given. Every missing right is reported at once, with the import that asks; `--allow` gives classes, `-A` all, and at a terminal the run asks once before the start. The exit code is 2. Lyric-Script's own (design/v1, 01 S1, S4)."
+
 [LYS-CLI0001]
 title = "an unknown command"
 severity = "error"
@@ -451,6 +457,120 @@ summary = "`[\"a\": 1, \"b\": 2]`: every entry is `key: value` (spec 2 D5)."
 # The checker (S2d). A code means what Lyric 5's LYR-SEM code of the same number means;
 # Lyric-Script's own codes start at 0900.
 
+[LYS-PKG0001]
+title = "a manifest that is no TOML a manifest takes"
+severity = "error"
+area = "15-project"
+summary = "The manifest `lyric-script.toml` is TOML, the part a manifest needs: a syntax error, a key or a table written twice, a float, a date or a time is refused at its line. Lyric 5's LYR-PKG0001."
+
+[LYS-PKG0002]
+title = "a manifest field missing or malformed"
+severity = "error"
+area = "15-project"
+summary = "`[package]` is required, with a `name` (a lowercase letter, then lowercase letters, digits and `_`, not `std`), a semantic `version`, the `edition` \"1\" by default and a `toolchain` like \"1.1\" or \">=1.1\"; `description`, `license` and `repository` are strings, `authors` an array of strings; a dependency is `{ path = \"…\" }`. Lyric 5's LYR-PKG0002."
+
+[LYS-PKG0003]
+title = "a manifest key the toolchain does not know"
+severity = "error"
+area = "15-project"
+summary = "A section or a key the manifest does not take is refused, as an unknown option is; a dependency written as a version alone is a registry's form, and Lyric-Script 1.0 has no registry. Lyric 5's LYR-PKG0003."
+
+[LYS-PKG0004]
+title = "a dependency whose folder holds no such package"
+severity = "error"
+area = "15-project"
+summary = "A path dependency's folder holds a manifest naming the package under the name its dependent gives it; a folder without a manifest, or with another package, is refused at the dependency's line. Lyric 5's LYR-PKG0004."
+
+[LYS-PKG0005]
+title = "two packages of one name"
+severity = "error"
+area = "15-project"
+summary = "A program holds one package of each name: two folders for one name are refused. Lyric 5's LYR-PKG0005."
+
+[LYS-PKG0006]
+title = "a revision or a package a repository does not have"
+severity = "error"
+area = "15-project"
+summary = "A git dependency's tag, branch or commit is not in its repository, the repository holds no package at its root or another one, or a tag that is a version names a manifest of another version. Lyric 5's LYR-PKG0006."
+
+[LYS-PKG0007]
+title = "a repository that cannot be reached"
+severity = "error"
+area = "15-project"
+summary = "A git dependency's repository cannot be cloned or fetched, or with `--offline` the cache does not hold what is asked for: a fault of the environment, with exit code 2. Lyric 5's LYR-PKG0007."
+
+[LYS-PKG0008]
+title = "content that is not what the lock holds"
+severity = "error"
+area = "15-project"
+summary = "A revision the lock holds is read at its commit: content whose hash is not the lock's, or a locked commit the repository does not have, is refused. Lyric 5's LYR-PKG0008."
+
+[LYS-PKG0009]
+title = "a toolchain below what a package asks for"
+severity = "error"
+area = "15-project"
+summary = "A package's `toolchain` names the least toolchain that builds it; a toolchain below it refuses the program with exit code 2, a fault of the environment and not of the script. A development build counts as its version. Lyric 5's LYR-PKG0009."
+
+[LYS-PKG0010]
+title = "packages that depend on each other"
+severity = "error"
+area = "15-project"
+summary = "No package depends on itself, at once or through others: a cycle is refused with its path, `app -> geo -> app`. A package's dependencies are read before it, and a cycle has no first one. Lyric 5's LYR-PKG0010."
+
+[LYS-PKG0011]
+title = "a lock that --locked would change"
+severity = "error"
+area = "15-project"
+summary = "Under `--locked` the lock is taken as it is and nothing is written: a revision the graph reads that the lock does not hold, an entry the graph no longer reads, or no lock where the program reads from git is refused. Lyric 5's LYR-PKG0011."
+
+[LYS-RES0001]
+title = "a name imported beside a declaration, or imported twice"
+severity = "error"
+area = "04-modules"
+summary = "A module imports a name it declares itself, or two of its imports bind the same name. The declaration keeps its name; the import is reported. Lyric 5's LYR-RES0001."
+
+[LYS-RES0003]
+title = "an import of a module that does not exist"
+severity = "error"
+area = "04-modules"
+summary = "An `import a.b` names a module no file provides: without a manifest, no `a/b.lyrs` below the entry script's folder. Lyric 5's LYR-RES0003."
+
+[LYS-RES0004]
+title = "an imported name the module does not declare"
+severity = "error"
+area = "04-modules"
+summary = "A selective import `import m { x };` asks for a name the module `m` neither declares nor passes on with `pub import`. Lyric 5's LYR-RES0004."
+
+[LYS-RES0005]
+title = "modules that import each other"
+severity = "error"
+area = "04-modules"
+summary = "The imports of the program's modules form a cycle: a module imports, directly or through others, a module that imports it. The message names the cycle. Lyric 5's LYR-RES0005."
+
+[LYS-RES0009]
+title = "a name the place may not see"
+severity = "error"
+area = "04-modules"
+summary = "An import or a use reaches a declaration of another module that is `private` to its file. Lyric 5's LYR-RES0009."
+
+[LYS-RES0011]
+title = "a declaration that takes a builtin type's name"
+severity = "error"
+area = "04-modules"
+summary = "A top-level declaration is named like a builtin type: `struct int`, `fn string()`, `let bool = …` at the top of a module. Lyric 5's LYR-RES0011."
+
+[LYS-RES0012]
+title = "a name that is also a submodule"
+severity = "error"
+area = "04-modules"
+summary = "A module declares or imports a name that is also the last segment of one of its submodules: `x` in `a.b` beside the file `a/b/x.lyrs`. Reported whether or not the submodule is imported. Lyric 5's LYR-RES0012."
+
+[LYS-RES0014]
+title = "an import of a package the manifest does not declare"
+severity = "error"
+area = "04-modules"
+summary = "A module imports from its own package and from the packages its package's manifest declares, not from what those depend on. Lyric 5's LYR-RES0014."
+
 [LYS-SEM0001]
 title = "a value of another type than the place takes"
 severity = "error"
@@ -558,6 +678,12 @@ title = "a conformance that leaves an interface member unimplemented"
 severity = "error"
 area = "05-interfaces"
 summary = "A type that conforms to an interface implements every member of its chain that has no default. Lyric 5's LYR-SEM0020."
+
+[LYS-SEM0021]
+title = "an entry's main of another form"
+severity = "error"
+area = "04-modules"
+summary = "The entry module's `fn main`, where it is the entry, takes parameters, is declared twice, or returns another type than `void` or `int`. A script without statements and with `fn main` runs it; `main` is not required. Lyric 5's LYR-SEM0021."
 
 [LYS-SEM0022]
 title = "an expression statement without an effect"
@@ -690,6 +816,12 @@ title = "a field written twice in one initializer or 'with'"
 severity = "error"
 area = "03-types"
 summary = "An initializer or a `with` gives a field twice. Lyric 5's LYR-SEM0070."
+
+[LYS-SEM0072]
+title = "an import that is never used"
+severity = "warning"
+area = "04-modules"
+summary = "A name an import binds — a declaration, or the module itself — is never referred to in the file. Lyric 5's LYR-SEM0072."
 
 [LYS-SEM0074]
 title = "a static member called on a value"
@@ -919,6 +1051,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "A member of `extend<T :: [Show]> Box<T> { … }` is there on the instances whose arguments meet the block's constraints and on no other: `Box<int>` has no such member when `int` is no `Show`. Lyric 5's LYR-SEM0134."
 
+[LYS-SEM0153]
+title = "a name hides one of the prelude's"
+severity = "warning"
+area = "04-modules"
+summary = "A module declares or imports a name the prelude already gives every module (`Error`, `Exception`, `println`, `assert` …); the module's own wins in that module, and the prelude's own code keeps its. Lyric 5's LYR-SEM0153."
+
 [LYS-SEM0160]
 title = "an associated type's answer does not meet its bound"
 severity = "error"
@@ -981,6 +1119,18 @@ severity = "error"
 area = "06-errors"
 summary = "A `return`, or a `break` or `continue` to a loop outside it, stands in a defer's body. A defer runs where its scope is left — on an error too — and goes on from there; a jump out of it would drop that way. Script's own; Lyric 5 does not say."
 
+[LYS-SEM0905]
+title = "a statement of an imported module"
+severity = "warning"
+area = "04-modules"
+summary = "An imported module's statement other than a `let` or a `var` does not run: only the entry module runs its statements; an imported one gives its declarations and its bindings, filled before the entry's code. Script's own; a Lyric 5 module has no statements."
+
+[LYS-SEM0906]
+title = "two entries"
+severity = "error"
+area = "04-modules"
+summary = "The entry module runs statements and declares `fn main`: either is an entry, both are two. Keep the statements, or move them into `main`. Script's own: a Lyric 5 module has no statements."
+
 [LYS-NYI0001]
 title = "a form a later milestone builds"
 severity = "error"
@@ -1028,3 +1178,21 @@ title = "an unknown option"
 severity = "error"
 area = "14-cli"
 summary = "A command is given an option it does not know. The exit code is 2."
+
+[LYS-CLI0005]
+title = "a package without a program"
+severity = "error"
+area = "14-cli"
+summary = "`lyric-script run` or `check` without a file, in a package's folder, takes its `src/main.lyrs`; a package without one has no program to name. The exit code is 2."
+
+[LYS-CLI0006]
+title = "an update of a package not read from git"
+severity = "error"
+area = "14-cli"
+summary = "`lyric-script update` names a package that no git dependency of the program is. The exit code is 2."
+
+[LYS-CLI0007]
+title = "an --allow of no rights"
+severity = "error"
+area = "14-cli"
+summary = "`--allow` names classes of rights between commas — file, net, process, os, native —; another word is refused. The exit code is 2."

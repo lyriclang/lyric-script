@@ -10,6 +10,8 @@ struct Span :: [Equatable, Debug] {
     end: int,
     line: int,
     column: int,
+    /// The file it stands in, by its place among the program's files (S5a).
+    file: int = 0,
 }
 
 extend Span {
@@ -296,6 +298,8 @@ struct InterfaceDecl :: [Debug] {
     members: FnDecl[],
     sealed: bool,
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
     assoc: AssocDecl[] = [],
     statics: StaticLet[] = [],
@@ -351,6 +355,8 @@ struct FnDecl :: [Debug] {
     returns: ?TypeExpr,
     body: FnBody,
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     isStatic: bool,
     span: Span,
     throws: ?ThrowsClause = null,
@@ -370,6 +376,8 @@ struct FieldDecl :: [Debug] {
     default: ?Expr,
     isVar: bool,
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
 }
 
@@ -382,6 +390,8 @@ struct TypeDecl :: [Debug] {
     fields: FieldDecl[],
     methods: FnDecl[],
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
     answers: TypeAnswer[] = [],
     statics: StaticLet[] = [],
@@ -404,6 +414,8 @@ struct EnumDecl :: [Debug] {
     variants: Variant[],
     methods: FnDecl[],
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
     answers: TypeAnswer[] = [],
     statics: StaticLet[] = [],
@@ -414,6 +426,8 @@ struct AliasDecl :: [Debug] {
     name: string,
     type: TypeExpr,
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
 }
 
@@ -424,6 +438,28 @@ enum Decl :: [Debug] {
     Alias(AliasDecl),
     Interface(InterfaceDecl),
     Extend(ExtendDecl),
+    Import(ImportDecl),
+}
+
+/// `import a.b { x, y as z }`, `import a.b`, `import a.b as c`; `pub` passes on what it binds
+/// (Lyric 5 04 §4 rules 1–2).
+struct ImportDecl :: [Debug] {
+    /// The module's path, segment by segment.
+    path: string[],
+    /// A selective import's names; none for a qualified or an aliased one.
+    items: ImportItem[],
+    selective: bool,
+    /// The name an aliased import binds the module under.
+    alias: ?string,
+    isPub: bool,
+    span: Span,
+}
+
+/// A name a selective import binds: the module's declaration, under another name with `as`.
+struct ImportItem :: [Debug] {
+    name: string,
+    alias: ?string,
+    span: Span,
 }
 
 /// What stands at the top of a module: a declaration, or a statement of the script (07 Top).

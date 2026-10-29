@@ -1,16 +1,20 @@
 //! The `lyric-script` command line (design/v1, 12): `run` — also `lyric-script script.lyrs` —,
 //! `check`, `--version`, `help`, and, until the debugging tools come, `asm`, which runs bytecode in
 //! its text form.
-import std.fs { readText };
-import std.io { eprintln, println };
+import std.collections { List };
+import std.fs { exists, readText };
+import std.io { eprintln, println, stdin };
 import std.os { args };
+import std.term { StdStream, isTerminal };
 import lyric_script { version };
 import lyric_script.cache { clean, load, store };
 import lyric_script.compiler.diagnostic { Diagnostic };
-import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.checker { ProgramUnit, checkModule };
 import lyric_script.compiler.codegen { generate, scriptEntry };
-import lyric_script.compiler.parser { parse };
 import lyric_script.compiler.render { SourceLines, renderJson, renderSummary, renderText };
+import lyric_script.loader { LoadOptions, Loaded, loadProgram, packageRoot };
+import lyric_script.package { manifestName };
+import lyric_script.rights { allowed, classesOf, missing };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
 import lyric_script.vm.heap { ScriptString };
@@ -27,6 +31,12 @@ fn usage(): void {
     println("");
     println("options of run and check:");
     println("  --json     the diagnostics as JSON lines on standard output");
+    println("  --offline  fetch nothing: a git dependency is read from the cache alone");
+    println("  --locked   take lyric-script.lock as it is, and write nothing");
+    println("  --allow R  allow rights, between commas: file, net, process, os, native");
+    println("  -A         allow every right");
+    println("  update [PACKAGE…]  read the git dependencies anew and write the lock");
+    println("  lock FILE  write a script's lock beside it, FILE.lock");
     println("  version    print the version (also --version)");
     println("  help       print this text (also --help)");
     println("  asm FILE   run a .lyrsasm file's 'main' (bytecode in its text form)");
@@ -47,6 +57,17 @@ fn main(): int {
         usage();
         return 0;
     }
+    if (command == "update") {
+        return update(given);
+    }
+    if (command == "lock") {
+        if (given.length() != 3) {
+            eprintln("error[LYS-CLI0002]: 'lock' takes one file");
+            eprintln("  = help: lyric-script lock tool.lyrs");
+            return 2;
+        }
+        return lockScript(given[2]);
+    }
     if (command == "clean" && given.length() == 2) {
         let dir = clean();
         if (dir != null) {
@@ -59,7 +80,18 @@ fn main(): int {
         if (o.fault != 0) {
             return o.fault;
         }
-        let file = o.file;
+        // in a package's folder `run` and `check` take its program, `src/main.lyrs` (S5b)
+        var file = o.file;
+        if (file == null && command != "asm" && exists(manifestName)) {
+            if (!exists("src/main.lyrs")) {
+                eprintln(
+                    "error[LYS-CLI0005]: the package has no program: there is no src/main.lyrs"
+                );
+                eprintln(f"  = help: lyric-script {command} names the module to start from");
+                return 2;
+            }
+            file = "src/main.lyrs";
+        }
         if (file == null || (command == "asm" && o.json)) {
             let example = if (command == "asm") "program.lyrsasm" else "script.lyrs";
             eprintln(f"error[LYS-CLI0002]: '{command}' takes one file");
@@ -67,8 +99,8 @@ fn main(): int {
             return 2;
         }
         return match (command) {
-            "run" => runScript(file, o.json),
-            "check" => checkScript(file, o.json),
+            "run" => runScript(file, o.json, how(o), Grant { allow = o.allow, all = o.all }),
+            "check" => checkScript(file, o.json, how(o)),
             _ => runAsm(file),
         };
     }
@@ -78,17 +110,85 @@ fn main(): int {
         if (o.fault != 0) {
             return o.fault;
         }
-        return runScript(command, o.json);
+        return runScript(command, o.json, how(o), Grant { allow = o.allow, all = o.all });
     }
     eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
     eprintln("  = help: lyric-script help lists the commands");
     return 2;
 }
 
+/// How the options read a program.
+fn how(o: Options): LoadOptions {
+    return LoadOptions { offline = o.offline, locked = o.locked };
+}
+
+/// `lyric-script update [package…]` in a package's folder (Lyric 5 15 §3 rule 3): reads every
+/// package from git anew — or those it names, the others staying at their commits — and writes
+/// the lock; runs nothing.
+fn update(given: string[]): int {
+    if (!exists(manifestName)) {
+        eprintln(f"error[LYS-CLI0005]: 'update' reads a package: there is no {manifestName} here");
+        return 2;
+    }
+    let names = List<string>.new();
+    var k = 2;
+    while (k < given.length()) {
+        if (given[k].startsWith("-")) {
+            eprintln(f"error[LYS-CLI0004]: unknown option '{given[k]}'");
+            return 2;
+        }
+        names.push(given[k]);
+        k += 1;
+    }
+    // the program's modules are read from its entry, or a library's root module
+    let entry = if (exists("src/main.lyrs")) "src/main.lyrs" else "src/lib.lyrs";
+    let text = readScript(entry);
+    if (text == null) {
+        return 2;
+    }
+    let loaded = loadProgram(entry, text, LoadOptions { update = true, only = names.toArray() });
+    for (n in names) {
+        var read = false;
+        for (e in loaded.lockNew) {
+            if (e.name == n) {
+                read = true;
+            }
+        }
+        if (!read) {
+            eprintln(f"error[LYS-CLI0006]: no package named '{n}' is read from git");
+            return 2;
+        }
+    }
+    let r = compile(loaded, false);
+    if (r.module == null) {
+        return if (loaded.exit != 0) loaded.exit else 1;
+    }
+    return 0;
+}
+
+/// `lyric-script lock tool.lyrs` (07 Dep): resolves a script's frontmatter as a run would and
+/// writes its lock beside it, `tool.lyrs.lock`, which later runs read; runs nothing.
+fn lockScript(path: string): int {
+    let text = readScript(path);
+    if (text == null) {
+        return 2;
+    }
+    let loaded = loadProgram(path, text, LoadOptions { lockFile = true });
+    if (compile(loaded, false).module == null) {
+        return if (loaded.exit != 0) loaded.exit else 1;
+    }
+    return 0;
+}
+
 /// What follows a command: its one file and its options.
 struct Options {
     file: ?string,
     json: bool,
+    offline: bool = false,
+    locked: bool = false,
+    // the rights given: `--allow`, and `-A` for all (S5e)
+    allow: string[] = [],
+    all: bool = false,
     // the exit code of a fault in them, reported already; 0 for none
     fault: int,
 }
@@ -96,11 +196,40 @@ struct Options {
 fn options(given: string[], from: int, file: ?string): Options {
     var found = file;
     var json = false;
+    var offline = false;
+    var locked = false;
+    var all = false;
+    let allow = List<string>.new();
     var k = from;
     while (k < given.length()) {
         let a = given[k];
         if (a == "--json") {
             json = true;
+        } else if (a == "--offline") {
+            offline = true;
+        } else if (a == "--locked") {
+            locked = true;
+        } else if (a == "-A") {
+            all = true;
+        } else if (a == "--allow" || a.startsWith("--allow=")) {
+            var list = "";
+            if (a == "--allow") {
+                k += 1;
+                list = if (k < given.length()) given[k] else "";
+            } else {
+                list = a[8..a.length()].toString();
+            }
+            let named = allowed(list);
+            if (named == null) {
+                eprintln(
+                    f"error[LYS-CLI0007]: '{list}' names no rights: file, net, process, os, native"
+                );
+                eprintln("  = help: lyric-script run --allow file,net script.lyrs");
+                return Options { file = null, json = json, fault = 2 };
+            }
+            for (n in named) {
+                allow.push(n);
+            }
         } else if (a.startsWith("-")) {
             eprintln(f"error[LYS-CLI0004]: unknown option '{a}'");
             eprintln("  = help: lyric-script help lists the options");
@@ -113,7 +242,15 @@ fn options(given: string[], from: int, file: ?string): Options {
         }
         k += 1;
     }
-    return Options { file = found, json = json, fault = 0 };
+    return Options {
+        file = found,
+        json = json,
+        offline = offline,
+        locked = locked,
+        allow = allow.toArray(),
+        all = all,
+        fault = 0,
+    };
 }
 
 fn readScript(path: string): ?string {
@@ -124,38 +261,117 @@ fn readScript(path: string): ?string {
 }
 
 /// Checks a script: 1 where it has errors, 0 where it has none; warnings are printed either way.
-fn checkScript(path: string, json: bool): int {
+fn checkScript(path: string, json: bool, how: LoadOptions): int {
     let text = readScript(path);
     if (text == null) {
         return 2;
     }
-    return if (compile(text, path, json).module != null) 0 else 1;
+    let loaded = loadProgram(path, text, how);
+    if (compile(loaded, json).module != null) {
+        return 0;
+    }
+    return if (loaded.exit != 0) loaded.exit else 1;
 }
 
 /// Runs a script: 0 at its end, 1 where it does not compile or an error leaves it, 101 for a
 /// panic.
-fn runScript(path: string, json: bool): int {
+fn runScript(path: string, json: bool, how: LoadOptions, grant: Grant): int {
     let text = readScript(path);
     if (text == null) {
         return 2;
     }
-    // a script compiled before, without a warning, runs from its bytecode (11 Fmt)
-    let cached = load(text);
-    if (cached != null) {
-        if (json) {
-            println(renderSummary(0, 0));
+    // a script compiled before, without a warning, runs from its bytecode (11 Fmt); a program of
+    // modules is keyed by all of its files' texts, a script without an import and outside a
+    // package by its own before it is parsed; a program whose reading found a fault never runs
+    // from the cache
+    let alone = !text.contains("import") && packageRoot(path) == null;
+    if (alone) {
+        let done = runCached(text, json, grant);
+        if (done != null) {
+            return done;
         }
-        return finish(execute(cached, scriptEntry, [], -1));
     }
-    let compiled = compile(text, path, json);
+    let loaded = loadProgram(path, text, how);
+    let key = loaded.cacheText();
+    if (!alone && loaded.errors.length() == 0 && loaded.exit == 0) {
+        let done = runCached(key, json, grant);
+        if (done != null) {
+            return done;
+        }
+    }
+    let compiled = compile(loaded, json);
     let module = compiled.module;
     if (module == null) {
-        return 1;
+        return if (loaded.exit != 0) loaded.exit else 1;
     }
     if (compiled.warnings == 0) {
-        store(text, module);
+        store(key, module);
     }
-    return finish(execute(module, scriptEntry, [], -1));
+    return runModule(module, grant);
+}
+
+/// The rights a run is given: those `--allow` names, or all with `-A` (01 S4).
+struct Grant {
+    allow: string[],
+    all: bool,
+}
+
+/// Runs a module once the rights its imports ask for are given (01 S1, S4): what the run was not
+/// given is asked for once before the start where stdin and stderr are a terminal; else every
+/// missing right is reported at once, with the import that asks (`LYS-CAP0001`), exit 2.
+fn runModule(module: Module, grant: Grant): int {
+    let lacking = missing(module.rights, grant.allow, grant.all);
+    if (lacking.length() > 0) {
+        if (isTerminal(StdStream.Stdin) && isTerminal(StdStream.Stderr)) {
+            eprintln("the script asks for rights it was not given:");
+            for (u in lacking) {
+                eprintln(f"  {u.right}: import {u.module} ({u.path}:{u.line})");
+            }
+            eprintln("allow them for this run? [y/N]");
+            var answer: ?string = null;
+            try {
+                answer = stdin().readLine();
+            } catch (_) {
+                answer = null;
+            }
+            let said = answer;
+            let yes = said != null && (said.trim() == "y" || said.trim() == "yes");
+            if (!yes) {
+                return 2;
+            }
+        } else {
+            for (u in lacking) {
+                eprintln(
+                    f"error[LYS-CAP0001]: the right '{u.right}' was not given: import {u.module} ({u.path}:{u.line})"
+                );
+            }
+            let names = classesOf(lacking).join(",");
+            eprintln(f"  = help: lyric-script run --allow {names} …, or -A for every right");
+            return 2;
+        }
+    }
+    return finishScript(execute(module, scriptEntry, [], -1));
+}
+
+/// The exit code of a script: what its `fn main(): int` returns (07 Top, V1 M7), else as `finish`
+/// says.
+fn finishScript(outcome: Outcome): int {
+    return match (outcome) {
+        .Scalar(bits) => bits as int,
+        _ => finish(outcome),
+    };
+}
+
+/// The run of the module cached for `key`, its exit code; `null` where there is none.
+fn runCached(key: string, json: bool, grant: Grant): ?int {
+    let cached = load(key);
+    if (cached == null) {
+        return null;
+    }
+    if (json) {
+        println(renderSummary(0, 0));
+    }
+    return runModule(cached, grant);
 }
 
 /// What compiling a script gave: its module, `null` where it has errors, and how many warnings
@@ -167,22 +383,57 @@ struct Compiled {
 
 /// The module of a script, its diagnostics reported — as text on standard error, or as JSON
 /// lines on standard output that a summary closes.
-fn compile(text: string, path: string, json: bool): Compiled {
-    let r = Reporter { path = path, lines = SourceLines.of(text), json = json };
-    let parsed = parse(text);
-    r.all(parsed.errors, parsed.warnings);
-    if (parsed.errors.length() > 0) {
+fn compile(l: Loaded, json: bool): Compiled {
+    let lines = List<SourceLines>.new();
+    for (t in l.texts) {
+        lines.push(SourceLines.of(t));
+    }
+    let path = l.paths[0];
+    let docLines = List<SourceLines>.new();
+    for (t in l.docTexts) {
+        docLines.push(SourceLines.of(t));
+    }
+    let r = Reporter {
+        paths = l.paths.toArray(),
+        lines = lines.toArray(),
+        docPaths = l.docPaths.toArray(),
+        docLines = docLines.toArray(),
+        json = json,
+    };
+    var broken = l.errors.length();
+    for (parsed in l.parses) {
+        r.all(parsed.errors, parsed.warnings);
+        broken += parsed.errors.length();
+    }
+    r.all(l.errors.toArray(), []);
+    if (broken > 0) {
         r.summary();
         return Compiled { module = null, warnings = r.warnings };
     }
-    // the checker reads a tree without faults: a fault of the parse would only echo
-    let checked = checkModule(parsed.module);
+    // the checker reads trees without faults: a fault of the parse would only echo
+    let imported = List<ProgramUnit>.new();
+    for (k in l.order) {
+        if (k != 0) {
+            imported.push(
+                ProgramUnit {
+                    name = l.names[k],
+                    module = l.parses[k].module,
+                    file = k,
+                    submodules = l.subs[k],
+                    package = l.pkgOf[k],
+                }
+            );
+        }
+    }
+    let checked = checkModule(l.parses[0].module, imported.toArray());
     r.all(checked.errors, checked.warnings);
     r.summary();
     if (checked.errors.length() > 0) {
         return Compiled { module = null, warnings = r.warnings };
     }
     let module = generate(checked.program, path);
+    // the rights its imports ask for travel with the bytecode (01 S1)
+    module.rights = l.rights.toArray();
     let faults = check(module);
     if (faults.length() > 0) {
         // the compiler's fault, not the script's
@@ -198,8 +449,12 @@ fn compile(text: string, path: string, json: bool): Compiled {
 
 /// Says a script's diagnostics, in the form asked for, and counts them.
 class Reporter {
-    path: string,
-    lines: SourceLines,
+    // each file's path and lines, by its place among the program's files; the manifests', a
+    // diagnostic about the `k`th naming file `-2 - k`
+    paths: string[],
+    lines: SourceLines[],
+    docPaths: string[],
+    docLines: SourceLines[],
     json: bool,
     var errors: int = 0,
     var warnings: int = 0,
@@ -216,10 +471,21 @@ class Reporter {
     }
 
     mut fn say(severity: string, d: Diagnostic): void {
+        // the file it is about; the prelude's, which is no file of the program, as the entry's
+        var path = this.paths[0];
+        var lines = this.lines[0];
+        let doc = -2 - d.file;
+        if (d.file >= 0 && d.file < this.paths.length()) {
+            path = this.paths[d.file];
+            lines = this.lines[d.file];
+        } else if (doc >= 0 && doc < this.docPaths.length()) {
+            path = this.docPaths[doc];
+            lines = this.docLines[doc];
+        }
         if (this.json) {
-            println(renderJson(d, severity, this.path, this.lines));
+            println(renderJson(d, severity, path, lines));
         } else {
-            eprintln(renderText(d, severity, this.path, this.lines));
+            eprintln(renderText(d, severity, path, lines));
         }
     }
 

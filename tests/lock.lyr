@@ -1,0 +1,48 @@
+// The lock file (S5c2; Lyric 5 15 §3): its entries written in one order and read back; the hash
+// of a package's content, checked against values computed apart from the toolchain (Python's
+// hashlib and base64 over the rule's lines).
+import std.crypto { sha256 };
+import std.test { assertEq };
+import lyric_script.lock { LockEntry, base64Of, contentHash, readLock, writeLock };
+
+@Test
+fn aContentHashIsTheRulesSha256InBase64(): void {
+    // the lines sorted by path, whatever order the files come in
+    let files = [
+        ("src/lib.lyrs", "fn f(): int = 1\n".toBytes()),
+        ("lyric-script.toml", "[package]\nname = \"geo\"\nversion = \"1.0.0\"\n".toBytes()),
+        ("README.md", "geo\n".toBytes()),
+    ];
+    assertEq(contentHash(files), "h1:Z0vs880jeilq+lMCjVl38+vdkmB1AXfX5gFcy5MATIA=");
+    assertEq(base64Of(sha256("".toBytes()[..])), "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
+}
+
+@Test
+fn aLockIsWrittenInOneOrderAndReadBack(): void {
+    let b = LockEntry {
+        name = "units",
+        version = "1.0.0",
+        repository = "file:///r/units",
+        revision = "branch main",
+        commit = "bbbb",
+        hash = "h1:B",
+    };
+    let a = LockEntry {
+        name = "geo",
+        version = "1.1.0",
+        repository = "file:///r/geo",
+        revision = "tag v1.1.0",
+        commit = "aaaa",
+        hash = "h1:A",
+    };
+    let text = writeLock([b, a]);
+    assertEq(text, writeLock([a, b]));
+    let read = readLock(text);
+    assertEq(read.fault, null);
+    assertEq(read.entries.length(), 2);
+    assertEq(read.entries[0] == a, true);
+    assertEq(read.entries[1] == b, true);
+    // a lock that does not read is refused, not repaired
+    assertEq(readLock("[[package]]\nname = \"geo\"\n").fault != null, true);
+    assertEq(readLock("version = 1\n").entries.length(), 0);
+}

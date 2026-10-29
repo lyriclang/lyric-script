@@ -1,0 +1,1521 @@
+//! The program the command line reads (S5a, S5b; design/v1, 07 Path and Man): the entry and the
+//! modules its imports reach, each file parsed once and ordered so that a module comes before
+//! those that import it. Without a manifest the entry's folder is the root and `import a.b` names
+//! `a/b.lyrs` below it. With one — the nearest `lyric-script.toml` above an entry that lies under
+//! its `src/` — Lyric 5's path rule holds (Lyric 5 04 §2): `pkg.a.b` is `src/a/b.lyrs` of the
+//! package `pkg`, `pkg` alone its `src/lib.lyrs`, and a module imports from its own package and
+//! from those its manifest declares.
+import std.collections { List, Map };
+import std.crypto { sha256 };
+import std.fs {
+    DirEntry,
+    absolute,
+    createDirAll,
+    exists,
+    readBytes,
+    readDir,
+    readText,
+    remove,
+    removeAll,
+    rename,
+    writeText,
+};
+import std.os { pid };
+import std.process { Command };
+import std.path { fileName, join, normalize, parent, stem };
+import lyric_script { version };
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.parser { Parsed, parse };
+import lyric_script.cache { cacheRoot };
+import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
+import lyric_script.rights { classOf };
+import lyric_script.vm.module { RightUse };
+import lyric_script.package {
+    Dep,
+    Manifest,
+    manifestName,
+    readManifest,
+    tagVersion,
+    toolchainAllows,
+    versionBelow,
+    versionLine,
+};
+
+/// A package of the program: its name, its root folder, and the packages its manifest declares,
+/// by name (S5b).
+class Pkg {
+    name: string,
+    root: string,
+    deps: Map<string, int>,
+    // its version; its repository's URL where it is read from git, and whether a tag that is a
+    // version asked for it — then it is one of the versions of its line (S5c3)
+    version: string = "",
+    repo: string = "",
+    versioned: bool = false,
+    // a package read from git: its content's patterns (Lyric 5 15 §2 rule 4)
+    include: string[] = [],
+    exclude: string[] = [],
+    // every name its manifest declares, read or not: an import of one that failed says nothing
+    // more than the manifest's error
+    declared: List<string> = List<string>.new(),
+}
+
+/// A program as read: each file's path, text, parse, module name, submodules and package, in the
+/// order they were found — 0 the entry —; the order their imports need, each module after those
+/// it imports; the program's packages and the manifests read; what the reading found wrong.
+class Loaded {
+    paths: List<string>,
+    texts: List<string>,
+    names: List<string>,
+    // each module's submodules: the `.lyrs` files in the folder of its name
+    subs: List<string[]>,
+    pkgOf: List<int>,
+    parses: List<Parsed>,
+    order: List<int>,
+    errors: List<Diagnostic>,
+    // the packages, none without a manifest; the manifests read, a diagnostic about the `k`th
+    // naming file `-2 - k`
+    pkgs: List<Pkg>,
+    docPaths: List<string>,
+    docTexts: List<string>,
+    // 2 where a fault of the environment stops the program (`LYS-PKG0007`, `LYS-PKG0009`), else 0
+    var exit: int = 0,
+    // `--offline`: nothing is fetched (S5c)
+    var offline: bool = false,
+    var how: LoadOptions = LoadOptions { },
+    // the lock as read, its manifest index, and what this build read from git (S5c2)
+    var lockOld: LockEntry[] = [],
+    var lockDoc: int = -1,
+    var lockNew: List<LockEntry> = List<LockEntry>.new(),
+    // `update`: the root manifest's tags raised to the newest of their lines, line by line
+    var raised: List<Raise> = List<Raise>.new(),
+    // a single script whose frontmatter names dependencies: the root package is the script (S5d)
+    var script: bool = false,
+    // the rights the imports ask for, each with where (S5e)
+    var rights: List<RightUse> = List<RightUse>.new(),
+
+    /// The text the cache keys the program by: the entry's alone where it is the one file, else
+    /// every file's module name and text.
+    fn cacheText(): string {
+        if (this.texts.length() == 1) {
+            return this.texts[0];
+        }
+        let parts = List<string>.new();
+        var k = 0;
+        while (k < this.texts.length()) {
+            parts.push(this.names[k]);
+            parts.push(this.texts[k]);
+            k += 1;
+        }
+        return parts.toArray().join("\u{0}");
+    }
+}
+
+/// Where an import leads: the folder its path is read below, its segments there, its package;
+/// or why it leads nowhere.
+struct Target {
+    src: string,
+    segments: string[],
+    pkg: int,
+    // the module's file as a message shows it
+    shown: string,
+    // whether it is a package's root module, `src/lib.lyrs`
+    isRoot: bool,
+    code: string,
+    message: string,
+}
+
+/// How a program is read (S5c): `offline` fetches nothing; `locked` takes the lock as it is;
+/// `update` reads every package from git anew, or those `only` names.
+struct LoadOptions {
+    offline: bool = false,
+    locked: bool = false,
+    update: bool = false,
+    only: string[] = [],
+    // `lyric-script lock`: a script's lock written beside it (S5d)
+    lockFile: bool = false,
+}
+
+/// Reads the program whose entry is `path`, its text `text`.
+fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): Loaded {
+    let l = Loaded {
+        paths = List<string>.new(),
+        texts = List<string>.new(),
+        names = List<string>.new(),
+        subs = List<string[]>.new(),
+        pkgOf = List<int>.new(),
+        parses = List<Parsed>.new(),
+        order = List<int>.new(),
+        errors = List<Diagnostic>.new(),
+        pkgs = List<Pkg>.new(),
+        docPaths = List<string>.new(),
+        docTexts = List<string>.new(),
+        offline = how.offline,
+        how = how,
+    };
+    l.paths.push(path);
+    l.texts.push(text);
+    l.pkgOf.push(0);
+    var folder = parent(path);
+    let inPackage = packageRoot(path);
+    if (inPackage != null) {
+        let (root, rel) = inPackage;
+        let lockPath = below(root, lockName);
+        readLockOf(lockPath, l);
+        loadPackages(root, l, null);
+        settleLock(lockPath, below(root, manifestName), l);
+        if (l.pkgs.length() == 0) {
+            // the root manifest does not read: its errors are all there is to say
+            l.parses.push(parse(text, 0));
+            return l;
+        }
+        folder = below(root, "src");
+        l.names.push(l.pkgs[0].name + "." + rel.replace("/", "."));
+        l.subs.push(lyrsIn(below(folder, rel)));
+    } else {
+        l.names.push(stem(path));
+        // the entry is the root: the modules beside it are no submodules of it
+        l.subs.push([]);
+        scriptPackages(path, text, l);
+    }
+    // each module's imports: the module, and the import's place for a cycle through it
+    let edges = List<List<int>>.new();
+    let edgeAt = List<List<Diagnostic>>.new();
+    var i = 0;
+    while (i < l.paths.length()) {
+        let parsed = parse(l.texts[i], i);
+        l.parses.push(parsed);
+        let deps = List<int>.new();
+        let at = List<Diagnostic>.new();
+        for (item in parsed.module.items) {
+            let im = match (item) {
+                .Decl(.Import(im)) => im,
+                _ => {
+                    continue;
+                }
+            };
+            let name = im.path.join(".");
+            // a module of a class of rights asks for it, here (01 S1)
+            let right = classOf(name);
+            if (right != null) {
+                l.rights.push(
+                    RightUse {
+                        right = right,
+                        module = name,
+                        path = l.paths[i],
+                        line = im.span.line,
+                    }
+                );
+            }
+            let where = Diagnostic {
+                code = "LYS-RES0003",
+                message = "",
+                start = im.span.start,
+                end = im.span.end,
+                line = im.span.line,
+                column = im.span.column,
+                help = null,
+                file = i,
+            };
+            var j = indexOf(l.names, name);
+            if (j < 0) {
+                // a script's own modules keep the path rule; its dependencies, by their names
+                let byPath = l.pkgs.length() == 0
+                    || (l.script && l.pkgOf[i] == 0 && indexOf(l.pkgs[0].declared, im.path[0]) < 0);
+                let t = if (byPath) plainTarget(folder, im.path)
+                    else packageTarget(l, l.pkgOf[i], im.path);
+                if (t.code == "quiet") {
+                    continue;
+                }
+                if (t.code != "") {
+                    l.errors.push(where with { code = t.code, message = t.message });
+                    continue;
+                }
+                let rel = t.segments.join("/") + ".lyrs";
+                let file = below(t.src, rel);
+                let found = try? readText(file);
+                if (found == null) {
+                    l.errors.push(
+                        where with { message = f"no module '{name}': there is no file {t.shown}" }
+                    );
+                    continue;
+                }
+                // the path names its file exactly, where the file system would take another case
+                let differs = misnamed(t.src, t.segments);
+                if (differs != null) {
+                    l.errors.push(
+                        where with {
+                            message = f"no module '{name}': the file is named '{differs}', not '{rel}'",
+                        }
+                    );
+                    continue;
+                }
+                j = l.paths.length();
+                l.paths.push(file);
+                l.texts.push(found);
+                l.names.push(name);
+                l.pkgOf.push(t.pkg);
+                // a package's root module stands beside each of its modules (Lyric 5 04 §4 rule 7)
+                l.subs.push(
+                    if (t.isRoot) without(lyrsIn(t.src), "lib")
+                        else lyrsIn(below(t.src, t.segments.join("/")))
+                );
+            }
+            deps.push(j);
+            at.push(where);
+        }
+        edges.push(deps);
+        edgeAt.push(at);
+        i += 1;
+    }
+    let state = List<int>.new();
+    for (_ in l.paths) {
+        state.push(0);
+    }
+    visit(0, edges, edgeAt, state, List<int>.new(), l);
+    return l;
+}
+
+/// A single script's frontmatter (07 Dep, 09 Hd): where it names dependencies, the script is
+/// the root of a graph of packages — read once, kept in a lock: `<script>.lock` beside it where
+/// there is one or `lyric-script lock` writes it, else one in the user's cache under the hash of
+/// the frontmatter, so that a later run reads what the first read.
+fn scriptPackages(path: string, text: string, l: Loaded): void {
+    let place = frontmatterOf(text);
+    if (place == null) {
+        return;
+    }
+    let (toml, lineOffset, byteOffset) = place;
+    let read = readManifest(toml, true);
+    // the frontmatter is the script's: its diagnostics at the script's lines
+    let d = l.docPaths.length();
+    l.docPaths.push(path);
+    l.docTexts.push(text);
+    for (e in read.errors) {
+        l.errors.push(
+            e with {
+                file = -2 - d,
+                line = e.line + lineOffset,
+                start = e.start + byteOffset,
+                end = e.end + byteOffset,
+            }
+        );
+    }
+    let m = read.manifest;
+    if (m == null || (m.deps.length() == 0 && m.overrides.length() == 0)) {
+        return;
+    }
+    let shifted = m with {
+        deps = shiftLines(m.deps, lineOffset),
+        overrides = shiftLines(m.overrides, lineOffset),
+    };
+    l.script = true;
+    let beside = path + ".lock";
+    let cached = join(
+        cacheRoot() ?? parent(path),
+        "scripts",
+        hexOf(sha256(toml.toBytes()[..]))[0..32].toString() + ".lock"
+    );
+    // the lock beside the script, where there is one or `lock` asks for it; else the cache's
+    let lockPath = if (exists(beside) || l.how.lockFile) beside else cached;
+    readLockOf(if (exists(beside)) beside else cached, l);
+    loadPackages(parent(path), l, (shifted, d));
+    settleLock(lockPath, "", l);
+}
+
+/// A script's frontmatter: its TOML, the number of the script's lines before its first, and the
+/// byte offset of that line — between two `---` lines, after a `#!` line where there is one;
+/// `null` for none, or one the lexer refuses as unclosed (09 Hd).
+fn frontmatterOf(text: string): ?(string, int, int) {
+    let lines = List<string>.new();
+    for (line in text.split('\n')) {
+        lines.push(line.toString());
+    }
+    var k = 0;
+    var offset = 0;
+    if (lines.length() > 0 && lines[0].startsWith("#!")) {
+        offset += lines[0].length() + 1;
+        k = 1;
+    }
+    if (k >= lines.length() || lines[k].trim().toString() != "---") {
+        return null;
+    }
+    offset += lines[k].length() + 1;
+    let first = k + 1;
+    let body = List<string>.new();
+    var j = first;
+    while (j < lines.length() && lines[j].trim().toString() != "---") {
+        body.push(lines[j]);
+        j += 1;
+    }
+    if (j >= lines.length()) {
+        return null;
+    }
+    return (body.toArray().join("\n"), first, offset);
+}
+
+fn shiftLines(deps: Dep[], by: int): Dep[] {
+    let out = List<Dep>.new();
+    for (d in deps) {
+        out.push(d with { line = d.line + by });
+    }
+    return out.toArray();
+}
+
+/// Without a manifest: `a.b` is `a/b.lyrs` below the entry's folder (07 Path).
+fn plainTarget(folder: string, path: string[]): Target {
+    let rel = path.join("/") + ".lyrs";
+    return Target {
+        src = folder,
+        segments = path,
+        pkg = 0,
+        shown = f"'{rel}' beside the entry",
+        isRoot = false,
+        code = "",
+        message = "",
+    };
+}
+
+/// With a manifest: `pkg.a.b` is `src/a/b.lyrs` of the package `pkg` — the importing module's own,
+/// or one its manifest declares (`LYS-RES0014`) —, `pkg` alone its `src/lib.lyrs`.
+fn packageTarget(l: Loaded, from: int, path: string[]): Target {
+    let name = path.join(".");
+    let own = l.pkgs[from];
+    let head = path[0];
+    let none = Target {
+        src = "",
+        segments = [],
+        pkg = -1,
+        shown = "",
+        isRoot = false,
+        code = "LYS-RES0003",
+        message = "",
+    };
+    let p = if (head == own.name) from else own.deps.get(head) ?? -1;
+    if (p < 0) {
+        // a dependency that did not read is reported at its manifest already
+        if (indexOf(own.declared, head) >= 0) {
+            return none with { code = "quiet" };
+        }
+        for (other in l.pkgs) {
+            if (other.name == head) {
+                return none with {
+                    code = "LYS-RES0014",
+                    message = f"'{head}' is no package the manifest of '{own.name}' declares: name it in its [dependencies]",
+                };
+            }
+        }
+        return none with {
+            message = f"no module '{name}': '{head}' is neither this package, '{own.name}', nor one it declares",
+        };
+    }
+    let pkg = l.pkgs[p];
+    let src = below(pkg.root, "src");
+    if (path.length() == 1) {
+        return Target {
+            src = src,
+            segments = ["lib"],
+            pkg = p,
+            shown = f"'src/lib.lyrs' in the package '{pkg.name}'",
+            isRoot = true,
+            code = "",
+            message = "",
+        };
+    }
+    let tail = List<string>.new();
+    var k = 1;
+    while (k < path.length()) {
+        tail.push(path[k]);
+        k += 1;
+    }
+    let rest = tail.toArray();
+    if (rest.length() == 1 && rest[0] == "lib") {
+        return none with {
+            message = f"no module '{name}': the package's src/lib.lyrs is the module '{head}'",
+        };
+    }
+    let file = "src/" + rest.join("/") + ".lyrs";
+    if (pkg.repo != "" && !inContent(file, pkg.include, pkg.exclude)) {
+        return none with {
+            message = f"no module '{name}': '{file}' is not in the content of the package '{pkg.name}'",
+        };
+    }
+    return Target {
+        src = src,
+        segments = rest,
+        pkg = p,
+        shown = f"'{file}' in the package '{pkg.name}'",
+        isRoot = false,
+        code = "",
+        message = "",
+    };
+}
+
+/// The package root holding the entry `path` under its `src/`, and the entry's path below
+/// `src/` without its extension, `a/main`: where the nearest manifest above the entry is such a
+/// package's; `null` where there is none, or the entry lies outside its `src/`.
+fn packageRoot(path: string): ?(string, string) {
+    let abs = try? absolute(path);
+    if (abs == null) {
+        return null;
+    }
+    var dir = parent(abs);
+    let names = List<string>.new();
+    var up = 0;
+    while (up < 64) {
+        if (exists(join(dir, manifestName))) {
+            break;
+        }
+        let next = parent(dir);
+        if (next == dir) {
+            return null;
+        }
+        names.push(fileName(dir));
+        dir = next;
+        up += 1;
+    }
+    if (up == 0 || names[names.length() - 1] != "src") {
+        return null;
+    }
+    // the folders from `src/` down to the entry's, then the entry's stem
+    let rel = List<string>.new();
+    var k = names.length() - 2;
+    while (k >= 0) {
+        rel.push(names[k]);
+        k -= 1;
+    }
+    rel.push(stem(path));
+    // the root as the entry's path is written: as many folders up from the entry's
+    var root = parent(path);
+    var n = 0;
+    while (n < up) {
+        root = normalize(join(root, ".."));
+        n += 1;
+    }
+    return (root, rel.toArray().join("/"));
+}
+
+/// A dependency to read: its folder — empty for one read from git —, the dependency as the
+/// depending manifest writes it, where that manifest declares it, the package that declares it
+/// and whether that package was read from git; `from` -1 for the root package.
+struct Wanted {
+    root: string,
+    dep: Dep,
+    doc: int,
+    from: int,
+    fromGit: bool = false,
+}
+
+/// Reads the package at `root` and every package its dependencies reach, each once (Lyric 5 15
+/// §1–§2): a manifest's faults at their lines; a folder without the package its dependent names
+/// (`LYS-PKG0004`); two folders for one name (`LYS-PKG0005`); a revision or a package a
+/// repository does not have (`LYS-PKG0006`); a repository that cannot be reached, and a
+/// toolchain the package asks more of, faults of the environment (`LYS-PKG0007`, `LYS-PKG0009`).
+fn loadPackages(root: string, l: Loaded, first: ?(Manifest, int)): void {
+    let queue = List<Wanted>.new();
+    queue.push(Wanted { root = root, dep = Dep { name = "", line = 0 }, doc = -1, from = -1 });
+    // every dependency as asked: the package asking, the name, the source it reached, where
+    let asks = List<Ask>.new();
+    let overrides = Map<string, Dep>.new();
+    var k = 0;
+    while (k < queue.length()) {
+        var w = queue[k];
+        k += 1;
+        // the root manifest's override reads its folder wherever the graph asks for the name
+        let over = if (w.from >= 0) overrides.get(w.dep.name) else null;
+        if (over != null) {
+            w = w with {
+                root = normalize(below(root, over.path)),
+                dep = over with { name = w.dep.name, line = w.dep.line },
+                fromGit = false,
+            };
+        }
+        let dep = w.dep;
+        var gotten: ?Fetched = null;
+        if (dep.git != "") {
+            let got = gitPackage(l, w);
+            if (got == null) {
+                continue;
+            }
+            let fetched = got.dir;
+            gotten = got;
+            w = w with { root = fetched };
+        } else if (w.fromGit && over == null) {
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                "LYS-PKG0004",
+                f"'{dep.name}' is read from a folder, and a package read from git names its own dependencies by git"
+            );
+            continue;
+        }
+        // a folder reached again is the package read before
+        var known = -1;
+        var j = 0;
+        while (j < l.pkgs.length()) {
+            if (l.pkgs[j].root == w.root) {
+                known = j;
+            }
+            j += 1;
+        }
+        if (known >= 0) {
+            asks.push(
+                Ask { from = w.from, name = dep.name, to = known, doc = w.doc, line = dep.line }
+            );
+            continue;
+        }
+        // a script's frontmatter, read already, is its root's manifest
+        if (w.from < 0 && first != null) {
+            let (fm, fd) = first;
+            let index = l.pkgs.length();
+            l.pkgs.push(Pkg { name = fm.name, root = w.root, deps = Map<string, int>.new() });
+            for (o in fm.overrides) {
+                overrides.insert(o.name, o);
+            }
+            for (next in fm.deps) {
+                l.pkgs[index].declared.push(next.name);
+                queue.push(
+                    Wanted {
+                        root = if (next.git != "") "" else normalize(below(w.root, next.path)),
+                        dep = next,
+                        doc = fd,
+                        from = index,
+                    }
+                );
+            }
+            let tool = fm.toolchain;
+            if (tool != null && !toolchainAllows(tool, version)) {
+                docError(
+                    l,
+                    fd,
+                    lineOfKey(l.docTexts[fd], "toolchain"),
+                    "LYS-PKG0009",
+                    f"the script asks for the toolchain {tool}; this one is {version}"
+                );
+                l.exit = 2;
+            }
+            continue;
+        }
+        let mpath = below(w.root, manifestName);
+        let text = try? readText(mpath);
+        if (text == null) {
+            if (dep.git != "") {
+                docError(
+                    l,
+                    w.doc,
+                    dep.line,
+                    "LYS-PKG0006",
+                    f"'{dep.gitWritten}' holds no package at its root: there is no {manifestName}"
+                );
+            } else {
+                docError(
+                    l,
+                    w.doc,
+                    dep.line,
+                    "LYS-PKG0004",
+                    f"no package at '{w.root}': it holds no {manifestName}"
+                );
+            }
+            continue;
+        }
+        let d = l.docPaths.length();
+        l.docPaths.push(mpath);
+        l.docTexts.push(text);
+        let read = readManifest(text);
+        for (e in read.errors) {
+            l.errors.push(e with { file = -2 - d });
+        }
+        let m = read.manifest;
+        if (m == null) {
+            continue;
+        }
+        if (w.from >= 0 && m.name != dep.name) {
+            let code = if (dep.git != "") "LYS-PKG0006" else "LYS-PKG0004";
+            let place = if (dep.git != "") dep.gitWritten else w.root;
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                code,
+                f"'{place}' holds the package '{m.name}', not '{dep.name}'"
+            );
+            continue;
+        }
+        // a tag that is a version asks for that version
+        let g = gotten;
+        let asked = if (g != null && g.tag != "") tagVersion(g.tag) else null;
+        if (asked != null && asked != m.version) {
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                "LYS-PKG0006",
+                f"the tag '{dep.rev}' of '{dep.gitWritten}' holds the version {m.version}"
+            );
+            continue;
+        }
+        // its content as its manifest names it, hashed and held against the lock (§3 rule 2)
+        var hash = "";
+        if (g != null) {
+            hash = contentHash(contentOf(w.root, m.include, m.exclude));
+            if (g.lockedHash != "" && hash != g.lockedHash) {
+                docError(
+                    l,
+                    w.doc,
+                    dep.line,
+                    "LYS-PKG0008",
+                    f"the content of {g.commit} of '{dep.gitWritten}' is not what the lock holds"
+                );
+                continue;
+            }
+        }
+        let tool = m.toolchain;
+        if (tool != null && !toolchainAllows(tool, version)) {
+            docError(
+                l,
+                d,
+                lineOfKey(text, "toolchain"),
+                "LYS-PKG0009",
+                f"the package '{m.name}' asks for the toolchain {tool}; this one is {version}"
+            );
+            l.exit = 2;
+        }
+        if (w.from < 0) {
+            for (o in m.overrides) {
+                overrides.insert(o.name, o);
+            }
+        }
+        let index = l.pkgs.length();
+        l.pkgs.push(
+            Pkg {
+                name = m.name,
+                root = w.root,
+                deps = Map<string, int>.new(),
+                version = m.version,
+                repo = dep.git,
+                versioned = asked != null,
+                include = m.include,
+                exclude = m.exclude,
+            }
+        );
+        if (g != null) {
+            l.lockNew.push(
+                LockEntry {
+                    name = m.name,
+                    version = m.version,
+                    repository = dep.git,
+                    revision = g.revision,
+                    commit = g.commit,
+                    hash = hash,
+                }
+            );
+            if (g.raisedFrom != "") {
+                l.raised.push(Raise { line = dep.line, from = g.raisedFrom, to = g.tag });
+            }
+        }
+        for (next in m.deps) {
+            l.pkgs[index].declared.push(next.name);
+        }
+        if (w.from >= 0) {
+            asks.push(
+                Ask { from = w.from, name = dep.name, to = index, doc = w.doc, line = dep.line }
+            );
+        }
+        for (next in m.deps) {
+            queue.push(
+                Wanted {
+                    root = if (next.git != "") "" else normalize(below(w.root, next.path)),
+                    dep = next,
+                    doc = d,
+                    from = index,
+                    fromGit = w.fromGit || dep.git != "",
+                }
+            );
+        }
+    }
+    choose(l, asks.toArray());
+}
+
+/// A dependency as a package asks for it: the asking package, the name, the source it reached,
+/// and where the asking manifest writes it.
+struct Ask {
+    from: int,
+    name: string,
+    to: int,
+    doc: int,
+    line: int,
+}
+
+/// A root manifest's tag raised by `update`: its line, the tag it was, the tag it becomes.
+struct Raise {
+    line: int,
+    from: string,
+    to: string,
+}
+
+/// One package of each name (Lyric 5 15 §2 rule 6): of the sources the graph reached for it, the
+/// one — or the greatest version of one line of one repository, the least that satisfies every
+/// ask (minimal version selection) —; two other sources are refused (`LYS-PKG0005`). Each ask
+/// then reaches the chosen package, and the chosen packages form no cycle (`LYS-PKG0010`).
+fn choose(l: Loaded, asks: Ask[]) {
+    let chosen = Map<string, int>.new();
+    for (a in asks) {
+        let have = chosen.get(a.name);
+        if (have == null) {
+            chosen.insert(a.name, a.to);
+            continue;
+        }
+        if (have == a.to) {
+            continue;
+        }
+        let x = l.pkgs[have];
+        let y = l.pkgs[a.to];
+        if (x.versioned
+            && y.versioned
+            && x.repo == y.repo
+            && versionLine(x.version) == versionLine(y.version)) {
+            if (versionBelow(x.version, y.version)) {
+                chosen.insert(a.name, a.to);
+            }
+            continue;
+        }
+        docError(
+            l,
+            a.doc,
+            a.line,
+            "LYS-PKG0005",
+            f"two sources for the package '{a.name}': {sourceOf(x)} and {sourceOf(y)}"
+        );
+    }
+    for (a in asks) {
+        let to = chosen.get(a.name) ?? a.to;
+        l.pkgs[a.from].deps.insert(a.name, to);
+    }
+    // no package depends on itself, at once or through others
+    let state = List<int>.new();
+    for (_ in l.pkgs) {
+        state.push(0);
+    }
+    if (l.pkgs.length() > 0) {
+        cycleFrom(0, l, asks, state, List<int>.new());
+    }
+}
+
+/// A package's source as a message names it.
+fn sourceOf(p: Pkg): string {
+    if (p.repo == "") {
+        return f"the folder '{p.root}'";
+    }
+    return if (p.versioned) f"version {p.version} of '{p.repo}'" else f"'{p.repo}' at {p.version}";
+}
+
+/// Depth first through the chosen packages' dependencies from package `k`; an ask that reaches a
+/// package on the way closes a cycle, said with its path at that ask (`LYS-PKG0010`).
+fn cycleFrom(k: int, l: Loaded, asks: Ask[], state: List<int>, stack: List<int>): void {
+    state[k] = 1;
+    stack.push(k);
+    for (a in asks) {
+        if (a.from != k) {
+            continue;
+        }
+        let j = l.pkgs[k].deps.get(a.name) ?? a.to;
+        if (state[j] == 1) {
+            let names = List<string>.new();
+            var n = 0;
+            while (stack[n] != j) {
+                n += 1;
+            }
+            while (n < stack.length()) {
+                names.push(l.pkgs[stack[n]].name);
+                n += 1;
+            }
+            names.push(l.pkgs[j].name);
+            let path = names.toArray().join(" -> ");
+            docError(
+                l,
+                a.doc,
+                a.line,
+                "LYS-PKG0010",
+                f"packages that depend on each other: {path}"
+            );
+        } else if (state[j] == 0) {
+            cycleFrom(j, l, asks, state, stack);
+        }
+    }
+    stack.pop();
+    state[k] = 2;
+}
+
+/// What a git dependency gave: the folder of its package, the revision as the manifest asks for
+/// it, the commit and its content's hash.
+struct Fetched {
+    dir: string,
+    revision: string,
+    commit: string,
+    hash: string,
+    // the tag it read, where a tag was asked for; the tag `update` raised it from (S5c3)
+    tag: string = "",
+    raisedFrom: string = "",
+    // the hash the lock holds for it, where it does
+    lockedHash: string = "",
+}
+
+/// The revision a dependency asks for, as the lock writes it: `tag v1.0.0`, `branch main`,
+/// `rev 0123abc`, `HEAD`.
+fn revisionOf(dep: Dep): string {
+    return if (dep.revKind == "") "HEAD" else f"{dep.revKind} {dep.rev}";
+}
+
+/// The folder of a git dependency's package: the repository cloned bare into the user's cache
+/// once, the commit's tree checked out once, `<cache>/src/<repository>/<commit>` (Lyric 5 15 §2
+/// rules 2–3). A revision the lock holds is read at its commit, and its content must be what the
+/// lock holds (§3 rule 2, `LYS-PKG0008`); one it does not hold is resolved — fetched where a branch
+/// is asked for or the revision is not there yet —, unless `--locked` takes the lock as it is
+/// (`LYS-PKG0011`). `null` where it fails, reported: a revision the repository does not have
+/// (`LYS-PKG0006`), a repository that cannot be reached or, `--offline`, is not in the cache
+/// (`LYS-PKG0007`).
+fn gitPackage(l: Loaded, w: Wanted): ?Fetched {
+    let dep = w.dep;
+    let revision = revisionOf(dep);
+    let anew = l.how.update && (l.how.only.length() == 0 || contains(l.how.only, dep.name));
+    var locked: ?LockEntry = null;
+    if (!anew) {
+        for (e in l.lockOld) {
+            if (e.repository == dep.git && e.revision == revision) {
+                locked = e;
+            }
+        }
+    }
+    if (locked == null && l.how.locked) {
+        docError(
+            l,
+            w.doc,
+            dep.line,
+            "LYS-PKG0011",
+            f"the lock holds no {revision} of '{dep.gitWritten}', and --locked takes it as it is"
+        );
+        return null;
+    }
+    let cache = cacheRoot();
+    if (cache == null) {
+        docError(l, w.doc, dep.line, "LYS-PKG0007", "there is no cache to keep a repository in");
+        l.exit = 2;
+        return null;
+    }
+    let key = hexOf(sha256(dep.git.toBytes()[..]))[0..16].toString();
+    let repo = join(cache, "git", key);
+    var fetched = false;
+    if (!exists(repo)) {
+        if (l.offline) {
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                "LYS-PKG0007",
+                f"'{dep.gitWritten}' is not in the cache, and --offline fetches nothing"
+            );
+            l.exit = 2;
+            return null;
+        }
+        try? createDirAll(join(cache, "git"));
+        if (git(["clone", "--bare", "--quiet", dep.git, repo], null) == null) {
+            docError(l, w.doc, dep.line, "LYS-PKG0007", f"'{dep.gitWritten}' cannot be reached");
+            l.exit = 2;
+            return null;
+        }
+        fetched = true;
+    }
+    // `update` reads from the repository as it is now
+    if (anew && !fetched && !l.offline) {
+        fetched = fetch(repo);
+    }
+    // and raises a root manifest's tag that is a version to the newest of its line
+    var tag = if (dep.revKind == "tag") dep.rev else "";
+    var raisedFrom = "";
+    if (anew && w.from == 0 && tagVersion(tag) != null) {
+        let newest = newestOfLine(repo, tag);
+        if (newest != tag) {
+            raisedFrom = tag;
+            tag = newest;
+        }
+    }
+    var id = "";
+    let held = locked;
+    if (held != null) {
+        // a locked revision: at its commit, whatever the branch or the tag says now
+        var there = git(["rev-parse", "--verify", "--quiet", held.commit + "^{commit}"], repo);
+        if (there == null && !fetched && !l.offline) {
+            fetch(repo);
+            there = git(["rev-parse", "--verify", "--quiet", held.commit + "^{commit}"], repo);
+        }
+        if (there == null) {
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                if (l.offline) "LYS-PKG0007" else "LYS-PKG0008",
+                f"the locked commit {held.commit} of '{dep.gitWritten}' is not in the repository"
+            );
+            if (l.offline) {
+                l.exit = 2;
+            }
+            return null;
+        }
+        id = there;
+    } else {
+        var revKind = dep.revKind;
+        var rev = dep.rev;
+        if (revKind == "") {
+            // the branch the repository's HEAD names
+            let head = git(["symbolic-ref", "--quiet", "HEAD"], repo) ?? "refs/heads/main";
+            revKind = "branch";
+            rev = if (head.startsWith("refs/heads/")) head[11..head.length()].toString() else head;
+        }
+        if (revKind == "tag") {
+            rev = tag;
+        }
+        let ref = match (revKind) {
+            "tag" => f"refs/tags/{rev}^{{commit}}",
+            "branch" => f"refs/heads/{rev}^{{commit}}",
+            _ => f"{rev}^{{commit}}",
+        };
+        // a branch moves: read at its head; a tag or a commit once it is there
+        if (revKind == "branch" && !fetched && !l.offline) {
+            fetched = fetch(repo);
+        }
+        var commit = git(["rev-parse", "--verify", "--quiet", ref], repo);
+        if (commit == null && !fetched && !l.offline) {
+            fetch(repo);
+            commit = git(["rev-parse", "--verify", "--quiet", ref], repo);
+        }
+        let found = commit;
+        if (found == null) {
+            let what = if (revKind == "rev") "commit" else revKind;
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                if (l.offline) "LYS-PKG0007" else "LYS-PKG0006",
+                if (l.offline) f"'{dep.gitWritten}' has no {what} '{rev}' in the cache, and --offline fetches nothing"
+                    else f"'{dep.gitWritten}' has no {what} '{rev}'"
+            );
+            if (l.offline) {
+                l.exit = 2;
+            }
+            return null;
+        }
+        id = found;
+    }
+    let dir = join(cache, "src", key, id);
+    if (!exists(dir)) {
+        let partial = f"{dir}.{pid()}.partial";
+        try? createDirAll(partial);
+        // the commit's bytes as they are: no line ends converted, so that the content's hash is
+        // one on every platform (a Windows git converts by default)
+        let done = git(
+            [
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.eol=lf",
+                "--git-dir",
+                repo,
+                "--work-tree",
+                partial,
+                "checkout",
+                "--quiet",
+                "--force",
+                id,
+                "--",
+                ".",
+            ],
+            null
+        );
+        if (done != null) {
+            try? rename(partial, dir);
+        }
+        if (!exists(dir)) {
+            try? removeAll(partial);
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                "LYS-PKG0007",
+                f"the commit {id} of '{dep.gitWritten}' cannot be checked out into the cache"
+            );
+            l.exit = 2;
+            return null;
+        }
+    }
+    let read = if (raisedFrom != "") f"tag {tag}" else revision;
+    return Fetched {
+        dir = dir,
+        revision = read,
+        commit = id,
+        hash = "",
+        tag = tag,
+        raisedFrom = raisedFrom,
+        lockedHash = if (held != null) held.hash else "",
+    };
+}
+
+/// A package's content as the lock hashes it (Lyric 5 15 §2 rule 4): each file of its folder in
+/// it, with its path — `/` between folders — and its bytes.
+fn contentOf(dir: string, include: string[], exclude: string[]): (string, uint8[])[] {
+    let out = List<(string, uint8[])>.new();
+    filesBelow(dir, "", include, exclude, out);
+    return out.toArray();
+}
+
+fn filesBelow(
+    dir: string,
+    rel: string,
+    include: string[],
+    exclude: string[],
+    out: List<(string, uint8[])>
+): void {
+    for (e in entriesOf(dir)) {
+        let path = if (rel == "") e.name else rel + "/" + e.name;
+        if (e.isDir) {
+            filesBelow(e.path, path, include, exclude, out);
+        } else if (e.isFile && inContent(path, include, exclude)) {
+            out.push((path, (try? readBytes(e.path)) ?? []));
+        }
+    }
+}
+
+/// Whether the file `path` is in a package's content: its manifest always; else what `include`
+/// names — by default its files under `src/` and `README*` and `LICENSE*` at its root —, less
+/// what `exclude` names.
+fn inContent(path: string, include: string[], exclude: string[]): bool {
+    if (path == manifestName) {
+        return true;
+    }
+    let named = if (include.length() == 0) path.startsWith("src/")
+        || (!path.contains("/") && (path.startsWith("README") || path.startsWith("LICENSE")))
+        else anyMatch(include, path);
+    return named && !anyMatch(exclude, path);
+}
+
+fn anyMatch(patterns: string[], path: string): bool {
+    let parts = segmentsOf(path);
+    for (p in patterns) {
+        if (matchFrom(segmentsOf(p), 0, parts, 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Whether the pattern's segments from `i` match the path's from `j`: `**` any number of
+/// folders, and a pattern that names a folder holds what lies below it.
+fn matchFrom(pattern: string[], i: int, path: string[], j: int): bool {
+    if (i == pattern.length()) {
+        // the pattern named a folder the path lies in, or the path itself
+        return true;
+    }
+    if (pattern[i] == "**") {
+        var k = j;
+        while (k <= path.length()) {
+            if (matchFrom(pattern, i + 1, path, k)) {
+                return true;
+            }
+            k += 1;
+        }
+        return false;
+    }
+    if (j == path.length()) {
+        return false;
+    }
+    return segmentMatches(pattern[i], 0, path[j], 0) && matchFrom(pattern, i + 1, path, j + 1);
+}
+
+/// `*` any characters, `?` one, within one segment.
+fn segmentMatches(p: string, i: int, s: string, j: int): bool {
+    return charsMatch(charsOf(p), i, charsOf(s), j);
+}
+
+fn charsOf(s: string): char[] {
+    let out = List<char>.new();
+    for (c in s.chars()) {
+        out.push(c);
+    }
+    return out.toArray();
+}
+
+/// A path's or a pattern's segments, `/` between them, empty ones left out.
+fn segmentsOf(path: string): string[] {
+    let out = List<string>.new();
+    for (part in path.split('/')) {
+        if (!part.isEmpty()) {
+            out.push(part.toString());
+        }
+    }
+    return out.toArray();
+}
+
+fn charsMatch(p: char[], i: int, s: char[], j: int): bool {
+    if (i == p.length()) {
+        return j == s.length();
+    }
+    if (p[i] == '*') {
+        var k = j;
+        while (k <= s.length()) {
+            if (charsMatch(p, i + 1, s, k)) {
+                return true;
+            }
+            k += 1;
+        }
+        return false;
+    }
+    if (j == s.length()) {
+        return false;
+    }
+    return (p[i] == '?' || p[i] == s[j]) && charsMatch(p, i + 1, s, j + 1);
+}
+
+/// The root package's lock, where there is one: read before the packages (Lyric 5 15 §3); one that
+/// does not read is refused (`LYS-PKG0001`).
+fn readLockOf(path: string, l: Loaded): void {
+    let text = try? readText(path);
+    if (text == null) {
+        return;
+    }
+    let d = l.docPaths.length();
+    l.docPaths.push(path);
+    l.docTexts.push(text);
+    l.lockDoc = d;
+    let read = readLock(text);
+    let fault = read.fault;
+    if (fault != null) {
+        docError(l, d, read.line, "LYS-PKG0001", fault);
+        return;
+    }
+    l.lockOld = read.entries;
+}
+
+/// After the packages: under `--locked` the lock is as it was — none where the program reads
+/// nothing from git, nothing it holds that the graph no longer reads (`LYS-PKG0011`) —; else, where
+/// all read, the lock is written where what was read changed, and goes where nothing is read from
+/// git (§3 rules 1, 4).
+fn settleLock(path: string, manifestPath: string, l: Loaded): void {
+    let now = l.lockNew.toArray();
+    if (l.how.locked) {
+        if (l.lockDoc < 0 && now.length() > 0) {
+            docError(
+                l,
+                0,
+                0,
+                "LYS-PKG0011",
+                f"the program reads from git, and --locked finds no {lockName}"
+            );
+            return;
+        }
+        for (e in l.lockOld) {
+            var read = false;
+            for (n in now) {
+                if (n == e) {
+                    read = true;
+                }
+            }
+            if (!read && l.errors.length() == 0) {
+                docError(
+                    l,
+                    l.lockDoc,
+                    1,
+                    "LYS-PKG0011",
+                    f"the lock holds {e.revision} of '{e.repository}', which the program no longer reads"
+                );
+            }
+        }
+        return;
+    }
+    if (l.errors.length() > 0) {
+        return;
+    }
+    if (now.length() == 0) {
+        if (l.lockDoc >= 0) {
+            try? remove(path);
+        }
+        return;
+    }
+    let text = writeLock(now);
+    if (l.lockDoc < 0 || writeLock(l.lockOld) != text || l.how.lockFile) {
+        try? createDirAll(parent(path));
+        try? writeText(path, text);
+    }
+    // `update` writes a raised tag on its line of the root manifest, the rest as it was
+    if (l.raised.length() > 0 && manifestPath != "") {
+        let mpath = manifestPath;
+        let old = try? readText(mpath);
+        if (old != null) {
+            let lines = List<string>.new();
+            var n = 0;
+            for (line in old.split('\n')) {
+                n += 1;
+                var t = line.toString();
+                for (r in l.raised) {
+                    if (r.line == n) {
+                        t = t.replace(f"\"{r.from}\"", f"\"{r.to}\"");
+                    }
+                }
+                lines.push(t);
+            }
+            try? writeText(mpath, lines.toArray().join("\n"));
+        }
+    }
+}
+
+fn contains(xs: string[], x: string): bool {
+    for (y in xs) {
+        if (y == x) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The newest tag of `tag`'s line the bare clone `repo` has (Lyric 5 15 §3 rule 3): never another
+/// major version, below 1 never another minor; a pre-release only for a pre-release; written as
+/// `tag` writes its version, with or without `v`.
+fn newestOfLine(repo: string, tag: string): string {
+    let mine = tagVersion(tag) ?? "";
+    let pre = mine.contains("-");
+    var best = tag;
+    var bestVersion = mine;
+    for (t in (git(["tag", "--list"], repo) ?? "").split('\n')) {
+        let name = t.trim().toString();
+        let v = tagVersion(name);
+        if (v == null || versionLine(v) != versionLine(mine) || (v.contains("-") && !pre)) {
+            continue;
+        }
+        if (name.startsWith("v") != tag.startsWith("v")) {
+            continue;
+        }
+        if (versionBelow(bestVersion, v)) {
+            best = name;
+            bestVersion = v;
+        }
+    }
+    return best;
+}
+
+/// Fetches every branch and tag of the bare clone `repo` from its origin; whether it did.
+fn fetch(repo: string): bool {
+    return git(
+        [
+            "fetch",
+            "--quiet",
+            "--force",
+            "origin",
+            "+refs/heads/*:refs/heads/*",
+            "+refs/tags/*:refs/tags/*",
+        ],
+        repo
+    )
+        != null;
+}
+
+/// Runs `git` with `args`, in `cwd` where given: what it writes, trimmed; `null` where it fails.
+fn git(args: string[], cwd: ?string): ?string {
+    let run = Command { program = "git", args = args, cwd = cwd, stdout = .Piped, stderr = .Piped };
+    let out = try run.output() catch (_) {
+        return null;
+    };
+    if (!out.status.success()) {
+        return null;
+    }
+    let text = try string.fromUtf8(out.stdout[..]) catch (_) {
+        return null;
+    };
+    return text.trim().toString();
+}
+
+/// Bytes as lowercase hexadecimal digits.
+fn hexOf(bytes: uint8[32]): string {
+    let digits = "0123456789abcdef";
+    let out = List<string>.new();
+    for (b in bytes) {
+        let v = b as int;
+        out.push(digits[v / 16..v / 16 + 1].toString());
+        out.push(digits[v % 16..v % 16 + 1].toString());
+    }
+    return out.toArray().join("");
+}
+
+/// An error at `line` of manifest `doc`.
+fn docError(l: Loaded, doc: int, line: int, code: string, message: string): void {
+    let text = if (doc >= 0) l.docTexts[doc] else "";
+    var start = 0;
+    var n = 1;
+    var k = 0;
+    for (b in text.toBytes()) {
+        if (n == line) {
+            break;
+        }
+        if (b == 10u8) {
+            n += 1;
+            start = k + 1;
+        }
+        k += 1;
+    }
+    var end = start;
+    let bytes = text.toBytes();
+    while (end < bytes.length() && bytes[end] != 10u8) {
+        end += 1;
+    }
+    l.errors.push(
+        Diagnostic {
+            code = code,
+            message = message,
+            start = start,
+            end = end,
+            line = if (line > 0) line else 1,
+            column = 1,
+            help = null,
+            file = -2 - doc,
+        }
+    );
+}
+
+/// The line of the first `key = …` in a manifest's text; 1 where there is none.
+fn lineOfKey(text: string, key: string): int {
+    var n = 0;
+    for (line in text.split('\n')) {
+        n += 1;
+        let t = line.trim().toString();
+        if (t.startsWith(key) && t[key.length()..t.length()].toString().trim().startsWith("=")) {
+            return n;
+        }
+    }
+    return 1;
+}
+
+/// Depth first from module `k`: its imports first, then it; `stack` the modules on the way, which
+/// an import of one of them closes to a cycle (LYS-RES0005). `state`: 0 not seen, 1 on the way,
+/// 2 placed.
+fn visit(
+    k: int,
+    edges: List<List<int>>,
+    edgeAt: List<List<Diagnostic>>,
+    state: List<int>,
+    stack: List<int>,
+    l: Loaded
+): void {
+    state[k] = 1;
+    stack.push(k);
+    var e = 0;
+    while (e < edges[k].length()) {
+        let j = edges[k][e];
+        if (state[j] == 1) {
+            let names = List<string>.new();
+            var n = 0;
+            while (stack[n] != j) {
+                n += 1;
+            }
+            while (n < stack.length()) {
+                names.push(l.names[stack[n]]);
+                n += 1;
+            }
+            names.push(l.names[j]);
+            let chain = names.toArray().join(" -> ");
+            l.errors.push(
+                edgeAt[k][e] with {
+                    code = "LYS-RES0005",
+                    message = f"modules that import each other: {chain}",
+                }
+            );
+        } else if (state[j] == 0) {
+            visit(j, edges, edgeAt, state, stack, l);
+        }
+        e += 1;
+    }
+    stack.pop();
+    state[k] = 2;
+    l.order.push(k);
+}
+
+/// `rel` below the folder `folder`.
+fn below(folder: string, rel: string): string {
+    return if (folder == ".") rel else join(folder, rel);
+}
+
+/// The path below `folder` as the folders name it, where it differs from `segments` — a module
+/// path — in case: `A/b.lyrs` for `a.b`; `null` where each name is exact (Lyric 5 04 §2 rule 4).
+fn misnamed(folder: string, segments: string[]): ?string {
+    var dir = folder;
+    let shown = List<string>.new();
+    var k = 0;
+    while (k < segments.length()) {
+        let want = if (k == segments.length() - 1) segments[k] + ".lyrs" else segments[k];
+        var exact = false;
+        var other: ?string = null;
+        for (e in entriesOf(dir)) {
+            if (e.name == want) {
+                exact = true;
+            } else if (e.name.toLower() == want.toLower()) {
+                other = e.name;
+            }
+        }
+        if (!exact && other != null) {
+            shown.push(other);
+            k += 1;
+            while (k < segments.length()) {
+                shown.push(if (k == segments.length() - 1) segments[k] + ".lyrs" else segments[k]);
+                k += 1;
+            }
+            return shown.toArray().join("/");
+        }
+        shown.push(want);
+        dir = below(dir, segments[k]);
+        k += 1;
+    }
+    return null;
+}
+
+/// The modules in folder `dir`: its `.lyrs` files' names without the extension; none where it is
+/// no folder.
+fn lyrsIn(dir: string): string[] {
+    let out = List<string>.new();
+    for (e in entriesOf(dir)) {
+        if (e.isFile && e.name.endsWith(".lyrs")) {
+            out.push(stem(e.name));
+        }
+    }
+    return out.toArray();
+}
+
+fn without(xs: string[], x: string): string[] {
+    let out = List<string>.new();
+    for (y in xs) {
+        if (y != x) {
+            out.push(y);
+        }
+    }
+    return out.toArray();
+}
+
+/// The entries of folder `dir`; none where it cannot be read.
+fn entriesOf(dir: string): DirEntry[] {
+    let out = List<DirEntry>.new();
+    try {
+        for (e in readDir(dir)) {
+            out.push(e);
+        }
+    } catch (_) {
+        return [];
+    }
+    return out.toArray();
+}
+
+fn indexOf(xs: List<string>, x: string): int {
+    var k = 0;
+    while (k < xs.length()) {
+        if (xs[k] == x) {
+            return k;
+        }
+        k += 1;
+    }
+    return -1;
+}

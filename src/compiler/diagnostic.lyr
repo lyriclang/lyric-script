@@ -12,4 +12,6 @@ struct Diagnostic :: [Debug] {
     column: int,
     /// What to do about it, where there is a short answer: drawn as `= help: …`.
     help: ?string,
+    /// The file it is about, by its place among the program's files (S5a).
+    file: int = 0,
 }

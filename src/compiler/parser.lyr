@@ -26,6 +26,8 @@ import lyric_script.compiler.ast {
     FnBody,
     FnDecl,
     InterfaceDecl,
+    ImportDecl,
+    ImportItem,
     Item,
     MapEntry,
     LambdaParam,
@@ -72,24 +74,26 @@ struct Parsed {
 /// leaves room (Lyric 5's floor of 128 is a thread's).
 let maxNesting: int = 64;
 
-/// Reads `source` into its syntax tree.
-fn parse(source: string): Parsed {
+/// Reads `source`, the program's file `file`, into its syntax tree: its spans and its diagnostics
+/// name the file (S5a) — 0 the entry, -1 the prelude.
+fn parse(source: string, file: int = 0): Parsed {
     let lexed = lex(source);
     let p = Parser.new(source, lexed.tokens);
+    p.file = file;
     let module = p.parseModule();
     let errors = List<Diagnostic>.new();
     for (d in lexed.errors) {
-        errors.push(d);
+        errors.push(d with { file = file });
     }
     for (d in p.errors) {
-        errors.push(d);
+        errors.push(d with { file = file });
     }
     let warnings = List<Diagnostic>.new();
     for (d in lexed.warnings) {
-        warnings.push(d);
+        warnings.push(d with { file = file });
     }
     for (d in p.warnings) {
-        warnings.push(d);
+        warnings.push(d with { file = file });
     }
     return Parsed { module = module, errors = errors.toArray(), warnings = warnings.toArray() };
 }
@@ -115,6 +119,8 @@ class Parser {
     var inGuard: bool = false,
     // in an interface's body, where a member without a body is abstract
     var inInterface: bool = false,
+    // the program's file this one is (S5a)
+    var file: int = 0,
     // the labels of the loops around, "" for one without (07 §1 rule 3), and the label written
     // before the loop the parser is about to read
     var loopLabels: List<string> = List<string>.new(),
@@ -167,7 +173,13 @@ class Parser {
     }
 
     mut fn spanOf(t: Token): Span {
-        return Span { start = t.start, end = t.end, line = t.line, column = t.column };
+        return Span {
+            start = t.start,
+            end = t.end,
+            line = t.line,
+            column = t.column,
+            file = this.file,
+        };
     }
 
     /// From `first` to the last token read.
@@ -178,6 +190,7 @@ class Parser {
             end = last.end,
             line = first.line,
             column = first.column,
+            file = this.file,
         };
     }
 
@@ -312,27 +325,40 @@ class Parser {
 
     mut fn parseItem(): Item throws SyntaxError {
         let first = this.current();
-        var isPub = false;
+        // visible beyond its file unless `private` (02 V); `pub` and `internal` are taken
+        var isPub = true;
+        var worded = false;
+        var inPackage = false;
         if (this.atWord("pub") || this.atWord("internal") || this.atWord("private")) {
-            isPub = this.atWord("pub");
+            isPub = !this.atWord("private");
+            worded = this.atWord("pub");
+            inPackage = this.atWord("internal");
             this.advance();
         }
+        if (this.atWord("import")) {
+            return Item.Decl(Decl.Import(try this.parseImport(worded, first)));
+        }
         if (this.atWord("fn")) {
-            return Item.Decl(Decl.Fn(try this.parseFn(isPub, false, first)));
+            let f = try this.parseFn(isPub, false, first);
+            return Item.Decl(Decl.Fn(f with { isInternal = inPackage }));
         }
         if (this.atWord("struct") || this.atWord("class")) {
-            return Item.Decl(Decl.Type(try this.parseTypeDecl(isPub, first)));
+            let t = try this.parseTypeDecl(isPub, first);
+            return Item.Decl(Decl.Type(t with { isInternal = inPackage }));
         }
         if (this.atWord("enum")) {
-            return Item.Decl(Decl.Enum(try this.parseEnum(isPub, first)));
+            let e = try this.parseEnum(isPub, first);
+            return Item.Decl(Decl.Enum(e with { isInternal = inPackage }));
         }
         if (this.atWord("type") && this.peek(1).kind == .Ident) {
-            return Item.Decl(Decl.Alias(try this.parseAlias(isPub, first)));
+            let a = try this.parseAlias(isPub, first);
+            return Item.Decl(Decl.Alias(a with { isInternal = inPackage }));
         }
         // `sealed` is a word only before `interface`
         if (this.atWord("interface")
             || (this.atWord("sealed") && this.isWord(this.peek(1), "interface"))) {
-            return Item.Decl(Decl.Interface(try this.parseInterface(isPub, first)));
+            let i = try this.parseInterface(isPub, first);
+            return Item.Decl(Decl.Interface(i with { isInternal = inPackage }));
         }
         if (this.atWord("extend") && (this.peek(1).kind == .Ident || this.peek(1).kind == .Lt)) {
             return Item.Decl(Decl.Extend(try this.parseExtend(first)));
@@ -345,6 +371,56 @@ class Parser {
             );
         }
         return Item.Stmt(try this.parseStmt());
+    }
+
+    /// `import a.b { x, y as z }`, `import a.b`, `import a.b as c` (Lyric 5 04 §4 rule 1).
+    mut fn parseImport(isPub: bool, first: Token): ImportDecl throws SyntaxError {
+        this.advance();
+        let path = List<string>.new();
+        path.push(this.text(try this.expect(.Ident, "LYS-PAR0026", "the module's path")));
+        while (this.at(.Dot)) {
+            this.advance();
+            path.push(this.text(try this.expect(.Ident, "LYS-PAR0026", "the module's path")));
+        }
+        let items = List<ImportItem>.new();
+        var selective = false;
+        var alias: ?string = null;
+        if (this.at(.LBrace)) {
+            this.advance();
+            selective = true;
+            this.skipNewlines();
+            while (!this.at(.RBrace)) {
+                let name = try this.expect(.Ident, "LYS-PAR0026", "a name the module declares");
+                var renamed: ?string = null;
+                if (this.atWord("as")) {
+                    this.advance();
+                    renamed = this.text(
+                        try this.expect(.Ident, "LYS-PAR0026", "the name after 'as'")
+                    );
+                }
+                items.push(
+                    ImportItem { name = this.text(name), alias = renamed, span = this.since(name) }
+                );
+                this.skipNewlines();
+                if (!this.at(.Comma)) {
+                    break;
+                }
+                this.advance();
+                this.skipNewlines();
+            }
+            try this.expect(.RBrace, "LYS-PAR0018", "'}' after the imported names");
+        } else if (this.atWord("as")) {
+            this.advance();
+            alias = this.text(try this.expect(.Ident, "LYS-PAR0026", "the name after 'as'"));
+        }
+        return ImportDecl {
+            path = path.toArray(),
+            items = items.toArray(),
+            selective = selective,
+            alias = alias,
+            isPub = isPub,
+            span = this.since(first),
+        };
     }
 
     /// `fn name(params): T { … }` or `fn name(params) = expr` (09 Ret).
@@ -509,9 +585,12 @@ class Parser {
             );
             return;
         }
-        var isPub = false;
+        // a member is seen where its type is unless `private` (02 V; Lyric 5 04 §3 rule 6)
+        var isPub = true;
+        var inPackage = false;
         if (this.atWord("pub") || this.atWord("internal") || this.atWord("private")) {
-            isPub = this.atWord("pub");
+            isPub = !this.atWord("private");
+            inPackage = this.atWord("internal");
             this.advance();
         }
         var isStatic = false;
@@ -520,7 +599,8 @@ class Parser {
             this.advance();
         }
         if (this.atWord("fn")) {
-            methods.push(try this.parseFn(isPub, isStatic, first));
+            let f = try this.parseFn(isPub, isStatic, first);
+            methods.push(f with { isInternal = inPackage });
             return;
         }
         // `static let zero: int = 0`: a constant of the type (05 §7 rule 2)
@@ -548,6 +628,7 @@ class Parser {
                 default = dflt,
                 isVar = isVar,
                 isPub = isPub,
+                isInternal = inPackage,
                 span = this.since(first),
             }
         );
@@ -1629,13 +1710,27 @@ class Parser {
         this.advance();
         let member = this.text(name);
         if (!optional && this.at(.LBrace) && isTypeName(member)) {
+            // `Shape.Rect { … }`, through a module `util.Shape.Rect { … }`
             let enumName = match (e) {
                 .Name(n, _) => if (isTypeName(n)) n else "",
+                .Member(inner, tn, false, _) => match (inner.value) {
+                    .Name(m, _) => if (!isTypeName(m) && isTypeName(tn)) m + "." + tn else "",
+                    _ => "",
+                },
                 _ => "",
             };
             if (enumName != "") {
                 let fields = try this.parseFieldInits();
                 return Expr.VariantInit(enumName, member, fields, this.since(first));
+            }
+            // `util.Point { … }`: a module's type built (Lyric 5 04 §3 rule 3)
+            let moduleName = match (e) {
+                .Name(n, _) => if (isTypeName(n)) "" else n,
+                _ => "",
+            };
+            if (moduleName != "") {
+                let fields = try this.parseFieldInits();
+                return Expr.StructInit(moduleName + "." + member, fields, this.since(first));
             }
         }
         return Expr.Member(boxed(e), member, optional, this.since(first));

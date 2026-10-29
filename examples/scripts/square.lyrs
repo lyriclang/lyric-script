@@ -1,0 +1,9 @@
+#!/usr/bin/env lyric-script
+---
+[dependencies]
+stats = { path = "../stats" }
+---
+// A single script whose frontmatter names its dependency.
+import stats { square }
+
+println(square(12))

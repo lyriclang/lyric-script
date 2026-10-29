@@ -134,6 +134,12 @@ jobs:
           grep -qx 'mean of squares: 21.0 over 4 points' tally.txt
           "$bin" run examples/scripts/fib.lyrs | tee fibs.txt
           grep -qx '75025' fibs.txt
+          # S5: a package of modules with a path dependency, run from its folder; a script whose
+          # frontmatter names a dependency
+          (cd examples/project && "../../$bin" run) | tee project.txt
+          grep -qx 'squares of 1 to 4: 30' project.txt
+          "$bin" run examples/scripts/square.lyrs | tee square.txt
+          grep -qx '144' square.txt
 
       # The specification's suite at the commit spec.pin names (the `script` branch of
       # lyric-spec): every case whose `since:` the toolchain has reached.

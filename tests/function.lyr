@@ -152,3 +152,10 @@ fn trailingBlocksBoundMethodsAndFields(): void {
         42
     );
 }
+
+@Test
+fn aLambdaOfNoValueRunsItsBody(): void {
+    // `() => f()` where `f` gives nothing: the call runs (since S3e it was dropped)
+    let source = "class C {\n    var n: int = 0\n    fn bump() {\n        this.n += 1\n    }\n}\nfn go(): int {\n    let c = C { }\n    let f = () => c.bump()\n    f()\n    f()\n    let g: fn(int) -> void = k => c.bump()\n    g(1)\n    return c.n\n}";
+    assertEq(value(source, "go"), 3);
+}

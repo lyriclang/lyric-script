@@ -20,10 +20,10 @@ fn errs(source: string): string[] {
     return out.toArray();
 }
 
-/// The type of the script's global `name`.
+/// The type of the script's global `name`: the entry's, keyed `::<name>` (S5a2).
 fn globalType(source: string, name: string): Ty {
     for (g in checkModule(parse(source).module).program.globals) {
-        if (g.name == name) {
+        if (g.name == "::" + name) {
             return g.ty;
         }
     }

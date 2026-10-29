@@ -3,7 +3,7 @@
 //! then the module. Only the toolchain that wrote it reads it back: a head that does not match is
 //! no file of this toolchain, and the reader says so rather than guessing (01 S10).
 import std.collections { List };
-import lyric_script.vm.module { Function, Handler, Module, ReturnKind, TypeDesc };
+import lyric_script.vm.module { Function, Handler, Module, RightUse, ReturnKind, TypeDesc };
 import lyric_script.vm.op { Instr, Op };
 
 /// The first bytes of every file: `LYSB`.
@@ -35,6 +35,14 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
     // the slots of `Error`'s members, one up so that none is 0 (S4a)
     w.word(module.errorMessage + 1);
     w.word(module.errorCause + 1);
+    // the rights its imports ask for (S5e)
+    w.word(module.rights.length());
+    for (u in module.rights) {
+        w.text(u.right);
+        w.text(u.module);
+        w.text(u.path);
+        w.word(u.line);
+    }
     w.word(module.types.length());
     for (t in module.types) {
         w.text(t.name);
@@ -107,6 +115,7 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
             w.word(h.reg);
             w.word(h.rec);
         }
+        w.text(f.file);
     }
     return w.out.toArray();
 }
@@ -133,6 +142,16 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
     let globalsR = try r.word();
     let errorMessage = try r.word() - 1;
     let errorCause = try r.word() - 1;
+    let rights = List<RightUse>.new();
+    var nr = try r.word();
+    while (nr > 0) {
+        let right = try r.text();
+        let mod = try r.text();
+        let path = try r.text();
+        let line = try r.word();
+        rights.push(RightUse { right = right, module = mod, path = path, line = line });
+        nr -= 1;
+    }
     let types = List<TypeDesc>.new();
     let links = List<DescLinks>.new();
     var n = try r.word();
@@ -259,6 +278,7 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
             );
             k -= 1;
         }
+        let file = try r.text();
         functions.push(
             Function {
                 name = fname,
@@ -274,6 +294,7 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
                 retS = retS,
                 retR = retR,
                 handlers = handlers.toArray(),
+                file = file,
             }
         );
         n -= 1;
@@ -289,6 +310,7 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         globalsR = globalsR,
         errorMessage = errorMessage,
         errorCause = errorCause,
+        rights = rights.toArray(),
     };
 }
 

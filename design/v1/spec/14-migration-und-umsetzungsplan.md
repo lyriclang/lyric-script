@@ -564,3 +564,190 @@ Mutantenkontrollen mit vorher geschriebener Vorhersage. Verfehlt nur in S4a: die
 der anderen nicht (2 statt 3, dann 3 statt 2). Vor den Läufen geschärft, weil sie den Mutanten
 sonst nicht gesehen hätten: je ein Test in S4b (Aufrufer-Rahmen), S4c (Fixpunkt) und S4e
 (Wertblock).
+
+## S5 — Slices (Plan, Entwurf 2026-10-29)
+
+Ziel aus der Meilensteintabelle: Module und Pakete — Datei = Modul, Importe, Globale, Pfadregel,
+Prelude, `lyric-script.toml`, Lock, Git und Pfad, Frontmatter-Abhängigkeiten, Rechteklassen aus
+Importen (07). Grundlage: Lyric 5 04 und 15 (gepinnt 38ea610e), Scripts Abweichungen 07 Top, Path,
+Dep, Man, V1–V7, 02 V und 01 S1–S4. Bisher ist ein Skript eine Datei; S5 ist Lader,
+Namensauflösung über Dateien, Projekt und Abhängigkeiten.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S5a Module einer Wurzel** | Datei = Modul, Name aus dem Pfad unter dem Ordner des Einstiegs ohne Präfix (Path); Importe selektiv/qualifiziert/Alias, `pub import`, kein Glob (V3); `private` an Funktionen, `pub`/`internal` angenommen (02 V); Modul-`let`/`var` vor dem Code des Einstiegs in Abhängigkeitsreihenfolge, Zyklus Fehler (V5); nur der Einstieg führt Anweisungen aus, die anderen ein Lint (Top); `RES0001/0003/0004/0005/0009`, ungenutzter Import (`SEM0072`); ein Bytecode-Modul fürs ganze Programm, Cache-Schlüssel über alle Quellen | Mehrdatei-Fälle (Runner: Verzeichnisfälle) |
+| **S5a2 Typen über Module, Namensräume, Einstieg** | aus S5a geteilt (2026-10-29): ein Typ über sein Modul im Initialisierer (`util.Point { … }`) und generisch (`util.Box<int>`); `private` an Typen und Mitgliedern (Lyric 5 §3 R6–R7); `RES0011`, `RES0012`, Verdecken des Prelude (`SEM0153`); `fn main` als Einstieg eines Moduls ohne Anweisungen, beides „zwei Einstiege“ (Top); der Pfad nennt seine Datei genau, Groß-/Kleinschreibung auch auf Windows (Lyric 5 §2 R4); die Spurform mit der Datei (06 R3) | Mehrdatei-Fälle |
+| **S5b Manifest** | `lyric-script.toml` (`[package]` `name`, `version`, `edition`, `toolchain`; `[dependencies]` mit `path`); mit Manifest Lyric 5s Pfadregel (Paketname vorn, `src/`, `src/lib.lyr` Wurzelmodul, `src/main.lyr` Einstieg); nur Deklariertes importierbar (`RES0014`); `PKG`-Codes | Paketfälle mit Pfad-Abhängigkeit |
+| **S5c Git und Lock** | Git-Abhängigkeiten (`tag`/`branch`/`rev`), normalisierte URL, Nutzer-Cache, MVS über Versionslinien, `[override]`, Zyklus `PKG0010`; `lyric-script.lock` mit Commit und Inhalts-Hash, `--locked`, `--offline`, `lyric-script update` | Fälle mit lokalen Repositories (`repos/<name>/<version>`), nie Netz |
+| **S5d Frontmatter-Abhängigkeiten** | der `---`-Kopf eines Einzelskripts mit der Abhängigkeits-Teilmenge des Manifests, beim ersten Lauf aufgelöst, nach dem Hash des Kopfs gecacht; `lyric-script lock tool.lyrs` → `tool.lyrs.lock` | Einzelskript mit Kopf |
+| **S5e Rechteklassen aus Importen** | Rechte je Modul aus den Importen abgeleitet, im Bytecode vermerkt, beim Laden geprüft (`CAP0001`, alle auf einmal mit Zeile); `--allow`/`-A`, einmalige Abfrage vor dem Start am Terminal (01 S1, S4); `std` kommt mit S7 — die Mechanik jetzt, eine Testtabelle steht für `std` | Rechte-Fälle |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s5-complete`; Bereichszeilen gegen den Code | Beispielprojekt in der CI |
+
+Reihenfolge: a vor a2 vor b vor c; d nach c (teilt den Auflöser); e nach a2.
+
+**S5a, Ergebnis (2026-10-29).** Spans und Diagnosen tragen ihre Datei (0 der Einstieg, −1 das
+Prelude). Der Prüfer registriert die Deklarationen eines importierten Moduls unter
+`<pfad>::<name>` und schlägt jeden Namen über die Sicht des aktuellen Moduls nach, so dass ein
+importiertes Modul die Namen des Einstiegs nicht sieht (`SEM0002`). Die drei Importformen und
+`pub import`; `private` an Funktionen, beim Import und beim Aufruf über das Modul (`RES0009`);
+ein Name zweimal gebunden (`RES0001`, die Deklaration behält ihn); ein Name, den das Modul nicht
+hat (`RES0004`); der ungenutzte Import (`SEM0072`) in Schreibreihenfolge, ein schon abgelehnter
+nicht noch einmal. Nur der Einstieg führt Anweisungen aus: die `let`/`var` importierter Module
+sind Globale, vor dem Code des Einstiegs in Abhängigkeitsreihenfolge gefüllt, andere Anweisungen
+warnen (`SEM0905`, Tops Lint). Die CLI liest den Einstieg und alle erreichbaren Module (`a.b` →
+`a/b.lyrs` unter dem Ordner des Einstiegs, `RES0003`), ordnet sie in Tiefensuche (`RES0005` mit
+dem Kreis), meldet je Datei und schlüsselt den Cache über Namen und Texte aller Dateien; ein
+Skript ohne `import` behält den Schlüssel seines Textes und wird vor dem Cache nicht geparst.
+`checkModule(entry, imported = [])` und `parse(source, file = 0)` sind der eine Eingang für
+Tests und CLI. Gefunden: drei Schleifen über `Map.keys()` — `SEM0042` aus S4c, die Self-Kopien
+und die Zeugen der Instanzen —; Lyric 5s Map liefert bis etwa acht Einträge die
+Einfügereihenfolge, darüber eine je Prozess neue, also waren Meldungen und Bytecode bei großen
+Typen je Lauf anders geordnet; jetzt nach Slot. Spec 04 Regeln 1–9 mit 14 Ordnerfällen (der
+Runner nimmt einen Ordner mit `main.lyrs` als einen Fall), alle rot gegen S4 und grün gegen
+S5a; Tests 245 → 256, Fälle 165 → 179. Mutanten mit vorher geschriebener Vorhersage: im ersten
+Lauf trafen 3 von 4 — die Reihenfolge der ungenutzten Importe sah ein Test mit vier Einträgen
+nicht; auf ein Dutzend geschärft, dann trafen beide Reihenfolge-Mutanten, der alte
+`keys()`-Weg von `SEM0042` eingeschlossen; die übrigen fünf wie vorhergesagt.
+
+**S5a2, Ergebnis (2026-10-29).** Der Einstieg ist ein Modul wie jedes: seine Deklarationen unter
+`::<name>`, nur das Prelude bar; so verdeckt ein Name eines Moduls den des Prelude mit Warnung
+(`SEM0153`), statt mit ihm zu kollidieren, und ein eingebauter Typname ist keiner Deklaration
+(`RES0011`, jetzt auch für Funktionen und Bindungen). Ein Typ über sein Modul — `util.Point { … }`,
+`util.Box<int>`, `util.Shape.Rect { … }`, `util.Shape.Dot`, `util.Counter.start()` —; `private`
+an Typen, Feldern und Methoden: ein Typ merkt sich sein Modul und die Namen seiner privaten
+Mitglieder, jede Zugriffsstelle fragt `mayName`, Initialisierer und `with` fragen `mayBuild`
+(Lyric 5 §3 R6–R7). Mitglieder ohne Wort sind jetzt öffentlich wie Deklarationen (vorher las
+der Parser nur `pub`). Der Lader prüft jeden Pfadteil gegen das Verzeichnis (exakte Schreibung
+auch auf Windows/macOS, `RES0003`) und gibt jedem Modul seine Untermodule mit (`RES0012`).
+`fn main` ist der Einstieg eines Skripts ohne Anweisungen, sein `int` der Exit-Code; beides ist
+„zwei Einstiege“ (`SEM0906`), eine andere Form `SEM0021`. Ein Rahmen eines importierten Moduls
+nennt seine Datei, `at f (util/deep.lyrs:2)`; die Bytecode-Funktion trägt sie (Format 8), die
+Rahmen des Einstiegs bleiben `(line n)` (P16). Gefunden: ein Lambda mit Ausdrucksrumpf ohne
+Wert führte seinen Rumpf nie aus (`() => say()` rief `say` nicht), seit S3e — der Rumpf wurde
+für ein `return` ohne Wert verworfen; dazu der Fall in 03. Spec 04 Regeln 10–15 und Regel 1
+(exakte Namen), 06 Regel 3 (die Datei), 14 Regel 3 (Schlüssel über alle Dateien); 12 Fälle,
+alle rot gegen S4. Tests 256 → 263, Fälle 179 → 192. Zwei Testerwartungen waren falsch, nicht
+der Code: Importe werden vor den Funktionen gebunden (ihre Warnung steht vorn), und
+`import x { y }` bindet `y`, nicht `x`. Mutanten (8, in zwei Läufen) alle wie vorhergesagt.
+
+**S5b, Ergebnis (2026-10-29).** `lyric-script.toml` über `std.toml` gelesen (`src/package.lyr`):
+`[package]` mit `name`, `version`, `edition` (`"1"`), `toolchain`, den beschreibenden Feldern;
+`[dependencies]` mit `path`; Floats und Datumsangaben (`PKG0001`), fehlende oder falsche Felder
+(`PKG0002`), Unbekanntes und die Registerform (`PKG0003`) an ihrer Zeile im Manifest; Git,
+`[override]`, `include`/`exclude` (S5c) und `[lints]` (S11) als `NYI0001`. Der Lader zieht aus
+der CLI nach `src/loader.lyr`: das nächste Manifest über einem Einstieg unter dessen `src/`
+macht das Programm zu einem Paket, dann gilt Lyric 5s Pfadregel (`app.a.b` → `src/a/b.lyrs`,
+`app` → `src/lib.lyrs`, kein `app.lib`); die Pakete über Pfad-Abhängigkeiten je einmal gelesen
+(`PKG0004` für einen Ordner ohne das genannte Paket, `PKG0005` für zwei gleichen Namens), ein
+Import nur aus dem eigenen und den deklarierten Paketen (`RES0014`); eine Toolchain unter der
+verlangten endet mit 2 (`PKG0009`). `run`/`check` ohne Datei im Paketordner nehmen
+`src/main.lyrs` (`CLI0005` ohne). `internal` hält eine Deklaration oder ein Mitglied im Paket
+(07 V2), ohne Manifest öffentlich. Spec 15 Regeln 1–5 und zehn Paketfälle (der Runner baut sie
+aus dem Ordner ohne Datei, `exit:` neben `error:` für Umgebungsfehler); gegen S4 alle rot, aber
+nur weil ein Aufruf ohne Datei dort scheitert — die semantische Kontrolle sind die Mutanten,
+erstmals mit Konformanzlauf, weil der Lader nur dort getestet ist: sechs auf einmal, alle sechs
+wie vorhergesagt (Unit 265/267, Konformanz 196/202). Tests 263 → 267, Fälle 192 → 202.
+Vorhersage verfehlt: in einer Probe meldete ein Programm mit `RES0014` nicht auch den
+`internal`-Verstoß der zweiten Zeile — Ladefehler beenden vor dem Prüfer.
+
+**S5c, geteilt (2026-10-29).** S5c ist der größte Slice von S5; er wird in drei Teile geschnitten,
+je mit eigenem Ergebnis: **S5c1** Git-Abhängigkeiten (Revisionen, Normalform der URL, Nutzer-Cache,
+`--offline`), **S5c2** die Lockdatei (Commit und Inhalts-Hash, `--locked`, `lyric-script update`),
+**S5c3** Versionslinien und MVS, `[override]`, Paketzyklen (`PKG0010`), `include`/`exclude`.
+
+**S5c1, Ergebnis (2026-10-29).** Eine Git-Abhängigkeit liest eine Revision: Tag, Branch, Commit
+(`rev`, 7–64 Hex-Ziffern) oder den Branch, den `HEAD` nennt; die URL in ihrer Normalform
+verglichen, gecacht und geklont. Der Lader klont ein Repository einmal bare in den Nutzer-Cache
+(`<cache>/git/<schlüssel>`), holt nach, wo ein Branch verlangt ist oder die Revision fehlt, und
+checkt jeden Commit einmal aus (`<cache>/src/<schlüssel>/<commit>`) — über `git` als Prozess
+(`std.process`). Fehlende Revision, fehlendes Paket, ein Versions-Tag über einem anderen Manifest:
+`PKG0006`; unerreichbar oder `--offline` ohne Cache: `PKG0007`, Exit 2; ein Paket aus Git nennt
+seine Abhängigkeiten per Git (`PKG0004`). Ein Import einer Abhängigkeit, die nicht gelesen wurde,
+schweigt (der Fehler steht am Manifest). Der Runner baut `repos/<name>/<version>/` zu
+Git-Repositories (fester Autor, feste Zeit), ersetzt `{repos}` und gibt jedem Paketfall eine Kopie
+und einen eigenen Cache; `option:` reicht Optionen durch. Spec 15 Regeln 6–7, acht Fälle, alle rot
+gegen S5b. Ein Fall war vor den Mutanten zu weich (der Pfad zeigte ins Leere, PKG0004 auch ohne
+die Regel) und wurde geschärft; danach trafen alle vier Mutanten wie vorhergesagt. Tests 267 →
+269, Fälle 202 → 210.
+
+**S5c2, Ergebnis (2026-10-29).** `lyric-script.lock` (`src/lock.lyr`): je gelesener Git-Revision
+Name, Version, Repository, Revision wie verlangt, Commit und Inhalts-Hash (`h1:` + Base64 von
+SHA-256 über die sortierten Zeilen `sha256  pfad` von Manifest, `src/**`, `README*`, `LICENSE*`;
+Base64 selbst geschrieben, weil `std.encoding` berechnete Modulbindungen hat). Ein gelockter
+Eintrag wird am gelockten Commit gelesen und sein Inhalt geprüft (`PKG0008`), ein kaputter Lock
+abgelehnt (`PKG0001`), der Lock nur bei Änderung geschrieben, ohne Git gelöscht; `--locked`
+verweigert jede Abweichung, ein fehlender Eintrag vor jedem Fetch (`PKG0011`); `update
+[paket…]` liest neu (`CLI0006` für einen Namen ohne Git-Paket). Gefunden: `run` nahm den
+Bytecode aus dem Cache, bevor die Fehler des Laders gemeldet waren (seit S5a) — ein Programm mit
+Ladefehler lief; ebenso nahm die Abkürzung für Skripte ohne `import` auch in einem Paket mit
+kaputtem Manifest den Cache. Beide geschlossen. Der Hash stimmte beim ersten Lauf mit einem
+Python-Orakel; die Commits der Runner-Repositories sind durch festen Autor und feste Zeit
+bestimmt — der Runner schaltet `core.fileMode` ab, sonst hängen sie am Dateisystem des Checkouts
+(lokal `/mnt/c`: jede Datei ausführbar). Spec 15 Regeln 8–9, sieben Fälle (Runner: `update`).
+Mutanten: im ersten Lauf überlebte die `--locked`-Frühprüfung — der Fall ohne Lock wird auch
+von der Schlussprüfung gefangen; ein geschärfter Fall (Lock hält `geo`, das Manifest liest auch
+`units`) misst sie jetzt, der Mutant fiel. Tests 269 → 271, Fälle 210 → 217.
+
+**S5c3, Ergebnis (2026-10-29).** Der Lader liest jetzt zweiphasig: erst jede Quelle, die das
+Programm verlangt — auch Versionen auf dem Weg —, jede Anfrage gemerkt; dann je Name eine
+(`choose`): ein Override, sonst die größte Version einer Linie eines Repositories (MVS), sonst
+`PKG0005`; die Anfragen erreichen danach das gewählte Paket, und eine Tiefensuche über die
+gewählten meldet Zyklen mit ihrem Pfad (`PKG0010`). `[override] name = { path }` des
+Wurzelmanifests ersetzt jede Anfrage des Namens, bevor etwas gelesen oder geholt wird.
+`include`/`exclude` bestimmen den Inhalt eines Git-Pakets (Muster mit `*`, `?`, `**`, Ordner);
+der Hash wird jetzt nach dem Lesen des Manifests gebildet, und ein Modul außerhalb des Inhalts
+gibt es nicht (`RES0003`). `update` hebt einen Versions-Tag des Wurzelmanifests auf den neuesten
+seiner Linie und schreibt ihn in seine Zeile. Spec 15 Regeln 10–12, sechs Fälle; sechs Mutanten in
+einem Lauf, alle wie vorhergesagt. Eine Testerwartung war falsch (eine Override-Zeile um eins
+verzählt). Tests 271 → 275, Fälle 217 → 223.
+
+**S5d, Ergebnis (2026-10-29).** Der `---`-Kopf eines Einzelskripts ist die Teilmenge des
+Manifests, die ein Skript nimmt — `[dependencies]`, `[override]`, `toolchain` in `[package]`, kein
+Paketname (`PKG0003`) —, gelesen mit `readManifest(text, frontmatter = true)`; seine Fehler stehen
+an den Zeilen des Skripts. Das Skript wird zur Wurzel eines Paketgraphen ohne eigenen Namen: seine
+eigenen Module bleiben bei der Pfadregel, ein Import mit dem Namen einer Abhängigkeit vorn geht in
+deren Paket. Aufgelöst beim ersten Lauf, gemerkt als Lock im Nutzer-Cache unter dem Hash des Kopfs
+(`<cache>/scripts/<hash>.lock`), so dass ein bewegter Branch den nächsten Lauf nicht ändert;
+`lyric-script lock tool.lyrs` schreibt `tool.lyrs.lock` daneben, das zuerst gelesen wird. Der
+Runner baut auch einen Programmordner mit `repos/` aus einer Kopie. Spec 15 Regel 13, drei Fälle,
+alle rot gegen S5c3; Mutanten wie vorhergesagt, nachdem ein eigener Mutant falsch gebaut war (die
+Vorrangregel machte jeden Import pfadbasiert — kein Befund über die Tests). Fälle 223 → 226.
+
+**S5e, Ergebnis (2026-10-29).** Rechte aus Importen (`src/rights.lyr`): die Klassen `file`, `net`,
+`process`, `os`, `native`; der Lader vermerkt je Import eines Moduls einer Klasse das Recht mit
+Pfad und Zeile, das Bytecode-Modul trägt sie (`Module.rights`, Format 9), so dass
+ein Lauf aus dem Cache sie ebenso verlangt. Vor dem Start prüft `run`: `--allow file,net` (auch
+`--allow=…`, wiederholbar) und `-A` geben; was fehlt, wird am Terminal einmal mit Herkunft
+erfragt, sonst alles auf einmal als `CAP0001` gemeldet, Exit 2; `CLI0007` für ein Wort, das
+keine Klasse ist. Die Tabelle für `std` steht vorläufig im Code (`std.fs` → `file`, `std.net`/
+`std.http` → `net`, `std.process` → `process`, `std.os`/`std.time`/`std.random` → `os`); S7
+legt sie mit `std` fest. Weil `std` bis dahin nicht importierbar ist, steht `LYRIC_SCRIPT_RIGHTS`
+als Testtabelle für sie (kann Rechte nur verlangen, nie geben). Gefunden: ein Lyric-5-ICE bei
+`(try? f()) ?? null` (lyriclang/lyric#624, umgangen); `eprint` ohne Zeilenende erschien am
+Terminal erst nach der Antwort — die Frage steht jetzt auf eigener Zeile (über ein
+Pseudo-Terminal geprüft). Spec 17 Regel 1, vier Fälle (Runner: `env:`, `stderr-has:`), alle rot
+gegen S5d. Mutanten: ein eigener Mutant baute nicht; eine Vorhersage verfehlt, weil zwei
+Mutanten im selben Lauf sich maskierten (ohne gesammelte Rechte ist `-A` gleichgültig) — allein
+fiel der zweite wie vorhergesagt. Tests 275 → 278, Fälle 226 → 230.
+
+**S5, Abschluss (2026-10-29).** Abgleich der Bereichszeilen 07 Top, Path, Dep, Man, V1–V7 und
+02 V gegen den Code: gebaut sind Datei = Modul mit exakten Namen und Laden je Datei einmal (V1),
+die drei Importformen, `pub import`, die Nichtnutzungswarnung (V3), Sichtbarkeit mit `private`
+je Datei und `internal` je Paket (V2, 02 V), Modul-`let`/`var` in Abhängigkeitsreihenfolge (V5),
+Namensräume mit `RES0001/0011/0012` (V6), Pakete mit Pfad und Git, Lock, MVS über Versionslinien
+und `[override]` (V7, Man), Frontmatter-Abhängigkeiten (Dep), nur der Einstieg führt Anweisungen
+aus und `fn main` als Einstieg (Top). Mit Uhr woanders: die Prelude-Zusätze `eprintln`,
+`readLine`, `args`, `exit` (V3 I8) mit dem std-Kern (**S7**), dort auch die feste Rechtetabelle;
+die Note, dass ein lokaler Name ein Modul verdeckt (V6), und `@Test`/`lyric-script test` (V4)
+mit **S11**; Bereiche auf Rechten (`--allow file=./data`) und die Rechte von Host-Modulen mit
+**S8** (01 S1–S2); `[lints]` mit **S11**. Das Austrittskriterium — ein Skriptprojekt aus
+mehreren Dateien mit Git-Abhängigkeit, ein Einzelskript mit Frontmatter — erfüllen die
+Paketfälle der Suite, die die CI auf allen vier Plattformen fährt (Git-Repositories baut der
+Runner), dazu `examples/project` (Paket mit Pfad-Abhängigkeit) und `examples/scripts/square.lyrs`
+(Kopf) als Schritte der CI. Gefunden über den Meilenstein: drei Schleifen über `Map.keys()`, ein
+Lambda ohne Wert lief nie (S3e), `run` nahm Bytecode aus dem Cache vor den Ladefehlern (S5a), ein
+Lyric-5-ICE (lyriclang/lyric#624). Je Slice Mutanten mit vorher geschriebener Vorhersage;
+verfehlt: ein Reihenfolgetest mit zu wenigen Einträgen (S5a), eine `--locked`-Prüfung, die eine
+andere verdeckte (S5c2), zwei sich maskierende Mutanten (S5e); jeweils geschärft oder getrennt
+nachgeprüft. Neue Werkzeugfalle: Lyric 5s Map ist bis etwa acht Einträge geordnet. 278 Tests,
+230 Fälle; Bytecode-Format 9.

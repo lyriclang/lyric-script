@@ -1,0 +1,35 @@
+// A package's content (S5c3; Lyric 5 15 §2 rule 4): by default its manifest, its files under
+// `src/` and `README*` and `LICENSE*` at its root; `include` names the files instead — the
+// manifest always in —, `exclude` takes files out; `*` and `?` within a folder, `**` any number of
+// folders, a pattern that names a folder holds what lies below it.
+import std.test { assertEq };
+import lyric_script.loader { inContent };
+
+@Test
+fn aPackagesContentIsItsSourcesByDefault(): void {
+    assertEq(inContent("lyric-script.toml", [], []), true);
+    assertEq(inContent("src/lib.lyrs", [], []), true);
+    assertEq(inContent("src/a/b.lyrs", [], []), true);
+    assertEq(inContent("README.md", [], []), true);
+    assertEq(inContent("LICENSE", [], []), true);
+    assertEq(inContent("tests/t.lyrs", [], []), false);
+    assertEq(inContent("docs/README.md", [], []), false);
+    assertEq(inContent("out/x", [], []), false);
+}
+
+@Test
+fn includeAndExcludeNameTheFiles(): void {
+    // a folder holds what is below it; `**` any folders; `*` and `?` within one
+    assertEq(inContent("src/a/b.lyrs", ["src/a"], []), true);
+    assertEq(inContent("src/c.lyrs", ["src/a"], []), false);
+    assertEq(inContent("lyric-script.toml", ["src/a"], []), true);
+    assertEq(inContent("src/x/y/z.lyrs", ["src/**/z.lyrs"], []), true);
+    assertEq(inContent("src/z.lyrs", ["src/**/z.lyrs"], []), true);
+    assertEq(inContent("src/lib.lyrs", ["src/*.lyrs"], []), true);
+    assertEq(inContent("src/a/lib.lyrs", ["src/*.lyrs"], []), false);
+    assertEq(inContent("src/v1.lyrs", ["src/v?.lyrs"], []), true);
+    assertEq(inContent("src/v10.lyrs", ["src/v?.lyrs"], []), false);
+    assertEq(inContent("src/tests/t.lyrs", [], ["src/tests"]), false);
+    assertEq(inContent("src/lib.lyrs", [], ["src/tests"]), true);
+    assertEq(inContent("src/gen/a.lyrs", ["src/**"], ["**/gen/*"]), false);
+}

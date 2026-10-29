@@ -26,6 +26,7 @@ import lyric_script.compiler.ast {
     FieldPattern,
     FnDecl,
     InterfaceDecl,
+    ImportDecl,
     Item,
     LambdaParam,
     MatchArm,
@@ -84,14 +85,42 @@ struct Checked {
 /// first thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core).
 let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\n";
 
-/// Checks a parsed module.
-fn checkModule(parsed: Module): Checked {
+/// A file of a program (S5a): its module's dotted path below the root, what it parsed to, and its
+/// place among the program's files — 0 the entry.
+struct ProgramUnit {
+    name: string,
+    module: Module,
+    file: int,
+    /// The last segments of its submodules: the modules in the folder of its name (S5a2).
+    submodules: string[] = [],
+    /// The package it is of, by its place among the program's packages; 0 the entry's (S5b).
+    package: int = 0,
+}
+
+/// Checks a program: its entry, file 0, with the modules it imports, given in the order their
+/// imports need — each module before the modules that import it (07 V5).
+fn checkModule(parsed: Module, imported: ProgramUnit[] = []): Checked {
     let c = Checker.new();
-    // the prelude's interfaces before the script's declarations
+    // the prelude's declarations before the program's, parsed as no file of it; the entry's last
     let items = List<Item>.new();
-    for (item in parse(preludeSource).module.items) {
+    for (item in parse(preludeSource, -1).module.items) {
         items.push(item);
     }
+    for (u in imported) {
+        c.modNames.insert(u.file, u.name);
+        c.modPkg.insert(u.file, u.package);
+        let subs = Set<string>.new();
+        for (n in u.submodules) {
+            subs.insert(n);
+        }
+        c.submodules.insert(u.file, Names { names = subs });
+        c.modByName.insert(u.name, u.file);
+        c.sources.insert(u.file, u.module.text);
+        for (item in u.module.items) {
+            items.push(item);
+        }
+    }
+    c.sources.insert(0, parsed.text);
     for (item in parsed.items) {
         items.push(item);
     }
@@ -103,7 +132,9 @@ fn checkModule(parsed: Module): Checked {
     c.source = parsed.text;
     c.declare(module);
     c.checkMain(module);
+    c.checkImports();
     c.checkBodies();
+    c.unusedImports();
     c.checkThrows();
     c.fillDebugSlot();
     c.instantiate();
@@ -127,6 +158,44 @@ struct ClauseHead {
 struct LaterMatch {
     key: string,
     types: Ty[],
+    at: Span,
+}
+
+/// A module's view: each name it sees, to its key. A class of its own: a field of type
+/// `Map<int, Map<…>>` does not lower yet (as lyriclang/lyric#612).
+class View {
+    names: Map<string, string>,
+}
+
+/// A set of names, a module's submodules (a class: a map of sets as a field of the checker is
+/// one Lyric 5 does not compile).
+class Names {
+    names: Set<string>,
+}
+
+/// The modules a module's qualified and aliased imports bind, by name.
+class ModuleNames {
+    modules: Map<string, int>,
+}
+
+/// What an import binds under a name, where, and whether anything used it.
+class ImportUse {
+    name: string,
+    mod: int,
+    at: Span,
+    var used: bool = false,
+}
+
+/// A selective import's name, to check once every declaration is known: its key, its name and
+/// module, the module that imports it and the one it names, where.
+struct ImportCheck {
+    key: string,
+    name: string,
+    // the name it binds: its alias or its own
+    bound: string,
+    path: string,
+    from: int,
+    target: int,
     at: Span,
 }
 
@@ -261,6 +330,30 @@ class Checker {
     var identityIndex: int = -1,
     // where each function writes its `throws` (S4c)
     var throwsAt: Map<int, Span> = Map<int, Span>.new(),
+    // the modules (S5a): the current one, by its file — 0 the entry, -1 the prelude —; each
+    // imported module's dotted path and its view, a name to its key; the modules a qualified
+    // import binds, by name
+    var mod: int = 0,
+    var modNames: Map<int, string> = Map<int, string>.new(),
+    var modScopes: Map<int, View> = Map<int, View>.new(),
+    var modAliases: Map<int, ModuleNames> = Map<int, ModuleNames>.new(),
+    var modByName: Map<string, int> = Map<string, int>.new(),
+    var sources: Map<int, string> = Map<int, string>.new(),
+    // the names imports bind, by "<module>:<name>", and whether anything used them; and the
+    // selective imports' names, checked once every declaration is known
+    var importUses: Map<string, ImportUse> = Map<string, ImportUse>.new(),
+    // the same, in the order they were written: the map's own order changes from run to run
+    var importOrder: List<ImportUse> = List<ImportUse>.new(),
+    var imported: List<ImportCheck> = List<ImportCheck>.new(),
+    // the keys of what is `private`: its file's alone (02 V)
+    var privateKeys: Set<string> = Set<string>.new(),
+    // the keys of what is `internal`: its package's alone (07 V2, S5b); each module's package
+    var internalKeys: Set<string> = Set<string>.new(),
+    var modPkg: Map<int, int> = Map<int, int>.new(),
+    // each module's submodules, by its file (S5a2)
+    var submodules: Map<int, Names> = Map<int, Names>.new(),
+    // a `pub import`'s names: the key under the passing module to the key it passes on
+    var reexports: Map<string, string> = Map<string, string>.new(),
     // the module's source, which an assertion quotes as written (S4f)
     var source: string = "",
     // the matches over a clause's set, checked once the sets are known (05 K7)
@@ -358,6 +451,380 @@ class Checker {
         };
     }
 
+    /// The key a declaration of the current module is registered under: "<path>::<name>" in a
+    /// module of the program — the entry's path empty —, its name alone in the prelude (S5a).
+    mut fn declKey(name: string): string {
+        return keyIn(this.modNames.get(this.mod) ?? "", this.mod, name);
+    }
+
+    /// The current module sees a declaration of its own by its name, before the prelude's of
+    /// that name (`LYS-SEM0153`) and before a name an import binds beside it (`LYS-RES0001`, said
+    /// with the imports). A builtin type's name is no declaration's (`LYS-RES0011`).
+    mut fn register(name: string, at: Span): void {
+        if (this.mod < 0) {
+            return;
+        }
+        this.viewOf(this.mod).insert(name, this.declKey(name));
+        this.notASubmodule(name, at);
+        if (isBuiltinType(name)) {
+            this.error("LYS-RES0011", f"'{name}' is a builtin type's name", at);
+        } else if (this.inPrelude(name)) {
+            this.hidesPrelude(name, at);
+        }
+    }
+
+    /// Whether the prelude gives every module `name`: a declaration of it, or one of the
+    /// functions the compiler knows.
+    mut fn inPrelude(name: string): bool {
+        return this.typeIndex.containsKey(name)
+            || this.fnByName.containsKey(name)
+            || this.globalIndex.containsKey(name)
+            || this.aliases.containsKey(name)
+            || isPreludeFn(name);
+    }
+
+    /// A name the current module declares or imports is not also one of its submodules (Lyric 5
+    /// 04 §4 rule 7, `LYS-RES0012`).
+    mut fn notASubmodule(name: string, at: Span): void {
+        let subs = this.submodules.get(this.mod);
+        if (subs != null && subs.names.contains(name)) {
+            let path = this.modNames.get(this.mod) ?? "";
+            this.error(
+                "LYS-RES0012",
+                f"'{name}' is also the name of the submodule '{path}.{name}'",
+                at
+            );
+        }
+    }
+
+    mut fn hidesPrelude(name: string, at: Span): void {
+        this.warn(
+            "LYS-SEM0153",
+            f"'{name}' hides the prelude's: in this module the name is its own",
+            at
+        );
+    }
+
+    /// A declaration of the current module kept to its file (`private`, 02 V) or to its package
+    /// (`internal`, 07 V2).
+    mut fn keepPrivate(name: string, isPub: bool, isInternal: bool): void {
+        if (!isPub) {
+            this.privateKeys.insert(this.declKey(name));
+        } else if (isInternal) {
+            this.internalKeys.insert(this.declKey(name));
+        }
+    }
+
+    /// The package of module `m`: the entry's, 0, where none is known.
+    mut fn pkgOf(m: int): int {
+        return this.modPkg.get(m) ?? 0;
+    }
+
+    /// Why module `from` may not name the declaration `key` of module `target`, `name`: a
+    /// `private` one is named in its own file alone, an `internal` one in its own package
+    /// (`LYS-RES0009`); `null` where it may.
+    mut fn hiddenFrom(key: string, name: string, target: int, from: int): ?string {
+        let path = this.modNames.get(target) ?? "";
+        if (this.privateKeys.contains(key) && target != from) {
+            return f"'{name}' is private to the module '{path}'";
+        }
+        if (this.internalKeys.contains(key) && this.pkgOf(target) != this.pkgOf(from)) {
+            return f"'{name}' is internal to the package of the module '{path}'";
+        }
+        return null;
+    }
+
+    /// Whether the current module may name the declaration `key` of module `target`, `name`
+    /// (`LYS-RES0009`).
+    mut fn maySee(key: string, name: string, target: int, at: Span): bool {
+        let why = this.hiddenFrom(key, name, target, this.mod);
+        if (why != null) {
+            this.error("LYS-RES0009", why, at);
+            return false;
+        }
+        return true;
+    }
+
+    /// The type an expression names: `util.Point` through its module, else as the module sees
+    /// the name; `null` where none — reported for a name through a module.
+    mut fn typeNamed(name: string, at: Span): ?int {
+        let dot = name.find('.');
+        if (dot == null) {
+            return this.typeIndex.get(this.q(name));
+        }
+        let head = name[0..dot].toString();
+        let rest = name[dot + 1..name.length()].toString();
+        let target = this.moduleNamed(head);
+        if (target == null) {
+            this.error("LYS-SEM0002", f"nothing in scope is named '{head}'", at);
+            return null;
+        }
+        let key = this.exportKey(target, rest);
+        let index = this.typeIndex.get(key);
+        if (index == null) {
+            this.error("LYS-RES0004", f"the module '{head}' declares no type '{rest}'", at);
+            return null;
+        }
+        this.maySee(key, rest, target, at);
+        return index;
+    }
+
+    /// Type `index` written with `args`: an instance of a generic one, an interface fixed in its
+    /// associated types, or the type itself.
+    mut fn namedWith(index: int, shown: string, args: TypeExpr[], at: Span): Ty {
+        let t = this.types[index];
+        if (t.kind == .Interface && args.length() > 0) {
+            return this.fixedInterface(index, args, at);
+        }
+        let n = t.typeParams.length();
+        if (n == 0 && args.length() == 0) {
+            return Ty.Named(index);
+        }
+        if (args.length() != n) {
+            this.error(
+                "LYS-SEM0026",
+                f"'{shown}' takes {n} type arguments, not {args.length()}",
+                at
+            );
+            return Ty.Unknown;
+        }
+        let tys = List<Ty>.new();
+        for (x in args) {
+            tys.push(this.resolveType(x));
+        }
+        return Ty.Named(this.typeInstance(index, tys.toArray()));
+    }
+
+    /// Whether the current module may name member `member` of type `i` (Lyric 5 04 §3 rule 6):
+    /// a `private` field or method in its type's file alone (`LYS-RES0009`).
+    mut fn mayName(i: int, member: string, at: Span): bool {
+        let base = if (this.types[i].template >= 0) this.types[i].template else i;
+        let t = this.types[base];
+        if (t.mod != this.mod && t.hidden.contains(member)) {
+            this.error("LYS-RES0009", f"'{t.name}.{member}' is private to its type's file", at);
+            return false;
+        }
+        if (this.pkgOf(t.mod) != this.pkgOf(this.mod) && t.internalNames.contains(member)) {
+            this.error("LYS-RES0009", f"'{t.name}.{member}' is internal to its type's package", at);
+            return false;
+        }
+        return true;
+    }
+
+    /// A type with a field the current module may not name is built in its type's file alone —
+    /// by its initializer, or a copy with `with` (Lyric 5 04 §3 rule 7, `LYS-RES0009`): a
+    /// function of its module builds it.
+    mut fn mayBuild(i: int, at: Span): void {
+        let base = if (this.types[i].template >= 0) this.types[i].template else i;
+        let t = this.types[base];
+        if (t.mod == this.mod) {
+            return;
+        }
+        let otherPkg = this.pkgOf(t.mod) != this.pkgOf(this.mod);
+        for (f in t.fields) {
+            if (t.hidden.contains(f.name) || (otherPkg && t.internalNames.contains(f.name))) {
+                this.error(
+                    "LYS-RES0009",
+                    f"'{t.name}' has the private field '{f.name}': a function of its module builds it",
+                    at
+                );
+                return;
+            }
+        }
+    }
+
+    /// The file of module `m` as its frames name it: its path below the root, `a/b.lyrs`; empty
+    /// for the entry's and the prelude's (S5a2).
+    mut fn fileText(m: int): string {
+        if (m <= 0) {
+            return "";
+        }
+        return (this.modNames.get(m) ?? "").replace(".", "/") + ".lyrs";
+    }
+
+    /// Whether module `m` declares `name` itself.
+    mut fn declaresOwn(m: int, name: string): bool {
+        let key = keyIn(this.modNames.get(m) ?? "", m, name);
+        return m >= 0
+            && (this.typeIndex.containsKey(key)
+                || this.fnByName.containsKey(key)
+                || this.globalIndex.containsKey(key)
+                || this.aliases.containsKey(key));
+    }
+
+    /// The module a qualified or aliased import binds under `name` here; `null` for none.
+    mut fn moduleNamed(name: string): ?int {
+        let aliases = this.modAliases.get(this.mod);
+        if (aliases == null) {
+            return null;
+        }
+        let target = aliases.modules.get(name);
+        if (target != null) {
+            let use = this.importUses.get(f"{this.mod}:{name}");
+            if (use != null) {
+                use.used = true;
+            }
+        }
+        return target;
+    }
+
+    /// The key of what module `target` offers under `name`: its declaration's, or what it passes
+    /// on with `pub import`.
+    mut fn exportKey(target: int, name: string): string {
+        var key = keyIn(this.modNames.get(target) ?? "", target, name);
+        var hops = 0;
+        while (hops < 64) {
+            let on = this.reexports.get(key);
+            if (on == null) {
+                break;
+            }
+            key = on;
+            hops += 1;
+        }
+        return key;
+    }
+
+    /// An import (Lyric 5 04 §4 rules 1–2): a selective one's names into the module's view, a
+    /// qualified or aliased one's module under its name; `pub` passes them on.
+    mut fn bindImport(im: ImportDecl): void {
+        let path = im.path.join(".");
+        let target = this.modByName.get(path);
+        if (target == null) {
+            this.error("LYS-RES0003", f"no module '{path}'", im.span);
+            return;
+        }
+        if (im.selective) {
+            for (it in im.items) {
+                let key = this.exportKey(target, it.name);
+                let bound = it.alias ?? it.name;
+                if (!this.noteImport(bound, it.span, im.isPub)) {
+                    continue;
+                }
+                // a declaration of the module's own keeps its name
+                let own = this.viewOf(this.mod).get(bound);
+                if (own == null || own != this.declKey(bound)) {
+                    this.viewOf(this.mod).insert(bound, key);
+                }
+                if (this.inPrelude(bound)) {
+                    this.hidesPrelude(bound, it.span);
+                }
+                this.notASubmodule(bound, it.span);
+                if (im.isPub) {
+                    this.reexports.insert(this.declKey(bound), key);
+                }
+                this.imported.push(
+                    ImportCheck {
+                        key = key,
+                        name = it.name,
+                        bound = bound,
+                        path = path,
+                        from = this.mod,
+                        target = target,
+                        at = it.span,
+                    }
+                );
+            }
+            return;
+        }
+        let bound = im.alias ?? im.path[im.path.length() - 1];
+        if (!this.noteImport(bound, im.span, im.isPub)) {
+            return;
+        }
+        this.notASubmodule(bound, im.span);
+        let known = this.modAliases.get(this.mod);
+        let aliases = if (known != null) known
+            else ModuleNames { modules = Map<string, int>.new() };
+        aliases.modules.insert(bound, target);
+        this.modAliases.insert(this.mod, aliases);
+    }
+
+    /// What the selective imports name: a declaration of the module (`LYS-RES0004`) its file does
+    /// not keep to itself (`LYS-RES0009`); and the imports nothing uses (`LYS-SEM0072`).
+    mut fn checkImports(): void {
+        for (use in this.importOrder) {
+            if (this.declaresOwn(use.mod, use.name)) {
+                this.error(
+                    "LYS-RES0001",
+                    f"'{use.name}' is imported here and declared in this module too",
+                    use.at
+                );
+                use.used = true;
+            }
+        }
+        for (c in this.imported) {
+            let known = this.typeIndex.containsKey(c.key)
+                || this.fnByName.containsKey(c.key)
+                || this.globalIndex.containsKey(c.key)
+                || this.aliases.containsKey(c.key);
+            let why = if (known) this.hiddenFrom(c.key, c.name, c.target, c.from) else null;
+            let wrong = !known || why != null;
+            if (!known) {
+                this.error("LYS-RES0004", f"the module '{c.path}' declares no '{c.name}'", c.at);
+            } else if (why != null) {
+                this.error("LYS-RES0009", why, c.at);
+            }
+            if (wrong) {
+                // an import said to be wrong is not also said to be unused
+                let use = this.importUses.get(f"{c.from}:{c.bound}");
+                if (use != null) {
+                    use.used = true;
+                }
+            }
+        }
+    }
+
+    /// An import that binds `bound` in the current module: unused until a name reads it, unless
+    /// it passes the name on. `false` where an import of the module binds the name already
+    /// (`LYS-RES0001`).
+    mut fn noteImport(bound: string, at: Span, isPub: bool): bool {
+        let slot = f"{this.mod}:{bound}";
+        if (this.importUses.containsKey(slot)) {
+            this.error("LYS-RES0001", f"'{bound}' is imported twice in this module", at);
+            return false;
+        }
+        let use = ImportUse { name = bound, mod = this.mod, at = at, used = isPub };
+        this.importUses.insert(slot, use);
+        this.importOrder.push(use);
+        return true;
+    }
+
+    /// The imports nothing used, once every body is checked.
+    mut fn unusedImports(): void {
+        for (use in this.importOrder) {
+            if (!use.used) {
+                this.warn("LYS-SEM0072", f"the import '{use.name}' is never used", use.at);
+            }
+        }
+    }
+
+    mut fn viewOf(m: int): Map<string, string> {
+        let known = this.modScopes.get(m);
+        if (known != null) {
+            return known.names;
+        }
+        let made = View { names = Map<string, string>.new() };
+        this.modScopes.insert(m, made);
+        return made.names;
+    }
+
+    /// A name as the current module sees it: the key of its own declaration or of what it
+    /// imports, the name itself for the prelude's and the builtins'. An imported module does not
+    /// see the entry's names unimported.
+    mut fn q(name: string): string {
+        let view = this.modScopes.get(this.mod);
+        if (view != null) {
+            let key = view.names.get(name);
+            if (key != null) {
+                let use = this.importUses.get(f"{this.mod}:{name}");
+                if (use != null) {
+                    use.used = true;
+                }
+                return key;
+            }
+        }
+        return name;
+    }
+
     /// `Error`'s type: the prelude's interface.
     mut fn errorTy(): Ty {
         let i = this.typeIndex.get("Error");
@@ -391,6 +858,7 @@ class Checker {
                 line = at.line,
                 column = at.column,
                 help = null,
+                file = at.file,
             }
         );
     }
@@ -409,6 +877,7 @@ class Checker {
                 line = at.line,
                 column = at.column,
                 help = help,
+                file = at.file,
             }
         );
     }
@@ -430,7 +899,7 @@ class Checker {
     /// The call of `target`'s `member` with the literal (none for `null`), where `target`
     /// conforms to the protocol; `null` where it does not.
     mut fn literalBuilt(lit: ?TExpr, proto: string, member: string, target: Ty): ?TExpr {
-        let pi = this.typeIndex.get(proto);
+        let pi = this.typeIndex.get(this.q(proto));
         if (pi == null) {
             return null;
         }
@@ -477,7 +946,9 @@ class Checker {
     // --- declarations ----------------------------------------------------------------------------
 
     mut fn declare(module: Module): void {
-        // `Any`, the empty interface every struct, class, enum and built-in value is (05 §9)
+        // `Any`, the empty interface every struct, class, enum and built-in value is (05 §9); it
+        // and `Identity` are the prelude's
+        this.mod = -1;
         this.anyIndex = this.types.length();
         this.declareTypeName(
             "Any",
@@ -493,26 +964,39 @@ class Checker {
         );
         // the names of the types first: fields and signatures may name any of them
         for (item in module.items) {
+            this.mod = itemFile(item);
             match (item) {
                 .Decl(d) => {
                     match (d) {
-                        .Type(t) => this.declareTypeName(
-                            t.name,
-                            if (t.isClass) TypeKind.Class else TypeKind.Struct,
-                            t.span
-                        ),
-                        .Enum(e) => this.declareTypeName(e.name, TypeKind.Enum, e.span),
-                        .Interface(i) => this.declareTypeName(i.name, TypeKind.Interface, i.span),
+                        .Type(t) => {
+                            this.declareTypeName(
+                                t.name,
+                                if (t.isClass) TypeKind.Class else TypeKind.Struct,
+                                t.span
+                            );
+                            this.keepPrivate(t.name, t.isPub, t.isInternal);
+                        }
+                        .Enum(e) => {
+                            this.declareTypeName(e.name, TypeKind.Enum, e.span);
+                            this.keepPrivate(e.name, e.isPub, e.isInternal);
+                        }
+                        .Interface(i) => {
+                            this.declareTypeName(i.name, TypeKind.Interface, i.span);
+                            this.keepPrivate(i.name, i.isPub, i.isInternal);
+                        }
                         .Extend(_) => { }
                         .Alias(a) => {
-                            if (this.typeIndex.containsKey(a.name)
-                                || this.aliases.containsKey(a.name)) {
+                            let key = this.declKey(a.name);
+                            if (this.typeIndex.containsKey(key) || this.aliases.containsKey(key)) {
                                 this.error("LYS-SEM0176", f"'{a.name}' is declared twice", a.span);
                             } else {
-                                this.aliases.insert(a.name, a);
+                                this.aliases.insert(key, a);
+                                this.register(a.name, a.span);
+                                this.keepPrivate(a.name, a.isPub, a.isInternal);
                             }
                         }
-                        .Fn(_) => { }
+                        .Fn(f) => this.keepPrivate(f.name, f.isPub, f.isInternal),
+                        .Import(im) => this.bindImport(im),
                     }
                 }
                 .Stmt(_) => { }
@@ -522,6 +1006,7 @@ class Checker {
         this.classifyInterfaces(module);
         // then what they hold, and the functions' signatures
         for (item in module.items) {
+            this.mod = itemFile(item);
             match (item) {
                 .Decl(d) => {
                     match (d) {
@@ -535,6 +1020,7 @@ class Checker {
                         .Fn(f) => {
                             this.declareFn(f, -1);
                         }
+                        .Import(_) => { }
                     }
                 }
                 .Stmt(_) => { }
@@ -551,6 +1037,7 @@ class Checker {
         }
         // the fields' defaults, now that every type is known
         for (item in module.items) {
+            this.mod = itemFile(item);
             match (item) {
                 .Decl(d) => {
                     match (d) {
@@ -564,6 +1051,7 @@ class Checker {
         }
         // the conformances, now that every type and method is known
         for (item in module.items) {
+            this.mod = itemFile(item);
             match (item) {
                 .Decl(d) => {
                     match (d) {
@@ -594,6 +1082,7 @@ class Checker {
         while (k < this.functions.length()) {
             let decl = this.fnDecls[k];
             if (decl != null) {
+                this.mod = fileModule(decl.span.file);
                 this.checkParamDefaults(k, decl);
                 this.declareThrows(k, decl);
             }
@@ -716,9 +1205,12 @@ class Checker {
             if (t.kind == .Interface) {
                 continue;
             }
-            for (slot in t.witness.keys()) {
+            // by slot, not by the map's order, which changes from run to run
+            var slot = 0;
+            while (slot < this.slotCount) {
                 let impl = t.witness.get(slot);
-                let member = this.slotMember(slot);
+                let member = if (impl == null) -1 else this.slotMember(slot);
+                slot += 1;
                 if (impl == null || member < 0 || impl == member) {
                     continue;
                 }
@@ -790,18 +1282,20 @@ class Checker {
     }
 
     mut fn declareTypeName(name: string, kind: TypeKind, at: Span): void {
-        if (this.typeIndex.containsKey(name)
-            || this.aliases.containsKey(name)
-            || isBuiltinType(name)) {
+        let key = this.declKey(name);
+        if (this.typeIndex.containsKey(key) || this.aliases.containsKey(key)) {
             this.error("LYS-SEM0176", f"'{name}' is declared twice", at);
             return;
         }
-        this.typeIndex.insert(name, this.types.length());
-        this.types.push(TypeInfo { name = name, kind = kind, methods = Map<string, int>.new() });
+        this.typeIndex.insert(key, this.types.length());
+        this.register(name, at);
+        this.types.push(
+            TypeInfo { name = name, kind = kind, methods = Map<string, int>.new(), mod = this.mod }
+        );
     }
 
     mut fn declareMembers(t: TypeDecl): void {
-        let index = this.typeIndex.get(t.name);
+        let index = this.typeIndex.get(this.q(t.name));
         if (index == null) {
             return;
         }
@@ -842,6 +1336,11 @@ class Checker {
                     default = null,
                 }
             );
+            if (!f.isPub) {
+                info.hidden.insert(f.name);
+            } else if (f.isInternal) {
+                info.internalNames.insert(f.name);
+            }
         }
         info.fields = fields.toArray();
         for (m in t.methods) {
@@ -851,6 +1350,11 @@ class Checker {
             }
             seen.insert(m.name, true);
             info.methods.insert(m.name, this.declareFn(m, index));
+            if (!m.isPub) {
+                info.hidden.insert(m.name);
+            } else if (m.isInternal) {
+                info.internalNames.insert(m.name);
+            }
         }
     }
 
@@ -862,6 +1366,7 @@ class Checker {
     mut fn classifyInterfaces(module: Module): void {
         let decls = List<InterfaceDecl>.new();
         for (item in module.items) {
+            this.mod = itemFile(item);
             match (item) {
                 .Decl(d) => match (d) {
                     .Interface(i) => decls.push(i),
@@ -871,7 +1376,7 @@ class Checker {
             }
         }
         for (i in decls) {
-            let index = this.typeIndex.get(i.name);
+            let index = this.typeIndex.get(this.q(i.name));
             if (index == null) {
                 continue;
             }
@@ -887,7 +1392,7 @@ class Checker {
                 // its bounds: interfaces, as a type parameter's constraints (05 §8 rule 2)
                 let bounds = List<int>.new();
                 for (b in a.bounds) {
-                    let bi = this.typeIndex.get(b.name);
+                    let bi = this.typeIndex.get(this.q(b.name));
                     if (bi == null || this.types[bi].kind != .Interface) {
                         this.error("LYS-SEM0078", f"'{b.name}' is no interface", b.span);
                         continue;
@@ -944,12 +1449,12 @@ class Checker {
         while (changed) {
             changed = false;
             for (i in decls) {
-                let index = this.typeIndex.get(i.name);
+                let index = this.typeIndex.get(this.q(i.name));
                 if (index == null || this.types[index].constraintOnly) {
                     continue;
                 }
                 for (p in i.parents) {
-                    let pi = this.typeIndex.get(p.name);
+                    let pi = this.typeIndex.get(this.q(p.name));
                     if (pi != null && this.types[pi].constraintOnly) {
                         this.types[index].constraintOnly = true;
                         this.types[index].hardOnly = this.types[pi].hardOnly;
@@ -1242,6 +1747,7 @@ class Checker {
     /// Every type's answers: each one an interface of the type asks for (`LYS-SEM0129`).
     mut fn checkAnswers(module: Module): void {
         for (item in module.items) {
+            this.mod = itemFile(item);
             match (item) {
                 .Decl(d) => match (d) {
                     .Type(t) => this.answersAsked(t.name, t.answers),
@@ -1293,7 +1799,7 @@ class Checker {
     }
 
     mut fn declareInterface(i: InterfaceDecl): void {
-        let index = this.typeIndex.get(i.name);
+        let index = this.typeIndex.get(this.q(i.name));
         if (index == null) {
             return;
         }
@@ -1304,7 +1810,7 @@ class Checker {
         info.sealed = i.sealed;
         let parents = List<int>.new();
         for (p in i.parents) {
-            let pi = this.typeIndex.get(p.name);
+            let pi = this.typeIndex.get(this.q(p.name));
             if (pi == null || this.types[pi].kind != .Interface || pi == index) {
                 this.error(
                     "LYS-SEM0078",
@@ -1543,7 +2049,7 @@ class Checker {
 
     /// The entry of the type `name` names: one of the program, or a built-in's; -1 for none.
     mut fn typeNamed(name: string): int {
-        let index = this.typeIndex.get(name);
+        let index = this.typeIndex.get(this.q(name));
         if (index != null) {
             return index;
         }
@@ -1682,7 +2188,7 @@ class Checker {
         // the interfaces a field answers for: each one's field (05 §5)
         let via = Map<int, int>.new();
         for (c in conforms) {
-            let ii = this.typeIndex.get(c.name);
+            let ii = this.typeIndex.get(this.q(c.name));
             if (ii == null || this.types[ii].kind != .Interface) {
                 this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
                 continue;
@@ -2020,7 +2526,7 @@ class Checker {
     }
 
     mut fn declareEnum(e: EnumDecl): void {
-        let index = this.typeIndex.get(e.name);
+        let index = this.typeIndex.get(this.q(e.name));
         if (index == null) {
             return;
         }
@@ -2095,6 +2601,11 @@ class Checker {
             }
             seen.insert(m.name, true);
             info.methods.insert(m.name, this.declareFn(m, index));
+            if (!m.isPub) {
+                info.hidden.insert(m.name);
+            } else if (m.isInternal) {
+                info.internalNames.insert(m.name);
+            }
         }
     }
 
@@ -2106,6 +2617,7 @@ class Checker {
             owner = owner,
             isStatic = f.isStatic || owner < 0,
             line = f.span.line,
+            file = this.fileText(fileModule(f.span.file)),
         };
         // `Self` in its signature: its type's (S3i)
         let savedSelf = this.selfTyIs;
@@ -2130,7 +2642,7 @@ class Checker {
                 scope.insert(tp.name, k);
                 let cs = List<int>.new();
                 for (c in tp.constraints) {
-                    let ii = this.typeIndex.get(c.name);
+                    let ii = this.typeIndex.get(this.q(c.name));
                     if (ii == null || this.types[ii].kind != .Interface) {
                         this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
                         continue;
@@ -2171,7 +2683,7 @@ class Checker {
         this.fnDecls.push(f);
         this.fnStates.push(state);
         if (owner < 0) {
-            let same = this.fnByName.get(f.name);
+            let same = this.fnByName.get(this.declKey(f.name));
             if (same != null) {
                 for (other in same) {
                     if (this.functions[other].params.length() == params.length()) {
@@ -2186,14 +2698,15 @@ class Checker {
             } else {
                 let list = List<int>.new();
                 list.push(index);
-                this.fnByName.insert(f.name, list);
+                this.fnByName.insert(this.declKey(f.name), list);
+                this.register(f.name, f.span);
             }
         }
         return index;
     }
 
     mut fn checkFieldDefaults(t: TypeDecl): void {
-        let index = this.typeIndex.get(t.name);
+        let index = this.typeIndex.get(this.q(t.name));
         if (index == null) {
             return;
         }
@@ -2203,7 +2716,7 @@ class Checker {
 
     /// The payloads' defaults of a struct variant, as a struct's fields have them.
     mut fn checkVariantDefaults(e: EnumDecl): void {
-        let index = this.typeIndex.get(e.name);
+        let index = this.typeIndex.get(this.q(e.name));
         if (index == null) {
             return;
         }
@@ -2327,9 +2840,27 @@ class Checker {
 
     mut fn resolveNamedType(name: string, args: TypeExpr[], at: Span): Ty {
         if (name.contains(".")) {
+            // `util.Point`: a module's type through its name
+            let dot = name.find('.') ?? 0;
+            let head = name[0..dot].toString();
+            if (let target = this.moduleNamed(head)) {
+                let rest = name[dot + 1..name.length()].toString();
+                let key = this.exportKey(target, rest);
+                this.maySee(key, rest, target, at);
+                let index = this.typeIndex.get(key);
+                if (index != null) {
+                    return this.namedWith(index, rest, args, at);
+                }
+                let alias = this.aliases.get(key);
+                if (alias != null && args.length() == 0) {
+                    return this.resolveAlias(alias);
+                }
+                this.error("LYS-RES0004", f"the module '{head}' declares no type '{rest}'", at);
+                return Ty.Unknown;
+            }
             return this.assocPath(name, at);
         }
-        let ifc = this.typeIndex.get(name);
+        let ifc = this.typeIndex.get(this.q(name));
         if (ifc != null && this.types[ifc].kind == .Interface && args.length() > 0) {
             return this.fixedInterface(ifc, args, at);
         }
@@ -2338,7 +2869,7 @@ class Checker {
             return Ty.Param(param);
         }
         // an instance of a generic type of the program
-        let generic = this.typeIndex.get(name);
+        let generic = this.typeIndex.get(this.q(name));
         if (generic != null && this.types[generic].typeParams.length() > 0) {
             let n = this.types[generic].typeParams.length();
             if (args.length() != n) {
@@ -2412,11 +2943,11 @@ class Checker {
             );
             return Ty.Unknown;
         }
-        let index = this.typeIndex.get(name);
+        let index = this.typeIndex.get(this.q(name));
         if (index != null) {
             return Ty.Named(index);
         }
-        let alias = this.aliases.get(name);
+        let alias = this.aliases.get(this.q(name));
         if (alias != null) {
             return this.resolveAlias(alias);
         }
@@ -2553,8 +3084,21 @@ class Checker {
         this.fnStates.push(FnState.Done);
         let stmts = List<Stmt>.new();
         for (item in module.items) {
+            this.mod = itemFile(item);
             match (item) {
-                .Stmt(s) => stmts.push(s),
+                .Stmt(s) => {
+                    if (this.mod <= 0 || bindsGlobals(s)) {
+                        stmts.push(s);
+                    } else {
+                        // only the entry runs its statements; an imported module gives its
+                        // bindings (07 Top)
+                        this.warn(
+                            "LYS-SEM0905",
+                            "this statement does not run: only the entry module runs its statements",
+                            stmtSpan(s)
+                        );
+                    }
+                }
                 .Decl(_) => { }
             }
         }
@@ -2589,9 +3133,62 @@ class Checker {
             body.push(s);
         }
         let info = this.functions[index];
+        // `fn main` of an entry without statements is its entry, after its bindings (07 Top)
+        let start = this.entryMain(stmts.toArray());
+        if (start != null) {
+            let (call, line) = start;
+            if (typeOf(call) == .Int) {
+                // `fn main(): int` gives the exit code (V1 M7)
+                body.push(TStmt.Return(call, line));
+                info.returns = Ty.Int;
+            } else {
+                body.push(TStmt.Expr(call, line));
+            }
+        }
         info.body = body.toArray();
         info.locals = this.ctx.locals.toArray();
         info.boxed = this.ctx.boxed.toArray();
+    }
+
+    /// The call of the entry's `fn main` where it is the entry, and the line it stands on; `null`
+    /// where the entry declares none, or runs statements beside it (`LYS-SEM0906`), or its form
+    /// is not an entry's (`LYS-SEM0021`).
+    mut fn entryMain(stmts: Stmt[]): ?(TExpr, int) {
+        let mains = this.fnByName.get(keyIn("", 0, "main"));
+        if (mains == null || mains.length() == 0) {
+            return null;
+        }
+        let fi = mains[0];
+        let decl = this.fnDecls[fi];
+        if (decl == null) {
+            return null;
+        }
+        for (st in stmts) {
+            if (fileModule(stmtSpan(st).file) == 0 && !bindsGlobals(st)) {
+                this.error(
+                    "LYS-SEM0906",
+                    "two entries: the script's statements and 'fn main' — keep one",
+                    decl.span
+                );
+                return null;
+            }
+        }
+        let saved = this.mod;
+        this.mod = 0;
+        let rt = this.returnsOf(fi, decl.span);
+        this.mod = saved;
+        if (mains.length() > 1
+            || this.functions[fi].params.length() > 0
+            || this.functions[fi].typeParams.length() > 0
+            || (rt != .Void && rt != .Int && rt != .Unknown)) {
+            this.error(
+                "LYS-SEM0021",
+                "the entry's 'main' takes no parameters and returns void or int",
+                decl.span
+            );
+            return null;
+        }
+        return (TExpr.Call(fi, [], rt), decl.span.line);
     }
 
     mut fn checkBodies(): void {
@@ -2632,6 +3229,12 @@ class Checker {
 
     mut fn checkFn(k: int, decl: FnDecl): void {
         let info = this.functions[k];
+        // the function's own module sees its names, wherever the check began
+        let savedMod = this.mod;
+        this.mod = fileModule(decl.span.file);
+        defer {
+            this.mod = savedMod;
+        }
         if (this.fnStates[k] == .Declared) {
             this.fnStates[k] = FnState.Inferring;
         }
@@ -2784,6 +3387,7 @@ class Checker {
                 owner = generic.owner,
                 isStatic = generic.isStatic,
                 line = generic.line,
+                file = generic.file,
             }
         );
         this.fnDecls.push(null);
@@ -3549,11 +4153,14 @@ class Checker {
             // a template: its instances copy their entries
             return;
         }
-        for (slot in info.witness.keys()) {
+        // by slot: the copies are made in the same order in every run
+        var slot = 0;
+        while (slot < this.slotCount) {
             let fi = info.witness.get(slot) ?? -1;
             if (fi >= 0 && this.selfGeneric(fi)) {
                 info.witness.insert(slot, this.selfCopy(fi, this.selfTy(i)));
             }
+            slot += 1;
         }
     }
 
@@ -3587,7 +4194,9 @@ class Checker {
         info.tabled = true;
         let tmpl = this.types[info.template];
         info.ifaces = tmpl.ifaces;
-        for (slot in tmpl.witness.keys()) {
+        // by slot: the instances are made in the same order in every run
+        var slot = 0;
+        while (slot < this.slotCount) {
             let fi = tmpl.witness.get(slot) ?? -1;
             if (fi >= 0) {
                 info.witness.insert(
@@ -3600,6 +4209,7 @@ class Checker {
                             else fi
                 );
             }
+            slot += 1;
         }
     }
 
@@ -3609,7 +4219,7 @@ class Checker {
         for (tp in params) {
             let cs = List<int>.new();
             for (c in tp.constraints) {
-                let ii = this.typeIndex.get(c.name);
+                let ii = this.typeIndex.get(this.q(c.name));
                 if (ii == null || this.types[ii].kind != .Interface) {
                     this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
                     continue;
@@ -3629,7 +4239,7 @@ class Checker {
         for (tp in params) {
             let fixed = List<FixedTy>.new();
             for (c in tp.constraints) {
-                let ii = this.typeIndex.get(c.name);
+                let ii = this.typeIndex.get(this.q(c.name));
                 if (ii == null) {
                     continue;
                 }
@@ -4038,6 +4648,10 @@ class Checker {
     // --- statements ------------------------------------------------------------------------------
 
     mut fn stmt(s: Stmt): TStmt {
+        // the script's code: each statement of it its module's
+        if (this.atTop()) {
+            this.mod = fileModule(stmtSpan(s).file);
+        }
         let out = this.stmtOf(s);
         // nothing follows a statement that never comes out: it adds nothing to what is assigned
         if (leaves(out)) {
@@ -5661,9 +6275,9 @@ class Checker {
             subs.push(f.pattern);
         }
         let t = typeOf(src);
+        let named = this.typeIndex.get(this.q(typeName)) ?? -1;
         let i = match (t) {
-            .Named(n) => if (this.types[n].kind != .Enum && this.types[n].name == typeName) n
-                else -1,
+            .Named(n) => if (this.types[n].kind != .Enum && n == named) n else -1,
             _ => -1,
         };
         if (i < 0) {
@@ -5692,6 +6306,7 @@ class Checker {
                 this.bindUnknown([f.pattern], out, seen);
                 continue;
             }
+            this.mayName(i, f.name, f.span);
             let part = TExpr.Field(boxE(src), found, this.types[i].fields[found].ty);
             test = andMaybe(test, this.patternTest(f.pattern, part, out, seen));
         }
@@ -5902,12 +6517,15 @@ class Checker {
     }
 
     mut fn declareGlobal(name: string, t: Ty, isVar: bool, at: Span): int {
-        if (this.globalIndex.containsKey(name)) {
+        let key = this.declKey(name);
+        if (this.globalIndex.containsKey(key)) {
             this.error("LYS-SEM0176", f"'{name}' is bound twice in one scope", at);
         }
         let g = this.globals.length();
-        this.globals.push(GlobalInfo { name = name, ty = t, isVar = isVar });
-        this.globalIndex.insert(name, g);
+        // a global's name is its key: the quiet pass of 03 Leer builds the index again from it
+        this.globals.push(GlobalInfo { name = key, ty = t, isVar = isVar });
+        this.globalIndex.insert(key, g);
+        this.register(name, at);
         return g;
     }
 
@@ -6449,7 +7067,7 @@ class Checker {
                 return if (c.isCell) TExpr.CapturedCell(k, c.ty) else TExpr.Captured(k, c.ty);
             }
         }
-        let global = this.globalIndex.get(name);
+        let global = this.globalIndex.get(this.q(name));
         if (global != null) {
             let declared = this.globals[global].ty;
             let narrowed = this.narrowedGlobal(global);
@@ -6461,12 +7079,12 @@ class Checker {
             }
             return TExpr.Global(global, declared);
         }
-        let candidates = this.fnByName.get(name);
+        let candidates = this.fnByName.get(this.q(name));
         if (candidates != null) {
             return this.functionValue(name, candidates.toArray(), expected, at);
         }
-        if (this.typeIndex.containsKey(name)
-            || this.aliases.containsKey(name)
+        if (this.typeIndex.containsKey(this.q(name))
+            || this.aliases.containsKey(this.q(name))
             || isBuiltinType(name)) {
             this.error("LYS-SEM0052", f"'{name}' is a type, not a value", at);
             return TExpr.Unknown;
@@ -7114,7 +7732,7 @@ class Checker {
     ): TExpr {
         var i = -1;
         if (enumName != null) {
-            let index = this.typeIndex.get(enumName);
+            let index = this.typeNamed(enumName, at);
             if (index == null || this.types[index].kind != .Enum) {
                 this.error("LYS-SEM0011", f"'{enumName}' names no enum", at);
                 return TExpr.Unknown;
@@ -7173,7 +7791,7 @@ class Checker {
         match (target) {
             .Name(name, nameAt) => {
                 let local = this.lookupLocal(name);
-                let global = this.globalIndex.get(name);
+                let global = this.globalIndex.get(this.q(name));
                 let captured = if (local == null && this.ctx.isLambda) this.capture(
                     this.ctx,
                     name,
@@ -7388,6 +8006,7 @@ class Checker {
                 var k = 0;
                 for (f in this.types[i].fields) {
                     if (f.name == field) {
+                        this.mayName(i, field, at);
                         return (i, k);
                     }
                     k += 1;
@@ -7482,12 +8101,29 @@ class Checker {
         // `Color.Red`: a variant of an enum; `P.zero`, `T.zero`: a constant (05 §7 rule 2)
         match (x) {
             .Name(typeName, _) => {
-                if (this.lookupLocal(typeName) == null && !this.globalIndex.containsKey(typeName)) {
+                // `util.LIMIT`: a module's binding through its name
+                if (this.lookupLocal(typeName) == null
+                    && !this.globalIndex.containsKey(this.q(typeName))) {
+                    if (let target = this.moduleNamed(typeName)) {
+                        let g = this.globalIndex.get(this.exportKey(target, name));
+                        if (g != null) {
+                            return TExpr.Global(g, this.globals[g].ty);
+                        }
+                        this.error(
+                            "LYS-RES0004",
+                            f"the module '{typeName}' declares no binding '{name}'",
+                            at
+                        );
+                        return TExpr.Unknown;
+                    }
+                }
+                if (this.lookupLocal(typeName) == null
+                    && !this.globalIndex.containsKey(this.q(typeName))) {
                     let pk = this.typeParams.get(typeName);
                     if (pk != null) {
                         return this.paramStatic(pk, name, [], at);
                     }
-                    var index = this.typeIndex.get(typeName);
+                    var index = this.typeIndex.get(this.q(typeName));
                     if (typeName == "Self") {
                         let s = this.selfTyIs;
                         if (s != null) {
@@ -7498,22 +8134,18 @@ class Checker {
                         }
                     }
                     if (index != null) {
-                        let g = this.types[index].staticLets.get(name);
-                        if (g != null) {
-                            return TExpr.Global(g, this.globals[g].ty);
-                        }
-                        let k = this.variantIndex(index, name);
-                        if (k >= 0) {
-                            return this.unitVariant(index, k, at);
-                        }
-                        // a static function named through its type is a value (§8.4 rule 1)
-                        let m = this.types[index].methods.get(name);
-                        if (m != null && this.functions[m].isStatic) {
-                            return this.thunk(m, at);
-                        }
-                        this.error("LYS-SEM0012", f"'{typeName}' has no member '{name}'", at);
-                        return TExpr.Unknown;
+                        return this.typeMember(index, typeName, name, at);
                     }
+                }
+            }
+            // `util.Shape.Dot`, `util.Point.origin`: a member of a module's type
+            .Member(inner, typeName, false, _) => {
+                let index = this.moduleType(inner.value, typeName, at);
+                if (index >= 0) {
+                    return this.typeMember(index, typeName, name, at);
+                }
+                if (index == -2) {
+                    return TExpr.Unknown;
                 }
             }
             _ => { }
@@ -7540,13 +8172,52 @@ class Checker {
         return TExpr.Field(boxE(o), index, this.types[owner].fields[index].ty);
     }
 
+    /// `T.name` of type `index`: a constant, a unit variant, or a static function as a value
+    /// (§8.4 rule 1).
+    mut fn typeMember(index: int, typeName: string, name: string, at: Span): TExpr {
+        let g = this.types[index].staticLets.get(name);
+        if (g != null) {
+            return TExpr.Global(g, this.globals[g].ty);
+        }
+        let k = this.variantIndex(index, name);
+        if (k >= 0) {
+            return this.unitVariant(index, k, at);
+        }
+        let m = this.types[index].methods.get(name);
+        if (m != null && this.functions[m].isStatic) {
+            this.mayName(index, name, at);
+            return this.thunk(m, at);
+        }
+        this.error("LYS-SEM0012", f"'{typeName}' has no member '{name}'", at);
+        return TExpr.Unknown;
+    }
+
+    /// The type `m.T` names where `e` is the name `m` of a module this one imports: its index;
+    /// -1 where `e` is no module's name, -2 where the module has no such type (reported).
+    mut fn moduleType(e: Expr, typeName: string, at: Span): int {
+        let m = match (e) {
+            .Name(n, _) => n,
+            _ => "",
+        };
+        if (m == ""
+            || this.lookupLocal(m) != null
+            || this.globalIndex.containsKey(this.q(m))
+            || this.moduleNamed(m) == null) {
+            return -1;
+        }
+        return this.typeNamed(m + "." + typeName, at) ?? -2;
+    }
+
     mut fn init(name: string, fields: FieldInit[], expected: ?Ty, at: Span): TExpr {
-        let index = this.typeIndex.get(name);
+        let index = this.typeNamed(name, at);
         if (index == null) {
-            this.resolveNamed(name, [], at);
+            if (!name.contains(".")) {
+                this.resolveNamed(name, [], at);
+            }
             return TExpr.Unknown;
         }
         let info = this.types[index];
+        this.mayBuild(index, at);
         if (info.kind == .Enum) {
             this.error(
                 "LYS-SEM0031",
@@ -7729,6 +8400,7 @@ class Checker {
             }
             return TExpr.Unknown;
         }
+        this.mayBuild(owner, at);
         let h = this.hidden(t, at);
         let setup = List<TStmt>.new();
         setup.push(TStmt.SetLocal(h, p, at.line));
@@ -8363,7 +9035,7 @@ class Checker {
                 }
                 match (inner.value) {
                     .Name(name, _) => {
-                        let candidates = this.fnByName.get(name);
+                        let candidates = this.fnByName.get(this.q(name));
                         if (candidates != null) {
                             let fitting = List<int>.new();
                             for (c in candidates) {
@@ -8418,11 +9090,11 @@ class Checker {
             .Name(name, nameAt) => {
                 let bound = this.lookupLocal(name) != null
                     || (this.ctx.isLambda && this.capture(this.ctx, name, nameAt) >= 0)
-                    || this.globalIndex.containsKey(name);
+                    || this.globalIndex.containsKey(this.q(name));
                 if (bound) {
                     return this.callValue(this.name(name, null, nameAt), args, at);
                 }
-                let candidates = this.fnByName.get(name);
+                let candidates = this.fnByName.get(this.q(name));
                 if (candidates != null) {
                     return this.callAmong(name, candidates.toArray(), null, args, at);
                 }
@@ -8435,7 +9107,7 @@ class Checker {
                     || name == "assert") {
                     return this.panicking(name, args, at);
                 }
-                let index = this.typeIndex.get(name);
+                let index = this.typeIndex.get(this.q(name));
                 if (index != null) {
                     // `Point(1, 2)` is `Point.new(1, 2)` (05 D11)
                     return this.staticCall(index, "new", args, at);
@@ -8459,7 +9131,11 @@ class Checker {
                 match (object.value) {
                     .Name(typeName, _) => {
                         if (this.lookupLocal(typeName) == null
-                            && !this.globalIndex.containsKey(typeName)) {
+                            && !this.globalIndex.containsKey(this.q(typeName))) {
+                            // `util.f(x)`, `util.Point(1, 2)`: through a module's name
+                            if (let target = this.moduleNamed(typeName)) {
+                                return this.moduleCall(target, method, args, at, memberAt);
+                            }
                             let pk = this.typeParams.get(typeName);
                             if (pk != null) {
                                 return this.paramStatic(pk, method, args, at);
@@ -8473,10 +9149,20 @@ class Checker {
                                     }
                                 }
                             }
-                            let index = this.typeIndex.get(typeName);
+                            let index = this.typeIndex.get(this.q(typeName));
                             if (index != null) {
                                 return this.staticCall(index, method, args, at);
                             }
+                        }
+                    }
+                    // `util.Counter.start()`: a static function of a module's type
+                    .Member(inner, typeName, false, _) => {
+                        let index = this.moduleType(inner.value, typeName, at);
+                        if (index >= 0) {
+                            return this.staticCall(index, method, args, at);
+                        }
+                        if (index == -2) {
+                            return TExpr.Unknown;
                         }
                     }
                     _ => { }
@@ -8658,7 +9344,13 @@ class Checker {
     ): TExpr {
         let index = this.functions.length();
         this.functions.push(
-            FnInfo { name = selfName, owner = -1, isStatic = true, line = at.line }
+            FnInfo {
+                name = selfName,
+                owner = -1,
+                isStatic = true,
+                line = at.line,
+                file = this.fileText(fileModule(at.file)),
+            }
         );
         this.fnDecls.push(null);
         this.fnStates.push(FnState.Done);
@@ -8723,12 +9415,12 @@ class Checker {
                     rt = typeOf(v);
                 }
                 let want = rt ?? Ty.Void;
-                stmts.push(
-                    TStmt.Return(
-                        if (want == .Void) null else this.coerce(v, want, spanOf(body)),
-                        at.line
-                    )
-                );
+                if (want == .Void) {
+                    // `() => say()`: the call runs, and the lambda gives nothing
+                    stmts.push(TStmt.Expr(v, at.line));
+                } else {
+                    stmts.push(TStmt.Return(this.coerce(v, want, spanOf(body)), at.line));
+                }
             }
         }
         let resultTy = rt ?? Ty.Void;
@@ -8867,7 +9559,7 @@ class Checker {
             .Name(n, _) => n,
             _ => "",
         };
-        let candidates = this.fnByName.get(name);
+        let candidates = this.fnByName.get(this.q(name));
         if (candidates == null) {
             this.error(
                 "LYS-SEM0013",
@@ -9294,6 +9986,7 @@ class Checker {
                     );
                     return TExpr.Unknown;
                 }
+                this.mayName(i, method, memberAt);
                 return this.callAmong(method, [m], receiver, args, at);
             }
             _ => {
@@ -9460,6 +10153,9 @@ class Checker {
         }
         if (!this.functions[m].isStatic) {
             this.error("LYS-SEM0055", f"'{method}' needs a {info.name} to call it on", at);
+            return TExpr.Unknown;
+        }
+        if (!this.mayName(typeIndex, method, at)) {
             return TExpr.Unknown;
         }
         return this.callAmong(method, [m], null, args, at);
@@ -9687,6 +10383,24 @@ class Checker {
     /// one is given (`LYS-RT0012`, `LYS-RT0013`); `assert(c) { m }` checks where it stands and,
     /// where `c` is false, says `assertion failed`, the condition as written and the message,
     /// built only then (`LYS-RT0011`).
+    /// `util.f(x)` and `util.Point(…)` (Lyric 5 04 §4 rule 1): a function of module `target`, or
+    /// a type's `new`.
+    mut fn moduleCall(target: int, name: string, args: Arg[], at: Span, nameAt: Span): TExpr {
+        let key = this.exportKey(target, name);
+        let candidates = this.fnByName.get(key);
+        if (candidates != null) {
+            this.maySee(key, name, target, nameAt);
+            return this.callAmong(name, candidates.toArray(), null, args, at);
+        }
+        let index = this.typeIndex.get(key);
+        if (index != null) {
+            return this.staticCall(index, "new", args, at);
+        }
+        let path = this.modNames.get(target) ?? "";
+        this.error("LYS-RES0004", f"the module '{path}' declares no function '{name}'", nameAt);
+        return TExpr.Unknown;
+    }
+
     mut fn panicking(name: string, args: Arg[], at: Span): TExpr {
         if (name == "assert") {
             if (args.length() < 1 || args.length() > 2) {
@@ -9699,8 +10413,9 @@ class Checker {
             }
             let cond = this.condition(args[0].value);
             let where = spanOf(args[0].value);
+            let text = this.sources.get(where.file) ?? this.source;
             let written = if (where.start >= 0
-                && where.end <= this.source.length()) this.source[where.start..where.end].toString()
+                && where.end <= text.length()) text[where.start..where.end].toString()
                 else "?";
             var message = TExpr.Str(f"assertion failed: {written}");
             if (args.length() == 2) {
@@ -9848,6 +10563,7 @@ fn itemLine(item: Item): int {
             .Alias(a) => a.span.line,
             .Interface(i) => i.span.line,
             .Extend(x) => x.span.line,
+            .Import(im) => im.span.line,
         },
     };
 }
@@ -10627,5 +11343,51 @@ fn spanOf(e: Expr): Span {
         .Is(_, _, at) => at,
         .Instance(_, _, at) => at,
         .Lambda(_, _, _, _, at) => at,
+    };
+}
+
+/// The file an item stands in: its declaration's or its statement's.
+fn itemFile(item: Item): int {
+    return match (item) {
+        .Stmt(st) => fileModule(stmtSpan(st).file),
+        .Decl(d) => fileModule(
+            match (d) {
+                .Fn(f) => f.span.file,
+                .Type(t) => t.span.file,
+                .Enum(e) => e.span.file,
+                .Alias(a) => a.span.file,
+                .Interface(i) => i.span.file,
+                .Extend(x) => x.span.file,
+                .Import(im) => im.span.file,
+            }
+        ),
+    };
+}
+
+/// A file's module: the file itself; the prelude's, which is parsed with no file of the
+/// program, -1.
+fn fileModule(file: int): int {
+    return if (file < 0) -1 else file;
+}
+
+/// Whether a statement of an imported module binds its globals: what of it runs (07 Top, V5).
+fn bindsGlobals(st: Stmt): bool {
+    return match (st) {
+        .Let(_, _, _, _, _) | .Destructure(_, _, _, _, _) => true,
+        _ => false,
+    };
+}
+
+/// The key of `name` in module `m` whose path is `path`: "<path>::<name>" in a module of the
+/// program — the entry's path empty —, the name alone in the prelude.
+fn keyIn(path: string, m: int, name: string): string {
+    return if (m < 0) name else path + "::" + name;
+}
+
+/// The prelude's functions the compiler knows rather than declares.
+fn isPreludeFn(name: string): bool {
+    return match (name) {
+        "print" | "println" | "panic" | "unreachable" | "todo" | "assert" => true,
+        _ => false,
     };
 }

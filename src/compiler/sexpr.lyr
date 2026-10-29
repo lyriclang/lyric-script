@@ -92,6 +92,20 @@ fn showDecl(d: Decl): string {
             }
             "(" + parts.toArray().join(" ") + ")"
         }
+        .Import(im) => {
+            let what = if (im.selective) {
+                let names = List<string>.new();
+                for (it in im.items) {
+                    let renamed = it.alias;
+                    names.push(if (renamed != null) it.name + " as " + renamed else it.name);
+                }
+                " {" + names.toArray().join(", ") + "}"
+            } else {
+                let renamed = im.alias;
+                if (renamed != null) " as " + renamed else ""
+            };
+            "(" + (if (im.isPub) "pub import " else "import ") + im.path.join(".") + what + ")"
+        }
         .Extend(x) => {
             let parts = List<string>.new();
             parts.push("extend");

@@ -33,7 +33,15 @@ Lyric 4.x status up to the 4.6 cut is archived at
   `defer` and `using` with suppressed errors, labels, `do … while`, `never` and the prelude's
   panics; 245 tests, 165 conformance cases. Found on the way: a copy at a scalar handed it to an
   interface parameter as a reference (since S3g).
-- **Open milestone: S5** — modules and packages.
+- **S5 done (2026-10-29)**: modules and packages — a program of modules below the entry's folder
+  or a package's `src/`, the three forms of import and `pub import`, `private` per file and
+  `internal` per package, types through modules, `fn main`; `lyric-script.toml` with path and git
+  dependencies, the lock with commits and content hashes, minimal version selection, `[override]`,
+  `update`, `--offline`, `--locked`; a script's frontmatter dependencies; rights from imports with
+  `--allow`, `-A` and the question at a terminal; 278 tests, 230 conformance cases, bytecode
+  format 9. Found on the way: loops over `Map.keys()` ordered per run, a lambda of no value that
+  never ran (since S3e), `run` taking a cached module before the loader's errors (since S5a).
+- **Open milestone: S6** — coroutines and tasks.
 
 ## Milestones
 
@@ -44,7 +52,7 @@ Lyric 4.x status up to the 4.6 cut is archived at
 | S2 | Front-end core | XL | **done** 2026-10-28 |
 | S3 | Type system complete | L | **done** 2026-10-29 |
 | S4 | Errors and control | M | **done** 2026-10-29 |
-| S5 | Modules and packages | M | — |
+| S5 | Modules and packages | M | **done** 2026-10-29 |
 | S6 | Coroutines and tasks | L | — |
 | S7 | std core | XL | — |
 | S8 | Security and embedding | L | — |
@@ -122,6 +130,30 @@ Errors and control (plan 14, S4): VM exceptions, inferred error sets, a written 
 
 Exit criterion: the error examples run; exit codes 1 and 101.
 
+### S5 — done
+
+Modules and packages (plan 14, "S5 — Slices"): a file is a module, imports, globals, the path
+rule, the prelude, `lyric-script.toml`, the lock, Git and path dependencies, frontmatter
+dependencies, rights classes from imports (07).
+
+| Slice | State |
+|---|---|
+| S5a modules of one root | done — a program is its entry and the modules its imports reach below the entry's folder (`LYS-RES0003`), read once and ordered depth first (`LYS-RES0005` names the cycle); each module's declarations under their own key, every name looked up through the module's view; the three forms of import and `pub import`; `private` on a function (`LYS-RES0009`), a name bound once (`LYS-RES0001`), `LYS-RES0004`, an unused import (`LYS-SEM0072`); only the entry runs its statements, an imported module's `let`/`var` are globals filled first, its other statements warned (`LYS-SEM0905`); diagnostics name their file; the cache keys a program by all its files. Found: three loops over `Map.keys()` (`LYS-SEM0042` from S4c among them) ordered differently per run once a map holds more than about eight entries |
+| S5a2 types through modules, namespaces, the entry | done — the entry keyed like any module, so a name hiding the prelude's warns (`LYS-SEM0153`) and a builtin type's name is refused (`LYS-RES0011`); a type through its module (built, generic, variants, statics); `private` on types, fields and methods, a type with a private field built in its file alone (`LYS-RES0009`); members without a word public; exact file names on every platform (`LYS-RES0003`), a name that is also a submodule (`LYS-RES0012`); `fn main` the entry of a script without statements, its `int` the exit code (`LYS-SEM0906`, `LYS-SEM0021`); a frame of an imported module names its file (format 8, P16). Found: a lambda whose body is a call of no value never ran it (since S3e) |
+| S5b manifest | done — `lyric-script.toml` (`[package]`, path `[dependencies]`) read through `std.toml`, its faults at their lines (`LYS-PKG0001`–`0005`, `LYS-PKG0009` exits 2); with a manifest Lyric 5's path rule (`app.a.b`, `app` = `src/lib.lyrs`), imports from declared packages only (`LYS-RES0014`); `run`/`check` without a file in a package (`LYS-CLI0005`); `internal` package-wide. The loader moved to `src/loader.lyr` |
+| S5c1 git dependencies | done — a tag, a branch, a commit or HEAD's branch of a repository, its URL in its normal form, through the user's cache (a bare clone per repository, a checkout per commit, `git` as a process); `--offline`; `LYS-PKG0006`, `LYS-PKG0007` (exit 2) |
+| S5c2 the lock | done — `lyric-script.lock` with commit and content hash (`h1:`), a locked revision read at its commit and checked (`LYS-PKG0008`), `--locked` (`LYS-PKG0011`), `lyric-script update [package…]` (`LYS-CLI0006`). Found: `run` took a cached module before the loader's errors were reported (since S5a) |
+| S5c3 versions, overrides, content | done — version lines and minimal version selection over the versions read on the way, `[override]` with a folder, package cycles (`LYS-PKG0010`), `include`/`exclude` for a git package's content (a module outside it is not there), `update` raising a root tag within its line |
+| S5d a script's frontmatter | done — `[dependencies]`, `[override]` and `toolchain` in a script's `---` frontmatter, its own modules by the path rule and its dependencies by their names; resolved at the first run and kept in a lock in the cache under the frontmatter's hash; `lyric-script lock tool.lyrs` writes `tool.lyrs.lock` beside it |
+| S5e rights from imports | done — the classes `file`, `net`, `process`, `os`, `native`; each import of a module of a class asks for it, recorded with its place in the bytecode (format 9); `run` checks before the start: `--allow`, `-A`, the one question at a terminal, else `LYS-CAP0001` for all at once (exit 2); the table for `std` provisional until S7, `LYRIC_SCRIPT_RIGHTS` its stand-in in tests. Found: lyriclang/lyric#624 (an ICE of `?? null`) |
+
+Exit criterion: a script project of several files with a Git dependency; a single script with
+frontmatter. Met by the suite's package cases, which CI runs on all four
+platforms (the runner builds the git repositories), and by `examples/project` and
+`examples/scripts/square.lyrs` as steps of CI. Clocks elsewhere: the prelude's `eprintln`,
+`readLine`, `args`, `exit` and the fixed rights table (S7); scopes on rights and host rights (S8);
+`[lints]`, `test`, the note of a local hiding a module (S11).
+
 ## Working mode
 
 Decided 2026-10-28 (14): **autonomous, as on the Lyric 5 line** — Claude plans each slice and
@@ -170,4 +202,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P13 | `id<int>` as a value: a `<` after a name opens type arguments where its `>` is followed by what no comparison goes on with — `(`, a closer, `,`, a line end, `.`, `==`, `!=` (C#'s set, narrowed; 03 rule 12). Lyric 5 writes the rule for a call only. Keep the set? | S3i |
 | P14 | A call through an interface member that writes no `throws` throws what the member's implementations in the script throw (S4c). 05 K names `Error` for function values, host and native modules only; "anything" for members would make `e.message()` break every written `throws`. A host-provided implementation (S8) is not in the union — it would have to write its set. Keep the union, or ask members to write `throws`? | S4c |
 | P15 | A `return`, or a `break`/`continue` to a loop outside it, in a defer's body is refused (`LYS-SEM0904`, S4e): the defer runs on the error path too, where the jump would drop the error. Lyric 5's spec does not say what such a jump does (its 06 §5 is silent, its compiler treats a defer's jumps as not the loop's). Keep the refusal, or take Lyric 5's answer once it gives one? | S4e |
+| P16 | A frame of an imported module's function names its file below the root, `at f (util/deep.lyrs:2)`; the entry's frames keep `(line n)` (S5a2), so a single script's report reads as before. Lyric 5 names the file in every frame. Keep the mixed form, or name the entry's file too? | S5a2 |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

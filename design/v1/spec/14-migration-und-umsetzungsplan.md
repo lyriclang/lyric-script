@@ -687,3 +687,16 @@ bestimmt — der Runner schaltet `core.fileMode` ab, sonst hängen sie am Dateis
 Mutanten: im ersten Lauf überlebte die `--locked`-Frühprüfung — der Fall ohne Lock wird auch
 von der Schlussprüfung gefangen; ein geschärfter Fall (Lock hält `geo`, das Manifest liest auch
 `units`) misst sie jetzt, der Mutant fiel. Tests 269 → 271, Fälle 210 → 217.
+
+**S5c3, Ergebnis (2026-10-29).** Der Lader liest jetzt zweiphasig: erst jede Quelle, die das
+Programm verlangt — auch Versionen auf dem Weg —, jede Anfrage gemerkt; dann je Name eine
+(`choose`): ein Override, sonst die größte Version einer Linie eines Repositories (MVS), sonst
+`PKG0005`; die Anfragen erreichen danach das gewählte Paket, und eine Tiefensuche über die
+gewählten meldet Zyklen mit ihrem Pfad (`PKG0010`). `[override] name = { path }` des
+Wurzelmanifests ersetzt jede Anfrage des Namens, bevor etwas gelesen oder geholt wird.
+`include`/`exclude` bestimmen den Inhalt eines Git-Pakets (Muster mit `*`, `?`, `**`, Ordner);
+der Hash wird jetzt nach dem Lesen des Manifests gebildet, und ein Modul außerhalb des Inhalts
+gibt es nicht (`RES0003`). `update` hebt einen Versions-Tag des Wurzelmanifests auf den neuesten
+seiner Linie und schreibt ihn in seine Zeile. Spec 15 Regeln 10–12, sechs Fälle; sechs Mutanten in
+einem Lauf, alle wie vorhergesagt. Eine Testerwartung war falsch (eine Override-Zeile um eins
+verzählt). Tests 271 → 275, Fälle 217 → 223.

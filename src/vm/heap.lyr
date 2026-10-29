@@ -42,6 +42,12 @@ pub fn sameRef(x: HeapRef, y: HeapRef): bool {
         }
         return false;
     }
+    if (x is ScriptArray) {
+        if (y is ScriptArray) {
+            return same(x, y);
+        }
+        return false;
+    }
     return x is Nil && y is Nil;
 }
 
@@ -61,6 +67,21 @@ pub class ErrorRecord :: [HeapRef] {
 /// A string of the script: a Lyric 5 string, wrapped once.
 pub class ScriptString :: [HeapRef] {
     pub text: string,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A list of the script (S7b1; design/v1, 03 S): the scalar and the reference slots of its
+/// elements apart, `ns` and `nr` of each, element `k` at `k * ns` and at `k * nr` — a list of
+/// `int` holds its ints unboxed (11 Gen).
+pub class ScriptArray :: [HeapRef] {
+    pub ns: int,
+    pub nr: int,
+    pub s: List<uint64>,
+    pub r: List<HeapRef>,
+    pub var n: int = 0,
 
     pub fn desc(): ?TypeDesc {
         return null;

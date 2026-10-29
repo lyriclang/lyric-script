@@ -25,6 +25,7 @@ import std.time { Duration, Monotonic };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
+    ScriptArray,
     ErrorRecord,
     HeapRef,
     Nil,
@@ -2752,6 +2753,143 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 let rec = r[br + a];
                 if (rec is ErrorRecord) {
                     rec.suppressed.push(r[br + b]);
+                }
+                pc += 1;
+            }
+            .ListNew => {
+                let shape = b;
+                r[br + a] = ScriptArray {
+                    ns = shape / 256,
+                    nr = shape % 256,
+                    s = List<uint64>.new(),
+                    r = List<HeapRef>.new(),
+                };
+                pc += 1;
+            }
+            .ListPush => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a push on no list");
+                }
+                var k = 0;
+                while (k < o.ns) {
+                    o.s.push(s[bs + a + k]);
+                    k += 1;
+                }
+                k = 0;
+                while (k < o.nr) {
+                    o.r.push(r[br + c + k]);
+                    k += 1;
+                }
+                o.n += 1;
+                pc += 1;
+            }
+            .ListGetS | .ListGetR | .ListSetS | .ListSetR => {
+                let reads = ins.op == .ListGetS || ins.op == .ListGetR;
+                let o = r[br + (if (reads) b else a)];
+                let i = (s[bs + (if (reads) c else b)]) as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an index into no list");
+                }
+                if (i < 0 || i >= o.n) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0003",
+                        f"index {i} out of bounds for length {o.n}"
+                    );
+                }
+                match (ins.op) {
+                    .ListGetS => s[bs + a] = o.s[i],
+                    .ListGetR => r[br + a] = o.r[i],
+                    .ListSetS => o.s[i] = s[bs + c],
+                    _ => o.r[i] = r[br + c],
+                }
+                pc += 1;
+            }
+            .ListGetN | .ListSetN => {
+                let o = r[br + b];
+                let i = s[bs + a] as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an index into no list");
+                }
+                if (i < 0 || i >= o.n) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0003",
+                        f"index {i} out of bounds for length {o.n}"
+                    );
+                }
+                // a write's value stands after the index and the list
+                let writes = ins.op == .ListSetN;
+                let at = if (writes) 1 else 0;
+                var k = 0;
+                while (k < o.ns) {
+                    if (writes) {
+                        o.s[i * o.ns + k] = s[bs + a + at + k];
+                    } else {
+                        s[bs + a + k] = o.s[i * o.ns + k];
+                    }
+                    k += 1;
+                }
+                k = 0;
+                while (k < o.nr) {
+                    if (writes) {
+                        o.r[i * o.nr + k] = r[br + b + at + k];
+                    } else {
+                        r[br + b + k] = o.r[i * o.nr + k];
+                    }
+                    k += 1;
+                }
+                pc += 1;
+            }
+            .ListLen => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "the length of no list");
+                }
+                s[bs + a] = o.n as uint64;
+                pc += 1;
+            }
+            .ListPop => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a pop of no list");
+                }
+                let plain = c == 1;
+                if (o.n == 0) {
+                    if (plain) {
+                        r[br + b] = nil;
+                    } else {
+                        s[bs + a + o.ns] = 0 as uint64;
+                        var k = 0;
+                        while (k < o.nr) {
+                            r[br + b + k] = nil;
+                            k += 1;
+                        }
+                    }
+                } else {
+                    o.n -= 1;
+                    var k = 0;
+                    while (k < o.ns) {
+                        s[bs + a + k] = o.s[o.n * o.ns + k];
+                        k += 1;
+                    }
+                    k = 0;
+                    while (k < o.nr) {
+                        r[br + b + k] = o.r[o.n * o.nr + k];
+                        k += 1;
+                    }
+                    if (!plain) {
+                        s[bs + a + o.ns] = 1 as uint64;
+                    }
+                    o.s.truncate(o.n * o.ns);
+                    o.r.truncate(o.n * o.nr);
                 }
                 pc += 1;
             }

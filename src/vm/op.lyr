@@ -156,6 +156,20 @@ pub enum Op :: [Variants, Equatable] {
     TimerAfter,
     // S6e: a line of standard input, read by a Lyric 5 task while the script's task waits.
     ReadLine,
+    // S7b1: lists — a new one (`b`: its elements' slots, scalars × 256 + references); a push of the
+    // value at the bases; an element read and written, of one scalar or one reference in place, of
+    // several slots over the index and the list at the bases (a write's value after them); the
+    // length; the last element taken off as an optional at the bases (`c` 1: a plain reference's).
+    ListNew,
+    ListPush,
+    ListGetS,
+    ListGetR,
+    ListGetN,
+    ListSetS,
+    ListSetR,
+    ListSetN,
+    ListLen,
+    ListPop,
 }
 
 /// What an operand of an operation names.
@@ -323,6 +337,16 @@ pub fn info(op: Op): OpInfo {
         .ParkW => OpInfo { mnemonic = "park.w", operands = [] },
         .Sleep => OpInfo { mnemonic = "sleep", operands = [.Scalar] },
         .TimerAfter => OpInfo { mnemonic = "timer.after", operands = [.Ref, .Scalar] },
+        .ListNew => OpInfo { mnemonic = "list.new", operands = [.Ref, .Imm] },
+        .ListPush => OpInfo { mnemonic = "list.push", operands = [.ScalarBase, .Ref, .RefBase] },
+        .ListGetS => OpInfo { mnemonic = "list.get.s", operands = [.Scalar, .Ref, .Scalar] },
+        .ListGetR => OpInfo { mnemonic = "list.get.r", operands = [.Ref, .Ref, .Scalar] },
+        .ListGetN => OpInfo { mnemonic = "list.get.n", operands = [.ScalarBase, .RefBase] },
+        .ListSetS => OpInfo { mnemonic = "list.set.s", operands = [.Ref, .Scalar, .Scalar] },
+        .ListSetR => OpInfo { mnemonic = "list.set.r", operands = [.Ref, .Scalar, .Ref] },
+        .ListSetN => OpInfo { mnemonic = "list.set.n", operands = [.ScalarBase, .RefBase] },
+        .ListLen => OpInfo { mnemonic = "list.len", operands = [.Scalar, .Ref] },
+        .ListPop => OpInfo { mnemonic = "list.pop", operands = [.ScalarBase, .RefBase, .Imm] },
         .ReadLine => OpInfo { mnemonic = "read.line", operands = [.Ref] },
     };
 }

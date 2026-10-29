@@ -43,6 +43,12 @@ severity = "panic"
 area = "08-expressions"
 summary = "An `int` operation's result does not fit 64 bits. The code and its meaning are Lyric 5's LYR-RT0002."
 
+[LYS-RT0003]
+title = "an index or a range out of bounds"
+severity = "panic"
+area = "08-expressions"
+summary = "A list read or written at an index it does not have: below 0, or at its length or above. The code and its meaning are Lyric 5's LYR-RT0003."
+
 [LYS-RT0004]
 title = "a null value used"
 severity = "panic"

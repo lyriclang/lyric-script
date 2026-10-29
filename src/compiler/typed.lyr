@@ -291,6 +291,7 @@ fn typeOf(e: TExpr): Ty {
         .Cast(_, t) => t,
         .Call(_, _, t) => t,
         .Native(_, _, t) => t,
+        .ListOp(_, _, t) => t,
         .New(i, _) => Ty.Named(i),
         .Field(_, _, t) => t,
         .Assign(_, _, _, t) => t,
@@ -348,6 +349,22 @@ enum Place :: [Debug] {
     Field(Box<TExpr>, int),
     /// A captured `var`, through the box capture `k` of the lambda's function value holds.
     CapturedCell(int),
+    /// An element of a list (S7b1): the list and the index, each evaluated once.
+    Item(Box<TExpr>, Box<TExpr>),
+}
+
+/// What a list operation does (S7b1; design/v1, 03 S).
+enum ListOp :: [Equatable, Debug] {
+    /// `[a, b, c]`: the elements, in order.
+    Lit,
+    /// `xs.push(v)`: the list, the value.
+    Push,
+    /// `xs[i]`: the list, the index; a panic outside the list.
+    Get,
+    /// `xs.length()`: the list.
+    Len,
+    /// `xs.pop()`: the list; its last element taken off, `null` where it is empty.
+    Pop,
 }
 
 enum TExpr :: [Debug] {
@@ -370,6 +387,8 @@ enum TExpr :: [Debug] {
     /// A function by index; a method's receiver is its first argument, the defaults are filled.
     Call(int, TExpr[], Ty),
     Native(Native, TExpr[], Ty),
+    /// A list operation (S7b1): the operation, its operands, its type.
+    ListOp(ListOp, TExpr[], Ty),
     /// A struct or class by index, its field values in declaration order.
     New(int, TExpr[]),
     Field(Box<TExpr>, int, Ty),
@@ -611,6 +630,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         ],
         .If(c, x, y, _) => [c.value, x.value, y.value],
         .Call(_, xs, _) | .Native(_, xs, _) | .New(_, xs) | .Tuple(xs, _) => xs,
+        .ListOp(_, xs, _) => xs,
         .MakeVariant(_, _, xs) | .Closure(_, xs, _) | .CallIface(_, xs, _) => xs,
         .CallGeneric(_, _, xs, _) | .CallConstraint(_, _, _, _, xs, _) | .InstDesc(_, xs, _) => xs,
         .CallStatic(_, _, _, _, xs, _) | .CallBound(_, _, _, _, xs, _) => xs,
@@ -620,6 +640,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         ),
         .Assign(place, _, v, _) => match (place) {
             .Field(x, _) => [x.value, v.value],
+            .Item(x, i) => [x.value, i.value, v.value],
             _ => [v.value],
         },
     };

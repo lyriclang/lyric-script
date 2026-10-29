@@ -159,5 +159,5 @@ fn valuesOfIfAndBlocks(): void {
 fn whatLyricScriptHasNot(): void {
     assertEq(errs("let a: int8 = 1\nprintln(a)"), ["LYS-SEM0900"]);
     // what a later milestone builds is named as such
-    assertEq(errs("let xs = [1]\nprintln(1)"), ["LYS-NYI0001"]);
+    assertEq(errs("let m = [\"a\": 1]\nprintln(1)"), ["LYS-NYI0001"]);
 }

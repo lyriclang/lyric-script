@@ -629,3 +629,23 @@ für ein `return` ohne Wert verworfen; dazu der Fall in 03. Spec 04 Regeln 10–
 alle rot gegen S4. Tests 256 → 263, Fälle 179 → 192. Zwei Testerwartungen waren falsch, nicht
 der Code: Importe werden vor den Funktionen gebunden (ihre Warnung steht vorn), und
 `import x { y }` bindet `y`, nicht `x`. Mutanten (8, in zwei Läufen) alle wie vorhergesagt.
+
+**S5b, Ergebnis (2026-10-29).** `lyric-script.toml` über `std.toml` gelesen (`src/package.lyr`):
+`[package]` mit `name`, `version`, `edition` (`"1"`), `toolchain`, den beschreibenden Feldern;
+`[dependencies]` mit `path`; Floats und Datumsangaben (`PKG0001`), fehlende oder falsche Felder
+(`PKG0002`), Unbekanntes und die Registerform (`PKG0003`) an ihrer Zeile im Manifest; Git,
+`[override]`, `include`/`exclude` (S5c) und `[lints]` (S11) als `NYI0001`. Der Lader zieht aus
+der CLI nach `src/loader.lyr`: das nächste Manifest über einem Einstieg unter dessen `src/`
+macht das Programm zu einem Paket, dann gilt Lyric 5s Pfadregel (`app.a.b` → `src/a/b.lyrs`,
+`app` → `src/lib.lyrs`, kein `app.lib`); die Pakete über Pfad-Abhängigkeiten je einmal gelesen
+(`PKG0004` für einen Ordner ohne das genannte Paket, `PKG0005` für zwei gleichen Namens), ein
+Import nur aus dem eigenen und den deklarierten Paketen (`RES0014`); eine Toolchain unter der
+verlangten endet mit 2 (`PKG0009`). `run`/`check` ohne Datei im Paketordner nehmen
+`src/main.lyrs` (`CLI0005` ohne). `internal` hält eine Deklaration oder ein Mitglied im Paket
+(07 V2), ohne Manifest öffentlich. Spec 15 Regeln 1–5 und zehn Paketfälle (der Runner baut sie
+aus dem Ordner ohne Datei, `exit:` neben `error:` für Umgebungsfehler); gegen S4 alle rot, aber
+nur weil ein Aufruf ohne Datei dort scheitert — die semantische Kontrolle sind die Mutanten,
+erstmals mit Konformanzlauf, weil der Lader nur dort getestet ist: sechs auf einmal, alle sechs
+wie vorhergesagt (Unit 265/267, Konformanz 196/202). Tests 263 → 267, Fälle 192 → 202.
+Vorhersage verfehlt: in einer Probe meldete ein Programm mit `RES0014` nicht auch den
+`internal`-Verstoß der zweiten Zeile — Ladefehler beenden vor dem Prüfer.

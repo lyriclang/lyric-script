@@ -26,6 +26,8 @@ import lyric_script.compiler.ast {
     FnBody,
     FnDecl,
     InterfaceDecl,
+    ImportDecl,
+    ImportItem,
     Item,
     MapEntry,
     LambdaParam,
@@ -74,22 +76,28 @@ let maxNesting: int = 64;
 
 /// Reads `source` into its syntax tree.
 fn parse(source: string): Parsed {
+    return parseFile(source, 0);
+}
+
+/// Parses the program's file `file`: its spans and its diagnostics name it (S5a).
+fn parseFile(source: string, file: int): Parsed {
     let lexed = lex(source);
     let p = Parser.new(source, lexed.tokens);
+    p.file = file;
     let module = p.parseModule();
     let errors = List<Diagnostic>.new();
     for (d in lexed.errors) {
-        errors.push(d);
+        errors.push(d with { file = file });
     }
     for (d in p.errors) {
-        errors.push(d);
+        errors.push(d with { file = file });
     }
     let warnings = List<Diagnostic>.new();
     for (d in lexed.warnings) {
-        warnings.push(d);
+        warnings.push(d with { file = file });
     }
     for (d in p.warnings) {
-        warnings.push(d);
+        warnings.push(d with { file = file });
     }
     return Parsed { module = module, errors = errors.toArray(), warnings = warnings.toArray() };
 }
@@ -115,6 +123,8 @@ class Parser {
     var inGuard: bool = false,
     // in an interface's body, where a member without a body is abstract
     var inInterface: bool = false,
+    // the program's file this one is (S5a)
+    var file: int = 0,
     // the labels of the loops around, "" for one without (07 §1 rule 3), and the label written
     // before the loop the parser is about to read
     var loopLabels: List<string> = List<string>.new(),
@@ -167,7 +177,13 @@ class Parser {
     }
 
     mut fn spanOf(t: Token): Span {
-        return Span { start = t.start, end = t.end, line = t.line, column = t.column };
+        return Span {
+            start = t.start,
+            end = t.end,
+            line = t.line,
+            column = t.column,
+            file = this.file,
+        };
     }
 
     /// From `first` to the last token read.
@@ -178,6 +194,7 @@ class Parser {
             end = last.end,
             line = first.line,
             column = first.column,
+            file = this.file,
         };
     }
 
@@ -312,10 +329,16 @@ class Parser {
 
     mut fn parseItem(): Item throws SyntaxError {
         let first = this.current();
-        var isPub = false;
+        // visible beyond its file unless `private` (02 V); `pub` and `internal` are taken
+        var isPub = true;
+        var worded = false;
         if (this.atWord("pub") || this.atWord("internal") || this.atWord("private")) {
-            isPub = this.atWord("pub");
+            isPub = !this.atWord("private");
+            worded = this.atWord("pub");
             this.advance();
+        }
+        if (this.atWord("import")) {
+            return Item.Decl(Decl.Import(try this.parseImport(worded, first)));
         }
         if (this.atWord("fn")) {
             return Item.Decl(Decl.Fn(try this.parseFn(isPub, false, first)));
@@ -345,6 +368,56 @@ class Parser {
             );
         }
         return Item.Stmt(try this.parseStmt());
+    }
+
+    /// `import a.b { x, y as z }`, `import a.b`, `import a.b as c` (Lyric 5 04 §4 rule 1).
+    mut fn parseImport(isPub: bool, first: Token): ImportDecl throws SyntaxError {
+        this.advance();
+        let path = List<string>.new();
+        path.push(this.text(try this.expect(.Ident, "LYS-PAR0026", "the module's path")));
+        while (this.at(.Dot)) {
+            this.advance();
+            path.push(this.text(try this.expect(.Ident, "LYS-PAR0026", "the module's path")));
+        }
+        let items = List<ImportItem>.new();
+        var selective = false;
+        var alias: ?string = null;
+        if (this.at(.LBrace)) {
+            this.advance();
+            selective = true;
+            this.skipNewlines();
+            while (!this.at(.RBrace)) {
+                let name = try this.expect(.Ident, "LYS-PAR0026", "a name the module declares");
+                var renamed: ?string = null;
+                if (this.atWord("as")) {
+                    this.advance();
+                    renamed = this.text(
+                        try this.expect(.Ident, "LYS-PAR0026", "the name after 'as'")
+                    );
+                }
+                items.push(
+                    ImportItem { name = this.text(name), alias = renamed, span = this.since(name) }
+                );
+                this.skipNewlines();
+                if (!this.at(.Comma)) {
+                    break;
+                }
+                this.advance();
+                this.skipNewlines();
+            }
+            try this.expect(.RBrace, "LYS-PAR0018", "'}' after the imported names");
+        } else if (this.atWord("as")) {
+            this.advance();
+            alias = this.text(try this.expect(.Ident, "LYS-PAR0026", "the name after 'as'"));
+        }
+        return ImportDecl {
+            path = path.toArray(),
+            items = items.toArray(),
+            selective = selective,
+            alias = alias,
+            isPub = isPub,
+            span = this.since(first),
+        };
     }
 
     /// `fn name(params): T { … }` or `fn name(params) = expr` (09 Ret).

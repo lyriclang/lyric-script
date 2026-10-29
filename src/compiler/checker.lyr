@@ -513,6 +513,7 @@ class Checker {
                             }
                         }
                         .Fn(_) => { }
+                        .Import(_) => { }
                     }
                 }
                 .Stmt(_) => { }
@@ -535,6 +536,7 @@ class Checker {
                         .Fn(f) => {
                             this.declareFn(f, -1);
                         }
+                        .Import(_) => { }
                     }
                 }
                 .Stmt(_) => { }
@@ -9848,6 +9850,7 @@ fn itemLine(item: Item): int {
             .Alias(a) => a.span.line,
             .Interface(i) => i.span.line,
             .Extend(x) => x.span.line,
+            .Import(im) => im.span.line,
         },
     };
 }

@@ -1,9 +1,13 @@
 // Tasks in the VM (S6a; Script 07 N4, N8, End; 11 Co): hand-written programs spawn closures as
 // tasks, await their values or errors, give way with `yield`, and end the top level with `join`;
 // tasks run one at a time, each until it ends or waits.
+import std.collections { List };
 import std.test { assertEq, assertTrue };
-import lyric_script.vm.asm { assemble };
-import lyric_script.vm.interp { Outcome, execute };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.asm { assemble, disassemble };
+import lyric_script.vm.interp { Outcome, execute, run };
 
 fn runText(text: string): Outcome {
     return execute(try! assemble(text, "t"), "main", [], -1);
@@ -22,6 +26,7 @@ let types: string = """
     type Fn scalar f ref box
     type Box scalar n
     type Oops
+    type Fault scalar n
     """;
 
 @Test
@@ -141,6 +146,76 @@ fn aTasksErrorReachesAwaitAndJoin(): void {
     assertEq(scalar(runText(text)), 11);
 }
 
+// two tasks that fail: `a` (function 0) gives way first, `b` (function 1) does not — `b` ends first
+let twoFail: string = """
+    fn main() -> s regs 2 5
+        new r0, Fn
+        load.i s0, 0
+        set.s r0, Fn.f, s0
+        spawn r1, r0
+        new r0, Fn
+        load.i s0, 1
+        set.s r0, Fn.f, s0
+        spawn r2, r0
+        join s1, r3
+        get.s s0, r3, Fault.n
+        ret.s s0
+    end
+    """;
+
+@Test
+fn theFirstTaskToFailIsTheOneJoinGives(): void {
+    // as a scope's close (Lyric 5 10 §4 rule 2): the first to end with an error, not the first
+    // spawned
+    let text = types
+        + "\n"
+        + """
+        fn a(r) -> s regs 1 2
+            yield
+            new r1, Fault
+            load.i s0, 1
+            set.s r1, Fault.n, s0
+            throw r1
+        end
+
+        fn b(r) -> s regs 1 2
+            new r1, Fault
+            load.i s0, 2
+            set.s r1, Fault.n, s0
+            throw r1
+        end
+        """
+        + "\n"
+        + twoFail;
+    assertEq(scalar(runText(text)), 2);
+}
+
+@Test
+fn aLaterPanicLeavesTheFirstError(): void {
+    // a panic is a failure as an error is (§5 rule 3): the first of them is the scope's
+    let text = types
+        + "\n"
+        + """
+        fn a(r) -> s regs 1 2
+            new r1, Fault
+            load.i s0, 1
+            set.s r1, Fault.n, s0
+            throw r1
+        end
+
+        fn b(r) -> s regs 2 1
+            yield
+            load.i s0, 1
+            load.i s1, 0
+            div.i s0, s0, s1
+            ret.s s0
+        end
+        """
+        + "\n"
+        + twoFail;
+    assertEq(scalar(runText(text)), 1);
+}
+
 @Test
 fn aTaskThatWaitsForItselfLeavesNoneToRun(): void {
     // the child awaits its own handle; the spawner awaits the child: none can go on
@@ -194,4 +269,97 @@ fn aPanicInATaskPanicsTheOneThatAwaitsIt(): void {
         .Panic(p) => assertTrue(p.message.contains("zero"), p.message),
         _ => assertTrue(false, "the panic reaches the awaiting task"),
     }
+}
+
+// The language (S6a): `spawn { … }` gives a `Task<T>`, `await()` its value or its error,
+// `status()` where it stands; `yieldNow()` gives way.
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+fn value(source: string, entry: string): int {
+    let checked = checkModule(parse(source).module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    return match (run(generate(checked.program, "t"), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+@Test
+fn aSpawnedBlockGivesItsValue(): void {
+    assertEq(
+        value("fn f(): int {\n    let t = spawn { 21 * 2 }\n    return t.await()\n}", "f"),
+        42
+    );
+}
+
+@Test
+fn aTaskIsTypedByItsBlock(): void {
+    assertEq(
+        errs("fn f(): string {\n    let t = spawn { 1 }\n    return t.await()\n}"),
+        ["LYS-SEM0001"]
+    );
+    assertEq(errs("fn f() {\n    spawn((x: int): int => x)\n}"), ["LYS-SEM0001"]);
+    assertEq(errs("fn f() {\n    spawn(42)\n}"), ["LYS-SEM0001"]);
+    assertEq(errs("fn g(x: int): int = x\nfn f() {\n    spawn(g)\n}"), ["LYS-SEM0001"]);
+}
+
+@Test
+fn aTaskHasAwaitAndStatus(): void {
+    assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.cancel()\n}"), ["LYS-SEM0012"]);
+    assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.await(1)\n}"), ["LYS-SEM0014"]);
+    assertEq(errs("fn f() {\n    yieldNow(1)\n}"), ["LYS-SEM0014"]);
+}
+
+@Test
+fn awaitThrowsAnyError(): void {
+    // `Task<T>` carries no `throws` (07 N4; 03: no errors in function types)
+    let a = "struct A :: Error {\n    fn message(): string = \"a\"\n}\n";
+    assertEq(
+        errs(a + "fn f(): int throws A {\n    let t = spawn { 1 }\n    return t.await()\n}"),
+        ["LYS-SEM0034"]
+    );
+    assertEq(errs(a + "fn f(): int {\n    let t = spawn { 1 }\n    return t.await()\n}"), []);
+}
+
+@Test
+fn aTasksStatusTellsHowItEnded(): void {
+    let boom = "fn boom(): int {\n    throw Exception(\"boom\")\n}\n";
+    assertEq(
+        value(
+            boom
+                + "fn f(): int {\n    let t = spawn { boom() }\n    let got = try? t.await()\n"
+                + "    return if (got == null && t.status() == TaskStatus.Failed) 1 else 0\n}",
+            "f"
+        ),
+        1
+    );
+    // a panic ends the task, not the run, until something awaits it
+    assertEq(
+        value(
+            "fn f(): int {\n    let t = spawn { 1 / 0 }\n    yieldNow()\n"
+                + "    return if (t.status() == TaskStatus.Panicked) 1 else 0\n}",
+            "f"
+        ),
+        1
+    );
+}
+
+@Test
+fn onlyAProgramThatSpawnsEndsWithAJoin(): void {
+    let plain = checkModule(parse("println(1)").module);
+    assertTrue(!disassemble(generate(plain.program, "t")).contains("join"), "no task, no join");
+    let spawning = checkModule(parse("spawn { 1 }").module);
+    assertTrue(disassemble(generate(spawning.program, "t")).contains("join"), "a join");
 }

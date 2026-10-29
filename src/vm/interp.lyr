@@ -169,6 +169,9 @@ class RunShared {
     queue: List<TaskState>,
     var head: int = 0,
     tasks: List<ScriptTask>,
+    // the first task to end with an error or a panic: what the top level's end gives (07 End;
+    // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
+    var failed: ?ScriptTask = null,
 }
 
 /// Runs `entry` of `module` on the current task; see `execute`.
@@ -228,6 +231,12 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                     return out;
                 }
                 h.result = out;
+                if (shared.failed == null) {
+                    match (out) {
+                        .Error(_) | .Panic(_) => shared.failed = h,
+                        _ => { }
+                    }
+                }
                 for (w in h.waiters) {
                     shared.queue.push(w);
                 }
@@ -1214,7 +1223,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc += 1;
             }
             // S6a: the end of the top level (07 End) — every task of the run ended, the first
-            // that failed thrown again here (`s[a]` 1, error `r[b]`, record `r[b+1]`), a panic
+            // to fail thrown again here (`s[a]` 1, error `r[b]`, record `r[b+1]`), or its panic
             // panicking the run
             .Join => {
                 var open: ?ScriptTask = null;
@@ -1236,21 +1245,16 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     return Outcome.Switch;
                 }
                 s[bs + a] = 0 as uint64;
-                for (h in shared.tasks) {
-                    let res = h.result;
-                    if (res != null) {
-                        match (res) {
-                            .Error(_) => {
-                                if (s[bs + a] == 0 as uint64) {
-                                    s[bs + a] = 1 as uint64;
-                                    r[br + b] = h.state.thrown;
-                                    r[br + b + 1] = h.state.record;
-                                }
-                            }
-                            .Panic(p) => {
-                                return Outcome.Panic(p);
-                            }
-                            _ => { }
+                let h = shared.failed;
+                if (h != null) {
+                    match (h.result ?? Outcome.Switch) {
+                        .Panic(p) => {
+                            return Outcome.Panic(p);
+                        }
+                        _ => {
+                            s[bs + a] = 1 as uint64;
+                            r[br + b] = h.state.thrown;
+                            r[br + b + 1] = h.state.record;
                         }
                     }
                 }

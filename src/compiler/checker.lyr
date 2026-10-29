@@ -8196,19 +8196,35 @@ class Checker {
     /// `T` the block's.
     mut fn spawnOf(args: Arg[], at: Span): TExpr {
         if (args.length() != 1) {
-            this.error("LYS-SEM0023", "spawn takes one block: spawn { … }", at);
+            this.error("LYS-SEM0014", "spawn takes one block: spawn { … }", at);
             return TExpr.Unknown;
         }
         let want = Ty.Fn(FnTy { params = [], result = boxTy(Ty.Unknown) });
+        // a lambda of parameters is reported by the lambda; a function value is not
+        let reported = this.errors.length();
         let closure = this.expr(args[0].value, want);
-        let result = match (typeOf(closure)) {
+        let given = typeOf(closure);
+        let result = match (given) {
             .Fn(ft) => {
                 if (ft.params.length() > 0) {
-                    this.error("LYS-SEM0045", "a task's block takes no parameter", at);
+                    if (this.errors.length() == reported) {
+                        this.error(
+                            "LYS-SEM0001",
+                            f"expected a block of no parameter, found {this.tyName(given)}",
+                            at
+                        );
+                    }
+                    Ty.Unknown
+                } else {
+                    ft.result.value
                 }
-                ft.result.value
             }
-            _ => Ty.Unknown,
+            // reported where it arose
+            .Unknown => Ty.Unknown,
+            _ => {
+                this.error("LYS-SEM0001", f"expected a block, found {this.tyName(given)}", at);
+                Ty.Unknown
+            }
         };
         let task = this.typeIndex.get("Task");
         if (task == null || result == .Unknown) {
@@ -8226,7 +8242,7 @@ class Checker {
             return null;
         }
         if (args.length() > 0) {
-            this.error("LYS-SEM0023", f"'{method}' takes no argument", at);
+            this.error("LYS-SEM0014", f"'{method}' takes no argument", at);
         }
         let value = if (this.types[i].args.length() > 0) this.types[i].args[0] else Ty.Unknown;
         return match (method) {
@@ -9177,7 +9193,7 @@ class Checker {
                 }
                 if (name == "yieldNow") {
                     if (args.length() > 0) {
-                        this.error("LYS-SEM0023", "yieldNow() takes no argument", at);
+                        this.error("LYS-SEM0014", "yieldNow() takes no argument", at);
                     }
                     return TExpr.YieldNow;
                 }

@@ -246,7 +246,7 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     }
     return Outcome.Panic(
         ScriptPanic {
-            code = "LYS-RT0900",
+            code = "LYS-RT0018",
             message = "every task waits for another: none can go on",
             trace = [],
         }

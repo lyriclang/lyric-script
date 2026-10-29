@@ -782,7 +782,7 @@ Top-Levels — nach `fn main`, wo es Einstieg ist — ist ein `join`, nur wo das
 enthält: es wartet alle Tasks ab, dann entscheidet das erste Scheitern nach End-Reihenfolge,
 Fehler und Panik gleich (Exit 1 bzw. 101), auch wo es erwartet und gefangen wurde (Lyric 5 10
 §4 Regel 2, §5 Regel 3; wie `TaskScope.ended` in Lyric 5s `std.task`). Eine Verklemmung paniert
-den Lauf (`RT0900`); Lyric 5 §2 Regel 12 lässt den ältesten wartenden Task panieren — da eine
+den Lauf (`RT0018`, Lyric 5s Code); Lyric 5 §2 Regel 12 lässt den ältesten wartenden Task panieren — da eine
 Panik nicht fangbar ist, kommt beides zum selben Ende. Vorgezogen aus S6c: `Panicked` und das
 erneute Panieren in `await()`, die der Scope braucht. Mit Uhr **S6c**: das Abbrechen der
 Geschwister beim ersten Scheitern, bis dahin laufen sie zu Ende; `TaskStatus<T>` mit Wert, Fehler
@@ -791,7 +791,8 @@ entschieden, also gilt Lyric 5) und `isDone()` (Regel 10). Gefunden: `join` nahm
 *gestarteten* gescheiterten Task und ließ eine Panik immer gewinnen — gegen Lyric 5s Scope, zwei
 VM-Tests rot gegen den alten Stand; `spawn(42)` lief ohne Diagnose durch; `SEM0023` stand in
 keinem Katalog (der Katalog-Check fing es) → `SEM0014`, ein Block mit Parametern `SEM0001` statt
-`SEM0045`, beim Lambda nicht mehr doppelt gemeldet. Spec 10 Regeln 1–3, elf Fälle; die neun
+`SEM0045`, beim Lambda nicht mehr doppelt gemeldet; die Verklemmung trug einen eigenen Code
+`RT0900`, obwohl Lyric 5 sie als `RT0018` kennt (Spec 16 Regel 1) — umbenannt. Spec 10 Regeln 1–3, elf Fälle; die neun
 ersten rot gegen S5 geprüft, die End-Reihenfolge nageln die VM-Tests fest. Sieben Mutanten in drei
 Läufen (`join` ohne Scheitern, `Failed` als `Done`, `spawn(42)` still, `await` ohne Menge; `yield`
 ohne Wechsel, kein `join`; `await` ohne erneutes Werfen), alle wie vorher aufgeschrieben gefangen.

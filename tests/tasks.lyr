@@ -239,7 +239,7 @@ fn aTaskThatWaitsForItselfLeavesNoneToRun(): void {
         end
         """;
     match (runText(text)) {
-        .Panic(p) => assertEq(p.code, "LYS-RT0900"),
+        .Panic(p) => assertEq(p.code, "LYS-RT0018"),
         _ => assertTrue(false, "every task waits"),
     }
 }

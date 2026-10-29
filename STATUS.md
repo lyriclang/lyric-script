@@ -174,7 +174,10 @@ Exit criterion: a concurrent example.
 - **S6b3 done** — `close()` throws `Cancelled` at the parked yield (defers run, a defer's error
   comes out), `using`, a `yield` in a called function met at run time, a coroutine an identity;
   bytecode format 12. Tasks and coroutines are no interface values until S7. Open: P17.
-- Next: **S6c** — cancellation and scopes.
+- **S6c1 done** — `task.cancel()`: a cancelled task's waits throw `Cancelled`; the top level's
+  first failure cancels the others; `spawnDetached { }`; bytecode format 13. The conformance runner
+  has a timeout of 60 s a call.
+- Next: **S6c2** — `TaskScope`.
 
 ## Working mode
 

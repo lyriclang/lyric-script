@@ -764,7 +764,7 @@ Generatoren, `spawn`/`await`/`TaskScope` (Top-Level), Channels, `select`, `sleep
 | **S6a Tasks in der VM** | die Frames des Interpreters je Task, eine Warteschlange je Instanz; `spawn { }` → `Task<T>`, `await()`, `status()` (`Running`/`Done`/`Failed`/`Panicked`/`Cancelled`), `yieldNow()`; kooperativ (N8); der Top-Level-Code ist ein `TaskScope` (End): Kinder am Ende abgewartet, der Fehler eines Kindes bricht die Geschwister ab und endet mit Exit 1 | Konformanzfälle |
 | **S6b Koroutinen** | `Coroutine<Y, R>`: `next(): ?Y`, `result()`, `isDone()`, `close()` (wirft drinnen `Cancelled`); Generator-Lambdas, `sequence { yield }`; `Coroutine :: Iterator`, `for` darüber; Warten im Generator parkt dessen Task (N3) | Konformanzfälle |
 | **S6c Abbruch und Scopes** | `task.cancel()` → `Cancelled` am nächsten Wartepunkt (N9), fangbar; `TaskScope { }`, `scope.cancel()`, `spawnDetached`, `withTimeout(d) { }`; Panik im Task → `Panicked`, `await()` paniert erneut (N4); `TaskStatus<T>` mit Wert, Fehler und `PanicInfo`, `isDone()` (Lyric 5 10 §2 Regeln 10–11; aus S6a) | Konformanzfälle |
-| **S6d Channels, select, Zeit** | `Channel<T>` gepuffert und ungepuffert, senden/empfangen/schließen; `select` als Builder; `sleep`, `Timer.after`; `Semaphore` (kein Mutex, N5); die Hauptschleife *standalone* wartet auf Zeitgeber | Konformanzfälle |
+| **S6d Channels, select, Zeit** | `Channel<T>` gepuffert und ungepuffert, senden/empfangen/schließen; `select` als Builder; `sleep`, `Timer.after`; `Semaphore` (kein Mutex, N5); die Hauptschleife *standalone* wartet auf Zeitgeber; `withTimeout(d) { }` (aus S6c) | Konformanzfälle |
 | **S6e I/O über Lyric-5-Tasks** | ein wartendes Native startet einen Lyric-5-Task und parkt den Skript-Task (N6, 11 Co); die ersten Natives, die das brauchen (`readLine` von stdin, `sleep` auf der Uhr); ein Callback aus einem Native darf nicht warten (Fehler) | Konformanzfälle |
 | **Abschluss** | STATUS, PR, CI, Merge, Tag `s6-complete`; Bereichszeilen gegen den Code | nebenläufiges Beispiel in der CI |
 
@@ -866,3 +866,30 @@ Sechs Mutanten in zwei Läufen, alle gefangen; eine Vorhersage vor dem Lauf korr
 Einschleusen läuft das `yield` erneut und paniert sofort), und `a_yield_after_the_close_panics`
 bleibt unter diesem Mutanten aus dem falschen Grund grün — ein Panikfall vergleicht nur den Code;
 die Unit-Tests fangen ihn. Tests 312 → 319, Fälle 264 → 277.
+
+**S6c, Schnitt (2026-10-29).** Drei Teile. **S6c1** Abbruch: `task.cancel()` markiert, jedes
+Warten im Task (`await`, `yieldNow`, das Ende des Top-Levels) wirft `Cancelled` — das, in dem er
+steht, sofort, jedes spätere vor dem Warten (Lyric 5 10 §3 Regeln 1–3); ein Task, der mit
+`Cancelled` endet, ist `Cancelled` und kein Scheitern; das erste Scheitern im Top-Level bricht die
+Geschwister ab (07 End, §4 Regel 2); `spawnDetached { }`, auf den niemand wartet und der nur
+`Cancelled` werfen darf (§2 Regel 3). **S6c2** `TaskScope`: `TaskScope.new()`, `scope.spawn`,
+`close()` wartet, erstes Scheitern bricht ab, `scope.cancel()`, ein geschlossener Scope nimmt keinen
+Task (§4). **S6c3** `TaskStatus<T>` mit Wert, Fehler und `PanicInfo`, `isDone()` (§2 Regeln 10–11,
+§5). `withTimeout(d) { }` braucht die Uhr und wandert zu **S6d** (Zeit).
+
+**S6c1, Ergebnis (2026-10-29).** `t.cancel()` (Op `task.cancel`) markiert den Task und nimmt ihn aus
+dem Warten, in dem er steht (`waitingOn`: aus der Warteliste des anderen Tasks, zurück in die
+Schlange). `await`, `yieldNow` und `join` prüfen am Anfang, ob ihr Task abgebrochen ist, und werfen
+dann ein `Cancelled`, das die VM baut — das Modul nennt den Prelude-Typ (Format 13) —, über das
+synthetische `throw` aus S6b3 an der Stelle des Wartens; ein `yield` kehrt dafür zum `yield` selbst
+zurück (`yielded`). Ein Task, der mit `Cancelled` endet, ist `Cancelled` und kein Scheitern; das
+erste Scheitern, Fehler oder Panik, bricht die übrigen Tasks des Top-Levels ab (07 End, endlich
+gebaut). `spawnDetached { }` (Op `spawn.d`): nicht im `join`, sein Block bekommt die Klausel
+`throws Cancelled` (`SEM0034` über den vorhandenen Abgleich), seine Panik beendet den Lauf. Für die
+Mengen wirft `yieldNow()` `Cancelled`. Gefunden: der Konformanz-Runner kannte kein Zeitlimit — ein
+Abbruch, der nie wirkt, hätte die Suite angehalten statt rot gemacht (die Gegenprobe gegen S6b3
+hätte gehangen); jetzt 60 s je Aufruf, und ein Fall endet dann rot. Mutanten, die den Abbruch
+ganz abschalten, würden aus demselben Grund hängen und blieben aus; sechs endliche in zwei Läufen,
+alle wie vorher aufgeschrieben. Ein S6a-Test nahm ausgerechnet `cancel()` als Methode, die ein Task
+nicht hat — Vorhersage verfehlt, Test auf `stop()`. Spec 10 Regeln 11–12, neun Fälle, alle rot gegen
+S6b3. Tests 319 → 324, Fälle 277 → 286.

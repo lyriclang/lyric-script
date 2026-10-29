@@ -497,3 +497,17 @@ die Rahmen in der Spurform `    at <function> (line <n>)`), nur an der Bindung s
 (`LYS-SEM0012` sonst), ein eigenes Member des Typs geht vor. Der Bericht zeigt die Rahmen des
 Datensatzes, also den ersten Wurfort. Bytecode-Format 5. `e.suppressed()` kommt mit den Arrays
 (S7), das Anhängen mit S4e. 214 Tests, 126 Konformanzfälle.
+
+**S4c, Ergebnis (2026-10-29).** Die Mengen werden nach dem Prüfen der Rümpfe in einem eigenen
+Lauf über den getypten Baum erschlossen (`throws.lyr`): je Funktion die Typen ihrer `throw`s und
+die Mengen ihrer Aufrufe, weniger was die Klauseln nehmen, in Runden bis kein Satz mehr wächst
+(Rekursion). Ein Funktionswert wirft alles (02 K2); ein Interface-Member wirft, was es schreibt,
+sonst die Vereinigung der Mengen seiner Implementierungen im Skript (entschieden beim Bau: 05 K
+nennt nur Funktionswerte, Host und native Module `Error`; mit „alles“ bräche schon
+`e.message()` jeden Vertrag — offener Punkt P14). Der Weiterwurf der Bindung trägt, was die
+Klausel erreichte (K7, präzises Weiterwerfen); eine generische Menge steht in den Begriffen des
+Aufrufs. Ein geschriebenes `throws` ist Vertrag (`LYS-SEM0034` am `throws`, mit Typ und Zeile
+jedes Verstoßes), die Teilmengenregel für Implementierungen eines Members mit `throws`
+(`LYS-SEM0042`), `LYS-SEM0137`, `LYS-PAR0049`. Die Marke `try e` wird geparst und ändert nichts;
+der Lint `unmarked-throw` kommt mit den Lints (S11). Neu in `typed.lyr`: Kinder-Läufe über den
+getypten Baum (`exprsIn`, `stmtsIn`, …). 222 Tests, 133 Konformanzfälle.

@@ -889,6 +889,18 @@ class FnGen {
                     this.patch(toElse, this.here());
                 }
             }
+            // the block, then the test: a `continue` goes to the test (07 §1 rule 5)
+            .DoWhile(body, c, line) => {
+                this.line = line;
+                let top = this.here();
+                let loop = this.openLoop(nowhere);
+                this.stmts(body);
+                let test = this.here();
+                this.line = line;
+                let cond = this.any(c).s;
+                this.emit(Op.JumpIf, cond, top, 0);
+                this.closeLoop(loop, test);
+            }
             .While(c, body, line) => {
                 this.line = line;
                 let toTest = this.emit(Op.Jump, 0, 0, 0);
@@ -939,9 +951,9 @@ class FnGen {
                     this.closeLoop(loop, next);
                 }
             }
-            .Break(v, line) => {
+            .Break(v, outward, line) => {
                 this.line = line;
-                let loop = this.loops[this.loops.length() - 1];
+                let loop = this.loops[this.loops.length() - 1 - outward];
                 if (v != null && (loop.result.s >= 0 || loop.result.r >= 0)) {
                     this.into(v, loop.result);
                 }
@@ -949,9 +961,9 @@ class FnGen {
                 loop.breaks.push(this.emit(Op.Jump, 0, 0, 0));
                 this.reopenFinallies(loop.finallyDepth);
             }
-            .Continue(line) => {
+            .Continue(outward, line) => {
                 this.line = line;
-                let loop = this.loops[this.loops.length() - 1];
+                let loop = this.loops[this.loops.length() - 1 - outward];
                 this.leaveFinallies(loop.finallyDepth);
                 loop.continues.push(this.emit(Op.Jump, 0, 0, 0));
                 this.reopenFinallies(loop.finallyDepth);

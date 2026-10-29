@@ -95,7 +95,12 @@ fn checkModule(parsed: Module): Checked {
     for (item in parsed.items) {
         items.push(item);
     }
-    let module = Module { frontmatter = parsed.frontmatter, items = items.toArray() };
+    let module = Module {
+        frontmatter = parsed.frontmatter,
+        items = items.toArray(),
+        text = parsed.text,
+    };
+    c.source = parsed.text;
     c.declare(module);
     c.checkMain(module);
     c.checkBodies();
@@ -132,6 +137,10 @@ class LoopCtx {
     var breaks: int = 0,
     // the bindings without a value its breaks leave unassigned: what follows a `loop`
     var exits: Set<int> = Set<int>.new(),
+    // its label, where it stands, and whether a jump names it (07 §1 rule 3)
+    var label: ?string = null,
+    var labelAt: ?Span = null,
+    var named: bool = false,
 }
 
 /// A scope's locals by name. A class of its own: a field of type `List<Map<…>>` does not lower
@@ -252,6 +261,8 @@ class Checker {
     var identityIndex: int = -1,
     // where each function writes its `throws` (S4c)
     var throwsAt: Map<int, Span> = Map<int, Span>.new(),
+    // the module's source, which an assertion quotes as written (S4f)
+    var source: string = "",
     // the matches over a clause's set, checked once the sets are known (05 K7)
     var laterMatches: List<LaterMatch> = List<LaterMatch>.new(),
     // the synthesized equality of each struct and enum compared, by type; its Debug form
@@ -2141,7 +2152,7 @@ class Checker {
         var state = FnState.Done;
         let written = f.returns;
         if (written != null) {
-            info.returns = this.resolveType(written);
+            info.returns = this.returnType(written);
         } else {
             match (f.body) {
                 // Kotlin's rule (09 Ret): a block without a written type gives nothing
@@ -2246,6 +2257,19 @@ class Checker {
 
     // --- types -----------------------------------------------------------------------------------
 
+    /// A return type: `never` stands here, and only here (06 §9 rule 3).
+    mut fn returnType(t: TypeExpr): Ty {
+        match (t) {
+            .Named(name, args, _) => {
+                if (name == "never" && args.length() == 0) {
+                    return Ty.Never;
+                }
+            }
+            _ => { }
+        }
+        return this.resolveType(t);
+    }
+
     mut fn resolveType(t: TypeExpr): Ty {
         return match (t) {
             .Named(name, args, at) => this.resolveNamed(name, args, at),
@@ -2264,7 +2288,7 @@ class Checker {
                     tys.push(this.resolveType(x));
                 }
                 Ty.Fn(
-                    FnTy { params = tys.toArray(), result = boxTy(this.resolveType(result.value)) }
+                    FnTy { params = tys.toArray(), result = boxTy(this.returnType(result.value)) }
                 )
             }
         };
@@ -2363,7 +2387,13 @@ class Checker {
             "void" => {
                 return Ty.Void;
             }
+            // a type of no value: written only as a return type (06 §9 rule 3)
             "never" => {
+                this.error(
+                    "LYS-SEM0145",
+                    "never types a value that cannot exist: it stands only as a return type",
+                    at
+                );
                 return Ty.Never;
             }
             "List" => {
@@ -2986,8 +3016,9 @@ class Checker {
                 this.specStmts(b, a),
                 l
             ),
-            .Break(v, l) => TStmt.Break(this.specOpt(v, a), l),
-            .Continue(l) => TStmt.Continue(l),
+            .Break(v, out, l) => TStmt.Break(this.specOpt(v, a), out, l),
+            .Continue(out, l) => TStmt.Continue(out, l),
+            .DoWhile(b, c, l) => TStmt.DoWhile(this.specStmts(b, a), this.specExpr(c, a), l),
             .Return(v, l) => TStmt.Return(this.specOpt(v, a), l),
             .Block(b, l) => TStmt.Block(this.specStmts(b, a), l),
             .DeclareLocal(id, l) => TStmt.DeclareLocal(id, l),
@@ -4053,13 +4084,13 @@ class Checker {
                 }
                 TStmt.If(c, t, o, at.line)
             }
-            .While(cond, body, _, at) => {
+            .While(cond, body, label, at) => {
                 this.unnarrowWritten([s]);
                 let c = this.condition(cond);
                 let before = this.ctx.unassigned;
-                this.ctx.loops.push(LoopCtx { isLoop = false });
+                this.pushLoop(LoopCtx { isLoop = false }, label, at);
                 let b = this.blockWith(body, this.factsOf(c, true));
-                this.ctx.loops.pop();
+                this.popLoop();
                 // the body may not run: what follows knows what the condition left
                 this.ctx.unassigned = before;
                 TStmt.While(c, b, at.line)
@@ -4070,25 +4101,41 @@ class Checker {
                     _ => this.ifLetPattern(pattern, value, then, otherwise, at),
                 }
             }
-            .WhileLet(pattern, value, body, _, at) => {
+            .WhileLet(pattern, value, body, label, at) => {
                 this.unnarrowWritten([s]);
                 match (pattern) {
-                    .Name(name, _) => this.whileLet(name, value, body, at),
-                    _ => this.whileLetPattern(pattern, value, body, at),
+                    .Name(name, _) => this.whileLet(name, value, body, label, at),
+                    _ => this.whileLetPattern(pattern, value, body, label, at),
                 }
             }
-            .For(name, iterable, body, _, at) => {
+            .For(name, iterable, body, label, at) => {
                 this.unnarrowWritten([s]);
-                this.forStmt(name, iterable, body, at)
+                this.forStmt(name, iterable, body, label, at)
             }
-            .Break(_, value, at) => this.breakStmt(value, at),
-            .Continue(_, at) => {
+            .Break(label, value, at) => this.breakStmt(label, value, at),
+            .Continue(label, at) => {
+                var out = 0;
                 if (this.ctx.loops.length() == 0) {
                     this.error("LYS-SEM0147", "'continue' outside a loop", at);
                 } else {
-                    this.outOfDefer("continue", true, at);
+                    let k = this.jumpTarget(label, at);
+                    if (k >= 0) {
+                        this.outOfDefer("continue", k, at);
+                        out = this.ctx.loops.length() - 1 - k;
+                    }
                 }
-                TStmt.Continue(at.line)
+                TStmt.Continue(out, at.line)
+            }
+            // the block at least once, then the condition, which sees what the block assigned
+            .DoWhile(body, cond, label, at) => {
+                this.unnarrowWritten([s]);
+                let ctx = LoopCtx { isLoop = false };
+                this.pushLoop(ctx, label, at);
+                let b = this.block(body);
+                let c = this.condition(cond);
+                this.popLoop();
+                this.ctx.unassigned = this.ctx.unassigned.union(ctx.exits);
+                TStmt.DoWhile(b, c, at.line)
             }
             .Return(value, at) => this.returnStmt(value, at),
             .Block(b, at) => TStmt.Block(this.block(b), at.line),
@@ -4528,7 +4575,7 @@ class Checker {
     }
 
     /// `while (let x = e) { … }`: `e` again before each turn, the loop's end where it is null.
-    mut fn whileLet(name: string, value: Expr, body: Block, at: Span): TStmt {
+    mut fn whileLet(name: string, value: Expr, body: Block, label: ?string, at: Span): TStmt {
         this.pushScope();
         let v = this.expr(value, null);
         let ot = typeOf(v);
@@ -4536,13 +4583,13 @@ class Checker {
         let tmp = this.hidden(ot, at);
         let x = this.declareLocal(name, inner, false, at);
         let before = this.ctx.unassigned;
-        this.ctx.loops.push(LoopCtx { isLoop = false });
+        this.pushLoop(LoopCtx { isLoop = false }, label, at);
         let turn = List<TStmt>.new();
         turn.push(TStmt.SetLocal(tmp, v, at.line));
         turn.push(
             TStmt.If(
                 TExpr.IsNull(boxE(TExpr.Local(tmp, ot))),
-                [TStmt.Break(null, at.line)],
+                [TStmt.Break(null, 0, at.line)],
                 [],
                 at.line
             )
@@ -4551,7 +4598,7 @@ class Checker {
         for (s in this.block(body)) {
             turn.push(s);
         }
-        this.ctx.loops.pop();
+        this.popLoop();
         this.popScope();
         this.ctx.unassigned = before;
         return TStmt.While(TExpr.Bool(true), turn.toArray(), at.line);
@@ -5808,7 +5855,13 @@ class Checker {
     }
 
     /// `while (let P = v) { … }` with a pattern: a turn while it matches, `v` again before each.
-    mut fn whileLetPattern(pattern: Pattern, value: Expr, body: Block, at: Span): TStmt {
+    mut fn whileLetPattern(
+        pattern: Pattern,
+        value: Expr,
+        body: Block,
+        label: ?string,
+        at: Span
+    ): TStmt {
         this.pushScope();
         let v = this.expr(value, null);
         let t = typeOf(v);
@@ -5822,7 +5875,7 @@ class Checker {
             turn.push(
                 TStmt.If(
                     TExpr.Unary(UnaryOp.Not, boxE(test), Ty.Bool),
-                    [TStmt.Break(null, at.line)],
+                    [TStmt.Break(null, 0, at.line)],
                     [],
                     at.line
                 )
@@ -5833,11 +5886,11 @@ class Checker {
             turn.push(TStmt.SetLocal(id, b.value, at.line));
         }
         let before = this.ctx.unassigned;
-        this.ctx.loops.push(LoopCtx { isLoop = false });
+        this.pushLoop(LoopCtx { isLoop = false }, label, at);
         for (s in this.block(body)) {
             turn.push(s);
         }
-        this.ctx.loops.pop();
+        this.popLoop();
         this.popScope();
         this.ctx.unassigned = before;
         return TStmt.While(TExpr.Bool(true), turn.toArray(), at.line);
@@ -5953,7 +6006,7 @@ class Checker {
     }
 
     /// `for (x in a..b)`: over a range of ints; other iterables come with the collections (S7).
-    mut fn forStmt(name: string, iterable: Expr, body: Block, at: Span): TStmt {
+    mut fn forStmt(name: string, iterable: Expr, body: Block, label: ?string, at: Span): TStmt {
         match (iterable) {
             .Range(from, to, inclusive, _) => {
                 let a = this.coerce(this.expr(from.value, Ty.Int), Ty.Int, spanOf(from.value));
@@ -5961,9 +6014,9 @@ class Checker {
                 let before = this.ctx.unassigned;
                 this.pushScope();
                 let id = this.declareLocal(name, Ty.Int, false, at);
-                this.ctx.loops.push(LoopCtx { isLoop = false });
+                this.pushLoop(LoopCtx { isLoop = false }, label, at);
                 let stmts = this.block(body);
-                this.ctx.loops.pop();
+                this.popLoop();
                 this.popScope();
                 // the body may not run
                 this.ctx.unassigned = before;
@@ -5979,22 +6032,83 @@ class Checker {
         return TStmt.Expr(TExpr.Unknown, at.line);
     }
 
-    mut fn breakStmt(value: ?Expr, at: Span): TStmt {
-        let out = this.breakOf(value, at);
-        if (this.ctx.loops.length() > 0) {
-            let loop = this.ctx.loops[this.ctx.loops.length() - 1];
-            loop.exits = loop.exits.union(this.ctx.unassigned);
+    mut fn breakStmt(label: ?string, value: ?Expr, at: Span): TStmt {
+        let out = this.breakOf(label, value, at);
+        match (out) {
+            .Break(_, outward, _) => {
+                let k = this.ctx.loops.length() - 1 - outward;
+                if (k >= 0) {
+                    let loop = this.ctx.loops[k];
+                    loop.exits = loop.exits.union(this.ctx.unassigned);
+                }
+            }
+            _ => { }
         }
         return out;
     }
 
-    mut fn breakOf(value: ?Expr, at: Span): TStmt {
+    /// Opens a loop with its label: one repeating a label around it is refused, a jump to it
+    /// would be ambiguous (`LYS-SEM0102`).
+    mut fn pushLoop(ctx: LoopCtx, label: ?string, at: Span): void {
+        if (let name = label) {
+            for (l in this.ctx.loops) {
+                if (l.label == name) {
+                    this.error(
+                        "LYS-SEM0102",
+                        f"a loop around is labeled '{name}' already: a jump to it would be ambiguous",
+                        at
+                    );
+                }
+            }
+            ctx.label = name;
+            ctx.labelAt = at;
+        }
+        this.ctx.loops.push(ctx);
+    }
+
+    /// Closes the innermost loop: a label nothing jumps to is warned about (`LYS-SEM0103`).
+    mut fn popLoop(): void {
+        let loop = this.ctx.loops.pop();
+        if (loop != null) {
+            let name = loop.label;
+            let at = loop.labelAt;
+            if (name != null && at != null && !loop.named) {
+                this.warn("LYS-SEM0103", f"no jump names the label '{name}'", at);
+            }
+        }
+    }
+
+    /// The loop a jump leaves or continues, by its index among the loops around: the innermost,
+    /// or the one its label names (`LYS-SEM0101` for none); -1 after a fault.
+    mut fn jumpTarget(label: ?string, at: Span): int {
+        let name = label;
+        if (name == null) {
+            return this.ctx.loops.length() - 1;
+        }
+        var k = this.ctx.loops.length() - 1;
+        while (k >= 0) {
+            if (this.ctx.loops[k].label == name) {
+                this.ctx.loops[k].named = true;
+                return k;
+            }
+            k -= 1;
+        }
+        this.error("LYS-SEM0101", f"no loop around is labeled '{name}'", at);
+        return -1;
+    }
+
+    mut fn breakOf(label: ?string, value: ?Expr, at: Span): TStmt {
         if (this.ctx.loops.length() == 0) {
             this.error("LYS-SEM0147", "'break' outside a loop", at);
-            return TStmt.Break(null, at.line);
+            return TStmt.Break(null, 0, at.line);
         }
-        this.outOfDefer("break", true, at);
-        let loop = this.ctx.loops[this.ctx.loops.length() - 1];
+        let k = this.jumpTarget(label, at);
+        if (k < 0) {
+            return TStmt.Break(null, 0, at.line);
+        }
+        this.outOfDefer("break", k, at);
+        let outward = this.ctx.loops.length() - 1 - k;
+        let loop = this.ctx.loops[k];
         loop.breaks += 1;
         if (value == null) {
             if (loop.isLoop && loop.breakTy != null) {
@@ -6004,7 +6118,7 @@ class Checker {
                     at
                 );
             }
-            return TStmt.Break(null, at.line);
+            return TStmt.Break(null, outward, at.line);
         }
         if (!loop.isLoop) {
             this.error(
@@ -6012,7 +6126,7 @@ class Checker {
                 "a 'while' or 'for' gives no value: its 'break' takes none",
                 at
             );
-            return TStmt.Break(null, at.line);
+            return TStmt.Break(null, outward, at.line);
         }
         let given = loop.breakTy;
         let v = this.expr(value, given);
@@ -6025,16 +6139,17 @@ class Checker {
                 );
             }
             loop.breakTy = typeOf(v);
-            return TStmt.Break(v, at.line);
+            return TStmt.Break(v, outward, at.line);
         }
-        return TStmt.Break(this.coerce(v, given, spanOf(value)), at.line);
+        return TStmt.Break(this.coerce(v, given, spanOf(value)), outward, at.line);
     }
 
     /// A jump that would leave a defer's body: refused, since the body runs where the scope is
-    /// left — on an error too, which the jump would drop (`LYS-SEM0904`).
-    mut fn outOfDefer(word: string, loopJump: bool, at: Span): void {
+    /// left — on an error too, which the jump would drop (`LYS-SEM0904`). `target` is the index of
+    /// the loop a `break` or `continue` goes to, -1 for a `return`.
+    mut fn outOfDefer(word: string, target: int, at: Span): void {
         let d = this.ctx.deferLoops;
-        if (d < 0 || (loopJump && this.ctx.loops.length() > d)) {
+        if (d < 0 || target >= d) {
             return;
         }
         this.error(
@@ -6045,7 +6160,7 @@ class Checker {
     }
 
     mut fn returnStmt(value: ?Expr, at: Span): TStmt {
-        this.outOfDefer("return", false, at);
+        this.outOfDefer("return", -1, at);
         if (this.ctx.isMain) {
             this.error(
                 "LYS-SEM0902",
@@ -6080,10 +6195,18 @@ class Checker {
             );
             return TStmt.Return(null, at.line);
         }
-        return TStmt.Return(
-            this.coerce(this.expr(value, expected), expected, spanOf(value)),
-            at.line
-        );
+        let v = this.expr(value, expected);
+        // a function returning `never` does not return, unless what it returns does not either
+        // (06 §9 rule 4)
+        if (expected == .Never && typeOf(v) != .Never && typeOf(v) != .Unknown) {
+            this.error(
+                "LYS-SEM0146",
+                "the function returns never: it does not return, so a 'return' gives nothing to it",
+                at
+            );
+            return TStmt.Return(null, at.line);
+        }
+        return TStmt.Return(this.coerce(v, expected, spanOf(value)), at.line);
     }
 
     // --- expressions -----------------------------------------------------------------------------
@@ -6223,12 +6346,12 @@ class Checker {
                 at
             ),
             .Block(b, _) => this.valueBlock(b, expected),
-            .Loop(body, _, at) => {
+            .Loop(body, label, at) => {
                 this.unnarrowWritten([Stmt.Expr(e, at)]);
                 let ctx = LoopCtx { isLoop = true };
-                this.ctx.loops.push(ctx);
+                this.pushLoop(ctx, label, at);
                 let stmts = this.block(body);
-                this.ctx.loops.pop();
+                this.popLoop();
                 // left only by its breaks: what follows knows what each of them left
                 this.ctx.unassigned = ctx.exits;
                 let given = ctx.breakTy;
@@ -8287,6 +8410,12 @@ class Checker {
                 if (name == "print" || name == "println") {
                     return this.prelude(name, args, at);
                 }
+                if (name == "panic"
+                    || name == "unreachable"
+                    || name == "todo"
+                    || name == "assert") {
+                    return this.panicking(name, args, at);
+                }
                 let index = this.typeIndex.get(name);
                 if (index != null) {
                     // `Point(1, 2)` is `Point.new(1, 2)` (05 D11)
@@ -9534,6 +9663,71 @@ class Checker {
     }
 
     /// `print(x)` and `println(x)`, `println()`: the prelude's output, any core value as text.
+    /// The prelude's panics (06 §9 rule 1): `panic(m)` says its message as written
+    /// (`LYS-RT0008`); `unreachable(m)` and `todo(m)` their word first, the message behind it where
+    /// one is given (`LYS-RT0012`, `LYS-RT0013`); `assert(c) { m }` checks where it stands and,
+    /// where `c` is false, says `assertion failed`, the condition as written and the message,
+    /// built only then (`LYS-RT0011`).
+    mut fn panicking(name: string, args: Arg[], at: Span): TExpr {
+        if (name == "assert") {
+            if (args.length() < 1 || args.length() > 2) {
+                this.error(
+                    "LYS-SEM0014",
+                    "'assert' takes a condition and, in a block, a message",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            let cond = this.condition(args[0].value);
+            let where = spanOf(args[0].value);
+            let written = if (where.start >= 0
+                && where.end <= this.source.length()) this.source[where.start..where.end].toString()
+                else "?";
+            var message = TExpr.Str(f"assertion failed: {written}");
+            if (args.length() == 2) {
+                // the message's block, set in place: built only where the assertion fails
+                let body = match (args[1].value) {
+                    .Lambda(ps, _, b, _, _) => if (ps.length() == 0) b.value else args[1].value,
+                    _ => args[1].value,
+                };
+                let m = this.coerce(this.expr(body, Ty.Str), Ty.Str, spanOf(args[1].value));
+                message = TExpr.Native(
+                    Native.Concat,
+                    [TExpr.Str(f"assertion failed: {written}: "), m],
+                    Ty.Str
+                );
+            }
+            return TExpr.If(
+                boxE(TExpr.Unary(UnaryOp.Not, boxE(cond), Ty.Bool)),
+                boxE(TExpr.Panic(boxE(message), 11)),
+                boxE(TExpr.Unit),
+                Ty.Void
+            );
+        }
+        if (args.length() > 1 || (args.length() == 1 && args[0].name != null)) {
+            this.error("LYS-SEM0014", f"'{name}' takes one message, or none", at);
+            return TExpr.Unknown;
+        }
+        if (name == "panic") {
+            if (args.length() == 0) {
+                this.error("LYS-SEM0014", "'panic' takes its message", at);
+                return TExpr.Unknown;
+            }
+            let m = this.coerce(this.expr(args[0].value, Ty.Str), Ty.Str, spanOf(args[0].value));
+            return TExpr.Panic(boxE(m), 8);
+        }
+        let word = if (name == "todo") "not implemented" else "unreachable";
+        let code = if (name == "todo") 13 else 12;
+        if (args.length() == 0) {
+            return TExpr.Panic(boxE(TExpr.Str(word)), code);
+        }
+        let m = this.coerce(this.expr(args[0].value, Ty.Str), Ty.Str, spanOf(args[0].value));
+        return TExpr.Panic(
+            boxE(TExpr.Native(Native.Concat, [TExpr.Str(word + ": "), m], Ty.Str)),
+            code
+        );
+    }
+
     mut fn prelude(name: string, args: Arg[], at: Span): TExpr {
         let native = if (name == "print") Native.Print else Native.Println;
         if (args.length() > 1 || (args.length() == 1 && args[0].name != null)) {
@@ -9575,7 +9769,7 @@ fn leavesAll(stmts: TStmt[]): bool {
 
 fn leaves(s: TStmt): bool {
     return match (s) {
-        .Break(_, _) | .Continue(_) => true,
+        .Break(_, _, _) | .Continue(_, _) => true,
         .If(_, then, otherwise, _) => leavesAll(then) && leavesAll(otherwise),
         .Block(stmts, _) => leavesAll(stmts),
         // the defer runs on the way and goes on as the body does
@@ -9643,7 +9837,7 @@ fn stmtSpan(s: Stmt): Span {
     return match (s) {
         .Throw(_, at) => at,
         .Try(_, _, at) => at,
-        .Defer(_, at) | .Using(_, _, _, at) => at,
+        .Defer(_, at) | .Using(_, _, _, at) | .DoWhile(_, _, _, at) => at,
         .Expr(_, at) => at,
         .Let(_, _, _, _, at) => at,
         .LocalFn(f) => f.span,
@@ -10216,6 +10410,8 @@ fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
     return match (s) {
         .Throw(e, _) => exprAny(e, onStmt, onExpr),
         .Defer(body, _) => blockAny(body, onStmt, onExpr),
+        .DoWhile(body, cond, _, _) => blockAny(body, onStmt, onExpr)
+            || exprAny(cond, onStmt, onExpr),
         .Using(_, _, value, _) => exprAny(value, onStmt, onExpr),
         .Try(body, clauses, _) => {
             var found = blockAny(body, onStmt, onExpr);

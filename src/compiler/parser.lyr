@@ -115,6 +115,10 @@ class Parser {
     var inGuard: bool = false,
     // in an interface's body, where a member without a body is abstract
     var inInterface: bool = false,
+    // the labels of the loops around, "" for one without (07 §1 rule 3), and the label written
+    // before the loop the parser is about to read
+    var loopLabels: List<string> = List<string>.new(),
+    var pendingLabel: ?string = null,
 
     static fn new(source: string, tokens: Token[]): Parser {
         return Parser {
@@ -303,7 +307,7 @@ class Parser {
             }
             this.skipTerminators();
         }
-        return Module { frontmatter = frontmatter, items = items.toArray() };
+        return Module { frontmatter = frontmatter, items = items.toArray(), text = this.source };
     }
 
     mut fn parseItem(): Item throws SyntaxError {
@@ -980,6 +984,11 @@ class Parser {
     // --- statements ------------------------------------------------------------------------------
 
     mut fn parseStmt(): Stmt throws SyntaxError {
+        // `outer: loop { … }`: a label names the loop after it (07 §1 rule 3)
+        if (this.at(.Ident) && this.peek(1).kind == .Colon && this.loopWordAt(2)) {
+            this.pendingLabel = this.text(this.advance());
+            this.advance();
+        }
         let first = this.current();
         if (this.atWord("let") || this.atWord("var")) {
             return try this.parseLet();
@@ -993,31 +1002,58 @@ class Parser {
         }
         if (this.atWord("while")) {
             this.advance();
+            let label = this.takeLabel();
             if (this.peek(1).kind == .Keyword && this.isWord(this.peek(1), "let")) {
                 let (pattern, value) = try this.parseLetCondition("while");
                 this.skipNewlines();
-                let body = try this.parseBlock();
-                return Stmt.WhileLet(pattern, value, body, null, this.since(first));
+                let body = try this.loopBody(label);
+                return Stmt.WhileLet(pattern, value, body, label, this.since(first));
             }
             let cond = try this.parseCondition("while");
             this.skipNewlines();
-            let body = try this.parseBlock();
-            return Stmt.While(cond, body, null, this.since(first));
+            let body = try this.loopBody(label);
+            return Stmt.While(cond, body, label, this.since(first));
+        }
+        // `do { … } while (c)`: the block at least once (07 §1)
+        if (this.atWord("do") && this.peek(1).kind == .LBrace) {
+            this.advance();
+            let label = this.takeLabel();
+            let body = try this.loopBody(label);
+            if (!this.atWord("while")) {
+                let t = this.current();
+                throw this.failure(
+                    "LYS-PAR0001",
+                    f"a 'do' loop ends in 'while (condition)': found {this.shown(t)}",
+                    t
+                );
+            }
+            this.advance();
+            let cond = try this.parseCondition("while");
+            return Stmt.DoWhile(body, cond, label, this.since(first));
         }
         if (this.atWord("for")) {
             return try this.parseFor();
         }
         if (this.atWord("break")) {
             this.advance();
+            // a name a loop around carries is its label; any other the start of the value
+            var label: ?string = null;
+            if (this.at(.Ident) && this.labelAround(this.text(this.current()))) {
+                label = this.text(this.advance());
+            }
             var value: ?Expr = null;
             if (!this.atStatementEnd()) {
                 value = try this.parseExpr();
             }
-            return Stmt.Break(null, value, this.since(first));
+            return Stmt.Break(label, value, this.since(first));
         }
         if (this.atWord("continue")) {
             this.advance();
-            return Stmt.Continue(null, this.since(first));
+            var label: ?string = null;
+            if (this.at(.Ident)) {
+                label = this.text(this.advance());
+            }
+            return Stmt.Continue(label, this.since(first));
         }
         if (this.atWord("return")) {
             this.advance();
@@ -1267,8 +1303,44 @@ class Parser {
         let iterable = try this.parseExpr();
         try this.expect(.RParen, "LYS-PAR0008", "')' after the iterable");
         this.skipNewlines();
-        let body = try this.parseBlock();
-        return Stmt.For(this.text(name), iterable, body, null, this.since(first));
+        let label = this.takeLabel();
+        let body = try this.loopBody(label);
+        return Stmt.For(this.text(name), iterable, body, label, this.since(first));
+    }
+
+    /// Whether token `k` ahead begins a loop: `loop {`, `while`, `do {`, `for`.
+    mut fn loopWordAt(k: int): bool {
+        let t = this.peek(k);
+        return (this.isWord(t, "loop") && this.peek(k + 1).kind == .LBrace)
+            || this.isWord(t, "while")
+            || (this.isWord(t, "do") && this.peek(k + 1).kind == .LBrace)
+            || this.isWord(t, "for");
+    }
+
+    /// The label written before the loop being read, once.
+    mut fn takeLabel(): ?string {
+        let label = this.pendingLabel;
+        this.pendingLabel = null;
+        return label;
+    }
+
+    /// A loop's block, read with its label among the labels around.
+    mut fn loopBody(label: ?string): Block throws SyntaxError {
+        this.loopLabels.push(label ?? "");
+        defer {
+            this.loopLabels.pop();
+        }
+        return try this.parseBlock();
+    }
+
+    /// Whether a loop around carries the label `name`.
+    mut fn labelAround(name: string): bool {
+        for (l in this.loopLabels) {
+            if (l == name) {
+                return true;
+            }
+        }
+        return false;
     }
 
     mut fn parseBlock(): Block throws SyntaxError {
@@ -1748,8 +1820,9 @@ class Parser {
     mut fn nameValue(t: Token): Expr throws SyntaxError {
         if (this.atWord("loop") && this.peek(1).kind == .LBrace) {
             this.advance();
-            let body = try this.parseBlock();
-            return Expr.Loop(body, null, this.since(t));
+            let label = this.takeLabel();
+            let body = try this.loopBody(label);
+            return Expr.Loop(body, label, this.since(t));
         }
         let name = this.text(t);
         let span = this.spanOf(t);

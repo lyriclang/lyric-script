@@ -466,8 +466,12 @@ enum TStmt :: [Debug] {
     While(TExpr, TStmt[], int),
     /// `for (local in from..to)`, `..=` when the flag is set.
     ForRange(int, TExpr, TExpr, bool, TStmt[], int),
-    Break(?TExpr, int),
-    Continue(int),
+    /// `break`, its value, how many loops out from the innermost the loop it leaves stands (07 §1
+    /// rule 3: 0 for the innermost).
+    Break(?TExpr, int, int),
+    Continue(int, int),
+    /// `do { … } while (c)`: the block, then the condition (S4f).
+    DoWhile(TStmt[], TExpr, int),
     Return(?TExpr, int),
     Block(TStmt[], int),
     /// `var x: T` without a value: its box where a lambda captures it.
@@ -538,8 +542,9 @@ fn exprsOfStmt(s: TStmt): TExpr[] {
         .Expr(e, _) | .SetLocal(_, e, _) | .SetGlobal(_, e, _) | .While(e, _, _) => [e],
         .If(c, _, _, _) => [c],
         .ForRange(_, x, y, _, _, _) => [x, y],
-        .Break(v, _) | .Return(v, _) => if (v != null) [v] else [],
-        .Continue(_) | .Block(_, _) | .DeclareLocal(_, _) | .Try(_, _, _, _, _) => [],
+        .Break(v, _, _) | .Return(v, _) => if (v != null) [v] else [],
+        .DoWhile(_, c, _) => [c],
+        .Continue(_, _) | .Block(_, _) | .DeclareLocal(_, _) | .Try(_, _, _, _, _) => [],
         .Finally(_, _, _, _, _, _, _) => [],
     };
 }
@@ -553,6 +558,7 @@ fn stmtsOfStmt(s: TStmt): TStmt[] {
             out.pushAll(otherwise);
         }
         .While(_, b, _) | .ForRange(_, _, _, _, b, _) | .Block(b, _) => out.pushAll(b),
+        .DoWhile(b, _, _) => out.pushAll(b),
         .Try(b, _, _, clauses, _) => {
             out.pushAll(b);
             for (c in clauses) {
@@ -572,7 +578,8 @@ fn stmtsOfStmt(s: TStmt): TStmt[] {
 fn stmtLine(s: TStmt): int {
     return match (s) {
         .Expr(_, l) | .SetLocal(_, _, l) | .SetGlobal(_, _, l) | .If(_, _, _, l) => l,
-        .While(_, _, l) | .ForRange(_, _, _, _, _, l) | .Break(_, l) | .Continue(l) => l,
+        .While(_, _, l) | .ForRange(_, _, _, _, _, l) | .Break(_, _, l) | .Continue(_, l) => l,
+        .DoWhile(_, _, l) => l,
         .Return(_, l) | .Block(_, l) | .DeclareLocal(_, l) | .Try(_, _, _, _, l) => l,
         .Finally(_, _, _, _, _, _, l) => l,
     };

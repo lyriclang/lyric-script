@@ -229,6 +229,7 @@ fn showStmt(s: Stmt): string {
         .Throw(e, _) => "(throw " + showExpr(e) + ")",
         .Try(body, clauses, _) => "(try " + showBlock(body) + showClauses(clauses) + ")",
         .Defer(body, _) => "(defer " + showBlock(body) + ")",
+        .DoWhile(body, cond, _, _) => "(do " + showBlock(body) + " " + showExpr(cond) + ")",
         .Using(name, ty, value, _) => {
             let typed = if (ty != null) ": " + showType(ty) else "";
             "(using " + name + typed + " " + showExpr(value) + ")"

@@ -234,6 +234,8 @@ enum Stmt :: [Debug] {
     /// `defer { … }` or `defer e`: run when the scope is left, on every way out but a panic, the
     /// last registered first (06 §5 rules 2–5).
     Defer(Block, Span),
+    /// `do { … } while (c)`: the block, then the condition, at least once (07 §1); its label.
+    DoWhile(Block, Expr, ?string, Span),
     /// `using let f: T = e`: bound like a `let`, and closed when the scope is left (06 §7).
     Using(string, ?TypeExpr, Expr, Span),
 }
@@ -434,6 +436,8 @@ enum Item :: [Debug] {
 struct Module :: [Debug] {
     frontmatter: ?string,
     items: Item[],
+    /// The source text: what an assertion quotes as written (S4f).
+    text: string = "",
 }
 
 /// How a prefix operator is written.

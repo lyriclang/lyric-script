@@ -727,6 +727,24 @@ severity = "error"
 area = "09-patterns"
 summary = "A `let` takes apart only what cannot fail; a pattern that tests goes in a `match`. Lyric 5's LYR-SEM0098."
 
+[LYS-SEM0101]
+title = "a jump to a label no loop around carries"
+severity = "error"
+area = "07-statements"
+summary = "`break outer` or `continue outer` names a label no loop around the jump carries — in this function: a lambda's body is a function of its own. Lyric 5's LYR-SEM0101."
+
+[LYS-SEM0102]
+title = "a label repeating one around it"
+severity = "error"
+area = "07-statements"
+summary = "A loop carries the label of a loop around it; a jump to it would be ambiguous. Lyric 5's LYR-SEM0102."
+
+[LYS-SEM0103]
+title = "a label nothing jumps to"
+severity = "warning"
+area = "07-statements"
+summary = "A loop's label is named by no `break` or `continue`. Lyric 5's LYR-SEM0103."
+
 [LYS-SEM0104]
 title = "an if let whose pattern matches every value"
 severity = "warning"
@@ -859,6 +877,18 @@ severity = "warning"
 area = "06-errors"
 summary = "An expression statement makes a value of a `Closeable` type and drops it: nothing closes it. Bind it with `using let`. Lyric 5's LYR-SEM0144; its half for a plain `let` comes with the lints (S11)."
 
+[LYS-SEM0145]
+title = "'never' where a value of it would have to exist"
+severity = "error"
+area = "06-errors"
+summary = "The type `never` stands somewhere other than a return type — a parameter, a binding, a field, an element, an optional, a type argument: it would type a value that cannot exist. Lyric 5's LYR-SEM0145."
+
+[LYS-SEM0146]
+title = "a 'return' in a function returning 'never'"
+severity = "error"
+area = "06-errors"
+summary = "A function whose return type is `never` does not return; a `return` in it is refused, other than one returning what itself does not return. Lyric 5's LYR-SEM0146."
+
 [LYS-SEM0147]
 title = "'break' or 'continue' outside a loop"
 severity = "error"
@@ -974,6 +1004,24 @@ title = "'try!' on an error"
 severity = "panic"
 area = "06-errors"
 summary = "Something under `try!` threw: the script ends with a panic that gives the error's message, exit code 101. The code and its meaning are Lyric 5's LYR-RT0010."
+
+[LYS-RT0011]
+title = "an assertion that fails"
+severity = "panic"
+area = "06-errors"
+summary = "`assert(condition) { message }` found the condition false: `assertion failed:`, the condition as written and the message. The code and its meaning are Lyric 5's LYR-RT0011."
+
+[LYS-RT0012]
+title = "unreachable reached"
+severity = "panic"
+area = "06-errors"
+summary = "`unreachable(message)` ran: `unreachable`, and the message where one is given. The code and its meaning are Lyric 5's LYR-RT0012."
+
+[LYS-RT0013]
+title = "not implemented"
+severity = "panic"
+area = "06-errors"
+summary = "`todo(message)` ran: `not implemented`, and the message where one is given. The code and its meaning are Lyric 5's LYR-RT0013."
 
 [LYS-CLI0004]
 title = "an unknown option"

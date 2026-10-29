@@ -1,7 +1,7 @@
 //! The checked program (S2d): what the checker gives the code generator. Every name is resolved
 //! to a local, a global, a field, a function or a native; every expression carries its type;
 //! every conversion the language makes on its own (`int` to `float`, 03 Mix) is written out.
-import std.collections { Map };
+import std.collections { List, Map };
 import lyric_script.compiler.ast { BinaryOp, UnaryOp };
 
 /// A type as the checker knows it.
@@ -220,6 +220,8 @@ class FnInfo {
     // a member of a generic extend block: the block's parameters, whose constraints an instance
     // meets or has no such member (05 §13 rule 2)
     var blockParams: TypeParamInfo[] = [],
+    // the `throws` written, `null` for none; the bare form is `[Error]` (S4c)
+    var throws: ?Ty[] = null,
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).
@@ -473,11 +475,102 @@ enum TStmt :: [Debug] {
     Try(TStmt[], int, int, TClause[], int),
 }
 
-/// A clause of a `try`: the test it makes of the error — none where it takes every error — and
-/// its body, which binds the error first where the clause names it.
+/// A clause of a `try`: the test it makes of the error — none where it takes every error —, its
+/// body, which binds the error first where the clause names it, and the types it takes, none for
+/// every error (the thrown sets, S4c).
 struct TClause :: [Debug] {
     test: ?TExpr,
     body: TStmt[],
+    types: Ty[] = [],
+}
+
+/// The expressions directly inside `e`: its operands, arguments, captures. A block's and a
+/// loop's statements are `stmtsIn`'s; a lambda's body is a function of its own.
+fn exprsIn(e: TExpr): TExpr[] {
+    return match (e) {
+        .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
+        .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],
+        .CapturedCell(_, _) | .CellOf(_, _) | .DescOfType(_, _) | .GenericValue(_, _, _) => [],
+        .Rethrow(_, _) | .Loop(_, _) | .Unknown => [],
+        .Unary(_, x, _) | .ToFloat(x) | .Cast(x, _) | .Field(x, _, _) | .Wrap(x, _) => [x.value],
+        .Narrow(x, _) | .Unwrap(x, _) | .IsNull(x) | .Elem(x, _, _) | .Tag(x) => [x.value],
+        .Payload(x, _, _, _, _) | .Upcast(x, _) | .BoxOf(x, _, _) | .Unbox(x, _) => [x.value],
+        .IsType(x, _, _) | .IsIface(x, _, _) | .IsParam(x, _, _) | .DescOfValue(x, _) => [x.value],
+        .DescArg(x, _, _) | .DescVariant(x, _, _) | .DebugParam(x, _, _) => [x.value],
+        .TextParam(x, _, _) | .Throw(x) | .Block(_, x, _) => [x.value],
+        .Binary(x, _, y, _) | .Coalesce(x, y, _) | .SameRef(x, y) | .IsDesc(x, y) => [
+            x.value,
+            y.value,
+        ],
+        .If(c, x, y, _) => [c.value, x.value, y.value],
+        .Call(_, xs, _) | .Native(_, xs, _) | .New(_, xs) | .Tuple(xs, _) => xs,
+        .MakeVariant(_, _, xs) | .Closure(_, xs, _) | .CallIface(_, xs, _) => xs,
+        .CallGeneric(_, _, xs, _) | .CallConstraint(_, _, _, _, xs, _) | .InstDesc(_, xs, _) => xs,
+        .CallStatic(_, _, _, _, xs, _) | .CallBound(_, _, _, _, xs, _) => xs,
+        .NewD(d, _, _, xs, _) | .CallValue(d, xs, _) | .CallStaticD(_, d, xs, _) => withFirst(
+            d.value,
+            xs
+        ),
+        .Assign(place, _, v, _) => match (place) {
+            .Field(x, _) => [x.value, v.value],
+            _ => [v.value],
+        },
+    };
+}
+
+/// The statements directly inside `e`: a block's, a loop's.
+fn stmtsIn(e: TExpr): TStmt[] {
+    return match (e) {
+        .Block(stmts, _, _) | .Loop(stmts, _) => stmts,
+        _ => [],
+    };
+}
+
+/// The expressions directly inside statement `s`.
+fn exprsOfStmt(s: TStmt): TExpr[] {
+    return match (s) {
+        .Expr(e, _) | .SetLocal(_, e, _) | .SetGlobal(_, e, _) | .While(e, _, _) => [e],
+        .If(c, _, _, _) => [c],
+        .ForRange(_, x, y, _, _, _) => [x, y],
+        .Break(v, _) | .Return(v, _) => if (v != null) [v] else [],
+        .Continue(_) | .Block(_, _) | .DeclareLocal(_, _) | .Try(_, _, _, _, _) => [],
+    };
+}
+
+/// The statements directly inside statement `s`: a `try`'s body and then its clauses'.
+fn stmtsOfStmt(s: TStmt): TStmt[] {
+    let out = List<TStmt>.new();
+    match (s) {
+        .If(_, then, otherwise, _) => {
+            out.pushAll(then);
+            out.pushAll(otherwise);
+        }
+        .While(_, b, _) | .ForRange(_, _, _, _, b, _) | .Block(b, _) => out.pushAll(b),
+        .Try(b, _, _, clauses, _) => {
+            out.pushAll(b);
+            for (c in clauses) {
+                out.pushAll(c.body);
+            }
+        }
+        _ => { }
+    }
+    return out.toArray();
+}
+
+/// The line a statement starts on.
+fn stmtLine(s: TStmt): int {
+    return match (s) {
+        .Expr(_, l) | .SetLocal(_, _, l) | .SetGlobal(_, _, l) | .If(_, _, _, l) => l,
+        .While(_, _, l) | .ForRange(_, _, _, _, _, l) | .Break(_, l) | .Continue(l) => l,
+        .Return(_, l) | .Block(_, l) | .DeclareLocal(_, l) | .Try(_, _, _, _, l) => l,
+    };
+}
+
+fn withFirst(x: TExpr, xs: TExpr[]): TExpr[] {
+    let out = List<TExpr>.new();
+    out.push(x);
+    out.pushAll(xs);
+    return out.toArray();
 }
 
 /// The checked program: its types, its functions (one of them `main`), its globals.

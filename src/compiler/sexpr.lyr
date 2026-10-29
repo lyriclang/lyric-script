@@ -109,7 +109,15 @@ fn showFn(f: FnDecl): string {
         params.push(showParam(p));
     }
     let r = f.returns;
-    let returns = if (r != null) ": " + showType(r) + " " else "";
+    var returns = if (r != null) ": " + showType(r) + " " else "";
+    let th = f.throws;
+    if (th != null) {
+        let types = List<string>.new();
+        for (x in th.types) {
+            types.push(showType(x));
+        }
+        returns = returns + "throws [" + types.toArray().join(", ") + "] ";
+    }
     let body = match (f.body) {
         .Block(b) => showBlock(b),
         .Expr(e) => "= " + showExpr(e),
@@ -272,6 +280,7 @@ fn showStmt(s: Stmt): string {
 fn showExpr(e: Expr): string {
     return match (e) {
         .Throw(x, _) => "(throw " + showExpr(x.value) + ")",
+        .TryMark(x, _) => "(try " + showExpr(x.value) + ")",
         .Int(n, _) => f"{n}",
         .Float(x, _) => f"{x}",
         .Bool(b, _) => if (b) "true" else "false",

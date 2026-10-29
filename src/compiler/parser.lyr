@@ -40,6 +40,7 @@ import lyric_script.compiler.ast {
     TypeAnswer,
     TypeDecl,
     TypeParam,
+    ThrowsClause,
     TypeExpr,
     UnaryOp,
     Variant,
@@ -356,6 +357,10 @@ class Parser {
             this.advance();
             returns = try this.parseType();
         }
+        var throws: ?ThrowsClause = null;
+        if (this.atWord("throws")) {
+            throws = try this.parseThrows();
+        }
         let body = if (this.at(.Assign)) {
             this.advance();
             FnBody.Expr(try this.parseExpr())
@@ -374,7 +379,44 @@ class Parser {
             isPub = isPub,
             isStatic = isStatic,
             span = this.since(first),
+            throws = throws,
         };
+    }
+
+    /// `throws E`, `throws [A, B]`, or the bare `throws` before the body or a line end; several
+    /// types stand in brackets (Lyric 5 06 §2 rule 1).
+    mut fn parseThrows(): ThrowsClause throws SyntaxError {
+        let first = this.advance();
+        let types = List<TypeExpr>.new();
+        if (this.at(.LBracket)) {
+            this.advance();
+            loop {
+                types.push(try this.parseType());
+                if (!this.at(.Comma)) {
+                    break;
+                }
+                this.advance();
+            }
+            try this.expect(.RBracket, "LYS-PAR0004", "']' after the thrown types");
+        } else if (!this.at(.LBrace)
+            && !this.at(.Assign)
+            && !this.at(.Newline)
+            && !this.at(.RBrace)
+            && !this.at(.Eof)) {
+            types.push(try this.parseType());
+            if (this.at(.Comma)) {
+                this.report(
+                    "LYS-PAR0049",
+                    "several thrown types stand in brackets: 'throws [A, B]'",
+                    this.peek(0)
+                );
+                while (this.at(.Comma)) {
+                    this.advance();
+                    types.push(try this.parseType());
+                }
+            }
+        }
+        return ThrowsClause { types = types.toArray(), span = this.since(first) };
     }
 
     mut fn parseParams(): Param[] throws SyntaxError {
@@ -1596,6 +1638,12 @@ class Parser {
         }
         if (w == "match") {
             return try this.parseMatch();
+        }
+        // `try e`: the mark, which covers what stands to its right; without effect (05 Th)
+        if (w == "try") {
+            this.advance();
+            let marked = try this.parseExpr();
+            return Expr.TryMark(boxed(marked), this.since(t));
         }
         // `throw e` where a value stands, of type `never` (06 §1 rule 3)
         if (w == "throw") {

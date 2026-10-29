@@ -146,6 +146,8 @@ enum Expr :: [Debug] {
     Instance(Box<Expr>, TypeExpr[], Span),
     /// `throw e` where a value stands: of type `never` (06 §1 rule 3).
     Throw(Box<Expr>, Span),
+    /// `try e`: the mark, accepted without effect (05 Th); it covers what stands to its right.
+    TryMark(Box<Expr>, Span),
     /// A lambda: its parameters, its result type if written, its body (an expression or a value
     /// block), and whether it is a trailing block without named parameters (`it`, or none).
     Lambda(LambdaParam[], ?TypeExpr, Box<Expr>, bool, Span),
@@ -336,6 +338,14 @@ struct FnDecl :: [Debug] {
     body: FnBody,
     isPub: bool,
     isStatic: bool,
+    span: Span,
+    throws: ?ThrowsClause = null,
+}
+
+/// A function's `throws`: its types, none for the bare form, which is `throws Error` (06 §2);
+/// in Lyric-Script a contract the inferred set is checked against (05 Th).
+struct ThrowsClause :: [Debug] {
+    types: TypeExpr[],
     span: Span,
 }
 

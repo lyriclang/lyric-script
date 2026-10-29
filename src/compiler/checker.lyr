@@ -46,6 +46,7 @@ import lyric_script.compiler.ast {
 };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { parse };
+import lyric_script.compiler.throws { ThrowSets, Thrown };
 import lyric_script.compiler.typed {
     FieldInfo,
     FixedTy,
@@ -98,6 +99,7 @@ fn checkModule(parsed: Module): Checked {
     c.declare(module);
     c.checkMain(module);
     c.checkBodies();
+    c.checkThrows();
     c.fillDebugSlot();
     c.instantiate();
     return Checked {
@@ -227,6 +229,8 @@ class Checker {
     // `Any`'s entry, and `Identity`'s
     var anyIndex: int = -1,
     var identityIndex: int = -1,
+    // where each function writes its `throws` (S4c)
+    var throwsAt: Map<int, Span> = Map<int, Span>.new(),
     // the synthesized equality of each struct and enum compared, by type; its Debug form
     eqFns: Map<int, int>,
     debugFns: Map<int, int>,
@@ -557,9 +561,151 @@ class Checker {
             let decl = this.fnDecls[k];
             if (decl != null) {
                 this.checkParamDefaults(k, decl);
+                this.declareThrows(k, decl);
             }
             k += 1;
         }
+    }
+
+    /// A function's written `throws`: each type an `Error` (`LYS-SEM0030`), named once
+    /// (`LYS-SEM0137`); the bare form is `throws Error` (06 §2 rules 1–2).
+    mut fn declareThrows(k: int, decl: FnDecl): void {
+        let clause = decl.throws;
+        if (clause == null) {
+            return;
+        }
+        let info = this.functions[k];
+        let savedScope = this.typeParams;
+        let savedGeneric = this.genericFn;
+        if (info.typeParams.length() > 0) {
+            let scope = Map<string, int>.new();
+            var t = 0;
+            for (tp in info.typeParams) {
+                scope.insert(tp.name, t);
+                t += 1;
+            }
+            this.typeParams = scope;
+            this.genericFn = k;
+        }
+        let out = List<Ty>.new();
+        if (clause.types.length() == 0) {
+            out.push(this.errorTy());
+        }
+        for (x in clause.types) {
+            let t = this.resolveType(x);
+            if (t == .Unknown) {
+                continue;
+            }
+            var twice = false;
+            for (y in out) {
+                twice = twice || y == t;
+            }
+            if (!this.throwable(t)) {
+                this.error(
+                    "LYS-SEM0030",
+                    f"{this.tyName(t)} is not an Error: a 'throws' names what conforms to Error",
+                    clause.span
+                );
+            } else if (twice) {
+                this.error(
+                    "LYS-SEM0137",
+                    f"{this.tyName(t)} is named twice in this 'throws'",
+                    clause.span
+                );
+            } else {
+                out.push(t);
+            }
+        }
+        info.throws = out.toArray();
+        this.throwsAt.insert(k, clause.span);
+        this.typeParams = savedScope;
+        this.genericFn = savedGeneric;
+    }
+
+    /// The thrown sets, and the contracts written against them: a function's `throws` covers what
+    /// it may throw (`LYS-SEM0034`, 06 §3 rule 3); an implementation of a member that writes
+    /// `throws` throws at most that (`LYS-SEM0042`, §2 rule 4). Script infers the rest (05 K).
+    mut fn checkThrows(): void {
+        let ei = match (this.errorTy()) {
+            .Named(i) => i,
+            _ => -1,
+        };
+        if (ei < 0) {
+            return;
+        }
+        let sets = ThrowSets.of(this.types.toArray(), this.functions.toArray(), ei);
+        sets.infer();
+        var k = 0;
+        while (k < this.functions.length()) {
+            let written = this.functions[k].throws;
+            let at = this.throwsAt.get(k);
+            if (written != null && at != null) {
+                let missed = sets.left(sets.setOf(k), written, k);
+                for (what in this.thrownTexts(missed)) {
+                    this.error(
+                        "LYS-SEM0034",
+                        f"'{this.functions[k].name}' {what}, which its 'throws' does not cover",
+                        at
+                    );
+                }
+            }
+            k += 1;
+        }
+        for (t in this.types) {
+            if (t.kind == .Interface) {
+                continue;
+            }
+            for (slot in t.witness.keys()) {
+                let impl = t.witness.get(slot);
+                let member = this.slotMember(slot);
+                if (impl == null || member < 0 || impl == member) {
+                    continue;
+                }
+                let written = this.functions[member].throws;
+                let decl = this.fnDecls[impl];
+                if (written == null || decl == null) {
+                    continue;
+                }
+                let missed = sets.left(sets.setOf(impl), written, impl);
+                for (what in this.thrownTexts(missed)) {
+                    this.error(
+                        "LYS-SEM0042",
+                        f"'{t.name}.{this.functions[impl].name}' {what}, which the member it implements does not write in its 'throws'",
+                        decl.span
+                    );
+                }
+            }
+        }
+    }
+
+    /// What a set says, a phrase each: anything, or a type, with the line it comes from.
+    mut fn thrownTexts(set: Thrown): string[] {
+        let out = List<string>.new();
+        if (set.any) {
+            out.push(
+                f"may throw any Error (line {set.anyLine}: a function value, or an interface member without 'throws')"
+            );
+        }
+        var k = 0;
+        while (k < set.types.length()) {
+            out.push(f"throws {this.tyName(set.types[k])} (line {set.lines[k]})");
+            k += 1;
+        }
+        return out.toArray();
+    }
+
+    /// The interface member of a slot; -1 for none.
+    mut fn slotMember(slot: int): int {
+        for (t in this.types) {
+            if (t.kind == .Interface) {
+                for (name in t.slotOf.keys()) {
+                    if (t.slotOf.get(name) == slot) {
+                        return t.methods.get(name) ?? -1;
+                    }
+                }
+            }
+        }
+        return -1;
     }
 
     mut fn checkParamDefaults(k: int, decl: FnDecl): void {
@@ -2798,8 +2944,16 @@ class Checker {
             .Try(b, caught, record, clauses, l) => {
                 let out = List<TClause>.new();
                 for (c in clauses) {
+                    let takes = List<Ty>.new();
+                    for (t in c.types) {
+                        takes.push(this.subst(t, a));
+                    }
                     out.push(
-                        TClause { test = this.specOpt(c.test, a), body = this.specStmts(c.body, a) }
+                        TClause {
+                            test = this.specOpt(c.test, a),
+                            body = this.specStmts(c.body, a),
+                            types = takes.toArray(),
+                        }
                     );
                 }
                 TStmt.Try(this.specStmts(b, a), caught, record, out.toArray(), l)
@@ -3871,6 +4025,7 @@ class Checker {
             var test: ?TExpr = null;
             var value = error;
             var bound = err;
+            var takes: Ty[] = [];
             if (c.types.length() > 0) {
                 let target = this.resolveType(c.types[0]);
                 value = TExpr.Unknown;
@@ -3880,6 +4035,7 @@ class Checker {
                         test = this.typeTest(error, target, c.span);
                         value = this.heldAs(error, target);
                         bound = target;
+                        takes = [target];
                     } else {
                         this.error(
                             "LYS-SEM0030",
@@ -3901,7 +4057,7 @@ class Checker {
             }
             this.popScope();
             after = after.union(this.ctx.unassigned);
-            out.push(TClause { test = test, body = stmts.toArray() });
+            out.push(TClause { test = test, body = stmts.toArray(), types = takes });
         }
         this.ctx.unassigned = after;
         return TStmt.Try(b, caught, record, out.toArray(), at.line);
@@ -4038,7 +4194,7 @@ class Checker {
             .Match(x, arms, matchAt) => this.matchOf(x.value, arms, null, true, matchAt),
             _ => this.expr(e, null),
         };
-        let effect = match (e) {
+        let effect = match (unmarked(e)) {
             .Call(_, _, _) | .Assign(_, _, _, _) | .Loop(_, _, _) | .Match(_, _, _) => true,
             _ => false,
         };
@@ -5492,6 +5648,8 @@ class Checker {
     mut fn expr(e: Expr, expected: ?Ty): TExpr {
         return match (e) {
             .Throw(value, _) => this.throwOf(value.value),
+            // `try e` marks `e` and changes nothing (05 Th)
+            .TryMark(marked, _) => this.expr(marked.value, expected),
             // where the place's type conforms, built by its literal protocol (03 Lit)
             .Int(n, _) => this.literalOf(
                 TExpr.Int(n),
@@ -9652,6 +9810,7 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
         }
         .Lambda(_, _, body, _, _) => exprAny(body.value, onStmt, onExpr),
         .Throw(x, _) => exprAny(x.value, onStmt, onExpr),
+        .TryMark(x, _) => exprAny(x.value, onStmt, onExpr),
         .Is(x, _, _) => exprAny(x.value, onStmt, onExpr),
         .Instance(x, _, _) => exprAny(x.value, onStmt, onExpr),
         .VariantInit(_, _, fields, _) => {
@@ -9676,9 +9835,18 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
 }
 
 /// Where an expression stands.
+/// `e` without its `try` marks.
+fn unmarked(e: Expr): Expr {
+    return match (e) {
+        .TryMark(x, _) => unmarked(x.value),
+        _ => e,
+    };
+}
+
 fn spanOf(e: Expr): Span {
     return match (e) {
         .Throw(_, at) => at,
+        .TryMark(_, at) => at,
         .Int(_, at) => at,
         .Float(_, at) => at,
         .Bool(_, at) => at,

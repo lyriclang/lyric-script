@@ -214,3 +214,14 @@ fn nestingHasABound(): void {
     assertEq(errs(nested(300)), ["LYS-PAR0045"]);
     assertEq(errs("let x = " + repeatText("!", 300) + "true"), ["LYS-PAR0045"]);
 }
+
+@Test
+fn throwsAndTheMark(): void {
+    assertEq(show("fn f(): int throws [A, B] = 1"), "(fn f () : int throws [A, B] = 1)");
+    assertEq(show("fn f(): int throws A = 1"), "(fn f () : int throws [A] = 1)");
+    // the bare form, before the body
+    assertEq(show("fn f() throws = 1"), "(fn f () throws [] = 1)");
+    assertEq(errs("fn f() throws A, B = 1"), ["LYS-PAR0049"]);
+    // the mark covers what stands to its right
+    assertEq(show("let x = a + try b * c"), "(let x (+ a (try (* b c))))");
+}

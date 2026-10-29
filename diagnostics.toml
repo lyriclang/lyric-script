@@ -388,6 +388,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "An enum delegates nothing: `I by field` stands in a struct's or a class's list. Lyric 5's LYR-PAR0047."
 
+[LYS-PAR0049]
+title = "several thrown types not in brackets"
+severity = "error"
+area = "06-errors"
+summary = "A `throws` names two or more types without brackets: `throws [A, B]`. Lyric 5's LYR-PAR0049."
+
 [LYS-PAR0053]
 title = "a visibility word where none belongs"
 severity = "error"
@@ -583,6 +589,12 @@ severity = "error"
 area = "09-patterns"
 summary = "Every alternative of `P | Q` binds the same names at the same types. Lyric 5's LYR-SEM0032."
 
+[LYS-SEM0034]
+title = "a throw the function's written 'throws' does not cover"
+severity = "error"
+area = "06-errors"
+summary = "A function writes `throws`, and its body may throw a type the list does not cover — by a `throw`, by a call, or anything through a function value or an interface member without `throws`. Script infers what a function throws and holds a written `throws` as a contract (05 Th); the diagnostic names the type and the line it comes from. Lyric 5's LYR-SEM0034."
+
 [LYS-SEM0036]
 title = "a try block without a catch"
 severity = "error"
@@ -593,7 +605,7 @@ summary = "A `try { … }` block has no `catch` clause: it takes none of its bod
 title = "an implementation whose signature differs from the member's"
 severity = "error"
 area = "05-interfaces"
-summary = "A conformer's method takes the member's parameters and gives its result, exactly — its own type where the interface writes `Self` —, and is static where the member is. Lyric 5's LYR-SEM0042."
+summary = "A conformer's method takes the member's parameters and gives its result, exactly — its own type where the interface writes `Self` —, and is static where the member is; where the member writes `throws`, the method throws at most that. Lyric 5's LYR-SEM0042."
 
 [LYS-SEM0043]
 title = "two defaults of one name, which the type does not write"
@@ -786,6 +798,12 @@ title = "a type test of what is no interface value"
 severity = "error"
 area = "05-interfaces"
 summary = "`x is T` and a type pattern ask an interface value what it holds; on a value of a known type, and against a type no interface value holds, they are refused. Lyric 5's LYR-SEM0131."
+
+[LYS-SEM0137]
+title = "a type named twice in one 'throws'"
+severity = "error"
+area = "06-errors"
+summary = "A function's `throws [ … ]` names the same error type more than once. Lyric 5's LYR-SEM0137."
 
 [LYS-SEM0147]
 title = "'break' or 'continue' outside a loop"

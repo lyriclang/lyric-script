@@ -1,0 +1,153 @@
+// Thrown sets (S4c; Script 05 K, Th, K7; Lyric 5 06 §2–§4): each function's set inferred from
+// its body to a fixpoint over the calls; a written `throws` a contract held against it, an
+// implementation's set within its member's; a clause's `throw e` throws what reached the clause.
+import std.collections { List };
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+fn value(source: string, entry: string): int {
+    let checked = checkModule(parse(source).module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    return match (run(generate(checked.program, "t"), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+let kinds = """
+struct A :: Error {
+    fn message(): string = "a"
+}
+struct B :: Error {
+    fn message(): string = "b"
+}
+interface Io :: Error {
+    fn path(): string
+}
+struct Disk :: Io {
+    fn message(): string = "disk"
+    fn path(): string = "/"
+}
+fn throwsB() {
+    throw B { }
+}
+"""
+    + "\n";
+
+@Test
+fn aWrittenThrowsCoversWhatTheBodyThrows(): void {
+    assertEq(errs(kinds + "fn f(): int throws A {\n    throw A { }\n}"), []);
+    assertEq(errs(kinds + "fn f() throws A {\n    throw B { }\n}"), ["LYS-SEM0034"]);
+    // through a call, inferred
+    assertEq(errs(kinds + "fn f() throws A {\n    throwsB()\n}"), ["LYS-SEM0034"]);
+    assertEq(errs(kinds + "fn f() throws B {\n    throwsB()\n}"), []);
+    // what a clause takes is not thrown on
+    assertEq(
+        errs(
+            kinds
+                + "fn f() throws A {\n    try {\n        throwsB()\n    } catch (_: B) {\n    }\n}"
+        ),
+        []
+    );
+    // an interface covers its conformers; the bare form covers everything
+    assertEq(errs(kinds + "fn f() throws Io {\n    throw Disk { }\n}"), []);
+    assertEq(errs(kinds + "fn f() throws {\n    throwsB()\n}"), []);
+    // a function value may throw anything (02 K2)
+    assertEq(errs(kinds + "fn f(g: fn() -> int): int throws A = g()"), ["LYS-SEM0034"]);
+}
+
+@Test
+fn recursionReachesAFixpoint(): void {
+    // `top` stands before what it calls, and `odd` before the `even` that throws: the sets reach
+    // it only in later rounds
+    let calls = "fn odd(n: int): bool = if (n == 0) false else even(n - 1)\nfn even(n: int): bool {\n    if (n < 0) {\n        throw B { }\n    }\n    return if (n == 0) true else odd(n - 1)\n}\n";
+    assertEq(errs(kinds + "fn top(): bool throws A = odd(3)\n" + calls), ["LYS-SEM0034"]);
+    assertEq(errs(kinds + "fn top(): bool throws B = odd(3)\n" + calls), []);
+}
+
+@Test
+fn aRethrowThrowsWhatReachedTheClause(): void {
+    let both = kinds
+        + "fn either(n: int) {\n    if (n == 0) {\n        throw A { }\n    }\n    throwsB()\n}\n";
+    // the catch-all's binding carries what the clauses above left: `B` alone (05 K7)
+    assertEq(
+        errs(
+            both
+                + "fn f() throws B {\n    try {\n        either(1)\n    } catch (_: A) {\n    } catch (e) {\n        throw e\n    }\n}"
+        ),
+        []
+    );
+    assertEq(
+        errs(
+            both
+                + "fn f() throws B {\n    try {\n        either(1)\n    } catch (e) {\n        throw e\n    }\n}"
+        ),
+        ["LYS-SEM0034"]
+    );
+    // a typed clause's binding throws its type, even of anything
+    assertEq(
+        errs(
+            kinds
+                + "fn f(g: fn() -> int): int throws A {\n    try {\n        return g()\n    } catch (e: A) {\n        throw e\n    } catch (_) {\n        return 0\n    }\n}"
+        ),
+        []
+    );
+}
+
+@Test
+fn anImplementationThrowsAtMostItsMember(): void {
+    let store = kinds + "interface Store {\n    fn load(): int throws A\n}\n";
+    assertEq(
+        errs(store + "struct Mem :: Store {\n    fn load(): int {\n        throw B { }\n    }\n}"),
+        ["LYS-SEM0042"]
+    );
+    assertEq(
+        errs(store + "struct Mem :: Store {\n    fn load(): int {\n        throw A { }\n    }\n}"),
+        []
+    );
+    // a call through the member throws what it writes; one without `throws` anything
+    assertEq(errs(store + "fn use(s: Store): int throws A = s.load()"), []);
+    assertEq(
+        errs(
+            kinds + "interface Src {\n    fn get(): int\n}\nfn use(s: Src): int throws A = s.get()"
+        ),
+        ["LYS-SEM0034"]
+    );
+}
+
+@Test
+fn aGenericThrowsItsArgumentsType(): void {
+    let fail = kinds + "fn fail<T :: [Error]>(e: T): int throws T {\n    throw e\n}\n";
+    assertEq(errs(fail + "fn use(): int throws A = fail(A { })"), []);
+    assertEq(errs(fail + "fn use(): int throws B = fail(A { })"), ["LYS-SEM0034"]);
+}
+
+@Test
+fn theThrowsListNamesErrorsOnce(): void {
+    assertEq(errs(kinds + "fn f() throws int {\n}"), ["LYS-SEM0030"]);
+    assertEq(errs(kinds + "fn f() throws [A, A] {\n}"), ["LYS-SEM0137"]);
+}
+
+@Test
+fn theMarkChangesNothing(): void {
+    let source = "fn g(): int = 1\nfn f(): int = try g() + 1\nfn h(): int {\n    try g()\n    return 3\n}";
+    assertEq(value(source, "f"), 2);
+    assertEq(value(source, "h"), 3);
+}

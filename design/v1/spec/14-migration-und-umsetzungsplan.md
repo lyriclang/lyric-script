@@ -564,3 +564,22 @@ Mutantenkontrollen mit vorher geschriebener Vorhersage. Verfehlt nur in S4a: die
 der anderen nicht (2 statt 3, dann 3 statt 2). Vor den Läufen geschärft, weil sie den Mutanten
 sonst nicht gesehen hätten: je ein Test in S4b (Aufrufer-Rahmen), S4c (Fixpunkt) und S4e
 (Wertblock).
+
+## S5 — Slices (Plan, Entwurf 2026-10-29)
+
+Ziel aus der Meilensteintabelle: Module und Pakete — Datei = Modul, Importe, Globale, Pfadregel,
+Prelude, `lyric-script.toml`, Lock, Git und Pfad, Frontmatter-Abhängigkeiten, Rechteklassen aus
+Importen (07). Grundlage: Lyric 5 04 und 15 (gepinnt 38ea610e), Scripts Abweichungen 07 Top, Path,
+Dep, Man, V1–V7, 02 V und 01 S1–S4. Bisher ist ein Skript eine Datei; S5 ist Lader,
+Namensauflösung über Dateien, Projekt und Abhängigkeiten.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S5a Module einer Wurzel** | Datei = Modul, Name aus dem Pfad unter dem Ordner des Einstiegs ohne Präfix (Path); Importe selektiv/qualifiziert/Alias, `pub import`, kein Glob (V3); `private` = Datei, `pub`/`internal` angenommen (02 V); Modul-`let`/`var` beim ersten Import in Abhängigkeitsreihenfolge, Zyklus Fehler (V5); nur der Einstieg führt Anweisungen aus (Top); Namensräume (`RES0003/0005/0011/0012`), ungenutzter Import (`SEM0072`), Verdecken des Prelude (`SEM0153`); ein Bytecode-Modul fürs ganze Programm, Cache-Schlüssel über alle Quellen | Mehrdatei-Fälle (Runner: Verzeichnisfälle) |
+| **S5b Manifest** | `lyric-script.toml` (`[package]` `name`, `version`, `edition`, `toolchain`; `[dependencies]` mit `path`); mit Manifest Lyric 5s Pfadregel (Paketname vorn, `src/`, `src/lib.lyr` Wurzelmodul, `src/main.lyr` Einstieg); nur Deklariertes importierbar (`RES0014`); `PKG`-Codes | Paketfälle mit Pfad-Abhängigkeit |
+| **S5c Git und Lock** | Git-Abhängigkeiten (`tag`/`branch`/`rev`), normalisierte URL, Nutzer-Cache, MVS über Versionslinien, `[override]`, Zyklus `PKG0010`; `lyric-script.lock` mit Commit und Inhalts-Hash, `--locked`, `--offline`, `lyric-script update` | Fälle mit lokalen Repositories (`repos/<name>/<version>`), nie Netz |
+| **S5d Frontmatter-Abhängigkeiten** | der `---`-Kopf eines Einzelskripts mit der Abhängigkeits-Teilmenge des Manifests, beim ersten Lauf aufgelöst, nach dem Hash des Kopfs gecacht; `lyric-script lock tool.lyrs` → `tool.lyrs.lock` | Einzelskript mit Kopf |
+| **S5e Rechteklassen aus Importen** | Rechte je Modul aus den Importen abgeleitet, im Bytecode vermerkt, beim Laden geprüft (`CAP0001`, alle auf einmal mit Zeile); `--allow`/`-A`, einmalige Abfrage vor dem Start am Terminal (01 S1, S4); `std` kommt mit S7 — die Mechanik jetzt, eine Testtabelle steht für `std` | Rechte-Fälle |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s5-complete`; Bereichszeilen gegen den Code | Beispielprojekt in der CI |
+
+Reihenfolge: a vor b vor c; d nach c (teilt den Auflöser); e nach a.

@@ -122,6 +122,15 @@ Errors and control (plan 14, S4): VM exceptions, inferred error sets, a written 
 
 Exit criterion: the error examples run; exit codes 1 and 101.
 
+### S5 — open
+
+Modules and packages (plan 14, "S5 — Slices"): a file is a module, imports, globals, the path
+rule, the prelude, `lyric-script.toml`, the lock, Git and path dependencies, frontmatter
+dependencies, rights classes from imports (07).
+
+Exit criterion: a script project of several files with a Git dependency; a single script with
+frontmatter.
+
 ## Working mode
 
 Decided 2026-10-28 (14): **autonomous, as on the Lyric 5 line** — Claude plans each slice and

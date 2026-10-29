@@ -267,8 +267,9 @@ class ThrowSets {
             .Await(_, _) => out.addAny(this.line),
             // a pull throws what the body throws: any error, the type says none (S6b; 03)
             .CoNext(_, _) => out.addAny(this.line),
-            // a close throws what the body throws on its way out (S6b3)
-            .CoClose(_, _) => out.addAny(this.line),
+            // a close throws what the body throws on its way out (S6b3); a scope's close the
+            // first failure of its tasks (S6c2)
+            .CoClose(_, _) | .ScopeClose(_) => out.addAny(this.line),
             // a wait throws `Cancelled` in a cancelled task (Lyric 5 10 §2 rule 7)
             .YieldNow => {
                 if (this.cancelled >= 0) {

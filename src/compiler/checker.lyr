@@ -86,7 +86,7 @@ struct Checked {
 /// static member that builds the conforming type from a literal of its kind; `Error`, the root of
 /// what is thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was
 /// first thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core).
-let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nenum TaskStatus {\n    Running,\n    Done,\n    Failed,\n    Panicked,\n    Cancelled,\n}\nclass Coroutine<Y, R> :: [Identity, Closeable] {\n    fn close() {\n    }\n}\nclass Cancelled :: Error {\n    fn message(): string = \"cancelled\"\n}\n";
+let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nenum TaskStatus {\n    Running,\n    Done,\n    Failed,\n    Panicked,\n    Cancelled,\n}\nclass Coroutine<Y, R> :: [Identity, Closeable] {\n    fn close() {\n    }\n}\nclass Cancelled :: Error {\n    fn message(): string = \"cancelled\"\n}\nclass TaskScope :: Closeable {\n    fn close() {\n    }\n}\n";
 
 /// A file of a program (S5a): its module's dotted path below the root, what it parsed to, and its
 /// place among the program's files — 0 the entry.
@@ -3738,6 +3738,14 @@ class Checker {
             .CoClose(x, c) => TExpr.CoClose(this.specBox(x, a), this.specBox(c, a)),
             .SpawnDetached(x) => TExpr.SpawnDetached(this.specBox(x, a)),
             .TaskCancel(x) => TExpr.TaskCancel(this.specBox(x, a)),
+            .ScopeNew(t) => TExpr.ScopeNew(t),
+            .ScopeSpawn(sc, x, t) => TExpr.ScopeSpawn(
+                this.specBox(sc, a),
+                this.specBox(x, a),
+                this.subst(t, a)
+            ),
+            .ScopeClose(x) => TExpr.ScopeClose(this.specBox(x, a)),
+            .ScopeCancel(x) => TExpr.ScopeCancel(this.specBox(x, a)),
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -8486,7 +8494,11 @@ class Checker {
                 let tpl = this.types[i].template;
                 let task = this.typeIndex.get("Task") ?? -1;
                 let co = this.typeIndex.get("Coroutine") ?? -1;
-                return (tpl >= 0 && (tpl == task || tpl == co)) || i == task || i == co;
+                let scope = this.typeIndex.get("TaskScope") ?? -1;
+                return (tpl >= 0 && (tpl == task || tpl == co))
+                    || i == task
+                    || i == co
+                    || i == scope;
             }
             _ => { }
         }
@@ -8580,6 +8592,35 @@ class Checker {
             }
         }
         return TExpr.SpawnDetached(boxE(closure));
+    }
+
+    /// A method of a `TaskScope` (Lyric 5 10 §4): `spawn { … }` a task of it, `close()`, which
+    /// waits for its tasks and throws the first failure, `cancel()`; `null` where `i` is no scope.
+    mut fn scopeMethod(receiver: TExpr, i: int, method: string, args: Arg[], at: Span): ?TExpr {
+        if (i != (this.typeIndex.get("TaskScope") ?? -1)) {
+            return null;
+        }
+        if (method == "spawn") {
+            return match (this.spawnOf(args, at)) {
+                .Spawn(x, t) => TExpr.ScopeSpawn(boxE(receiver), x, t),
+                _ => TExpr.Unknown,
+            };
+        }
+        if (args.length() > 0) {
+            this.error("LYS-SEM0014", f"'{method}' takes no argument", at);
+        }
+        return match (method) {
+            "close" => TExpr.ScopeClose(boxE(receiver)),
+            "cancel" => TExpr.ScopeCancel(boxE(receiver)),
+            _ => {
+                this.error(
+                    "LYS-SEM0012",
+                    f"a task scope has no method '{method}': spawn, close, cancel",
+                    at
+                );
+                TExpr.Unknown
+            }
+        };
     }
 
     /// A method of a `Task<T>` (07 N4): `await()` its value, `status()` where it stands; `null`
@@ -10419,6 +10460,11 @@ class Checker {
                 if (asCoroutine != null) {
                     return asCoroutine;
                 }
+                // a task scope's (S6c2)
+                let asScope = this.scopeMethod(receiver, i, method, args, memberAt);
+                if (asScope != null) {
+                    return asScope;
+                }
                 if (this.types[i].kind == .Interface) {
                     // through the interface value: the conformer's function in the slot
                     let found = this.ifaceMember(i, method);
@@ -10660,6 +10706,13 @@ class Checker {
 
     mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
         let info = this.types[typeIndex];
+        // `TaskScope.new()` (Lyric 5 10 §4 rule 1): the VM's scope
+        if (typeIndex == (this.typeIndex.get("TaskScope") ?? -1) && method == "new") {
+            if (args.length() > 0) {
+                this.error("LYS-SEM0014", "TaskScope.new() takes no argument", at);
+            }
+            return TExpr.ScopeNew(Ty.Named(typeIndex));
+        }
         if (info.kind == .Interface) {
             return this.qualifiedCall(typeIndex, method, args, at);
         }

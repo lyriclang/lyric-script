@@ -1620,6 +1620,31 @@ class FnGen {
                 let task = this.any(x.value);
                 this.emit(Op.TaskCancel, task.r, 0, 0);
             }
+            // S6c2: a task scope; a task of it; its close, what it throws thrown again; its cancel
+            .ScopeNew(_) => {
+                this.emit(Op.ScopeNew, dst.r, 0, 0);
+            }
+            .ScopeSpawn(sc, x, _) => {
+                let scope = this.any(sc.value);
+                let at = this.any(x.value);
+                this.emit(Op.SpawnS, dst.r, at.r, scope.r);
+            }
+            .ScopeClose(x) => {
+                let scope = this.any(x.value);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 1;
+                this.nextR += 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.ScopeClose, bs, br, scope.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
+            }
+            .ScopeCancel(x) => {
+                let scope = this.any(x.value);
+                this.emit(Op.ScopeCancel, scope.r, 0, 0);
+            }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);
                 this.emit(Op.TaskSt, dst.s, task.r, 0);

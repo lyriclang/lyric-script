@@ -428,3 +428,38 @@ fn cancellationIsChecked(): void {
     assertEq(errs("fn f() throws Exception {\n    yieldNow()\n}"), ["LYS-SEM0034"]);
     assertEq(errs("fn f() throws Cancelled {\n    yieldNow()\n}"), []);
 }
+
+// Task scopes (S6c2): `close()` waits for the scope's tasks and throws the first failure.
+let boxed: string = "class B {\n    var n: int = 0\n}\n";
+
+@Test
+fn aScopeWaitsForItsTasks(): void {
+    let src = boxed
+        + "fn run(b: B) {\n    using let scope = TaskScope.new()\n    scope.spawn {\n        yieldNow()\n"
+        + "        b.n += 1\n    }\n}\nfn f(): int {\n    let b = B { }\n    run(b)\n    return b.n\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn theFirstFailureComesOutOfClose(): void {
+    let src = "fn fail(): int {\n    throw Exception(\"boom\")\n}\nfn run() {\n    using let scope = TaskScope.new()\n"
+        + "    scope.spawn { fail() }\n}\nfn f(): int {\n    try {\n        run()\n    } catch (e) {\n"
+        + "        return if (e.message() == \"boom\") 1 else 2\n    }\n    return 0\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn aScopesCancelReachesItsTasks(): void {
+    let src = boxed
+        + "fn run(b: B) {\n    using let scope = TaskScope.new()\n    scope.spawn {\n        try {\n"
+        + "            yieldNow()\n        } catch (e: Cancelled) {\n            b.n += 1\n        }\n    }\n"
+        + "    scope.cancel()\n}\nfn f(): int {\n    let b = B { }\n    run(b)\n    return b.n\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn scopesAreChecked(): void {
+    assertEq(errs("let scope = TaskScope.new(1)"), ["LYS-SEM0014"]);
+    assertEq(errs("let scope = TaskScope.new()\nscope.join()"), ["LYS-SEM0012"]);
+    assertEq(errs("let x: Closeable = TaskScope.new()"), ["LYS-SEM0001"]);
+}

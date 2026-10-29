@@ -234,6 +234,20 @@ pub class ScriptTask :: [HeapRef] {
     // S6c1: cancelled, its waits throw `Cancelled`; detached, nobody waits for it
     var cancelled: bool = false,
     detached: bool = false,
+    // S6c2: the task scope it belongs to; none for the top level's
+    scope: ?ScriptScope = null,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A task scope (Lyric 5 10 §4): its tasks, the first of them to fail, whether it has closed
+/// (S6c2).
+pub class ScriptScope :: [HeapRef] {
+    tasks: List<ScriptTask>,
+    var failed: ?ScriptTask = null,
+    var closed: bool = false,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -313,7 +327,17 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                     return out;
                 }
                 h.result = out;
-                if (shared.failed == null && !h.detached) {
+                // a task of a scope fails its scope: the first cancels the scope's others (§4
+                // rule 2, §5 rule 3)
+                let sc = h.scope;
+                if (sc != null) {
+                    if (sc.failed == null && failedWith(module, h, out)) {
+                        sc.failed = h;
+                        for (x in sc.tasks) {
+                            cancelTask(x, shared);
+                        }
+                    }
+                } else if (shared.failed == null && !h.detached) {
                     // a task that ends with `Cancelled` is no failure (Lyric 5 10 §4 rule 2)
                     var failed = false;
                     match (out) {
@@ -368,6 +392,16 @@ fn isCancelled(module: Module, v: HeapRef): bool {
         return false;
     }
     return same(v.typeDesc, module.types[module.cancelledType]);
+}
+
+/// Whether task `h`, which ended with `out`, failed: an error other than `Cancelled`, or a panic
+/// (Lyric 5 10 §4 rule 2, §5 rule 3).
+fn failedWith(module: Module, h: ScriptTask, out: Outcome): bool {
+    return match (out) {
+        .Error(_) => !isCancelled(module, h.state.thrown),
+        .Panic(_) => true,
+        _ => false,
+    };
 }
 
 /// A new `Cancelled`, which a wait in a cancelled task throws (S6c1).
@@ -1642,6 +1676,71 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     pc += 1;
                 }
             }
+            // S6c2: a task scope
+            .ScopeNew => {
+                r[br + a] = ScriptScope { tasks = List<ScriptTask>.new() };
+                pc += 1;
+            }
+            // S6c2: the scope in `c` closes (Lyric 5 10 §4 rules 1–4): it waits until every task of
+            // it has ended — a cancel of the closing task cancels them and goes on waiting —, then
+            // throws the first failure (`s[a]` 1, error `r[b]`, record `r[b+1]`) or panics its panic
+            .ScopeClose => {
+                let sc = r[br + c];
+                if (!(sc is ScriptScope)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a close of no scope");
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    for (x in sc.tasks) {
+                        cancelTask(x, shared);
+                    }
+                }
+                var open: ?ScriptTask = null;
+                for (h in sc.tasks) {
+                    if (h.result == null && open == null) {
+                        open = h;
+                    }
+                }
+                let waiting = open;
+                if (waiting != null) {
+                    t.waitingOn = waiting;
+                    waiting.waiters.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+                sc.closed = true;
+                s[bs + a] = 0 as uint64;
+                let h = sc.failed;
+                if (h != null) {
+                    match (h.result ?? Outcome.Switch) {
+                        .Panic(p) => {
+                            return Outcome.Panic(p);
+                        }
+                        _ => {
+                            s[bs + a] = 1 as uint64;
+                            r[br + b] = h.state.thrown;
+                            r[br + b + 1] = h.state.record;
+                        }
+                    }
+                }
+                pc += 1;
+            }
+            .ScopeCancel => {
+                let sc = r[br + a];
+                if (sc is ScriptScope) {
+                    for (x in sc.tasks) {
+                        cancelTask(x, shared);
+                    }
+                }
+                pc += 1;
+            }
             // S6c1: the task in `a` cancelled (Lyric 5 10 §3 rule 1)
             .TaskCancel => {
                 let o = r[br + a];
@@ -1664,7 +1763,25 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             }
             // S6a: a task of the closure in `b`, queued; the spawner goes on (07 N8); `spawn.d` one
             // nobody waits for (S6c1)
-            .Spawn | .SpawnD => {
+            .Spawn | .SpawnD | .SpawnS => {
+                // S6c2: a scope's task; a closed scope takes none (Lyric 5 10 §4 rule 5)
+                var scope: ?ScriptScope = null;
+                if (ins.op == .SpawnS) {
+                    let sc = r[br + c];
+                    if (sc is ScriptScope) {
+                        if (sc.closed) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0008",
+                                "a closed scope takes no task"
+                            );
+                        }
+                        scope = sc;
+                    }
+                }
                 let env = r[br + b];
                 var target = -1;
                 if (env is ScriptObject) {
@@ -1692,10 +1809,16 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     state = child,
                     waiters = List<TaskState>.new(),
                     detached = ins.op == .SpawnD,
+                    scope = scope,
                 };
                 child.handle = handle;
                 shared.queue.push(child);
-                shared.tasks.push(handle);
+                let own = scope;
+                if (own != null) {
+                    own.tasks.push(handle);
+                } else {
+                    shared.tasks.push(handle);
+                }
                 r[br + a] = handle;
                 pc += 1;
             }

@@ -263,6 +263,8 @@ fn typeOf(e: TExpr): Ty {
         .CoNew(_, t) | .CoNext(_, t) | .CoResult(_, t) => t,
         .CoDone(_) => Ty.Bool,
         .CoClose(_, _) | .SpawnDetached(_) | .TaskCancel(_) => Ty.Void,
+        .ScopeNew(t) | .ScopeSpawn(_, _, t) => t,
+        .ScopeClose(_) | .ScopeCancel(_) => Ty.Void,
         .Int(_) => Ty.Int,
         .Float(_) => Ty.Float,
         .Bool(_) => Ty.Bool,
@@ -485,6 +487,12 @@ enum TExpr :: [Debug] {
     /// S6c1: `spawnDetached { … }`, a task nobody waits for; `t.cancel()`.
     SpawnDetached(Box<TExpr>),
     TaskCancel(Box<TExpr>),
+    /// S6c2: `TaskScope.new()`; `scope.spawn { … }`, the task's type; `scope.close()`;
+    /// `scope.cancel()` (Lyric 5 10 §4).
+    ScopeNew(Ty),
+    ScopeSpawn(Box<TExpr>, Box<TExpr>, Ty),
+    ScopeClose(Box<TExpr>),
+    ScopeCancel(Box<TExpr>),
     Unknown,
 }
 
@@ -541,6 +549,9 @@ fn exprsIn(e: TExpr): TExpr[] {
         .CoNew(x, _) | .CoNext(x, _) | .CoResult(x, _) | .CoDone(x) => [x.value],
         .CoClose(x, c) => [x.value, c.value],
         .SpawnDetached(x) | .TaskCancel(x) => [x.value],
+        .ScopeNew(_) => [],
+        .ScopeSpawn(sc, x, _) => [sc.value, x.value],
+        .ScopeClose(x) | .ScopeCancel(x) => [x.value],
         .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
         .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],
         .CapturedCell(_, _) | .CellOf(_, _) | .DescOfType(_, _) | .GenericValue(_, _, _) => [],

@@ -103,7 +103,11 @@ Exit criterion: generic code and interfaces in scripts, in CI; the delta's chapt
 
 Errors and control (plan 14, S4): VM exceptions, inferred error sets, a written `throws` checked,
 `try?`/`try!`/`try … catch`, `catch (e in […])`, `defer`/`using`, `loop`/`break value`, `never`
-(05). The slices are made precise in 14 before the work starts.
+(05). The slices are made precise in 14 ("S4 — Slices").
+
+| Slice | State |
+|---|---|
+| S4a throwing and the error path | done — `throw` (a statement, and an expression of type `never`, which now fits every type), the `try` block with typed clauses and the clause without a type; the VM's `throw` and a region table per function (format 4); an error leaves frame after frame to the first region that covers it; one no frame takes is reported through its `message()` and `cause()` in the same run, `error:`/`caused by:` and its frames, exit 1. `Error` and `Exception` in the prelude (from S4b), `LYS-SEM0030`, `LYS-SEM0036`. Found on the way: a copy at a scalar handed it to an interface parameter as a reference (since S3g) |
 
 Exit criterion: the error examples run; exit codes 1 and 101.
 

@@ -461,7 +461,7 @@ und 07 des Deltas.
 | Slice | Inhalt | Prüfung |
 |---|---|---|
 | **S4a Werfen und Fehlerpfad** | `throw e` (Anweisung und Ausdruck vom Typ `never`); in der VM verlässt ein Fehler jeden Rahmen wie eine Rückkehr ohne Wert (06 §5 R1), Handler-Tabelle je Funktion; der `try`-Block mit Klauseln als Typtests über den Deskriptor (`is.t`/`is.i`/`is.d`, 06 §4 R7); ungefangen aus `main`: `error:` mit `caused by:`/`suppressed:`, Exit 1 (§5 R3); Paniken bleiben 101 und unfangbar | Fehlerbeispiele; Exit 1/101 |
-| **S4b `Error` und `Exception`** | `interface Error { message(), cause() }` und `Exception(message, cause:)` im Prelude (Lyric-Script-Quelle wie die Literal-Protokolle); werfbar ist, was zu `Error` konformiert (§1, `LYS-SEM0030`) | Konformanzfälle |
+| **S4b Der Datensatz eines Fehlers** | wo er zuerst geworfen wurde, `e.backtrace()` an der Bindung einer Klausel (06 §4 R4, Lyric 5 M5-3); `throw e` der eigenen Bindung in ihrer Klausel ist derselbe Fehler und behält ihn, jeder andere Wurf beginnt einen neuen. `Error` und `Exception` kamen schon mit S4a; `e.suppressed()` ist ein `Error[]` und kommt mit den Arrays (S7), das Anhängen mit S4e | Konformanzfälle |
 | **S4c Fehlermengen** | je Funktion erschlossen (Fixpunkt über den Aufrufgraphen); geschriebenes `throws [A, B]` als geprüfter Vertrag; Teilmengenregel nur bei deklariertem Interface-Member; Funktionswerte, Host und native Module werfen `Error` (05 K); Lint `unmarked-throw` | Fehler am Vertrag |
 | **S4d Ausdrucksformen und Klauselregeln** | `try?` (nicht abgeflacht), `try!` (Panik `RT0010`), `try e catch (x: A) v` (06 §6); `catch (e in [A, B])`, Regeln E9 (kein Typ doppelt, unerreichbare Klausel, Catch-all zuletzt), `catch (e)` trägt die Menge (K7), präzises Weiterwerfen | Konformanzfälle |
 | **S4e `defer` und `using`** | `defer` statisch auf jeden Ausgang gelegt, auf dem Fehlerpfad als Catch-all-Bereich, LIFO; wirft er unterwegs, gewinnt der erste Fehler, der zweite hängt als unterdrückt an (§5 R4–R5); `using let` für `Closeable` (§7) | Reihenfolge-Fälle |
@@ -470,3 +470,19 @@ und 07 des Deltas.
 
 Reihenfolge: a vor b (das Werfen braucht noch keine Hierarchie, die Klauseln testen Typen), b vor
 c–d, e nach a, f unabhängig.
+
+**S4a, Ergebnis (2026-10-29).** `throw e` als Anweisung und als Ausdruck vom Typ `never`; `never`
+passt jetzt in `fit` zu jedem Typ, also auch rechts von `??` und als Rumpf eines Lambdas. Der
+`try`-Block mit getypten Klauseln und der Klausel ohne Typ; eine Klausel testet wie ein
+Typmuster (`typeTest`, `heldAs`) und bindet den Fehler als ihren Typ. In der VM die Op `throw`
+und eine Bereichstabelle je Funktion, innerste zuerst (Bytecode-Format 4; im Text-Assembler die
+Zeile `catch @von, @bis, @handler, rN`); ein Fehler verlässt Rahmen um Rahmen bis zum ersten
+Bereich, der ihn abdeckt — beim Aufrufer am Aufruf. Ungefangen fragt die VM im selben Lauf
+`message()` und `cause()` (die Kette bis 64, ein Zyklus endet dort; wirft `message()`, nennt
+der Typ den Fehler) und endet mit `Outcome.Error`; die CLI druckt `error:`, `  caused by:` und
+die Rahmen, Exit 1. `Error` und `Exception` stehen als Lyric-Script-Quelle im Prelude (aus S4b
+vorgezogen), dazu `LYS-SEM0030` und `LYS-SEM0036` (ein Block ohne Klausel, wie Lyric 5). Die
+Zuweisungsanalyse: eine Klausel kennt nur, was vor dem `try` zugewiesen war. Der Runner kann
+Lyric 5s `stderr:`. Nebenbei behoben: eine Kopie an einem Skalar gab ihn einem
+Interface-Parameter als Referenz weiter (seit S3g, `f<T :: [Show]>(x: T) = describe(x)` mit
+`int`: fehlerhafter Bytecode) — jetzt eine Box wie bei `fit`. 208 Tests, 123 Konformanzfälle.

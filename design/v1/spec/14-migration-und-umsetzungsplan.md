@@ -549,4 +549,4 @@ Funktionstyp das Ergebnis), eine `never`-Funktion kehrt nicht zurück (`LYS-SEM0
 fehlerhafter Bytecode bei `fn f(): int = todo()`). `panic`, `assert { }`, `unreachable`, `todo`
 als Built-ins auf `TExpr.Panic` (RT0008/0011/0012/0013); `assert` steht an der Stelle, zitiert
 die Bedingung aus dem Quelltext (den der Parser jetzt im Modul hält) und baut die Meldung nur
-beim Fehlschlag. 244 Tests, 165 Konformanzfälle.
+beim Fehlschlag. Der Fall aus Lyric 5s Beispiel (`ok || fail("why")` ist ein `bool`) fand eine Lücke: `never` als Operand — rechts von `&&`/`||` bestimmt die linke Seite den Typ, unter jedem anderen Operator ergibt das Ganze `never`; `println` eines `never` ebenso. 245 Tests, 165 Konformanzfälle.

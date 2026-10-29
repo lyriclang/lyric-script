@@ -525,3 +525,15 @@ bis nach der Inferenz (`LYS-SEM0050` nennt den fehlenden Typ). Abweichung, entsc
 Bau: die Bindung bleibt ein `Error`, auch wo nur ein Typ ankommt (Lyric 5 M5-6), da die Mengen
 erst nach den Rümpfen feststehen. `LYS-PAR0050`/`PAR0051` im Parser. 229 Tests, 145
 Konformanzfälle.
+
+**S4e, Ergebnis (2026-10-29).** `defer` und `using let` werden im Checker zu `TStmt.Finally`
+gesenkt: der Rest des Gültigkeitsbereichs ist die Region des `defer`, auch in Wertblöcken. Der
+Codegen legt den `defer` auf jeden Ausgang: am Ende, auf dem Fehlerpfad im Handler (unter einer
+eigenen Region, deren Fehler mit der neuen Op `suppress` an den Datensatz des ersten gehen; dann
+`rethrow`), und bei `return`/`break`/`continue` als Kopie — die Region bekommt dort eine Lücke,
+damit die Kopie unter den äußeren Regionen läuft, nicht unter der eigenen (06 §5 R4); der Wert
+eines `return` liegt vorher in eigenen Registern. Der Bericht nennt `  suppressed:` (Format 7).
+`using` bindet ein `Closeable` des Prelude (`LYS-SEM0143`, `LYS-PAR0052`); ein fallengelassenes
+`Closeable` warnt (`LYS-SEM0144`, die `let`-Hälfte mit den Lints S11). Ein Sprung aus einem
+`defer`-Rumpf (`return`, `break`/`continue` nach außen) ist abgelehnt (`LYS-SEM0904`, eigener
+Code; Lyric 5 sagt nichts — offener Punkt P15). 238 Tests, 153 Konformanzfälle.

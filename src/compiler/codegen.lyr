@@ -970,7 +970,10 @@ class FnGen {
             }
             .Return(v, line) => {
                 this.line = line;
-                if (v != null) {
+                // what does not return leaves by its own way: no `ret` follows it
+                if (v != null && typeOf(v) == .Never) {
+                    this.effect(v);
+                } else if (v != null) {
                     let t = typeOf(v);
                     // the value first, then the defers on the way out (06 §5 rule 2): in a
                     // temporary of its own where a defer may run, which no defer writes
@@ -997,7 +1000,10 @@ class FnGen {
                     this.line = line;
                     this.emit(Op.Ret, 0, 0, 0);
                 }
-                this.reopenFinallies(0);
+                // after a `ret` the regions open again; what did not return left none
+                if (v == null || typeOf(v) != .Never) {
+                    this.reopenFinallies(0);
+                }
             }
             .Block(list, _) => this.stmts(list),
             // the rest of a scope with its defer: the region, the defer on the normal way out,

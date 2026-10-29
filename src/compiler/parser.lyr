@@ -1818,6 +1818,13 @@ class Parser {
     /// A name, `loop { … }`, `x => …` (a lambda of one parameter, its type from the position), or
     /// `Name { … }`, an initializer.
     mut fn nameValue(t: Token): Expr throws SyntaxError {
+        // `found = search: loop { … }`: a label before a loop where a value stands
+        if (this.peek(1).kind == .Colon
+            && this.isWord(this.peek(2), "loop")
+            && this.peek(3).kind == .LBrace) {
+            this.pendingLabel = this.text(this.advance());
+            this.advance();
+        }
         if (this.atWord("loop") && this.peek(1).kind == .LBrace) {
             this.advance();
             let label = this.takeLabel();

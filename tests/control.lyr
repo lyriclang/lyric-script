@@ -1,0 +1,148 @@
+// Control and `never` (S4f; Lyric 5 07 §1, 06 §9): a label names the loop a jump leaves or
+// continues; `do … while` runs its block first; `never` stands only as a return type, a function
+// returning it does not return; the prelude's `panic`, `assert`, `unreachable` and `todo`.
+import std.collections { List };
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.heap { ScriptString };
+import lyric_script.vm.interp { ScriptPanic, run };
+import lyric_script.vm.module { Module, check };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "t");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn text(source: string, entry: string): string {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Ref(v) => if (v is ScriptString) v.text else "<no string>",
+        .Panic(p) => f"<panic {p.code}>",
+        _ => "<none>",
+    };
+}
+
+fn panicOf(source: string, entry: string): ScriptPanic {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Panic(p) => p,
+        _ => ScriptPanic { code = "none", message = "", trace = [] },
+    };
+}
+
+fn diagnostics(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    if (out.length() > 0) {
+        return out.toArray();
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        out.push(e.code);
+    }
+    for (w in checked.warnings) {
+        out.push(w.code);
+    }
+    return out.toArray();
+}
+
+@Test
+fn labelsNameTheLoopTheyLeave(): void {
+    let source = "fn walk(): string {\n    var s = \"\"\n    outer: for (i in 0..3) {\n        for (j in 0..3) {\n            if (j == 1) {\n                continue outer\n            }\n            if (i == 2) {\n                break outer\n            }\n            s = s + f\"{i}{j} \"\n        }\n    }\n    return s\n}\nfn search(): int {\n    let found = hunt: loop {\n        for (k in 0..10) {\n            if (k * k > 20) {\n                break hunt k\n            }\n        }\n        break hunt -1\n    }\n    return found\n}";
+    assertEq(text(source, "walk"), "00 10 ");
+    // a name after `break` is the label of a loop around, and the value otherwise
+    assertEq(value(source, "search"), 5);
+}
+
+@Test
+fn aDoLoopRunsItsBlockFirst(): void {
+    let source = "fn once(): int {\n    var n = 10\n    do {\n        n += 1\n    } while (false)\n    return n\n}\nfn turns(): int {\n    var n = 0\n    var odd = 0\n    do {\n        n += 1\n        if (n % 2 == 0) {\n            continue\n        }\n        odd += 1\n        if (n > 6) {\n            break\n        }\n    } while (n < 10)\n    return n * 100 + odd\n}";
+    assertEq(value(source, "once"), 11);
+    // a `continue` goes to the test, a `break` past it: 1 3 5 7 counted, 7 breaks
+    assertEq(value(source, "turns"), 704);
+}
+
+@Test
+fn whatLabelsRefuse(): void {
+    assertEq(
+        diagnostics("fn f() {\n    for (i in 0..2) {\n        continue nowhere\n    }\n}"),
+        ["LYS-SEM0101"]
+    );
+    assertEq(
+        diagnostics(
+            "fn f() {\n    a: for (i in 0..2) {\n        a: for (j in 0..2) {\n            break a\n        }\n    }\n}"
+        ),
+        ["LYS-SEM0102", "LYS-SEM0103"]
+    );
+    assertEq(
+        diagnostics("fn f() {\n    b: for (i in 0..2) {\n        println(i)\n    }\n}"),
+        ["LYS-SEM0103"]
+    );
+    // a lambda's body is a function of its own: the loops around are out of its reach
+    assertEq(
+        diagnostics(
+            "fn f() {\n    out: for (i in 0..2) {\n        let g = () => {\n            for (j in 0..2) {\n                break out\n            }\n        }\n        g()\n        break out\n    }\n}"
+        ),
+        ["LYS-SEM0101"]
+    );
+}
+
+@Test
+fn neverStandsOnlyAsAReturnType(): void {
+    assertEq(diagnostics("fn f(x: never) {\n}"), ["LYS-SEM0145"]);
+    assertEq(diagnostics("fn f() {\n    let y: ?never = null\n}"), ["LYS-SEM0145"]);
+    assertEq(diagnostics("struct S {\n    n: never\n}"), ["LYS-SEM0145"]);
+    assertEq(diagnostics("fn g(): never {\n    return 1\n}"), ["LYS-SEM0146"]);
+    assertEq(diagnostics("fn h(): never {\n    println(\"x\")\n}"), ["LYS-SEM0017"]);
+    assertEq(diagnostics("fn k(): never {\n    panic(\"no\")\n}"), []);
+    assertEq(diagnostics("fn k(): never {\n    return unreachable()\n}"), []);
+    // it fits every type where a value is wanted
+    let source = "fn pick(x: ?int): int = x ?? unreachable(\"x is there\")\nfn p(): int = pick(4)\nfn later(): int = todo(\"later\")";
+    assertEq(value(source, "p"), 4);
+    assertEq(panicOf(source, "later").code, "LYS-RT0013");
+}
+
+@Test
+fn thePreludesPanics(): void {
+    let source = "fn a(): int {\n    panic(\"as written\")\n}\nfn b(): int = unreachable()\nfn c(): int = todo(\"the parser\")\nfn d(n: int): int {\n    assert(n > 2) { f\"n = {n}\" }\n    return n\n}\nfn d1(): int = d(1)\nfn d5(): int = d(5)\nfn e(): int {\n    assert(1 + 1 == 3)\n    return 0\n}";
+    let a = panicOf(source, "a");
+    assertEq(a.code, "LYS-RT0008");
+    assertEq(a.message, "as written");
+    assertEq(panicOf(source, "b").message, "unreachable");
+    let c = panicOf(source, "c");
+    assertEq(c.code, "LYS-RT0013");
+    assertEq(c.message, "not implemented: the parser");
+    // an assertion names its condition as written
+    let d = panicOf(source, "d1");
+    assertEq(d.code, "LYS-RT0011");
+    assertEq(d.message, "assertion failed: n > 2: n = 1");
+    assertEq(value(source, "d5"), 5);
+    assertEq(panicOf(source, "e").message, "assertion failed: 1 + 1 == 3");
+}
+
+@Test
+fn anAssertionBuildsItsMessageOnlyWhenItFails(): void {
+    let source = "class Count {\n    var n: int = 0\n    fn note(): string {\n        this.n += 1\n        return \"noted\"\n    }\n}\nfn go(): int {\n    let c = Count { }\n    assert(true) { c.note() }\n    assert(1 < 2) { c.note() }\n    return c.n\n}";
+    assertEq(value(source, "go"), 0);
+}

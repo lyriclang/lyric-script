@@ -1692,9 +1692,42 @@ class Parser {
 
     mut fn indexAfter(e: Expr, first: Token): Expr throws SyntaxError {
         this.advance();
-        let index = try this.parseExpr();
+        let index = try this.parseIndex();
         try this.expect(.RBracket, "LYS-PAR0004", "']' after the index");
         return Expr.Index(boxed(e), boxed(index), this.since(first));
+    }
+
+    /// What stands in `[ ]` (S7b2b; Lyric 5 03 T14): an index, `^n` from the end, or a range of
+    /// them whose ends may be left out — `a..` to the end (`a..^0`), `..b` from the start.
+    mut fn parseIndex(): Expr throws SyntaxError {
+        let first = this.current();
+        var lower = Expr.Int(0, this.since(first));
+        if (!this.at(.DotDot) && !this.at(.DotDotEq)) {
+            lower = try this.indexBound();
+            if (!this.at(.DotDot) && !this.at(.DotDotEq)) {
+                return lower;
+            }
+        }
+        let inclusive = this.at(.DotDotEq);
+        this.advance();
+        let end = if (!inclusive && this.at(.RBracket)) Expr.FromEnd(
+            boxed(Expr.Int(0, this.since(first))),
+            this.since(first)
+        )
+            else try this.indexBound();
+        return Expr.Range(boxed(lower), boxed(end), inclusive, this.since(first));
+    }
+
+    /// An end of an index or of a range in `[ ]`: `^n`, or an expression that binds tighter than
+    /// a range.
+    mut fn indexBound(): Expr throws SyntaxError {
+        let first = this.current();
+        if (this.at(.Caret)) {
+            this.advance();
+            let n = try this.parseUnary();
+            return Expr.FromEnd(boxed(n), this.since(first));
+        }
+        return try this.parseBinary(21);
     }
 
     /// `p with { x = 1 }` (Lyric 5 02 M6): a postfix, `with` contextual.

@@ -2142,6 +2142,11 @@ class FnGen {
                 let c = this.any(args[1]).s;
                 this.emit(Op.ListCheck, l, c, 0);
             }
+            .Suppressed => {
+                let rec = this.any(args[0]).r;
+                let out = if (dst.r < 0) this.temp(t) else dst;
+                this.emit(Op.ListSupp, out.r, rec, 0);
+            }
         }
         this.release(m);
     }

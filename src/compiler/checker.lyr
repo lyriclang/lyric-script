@@ -3390,6 +3390,14 @@ class Checker {
         for (m in staleBound) {
             this.bound.remove(m);
         }
+        // every cache of a function the checker wrote: a dropped one is written again (S7b2b —
+        // a type's Debug form kept the index of a dropped function, another took its place)
+        dropIntKeyed(this.eqFns, n);
+        dropIntKeyed(this.debugFns, n);
+        dropIntKeyed(this.unboxers, n);
+        dropTextKeyed(this.listDebugFns, n);
+        dropTextKeyed(this.instances, n);
+        dropTextKeyed(this.descThunks, n);
     }
 
     // --- the copies of generics (11 Gen) ----------------------------------------------------------
@@ -5420,6 +5428,9 @@ class Checker {
         if (isVar && written == null && isNullLit(value)) {
             return this.nullVar(name, at);
         }
+        if (written == null && isEmptyList(value)) {
+            return this.emptyListVar(name, isVar, at);
+        }
         var v = this.expr(value, if (written != null) t else null);
         if (written != null) {
             v = this.coerce(v, t, spanOf(value));
@@ -6744,6 +6755,44 @@ class Checker {
         return TStmt.SetLocal(id, v, at.line);
     }
 
+    /// `var xs = []` or `let xs = []` (03 Leer, S7b2b): its type is the first a use in the function
+    /// fixes — a push, an element written, the list given where a list is taken; where nothing
+    /// fixes it, it is written.
+    mut fn emptyListVar(name: string, isVar: bool, at: Span): TStmt {
+        let ord = this.ctx.nullVars;
+        this.ctx.nullVars += 1;
+        var t = Ty.List(boxTy(Ty.Unknown));
+        if (this.ctx.fixing) {
+            this.ctx.fixes.push(null);
+        } else {
+            let fixed: ?Ty = if (ord < this.ctx.fixes.length()) this.ctx.fixes[ord] else null;
+            if (fixed != null) {
+                t = fixed;
+            } else {
+                this.errorHelp(
+                    "LYS-SEM0010",
+                    f"nothing in this function fixes the type of '{name}'",
+                    f"write it: {if (isVar) "var" else "let"} {name}: T[] = []",
+                    at
+                );
+                t = Ty.Unknown;
+            }
+        }
+        let v = if (t == .Unknown) TExpr.Unknown else TExpr.ListOp(ListOp.Lit, [], t);
+        if (this.atTop()) {
+            let g = this.declareGlobal(name, t, isVar, at);
+            if (this.ctx.fixing) {
+                this.ctx.soughtGlobals.insert(g, ord);
+            }
+            return TStmt.SetGlobal(g, v, at.line);
+        }
+        let id = this.declareLocal(name, t, isVar, at);
+        if (this.ctx.fixing) {
+            this.ctx.sought.insert(id, ord);
+        }
+        return TStmt.SetLocal(id, v, at.line);
+    }
+
     /// In the first pass of 03 Leer: where `e` is a `var x = null` whose type is still sought, `t`
     /// fixes it — the first such use in the function, as an optional.
     mut fn fixFrom(e: TExpr, t: Ty): void {
@@ -6756,6 +6805,23 @@ class Checker {
             _ => null,
         };
         if (ord == null || this.ctx.fixes[ord] != null) {
+            return;
+        }
+        // an empty list's: a list of a known element (S7b2b)
+        let sought = typeOf(e);
+        let isList = match (sought) {
+            .List(_) => true,
+            _ => false,
+        };
+        if (isList) {
+            match (t) {
+                .List(x) => {
+                    if (x.value != .Unknown && x.value != .NullLit) {
+                        this.ctx.fixes[ord] = t;
+                    }
+                }
+                _ => { }
+            }
             return;
         }
         let fixed: ?Ty = match (t) {
@@ -7269,6 +7335,10 @@ class Checker {
                 }
             }
             .Index(x, i, at) => this.indexRead(x.value, i.value, at),
+            .FromEnd(_, at) => {
+                this.error("LYS-ICE0001", "a count from the end where no list is indexed", at);
+                TExpr.Unknown
+            }
             .Member(x, name, optional, at) => this.member(x.value, name, optional, at),
             .List(items, at) => this.listLiteral(items, expected, at),
             .Map(_, at) => this.notYet("a map literal", "S7 (the core collections)", at),
@@ -8290,10 +8360,21 @@ class Checker {
                 current = TExpr.Field(boxE(o), index, t);
             }
             .Index(x, i, indexAt) => {
-                let lv = this.expr(x.value, null);
-                match (typeOf(lv)) {
+                var lv = this.expr(x.value, null);
+                let lt = typeOf(lv);
+                match (lt) {
                     .List(e) => {
-                        let iv = this.coerce(this.expr(i.value, Ty.Int), Ty.Int, spanOf(i.value));
+                        var hold: ?int = null;
+                        if (countsFromEnd(i.value)) {
+                            let h = this.hidden(lt, indexAt);
+                            lv = TExpr.Block(
+                                [TStmt.SetLocal(h, lv, indexAt.line)],
+                                boxE(TExpr.Local(h, lt)),
+                                lt
+                            );
+                            hold = h;
+                        }
+                        let iv = this.indexOf(i.value, lt, hold);
                         place = Place.Item(boxE(lv), boxE(iv));
                         t = e.value;
                         current = TExpr.ListOp(ListOp.Get, [lv, iv], t);
@@ -8925,19 +9006,22 @@ class Checker {
     /// `xs[i]` (S7b1; 03 Index): the element at an `int` index; outside the list a panic
     /// (`LYS-RT0003`).
     mut fn indexRead(x: Expr, i: Expr, at: Span): TExpr {
-        let lv = this.expr(x, null);
+        var lv = this.expr(x, null);
         let t = typeOf(lv);
         match (t) {
             .List(e) => {
+                // `^n` reads the length: the list held once, the place where it is read
+                var hold: ?int = null;
+                if (countsFromEnd(i)) {
+                    let h = this.hidden(t, at);
+                    lv = TExpr.Block([TStmt.SetLocal(h, lv, at.line)], boxE(TExpr.Local(h, t)), t);
+                    hold = h;
+                }
                 match (i) {
                     .Range(from, to, inclusive, _) => {
                         // a slice is a new list (03 S)
-                        let a = this.coerce(
-                            this.expr(from.value, Ty.Int),
-                            Ty.Int,
-                            spanOf(from.value)
-                        );
-                        let b = this.coerce(this.expr(to.value, Ty.Int), Ty.Int, spanOf(to.value));
+                        let a = this.indexOf(from.value, t, hold);
+                        let b = this.indexOf(to.value, t, hold);
                         let end = if (inclusive) TExpr.Binary(
                             boxE(b),
                             BinaryOp.Add,
@@ -8949,7 +9033,7 @@ class Checker {
                     }
                     _ => { }
                 }
-                let iv = this.coerce(this.expr(i, Ty.Int), Ty.Int, spanOf(i));
+                let iv = this.indexOf(i, t, hold);
                 return TExpr.ListOp(ListOp.Get, [lv, iv], e.value);
             }
             .Unknown => {
@@ -8959,6 +9043,20 @@ class Checker {
                 return this.notYet(f"indexing a {this.tyName(t)}", "S7 (the core collections)", at);
             }
         }
+    }
+
+    /// An index of a list: an `int`, or `^n`, the list's length less `n` — the list in hidden
+    /// local `hold`, which the place set before (S7b2b).
+    mut fn indexOf(i: Expr, t: Ty, hold: ?int): TExpr {
+        match (i) {
+            .FromEnd(n, _) => {
+                let k = this.coerce(this.expr(n.value, Ty.Int), Ty.Int, spanOf(n.value));
+                let len = TExpr.ListOp(ListOp.Len, [TExpr.Local(hold ?? 0, t)], Ty.Int);
+                return TExpr.Binary(boxE(len), BinaryOp.Sub, boxE(k), Ty.Int);
+            }
+            _ => { }
+        }
+        return this.coerce(this.expr(i, Ty.Int), Ty.Int, spanOf(i));
     }
 
     /// A list's own methods (S7b1): `length()`, `push(v)`, `pop()`; `null` for another name — the
@@ -9059,6 +9157,9 @@ class Checker {
             "pop" => TExpr.ListOp(ListOp.Pop, [receiver], Ty.Optional(boxTy(elem))),
             _ => {
                 let v = this.coerce(this.expr(args[0].value, elem), elem, spanOf(args[0].value));
+                if (elem == .Unknown) {
+                    this.fixFrom(receiver, Ty.List(boxTy(typeOf(v))));
+                }
                 TExpr.ListOp(ListOp.Push, [receiver, v], Ty.Void)
             }
         };
@@ -11301,6 +11402,18 @@ class Checker {
                     && !this.hasMember(t, method)) {
                     return this.backtraceOf(record);
                 }
+                // the errors a defer threw while this one was in flight (06 §4, S7b2b)
+                if (let rec = record) {
+                    if (method == "suppressed"
+                        && args.length() == 0
+                        && !this.hasMember(t, method)) {
+                        return TExpr.ListOp(
+                            ListOp.Suppressed,
+                            [TExpr.Local(rec, Ty.Named(this.anyIndex))],
+                            Ty.List(boxTy(this.errorTy()))
+                        );
+                    }
+                }
             }
             _ => { }
         }
@@ -12199,13 +12312,55 @@ fn fnDeclaresNull(decl: FnDecl): bool {
 fn isNullVar(s: Stmt): bool {
     match (s) {
         .Let(isVar, _, written, value, _) => {
-            if (isVar && written == null && value != null) {
-                return isNullLit(value);
+            if (written == null && value != null) {
+                return (isVar && isNullLit(value)) || isEmptyList(value);
             }
         }
         _ => { }
     }
     return false;
+}
+
+/// The entries of `m` whose function is `n` or later: gone.
+fn dropIntKeyed(m: Map<int, int>, n: int): void {
+    let stale = List<int>.new();
+    for (k in m.keys()) {
+        if ((m.get(k) ?? -1) >= n) {
+            stale.push(k);
+        }
+    }
+    for (k in stale) {
+        m.remove(k);
+    }
+}
+
+fn dropTextKeyed(m: Map<string, int>, n: int): void {
+    let stale = List<string>.new();
+    for (k in m.keys()) {
+        if ((m.get(k) ?? -1) >= n) {
+            stale.push(k);
+        }
+    }
+    for (k in stale) {
+        m.remove(k);
+    }
+}
+
+/// `[]`: a list literal of no element (S7b2b).
+fn isEmptyList(e: Expr): bool {
+    return match (e) {
+        .List(items, _) => items.length() == 0,
+        _ => false,
+    };
+}
+
+/// Whether an index counts from the end, `^n`, at itself or at an end of its range.
+fn countsFromEnd(i: Expr): bool {
+    return match (i) {
+        .FromEnd(_, _) => true,
+        .Range(a, b, _, _) => countsFromEnd(a.value) || countsFromEnd(b.value),
+        _ => false,
+    };
 }
 
 fn isNullLit(e: Expr): bool {
@@ -12950,6 +13105,7 @@ fn spanOf(e: Expr): Span {
         .Unwrap(_, at) => at,
         .Tuple(_, at) => at,
         .Implicit(_, at) => at,
+        .FromEnd(_, at) => at,
         .VariantInit(_, _, _, at) => at,
         .Match(_, _, at) => at,
         .Is(_, _, at) => at,

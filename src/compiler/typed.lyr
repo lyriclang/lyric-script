@@ -371,6 +371,9 @@ enum ListOp :: [Equatable, Debug] {
     Changes,
     /// A walk's check that the count is still the one it began with (`LYS-RT0016`).
     Check,
+    /// `e.suppressed()` (S7b2b): the errors a defer threw while the error of the record was in
+    /// flight, as a list.
+    Suppressed,
 }
 
 enum TExpr :: [Debug] {

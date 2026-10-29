@@ -415,6 +415,7 @@ fn showExpr(e: Expr): string {
             "(tuple " + parts.toArray().join(" ") + ")"
         }
         .Implicit(name, _) => "." + name,
+        .FromEnd(n, _) => "(^ " + showExpr(n.value) + ")",
         .Is(x, t, _) => "(is " + showExpr(x.value) + " " + showType(t) + ")",
         .Instance(x, args, _) => {
             let parts = List<string>.new();

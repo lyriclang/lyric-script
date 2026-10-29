@@ -120,6 +120,8 @@ enum Expr :: [Debug] {
     Cast(Box<Expr>, TypeExpr, Span),
     Call(Box<Expr>, Arg[], Span),
     Index(Box<Expr>, Box<Expr>, Span),
+    /// `^n` in a list's brackets (S7b2b; Lyric 5 03 T14): `n` counted from the end, `^1` the last.
+    FromEnd(Box<Expr>, Span),
     /// `x.name`, or `x?.name` when the flag is set.
     Member(Box<Expr>, string, bool, Span),
     List(Expr[], Span),

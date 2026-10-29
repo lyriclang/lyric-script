@@ -2909,6 +2909,23 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 }
                 pc += 1;
             }
+            .ListSupp => {
+                let out = ScriptArray {
+                    ns = 0,
+                    nr = 1,
+                    s = List<uint64>.new(),
+                    r = List<HeapRef>.new(),
+                };
+                let rec = r[br + b];
+                if (rec is ErrorRecord) {
+                    for (x in rec.suppressed) {
+                        out.r.push(x);
+                        out.n += 1;
+                    }
+                }
+                r[br + a] = out;
+                pc += 1;
+            }
             .ListChanges => {
                 let o = r[br + b];
                 if (!(o is ScriptArray)) {

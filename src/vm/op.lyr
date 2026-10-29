@@ -175,6 +175,8 @@ pub enum Op :: [Variants, Equatable] {
     ListTrunc,
     ListChanges,
     ListCheck,
+    // S7b2b: the errors an error's record holds as suppressed, a new list of them.
+    ListSupp,
 }
 
 /// What an operand of an operation names.
@@ -355,6 +357,7 @@ pub fn info(op: Op): OpInfo {
         .ListTrunc => OpInfo { mnemonic = "list.trunc", operands = [.Ref, .Scalar] },
         .ListChanges => OpInfo { mnemonic = "list.changes", operands = [.Scalar, .Ref] },
         .ListCheck => OpInfo { mnemonic = "list.check", operands = [.Ref, .Scalar] },
+        .ListSupp => OpInfo { mnemonic = "list.supp", operands = [.Ref, .Ref] },
         .ReadLine => OpInfo { mnemonic = "read.line", operands = [.Ref] },
     };
 }

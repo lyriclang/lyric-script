@@ -537,3 +537,16 @@ eines `return` liegt vorher in eigenen Registern. Der Bericht nennt `  suppresse
 `Closeable` warnt (`LYS-SEM0144`, die `let`-Hälfte mit den Lints S11). Ein Sprung aus einem
 `defer`-Rumpf (`return`, `break`/`continue` nach außen) ist abgelehnt (`LYS-SEM0904`, eigener
 Code; Lyric 5 sagt nichts — offener Punkt P15). 238 Tests, 153 Konformanzfälle.
+
+**S4f, Ergebnis (2026-10-29).** Labels werden jetzt geparst — vor `loop`, `while`, `do` und
+`for`, vor einem `loop` auch mitten im Ausdruck; der Parser führt die Labels der umgebenden
+Schleifen, damit nach `break` ein Name das Label ist, wo eine Schleife es trägt, sonst der
+Anfang des Werts. `TStmt.Break`/`Continue` tragen, wie viele Schleifen nach außen ihr Ziel steht;
+`LYS-SEM0101`, `LYS-SEM0102`, `LYS-SEM0103` (Warnung). `do { … } while (c)` mit eigenem
+`TStmt.DoWhile` (`continue` zum Test). `never` nur als Rückgabetyp (`LYS-SEM0145`, auch im
+Funktionstyp das Ergebnis), eine `never`-Funktion kehrt nicht zurück (`LYS-SEM0146`,
+`LYS-SEM0017`); ein `return` dessen, was nicht zurückkehrt, erzeugt kein `ret` (vorher
+fehlerhafter Bytecode bei `fn f(): int = todo()`). `panic`, `assert { }`, `unreachable`, `todo`
+als Built-ins auf `TExpr.Panic` (RT0008/0011/0012/0013); `assert` steht an der Stelle, zitiert
+die Bedingung aus dem Quelltext (den der Parser jetzt im Modul hält) und baut die Meldung nur
+beim Fehlschlag. 244 Tests, 165 Konformanzfälle.

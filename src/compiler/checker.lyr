@@ -6478,6 +6478,10 @@ class Checker {
     mut fn unary(op: UnaryOp, x: Expr, at: Span): TExpr {
         let v = this.expr(x, null);
         let t = typeOf(v);
+        // over `never` an operator gives `never` (06 §9 rule 2)
+        if (t == .Never) {
+            return v;
+        }
         if (t == .Unknown) {
             return TExpr.Unknown;
         }
@@ -6522,6 +6526,20 @@ class Checker {
         let tb = typeOf(b);
         if (ta == .Unknown || tb == .Unknown) {
             return TExpr.Unknown;
+        }
+        // `never` as an operand (06 §9 rule 2): the left one ends the path; on the right of `&&`
+        // and `||` it may not run, so the left side's `bool` stands; under any other operator the
+        // whole gives `never`, the left side run first
+        if (ta == .Never) {
+            return a;
+        }
+        if (tb == .Never) {
+            if ((op == .And || op == .Or) && ta == .Bool) {
+                return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
+            }
+            if (op != .And && op != .Or) {
+                return TExpr.Block([TStmt.Expr(a, at.line)], boxE(b), Ty.Never);
+            }
         }
         // `x == null`, `x != null`
         if ((op == .Eq || op == .Ne) && (ta == .NullLit || tb == .NullLit)) {
@@ -8036,7 +8054,8 @@ class Checker {
     /// A value as text, for `print`, `println` and the holes of an f-string.
     mut fn stringOf(v: TExpr, at: Span): TExpr {
         let t = typeOf(v);
-        if (t == .Str || t == .Unknown) {
+        // what gives no value gives no text either: it ends the path (06 §9 rule 2)
+        if (t == .Str || t == .Unknown || t == .Never) {
             return v;
         }
         let native: ?Native = match (t) {

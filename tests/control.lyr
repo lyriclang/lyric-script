@@ -146,3 +146,12 @@ fn anAssertionBuildsItsMessageOnlyWhenItFails(): void {
     let source = "class Count {\n    var n: int = 0\n    fn note(): string {\n        this.n += 1\n        return \"noted\"\n    }\n}\nfn go(): int {\n    let c = Count { }\n    assert(true) { c.note() }\n    assert(1 < 2) { c.note() }\n    return c.n\n}";
     assertEq(value(source, "go"), 0);
 }
+
+@Test
+fn operatorsOverNever(): void {
+    // on the right of `||` it may not run; under another operator the whole gives `never`
+    let source = "fn ok(b: bool): bool = b || panic(\"why\")\nfn t(): int = if (ok(true)) 1 else 0\nfn sum(x: int): int = x + todo(\"rest\")\nfn s(): int = sum(1)\nfn shown(): int {\n    println(-unreachable() + 1)\n    return 0\n}";
+    assertEq(value(source, "t"), 1);
+    assertEq(panicOf(source, "s").code, "LYS-RT0013");
+    assertEq(panicOf(source, "shown").code, "LYS-RT0012");
+}

@@ -207,7 +207,13 @@ std core (plan 14): the native core types (`T[]`, `Map`/`Set` in insertion order
 `BigInt`, `Bytes`); `core`, `iter`, `collections`, `string`, `fmt`, `math`, `io`, `fs` + `glob`,
 `path`, `process`, `os`, `time`, `random`, `test`, `cli`, `log`, `csv`; the rights table; the cost
 rules (12). Exit criterion: the target programs, a terminal tool and an automation, run;
-measurement point 3, the bench suite at ≥ 5× 4.6. Slices to be cut first, in plan 14.
+measurement point 3, the bench suite at ≥ 5× 4.6. Slices (plan 14, "S7 — Slices"): S7a std as
+Script modules, S7b lists, S7c iterators, S7d maps and sets, S7e strings and formats, S7f numbers,
+`BigInt`, `Bytes`, S7g I/O and files, S7h processes, environment, time, S7i batteries, S7j the
+VM's call path, S7k measurement point 3.
+
+- Next: **S7a** — `import std.<m>` from Script sources in the binary; natives as intrinsics; the
+  rights table fixed.
 
 ## Working mode
 

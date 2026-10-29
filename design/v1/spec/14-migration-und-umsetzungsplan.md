@@ -1013,3 +1013,42 @@ nicht (seit S3); der Runner hatte kein Zeitlimit; `execute` hätte im Leerlauf g
 `scope.spawn` markierte das Programm als Task-startend. Lehren: Wächter in Patch-Skripten (Löschung
 gegen Einfügung), Testwerte, die keine Konstante der Nachbarschaft sind, Mutanten vor der Vorhersage
 auf Beobachtbarkeit prüfen. 344 Tests, 331 Fälle; Bytecode-Format 19.
+
+## S7 — Slices (Plan, Entwurf 2026-10-29)
+
+Ziel aus der Meilensteintabelle: der std-Kern — die nativen Kerntypen und die Module, die die
+Zielprogramme „Terminal-Werkzeug“ und „Automatisierung“ (02) brauchen, die feste Rechtetabelle,
+die Kostenregeln der schweren Natives (01 S5c), dazu der Slice „Aufrufpfad der VM“ aus dem
+Ergebnis von Messpunkt 1 und **Messpunkt 3**. Quellen: 12 Um, Src und die Einzelheiten; 03 S,
+Str, Eq, Leer, Lit, Index; 05 Iteratoren und E7; 07 V3 I8; 01 S5c, S8; 11 V3, Gen, std. Die API
+folgt Lyric 5s `std` (Namensgesetz N1–N13), angepasst an Script-Typen; was Lyric 5 nicht hat
+(`BigInt`, `cli`, `csv`, `log`, `fs.glob`), entscheidet der Slice, der es bringt, nach 12. Mit
+Uhr aus früheren Meilensteinen hierher: Array-Muster und `Hashable` (S3), `typeOf([1, 2])`
+(S3i), Display mit den Prelude-Interfaces (S3), `e.suppressed()` (S4b), die Prelude-Zusätze
+`eprintln`, `args`, `exit` und die feste Rechtetabelle (S5), `Coroutine :: Iterator`, `for` über
+jedes Iterable, Tasks/Koroutinen/Kanäle als Interfacewerte, `IoError` für `readLine` und
+`os.signals` (S6).
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S7a std als Script-Module** | `import std.<m>` löst auf Quelltexte im Binary auf (`std/*.lyrs`, eingebettet mit Lyric 5s `comptime embed`): Logik in Script (12 Src), übersetzt wie ein Paket und mit dem Programm im Bytecode-Cache; *vorkompiliert* ins Binary (11 std) kommt mit `pack` (S13), das dieselbe Mechanik braucht — bis dahin übersetzt der erste Lauf nach einem Update die importierten std-Module mit. Natives der std als `__name(…)`-Intrinsics, nur in std-Dateien erkannt (wie die der Prelude seit S6), mit Signaturen aus einer Tabelle, die Checker und VM teilen. Die Rechtetabelle je Modul fest (12 Rechte) statt der vorläufigen aus S5e; die Testtabelle `LYRIC_SCRIPT_RIGHTS` retiriert mit ihr, ihre Fälle importieren echte Module | ein std-Modul importiert und gerufen; Rechte-Fälle gegen echte Importe |
+| **S7b Listen** | `T[]` nativ in der VM (`ScriptArray`, getrennt für Skalare und Referenzen — `List<int>` ungeboxt, 11 Gen), `List<T>` als Alias; Literale, `[]` mit Leer-Inferenz (03 Leer), `FromArrayLiteral` (03 Lit); `xs[i]`, `xs[^n]`, `xs[i] = v` mit Bereichsprüfung, `xs[a..b]` kopiert (03 S); die Methoden von Lyric 5s `List` ohne die Sichten (`length()`, `push`, `pop`, `insert`, `remove…`, `contains` …), `+` und `xs * n` (12 Container), `in`/`!in`, `==` über `Equatable`-Elemente; `Index<K>`/`IndexSet<K>` für eigene Typen (03 Index); Array-Muster; `typeOf([1, 2])` sagt `int[]`; `e.suppressed()`; der Text einer Liste in der Debug-Form | Konformanzfälle; Kostenregeln für `+` und `xs * n` |
+| **S7c Iteratoren** | `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator`; `for` über jedes Iterable, auch eigene Typen, und `for` schließt `Closeable`-Iteratoren (05 E7); `Coroutine :: Iterator`; Tasks, Koroutinen und Kanäle als Interfacewerte mit Deskriptoren; `std.iter` in Script mit den Adaptern von Lyric 5s `iter` und den Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …); `sort` nativ | Konformanzfälle; Kostenregel für `sort` |
+| **S7d Map und Set** | `Map<K, V>` und `Set<T>` nativ, eine eigene Hash-Tabelle in Einfügereihenfolge (12 Src; 01 S8: keine Adress-Hashes), `string`-Schlüssel ohne Hülle (11 Gen); **Synthese** von `Equatable` und `Hashable` für Structs, Enums und Tupel, deren Felder es sind (03 Eq; `float` nicht `Hashable`), Klassen über `Identity` mit einer Objektnummer statt der Adresse; Map-Literal, `[:]` (`FromMapLiteral`), `m[k]` → `?V`, `m[k] = v`, `in`, die Methoden von Lyric 5s `Map`/`Set`; `Deque` und `Heap` in Script (12 Container) | Konformanzfälle; Reihenfolge mit mehr als einem Dutzend Einträgen |
+| **S7e Strings und Formate** | die String-Methoden von Lyric 5s `core`/`string` an `string` (03 Str: `length()` in Bytes, `s[i]` das Zeichen ab Byte `i`, `s[a..b]` neu, `chars()`, `lines()`, `split`, `trim…`, `lower`/`upper`, `replace`, `repeat`, `Pattern` …), Zahlen aus Text; `Display` und `Debug` als Prelude-Interfaces, jeder Wert druckbar — `{x}` fällt auf `Debug` zurück (03 Eq); `std.fmt` mit Formatangaben in f-Strings (`{n:>6}`, `{x:.2}`, `{x:?}`); `print`/`println` für jeden Wert | Konformanzfälle; Kostenregeln für `repeat`, `replace`, `split` |
+| **S7f Zahlen, `BigInt`, `Bytes`** | Typkonstanten am Typ (`int.max`, `float.epsilon`), `std.math` (Weltkonstanten, die Funktionen von Lyric 5s `math`), `checked*`/`saturating*`/`wrapping*` und `+% -% *%` (03 Überlauf); `BigInt` nativ (Lyric 5 hat keins: eine eigene Implementierung in der VM, 02 T1) mit Literalen über `FromIntLiteral`; `Bytes` mit `b"…"`, Index, kopierenden Slices, UTF-8 hin und zurück; `std.random` — geseedet ohne Recht, ungeseedet mit `os` (01 S8) | Konformanzfälle; Kostenregeln für `BigInt`-Multiplikation, -Division und -Text |
+| **S7g I/O und Dateien** | `std.io`: `Reader`/`Writer` über `Bytes` (Go-Form), `IoError { kind }`, stdin/stdout/stderr, die `print`-Familie, `readLine()` wirft `IoError`; `eprintln` in der Prelude (07 V3 I8); `std.fs` als Adapter über Lyric 5s `fs` (wartende Natives über Lyric-5-Tasks wie seit S6e), `fs.glob` und `std.path` in Script | Konformanzfälle mit Dateien im Fallordner |
+| **S7h Prozesse, Umgebung, Zeit** | `std.process` (`Command`-Struct, Lauf mit Ausgabe und Exit-Code), `std.os` (Umgebung; `signals` als Kanal mit dem Recht `os`), `args` und `exit` in der Prelude; `std.time` als Adapter über Lyric 5s `time` | Konformanzfälle |
+| **S7i Batterien** | in Script, je eine API (12 Um): `std.test` (`assert…` nach Lyric 5s `test`; `@Test`, Subtests, `@Bench` und `lyric-script test` mit S11), `std.cli` (Argumente, Flags, Optionen, `--help`), `std.log`, `std.csv` (RFC 4180) | Konformanzfälle |
+| **S7j Aufrufpfad der VM** | aus Messpunkt 1: Frames ohne `List`, aufgelöste Funktionstabelle, eine Wachstumsprüfung je Aufruf, Fuel an Rücksprüngen statt je Aufruf | Bench von S1 vorher/nachher, Erwartung vorab |
+| **S7k Messpunkt 3** | Bench-Suite: die Programme von Messpunkt 1 als Script-Quelltext, dazu Programme über die Kerntypen (Wörter zählen, Sortieren, Map-Last, Strings bauen), je auch als 4.x-Programm; dieselbe Maschine; Ratchet ≥ 5× | Bericht `bench/README.md` mit Erwartung vorab und Kontrolle |
+| **Abschluss** | die Zielprogramme Terminal-Werkzeug und Automatisierung (02) in der Form der entschiedenen API als Beispiele in der CI; STATUS, PR, CI, Merge, Tag `s7-complete`; Bereichszeilen gegen den Code | Zielprogramme in der CI auf allen Tier-1-Zielen |
+
+Reihenfolge: a bis i in dieser Folge — Listen vor Iteratoren (Adapter liefern Listen), beide vor
+Map und Set (`keys()`, `entries()`), Listen vor Strings (`split`), `Bytes` vor I/O; j unabhängig,
+aber vor k; k zuletzt, wenn alle Kerntypen stehen. Ein Slice, der zu groß wird, wird wie in S5
+und S6 geteilt, bevor er gebaut wird. **Kostenregeln**: jedes schwere Native rechnet proportional
+ab (`budget.charge(n)`, 01 S5c) und bekommt seinen Test im Slice, der es bringt; das Prüfen der
+Deadline in langen Schleifen kommt mit dem Budget (S8). **Spec**: Kapitel 12 wächst je Slice um
+Regeln und Fälle; die Sprachteile (Literale, Index, `for`, Synthese) gehen in 03, 07, 08 und 09.
+Austrittskriterium: die Zielprogramme laufen in der CI; Messpunkt 3 ≥ 5×.

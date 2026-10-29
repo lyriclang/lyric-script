@@ -346,14 +346,15 @@ fn aCoroutinesBodyIsChecked(): void {
 
 @Test
 fn aYieldOfItsOwnMakesTheCoroutineFunction(): void {
-    // a yield in a lambda is the lambda's (S6b2): the function that returns a value stays a factory
+    // a yield in a lambda makes the lambda a generator (S6b2): the function that returns a value
+    // stays a factory; a yield in a function a coroutine calls comes with S6b3
     assertEq(errs("fn f() {\n    yield 1\n}"), ["LYS-NYI0001"]);
     assertEq(
         errs(
             count
                 + "fn f(): Coroutine<int> {\n    let g = () => {\n        yield 1\n    }\n    return count(1)\n}"
         ),
-        ["LYS-NYI0001"]
+        []
     );
 }
 
@@ -367,4 +368,51 @@ fn aPullThrowsAnyError(): void {
         ),
         ["LYS-SEM0034"]
     );
+}
+
+// Generators (S6b2): generator lambdas, `sequence { }`, `for` over a coroutine.
+@Test
+fn aGeneratorLambdaInfersItsTypes(): void {
+    // the yields unify into `float`: the first one, an int, is converted, not read as float bits
+    let src = "fn f(): int {\n    let g = () => {\n        yield 1\n        yield 2.5\n    }\n    let c = g()\n"
+        + "    let a = c.next() ?? 0.0\n    let b = c.next() ?? 0.0\n    return ((a + b) * 10.0) as int\n}";
+    assertEq(value(src, "f"), 35);
+}
+
+@Test
+fn aGeneratorLambdaTakesTheTypesOfThePlace(): void {
+    let src = "fn take(make: fn() -> Coroutine<float>): float {\n    return make().next() ?? 0.0\n}\n"
+        + "fn f(): int {\n    return (take(() => {\n        yield 2\n    }) * 10.0) as int\n}";
+    assertEq(value(src, "f"), 20);
+}
+
+@Test
+fn theReturnsGiveTheResultType(): void {
+    let src = "fn f(): int {\n    let g = () => {\n        yield 1\n        return \"ok\"\n    }\n    let c = g()\n"
+        + "    c.next()\n    c.next()\n    return if ((c.result() ?? \"\") == \"ok\") 1 else 0\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn aForLoopPullsTheCoroutineItHoldsOnce(): void {
+    let src = count
+        + "class B {\n    var calls: int = 0\n}\nfn wrap(b: B): Coroutine<int> {\n    b.calls += 1\n    return count(3)\n}\n"
+        + "fn f(): int {\n    let b = B { }\n    var s = 0\n    for (x in wrap(b)) {\n        s += x\n    }\n"
+        + "    for (y in sequence {\n        yield 10\n    }) {\n        s += y\n    }\n    return b.calls * 100 + s\n}";
+    assertEq(value(src, "f"), 116);
+}
+
+@Test
+fn generatorsAreChecked(): void {
+    assertEq(errs("let g = () => {\n    yield 1\n    yield \"x\"\n}"), ["LYS-SEM0016"]);
+    assertEq(
+        errs(
+            "let g = (b: bool): Coroutine<int, int> => {\n    yield 1\n    if (b) {\n        return 2\n    }\n}"
+        ),
+        ["LYS-SEM0046"]
+    );
+    assertEq(errs("let g = (): int => {\n    yield 1\n}"), ["LYS-SEM0001"]);
+    assertEq(errs("let c = sequence { 1 }"), ["LYS-SEM0001"]);
+    assertEq(errs("let c = sequence {\n    yield 1\n    return 2\n}"), ["LYS-SEM0039"]);
+    assertEq(errs("fn t(): Coroutine<void> {\n    yield\n}\nfor (x in t()) {\n}"), ["LYS-SEM0007"]);
 }

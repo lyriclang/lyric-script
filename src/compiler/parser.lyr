@@ -1986,11 +1986,14 @@ class Parser {
             if (kind == .FatArrow) {
                 return true;
             }
-            // `fn(int, int) -> int`: a comma in the type's own parentheses
-            if (kind == .LParen) {
+            // `fn(int, int) -> int`, `Pair<int, int>`: a comma in the type's own brackets — `>>`
+            // closes two (S6b2)
+            if (kind == .LParen || kind == .Lt) {
                 inner += 1;
-            } else if (kind == .RParen) {
+            } else if (kind == .RParen || kind == .Gt) {
                 inner -= 1;
+            } else if (kind == .Shr) {
+                inner -= 2;
             }
             if (kind == .Eof
                 || kind == .Newline

@@ -203,6 +203,18 @@ struct ImportCheck {
 }
 
 /// A loop being checked: `loop` gives the value of its breaks, `while` and `for` give none.
+/// A coroutine's body about to be checked (S6b): the type it yields and the one it returns, each
+/// given or inferred from its yields and returns (`inferY`, `inferR`, starting from `y` and `r`),
+/// quietly where `quiet`; and the code for a path that ends without the result.
+class GenBody {
+    y: Ty,
+    inferY: bool,
+    r: Ty,
+    inferR: bool,
+    quiet: bool,
+    pathCode: string,
+}
+
 class LoopCtx {
     isLoop: bool,
     var breakTy: ?Ty = null,
@@ -248,7 +260,7 @@ class FnCtx {
     localIsVar: List<bool>,
     localNames: List<string>,
     loops: List<LoopCtx>,
-    returns: Ty,
+    var returns: Ty,
     // whether `let` and `var` at the outermost scope are the script's globals (main's code)
     isMain: bool,
     // the bindings declared without a value that are not assigned on every way to here (Lyric 5
@@ -277,8 +289,11 @@ class FnCtx {
     // in a defer's body: how many loops stood around it, which its jumps may not leave; -1 for
     // none (S4e)
     var deferLoops: int = -1,
-    // a coroutine's body: the type it yields; none elsewhere (S6b)
+    // a coroutine's body: the type it yields; none elsewhere (S6b); whether its yields and its
+    // returns infer the types, which they unify into (S6b2)
     var yields: ?Ty = null,
+    var yieldsInferred: bool = false,
+    var returnsInferred: bool = false,
 
     static fn new(fnIndex: int, returns: Ty, isMain: bool, fixing: bool): FnCtx {
         let scopes = List<Scope>.new();
@@ -337,8 +352,11 @@ class Checker {
     var throwsAt: Map<int, Span> = Map<int, Span>.new(),
     // whether a task is spawned anywhere: the top level then ends with a join (S6a)
     var spawns: bool = false,
-    // the yield type of the coroutine body the next lambda made is (S6b)
-    var pendingYields: ?Ty = null,
+    // the coroutine body the next lambda made is (S6b), and the types the last one yielded and
+    // returned
+    var pendingBody: ?GenBody = null,
+    var lastYields: Ty = Ty.Void,
+    var lastReturns: Ty = Ty.Void,
     // the modules (S5a): the current one, by its file — 0 the entry, -1 the prelude —; each
     // imported module's dotted path and its view, a name to its key; the modules a qualified
     // import binds, by name
@@ -4367,7 +4385,14 @@ class Checker {
                 // arguments
                 let co = this.coroutineArgs(info.returns);
                 if (co.length() == 2 && (hasOwnYield(b) || !returnsValue(b))) {
-                    this.pendingYields = co[0];
+                    this.pendingBody = GenBody {
+                        y = co[0],
+                        inferY = false,
+                        r = co[1],
+                        inferR = false,
+                        quiet = false,
+                        pathCode = "LYS-SEM0017",
+                    };
                     let coBody = this.makeLambda(
                         "<coroutine>",
                         [],
@@ -6673,7 +6698,8 @@ class Checker {
         return c;
     }
 
-    /// `for (x in a..b)`: over a range of ints; other iterables come with the collections (S7).
+    /// `for (x in a..b)`: over a range of ints; `for (x in c)` over a coroutine (S6b2); other
+    /// iterables come with the collections (S7).
     mut fn forStmt(name: string, iterable: Expr, body: Block, label: ?string, at: Span): TStmt {
         match (iterable) {
             .Range(from, to, inclusive, _) => {
@@ -6692,11 +6718,41 @@ class Checker {
             }
             _ => { }
         }
-        this.notYet(
-            "a loop over anything but a range of ints",
-            "S7 (the core collections)",
-            spanOf(iterable)
-        );
+        // a coroutine (S6b2): its values, pulled one by one — `while (let x = c.next())` over the
+        // coroutine, held once; other iterables come with the collections (S7)
+        this.pushScope();
+        let it = this.expr(iterable, null);
+        let t = typeOf(it);
+        let co = this.coroutineArgs(t);
+        if (co.length() == 2) {
+            if (co[0] == .Void) {
+                this.error(
+                    "LYS-SEM0007",
+                    "a Coroutine<void> yields no value to bind: pull it with next()",
+                    spanOf(iterable)
+                );
+                this.popScope();
+                return TStmt.Expr(it, at.line);
+            }
+            let id = this.hidden(t, at);
+            let held = Expr.Name(this.ctx.localNames[id], at);
+            let pull = Expr.Call(
+                Box<Expr> { value = Expr.Member(Box<Expr> { value = held }, "next", false, at) },
+                [],
+                at
+            );
+            let loop = this.whileLet(name, pull, body, label, at);
+            this.popScope();
+            return TStmt.Block([TStmt.SetLocal(id, it, at.line), loop], at.line);
+        }
+        this.popScope();
+        if (t != .Unknown) {
+            this.notYet(
+                "a loop over anything but a range of ints or a coroutine",
+                "S7 (the core collections)",
+                spanOf(iterable)
+            );
+        }
         return TStmt.Expr(TExpr.Unknown, at.line);
     }
 
@@ -6838,7 +6894,18 @@ class Checker {
             return TStmt.Return(null, at.line);
         }
         let expected = this.ctx.returns;
-        // a coroutine's body: `return v` gives its result, none where the type has none (rule 3)
+        // a coroutine's body: `return v` gives its result, none where the type has none (rule 3);
+        // where nothing gives the result, the returns unify into it (rule 11)
+        if (this.ctx.yields != null && this.ctx.returnsInferred) {
+            if (value == null) {
+                this.ctx.returns = this.unify(expected, Ty.Void, at, "the returns");
+                return TStmt.Return(null, at.line);
+            }
+            let v = this.expr(value, if (expected == .Unknown) null else expected);
+            let t = this.unify(expected, typeOf(v), spanOf(value), "the returns");
+            this.ctx.returns = t;
+            return TStmt.Return(this.coerce(v, t, spanOf(value)), at.line);
+        }
         if (this.ctx.yields != null) {
             if (value == null && expected != .Void && expected != .Unknown) {
                 this.error(
@@ -6901,8 +6968,19 @@ class Checker {
     mut fn yieldStmt(value: ?Expr, at: Span): TStmt {
         let y = this.ctx.yields;
         if (y == null) {
-            this.notYet("a yield outside a coroutine function's body", "S6b2", at);
+            this.notYet("a yield in a function a coroutine calls", "S6b3", at);
             return TStmt.Expr(TExpr.Unknown, at.line);
+        }
+        // a generator lambda's without a type for it: the yields unify into it (rule 11)
+        if (this.ctx.yieldsInferred) {
+            if (value == null) {
+                this.ctx.yields = this.unify(y, Ty.Void, at, "the yields");
+                return TStmt.Yield(null, at.line);
+            }
+            let v = this.expr(value, if (y == .Unknown) null else y);
+            let t = this.unify(y, typeOf(v), spanOf(value), "the yields");
+            this.ctx.yields = t;
+            return TStmt.Yield(this.coerce(v, t, spanOf(value)), at.line);
         }
         if (value == null) {
             if (y != .Void && y != .Unknown) {
@@ -8305,6 +8383,74 @@ class Checker {
         return TExpr.Spawn(boxE(closure), Ty.Named(this.typeInstance(task, [result])));
     }
 
+    /// A coroutine of `body` — a generator lambda's, `sequence { … }`'s (Lyric 5 10 §1 rules
+    /// 11–12): the body a closure of no parameter over the captures, its `Y` and `R` as given, or
+    /// inferred from its yields and returns — by a quiet first pass, so that every yield and
+    /// return of the second meets the types they unify into (`LYS-SEM0016`).
+    mut fn generatorOf(body: Expr, y: ?Ty, r: ?Ty, pathCode: string, at: Span): TExpr {
+        var startY = y ?? Ty.Unknown;
+        var startR = r ?? Ty.Unknown;
+        if (y == null || r == null) {
+            let made = this.functions.length();
+            this.pendingBody = GenBody {
+                y = startY,
+                inferY = y == null,
+                r = startR,
+                inferR = r == null,
+                quiet = true,
+                pathCode = pathCode,
+            };
+            this.makeLambda("<coroutine>", [], [], r, body, at);
+            this.dropFunctionsFrom(made);
+            startY = this.lastYields;
+            startR = this.lastReturns;
+        }
+        this.pendingBody = GenBody {
+            y = startY,
+            inferY = y == null,
+            r = startR,
+            inferR = r == null,
+            quiet = false,
+            pathCode = pathCode,
+        };
+        let inner = this.makeLambda("<coroutine>", [], [], r, body, at);
+        let co = this.typeIndex.get("Coroutine");
+        if (co == null) {
+            return TExpr.Unknown;
+        }
+        let fy = if (this.lastYields == .Unknown) Ty.Void else this.lastYields;
+        let fr = if (this.lastReturns == .Unknown) Ty.Void else this.lastReturns;
+        return TExpr.CoNew(boxE(inner), Ty.Named(this.typeInstance(co, [fy, fr])));
+    }
+
+    /// `sequence { … }` (Lyric 5 10 §1 rule 12): a coroutine of a block that yields, its `Y` the
+    /// place's or the yields', its result none.
+    mut fn sequenceOf(args: Arg[], expected: ?Ty, at: Span): TExpr {
+        if (args.length() != 1) {
+            this.error("LYS-SEM0014", "sequence takes one block: sequence { … }", at);
+            return TExpr.Unknown;
+        }
+        match (args[0].value) {
+            .Lambda(params, _, body, _, _) => {
+                var yields = false;
+                match (body.value) {
+                    .Block(b, _) => {
+                        yields = hasOwnYield(b);
+                    }
+                    _ => { }
+                }
+                if (params.length() == 0 && yields) {
+                    let co = this.coroutineArgs(expected ?? Ty.Unknown);
+                    let y: ?Ty = if (co.length() == 2) co[0] else null;
+                    return this.generatorOf(body.value, y, Ty.Void, "LYS-SEM0046", at);
+                }
+            }
+            _ => { }
+        }
+        this.error("LYS-SEM0001", "sequence takes a block that yields: sequence { yield … }", at);
+        return TExpr.Unknown;
+    }
+
     /// The yield and the result type of a `Coroutine<Y, R>`, `[Y, R]`; none for another type (S6b).
     fn coroutineArgs(t: Ty): Ty[] {
         let co = this.typeIndex.get("Coroutine") ?? -1;
@@ -8349,7 +8495,7 @@ class Checker {
                 }
             }
             "isDone" => TExpr.CoDone(boxE(receiver)),
-            "close" => this.notYet("a coroutine's close()", "S6b2", at),
+            "close" => this.notYet("a coroutine's close()", "S6b3", at),
             _ => {
                 this.error(
                     "LYS-SEM0012",
@@ -8738,7 +8884,7 @@ class Checker {
 
     /// The type both branches give: the same one, `float` where one is `int`, the other where one
     /// never ends (`LYS-SEM0016` otherwise).
-    mut fn unify(a: Ty, b: Ty, at: Span): Ty {
+    mut fn unify(a: Ty, b: Ty, at: Span, what: string = "the branches"): Ty {
         if (a == b || b == .Never || b == .Unknown) {
             return a;
         }
@@ -8777,7 +8923,7 @@ class Checker {
             }
             _ => { }
         }
-        this.error("LYS-SEM0016", f"the branches give {this.tyName(a)} and {this.tyName(b)}", at);
+        this.error("LYS-SEM0016", f"{what} give {this.tyName(a)} and {this.tyName(b)}", at);
         return Ty.Unknown;
     }
 
@@ -9301,6 +9447,14 @@ class Checker {
                 return this.variantCall(i, k, args, at);
             }
             .Name(name, nameAt) => {
+                // a generator lambda's body (S6b2): no name of the program
+                if (name == "<generator>" && args.length() == 1) {
+                    let co = this.coroutineArgs(expected ?? Ty.Unknown);
+                    if (co.length() == 2) {
+                        return this.generatorOf(args[0].value, co[0], co[1], "LYS-SEM0046", at);
+                    }
+                    return this.generatorOf(args[0].value, null, null, "LYS-SEM0046", at);
+                }
                 let bound = this.lookupLocal(name) != null
                     || (this.ctx.isLambda && this.capture(this.ctx, name, nameAt) >= 0)
                     || this.globalIndex.containsKey(this.q(name));
@@ -9317,6 +9471,10 @@ class Checker {
                 // a task (07 N4): `spawn { … }`; the task gives way: `yieldNow()` (N8)
                 if (name == "spawn") {
                     return this.spawnOf(args, at);
+                }
+                // `sequence { … }` (Lyric 5 10 §1 rule 12)
+                if (name == "sequence") {
+                    return this.sequenceOf(args, expected, at);
                 }
                 if (name == "yieldNow") {
                     if (args.length() > 0) {
@@ -9552,7 +9710,23 @@ class Checker {
             // a position that does not know the result — `spawn { … }`'s — leaves it to the body
             rt = want.result.value;
         }
-        return this.makeLambda("<lambda>", names.toArray(), tys.toArray(), rt, body, at);
+        // a generator lambda (Lyric 5 10 §1 rule 11): a yield of its own makes each call give a
+        // coroutine over the call's arguments and the lambda's captures — its body that of a
+        // closure the call wraps, typed by the lambda's result type where one is known
+        var made = body;
+        match (body) {
+            .Block(b, bat) => {
+                if (hasOwnYield(b)) {
+                    made = Expr.Call(
+                        Box<Expr> { value = Expr.Name("<generator>", bat) },
+                        [Arg { name = null, value = body }],
+                        bat
+                    );
+                }
+            }
+            _ => { }
+        }
+        return this.makeLambda("<lambda>", names.toArray(), tys.toArray(), rt, made, at);
     }
 
     /// The function of a lambda or a local function: a function of its own whose first parameter,
@@ -9589,12 +9763,24 @@ class Checker {
         info.env = true;
         let saved = this.ctx;
         let savedFacts = this.postFacts;
-        let yields = this.pendingYields;
-        this.pendingYields = null;
-        this.ctx = FnCtx.new(index, result ?? Ty.Unknown, false, saved.fixing);
+        let gen = this.pendingBody;
+        this.pendingBody = null;
+        this.ctx = FnCtx.new(
+            index,
+            result ?? Ty.Unknown,
+            false,
+            saved.fixing || (gen != null && gen.quiet)
+        );
         this.ctx.isLambda = true;
         this.ctx.outer = saved;
-        this.ctx.yields = yields;
+        if (gen != null) {
+            this.ctx.yields = gen.y;
+            this.ctx.yieldsInferred = gen.inferY;
+            this.ctx.returnsInferred = gen.inferR;
+            if (gen.inferR) {
+                this.ctx.returns = gen.r;
+            }
+        }
         this.declareLocal(
             selfName,
             Ty.Fn(FnTy { params = tys, result = boxTy(result ?? Ty.Unknown) }),
@@ -9610,16 +9796,19 @@ class Checker {
         let stmts = List<TStmt>.new();
         match (body) {
             .Block(b, _) => {
-                if (yields != null) {
+                if (gen != null) {
                     // a coroutine's body (S6b): statements, its result given by `return` (Lyric 5
-                    // 10 §1 rule 3)
+                    // 10 §1 rule 3) — inferred from the returns where nothing gives it
                     for (st in this.stmtList(b.stmts)) {
                         stmts.push(st);
+                    }
+                    if (rt == null) {
+                        rt = if (this.ctx.returns == .Unknown) Ty.Void else this.ctx.returns;
                     }
                     let want = rt ?? Ty.Void;
                     if (want != .Void && want != .Unknown && !endsAll(stmts.toArray())) {
                         this.error(
-                            "LYS-SEM0017",
+                            gen.pathCode,
                             f"the coroutine can reach its end without returning its {this.tyName(want)}",
                             at
                         );
@@ -9666,6 +9855,12 @@ class Checker {
         }
         let resultTy = rt ?? Ty.Void;
         info.returns = resultTy;
+        if (gen != null) {
+            // what a generator's caller types the coroutine with — `Unknown` kept where the
+            // inference failed, for the second pass to report (S6b2)
+            this.lastYields = this.ctx.yields ?? Ty.Void;
+            this.lastReturns = if (gen.inferR) this.ctx.returns else resultTy;
+        }
         info.body = stmts.toArray();
         info.locals = this.ctx.locals.toArray();
         info.boxed = this.ctx.boxed.toArray();
@@ -11670,7 +11865,7 @@ fn keyIn(path: string, m: int, name: string): string {
 /// The prelude's functions the compiler knows rather than declares.
 fn isPreludeFn(name: string): bool {
     return match (name) {
-        "print" | "println" | "panic" | "unreachable" | "todo" | "assert" | "spawn" | "yieldNow" => true,
+        "print" | "println" | "panic" | "unreachable" | "todo" | "assert" | "spawn" | "yieldNow" | "sequence" => true,
         _ => false,
     };
 }

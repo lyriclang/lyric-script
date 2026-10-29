@@ -1050,54 +1050,66 @@ class Parser {
         let first = this.advance();
         let body = try this.parseBlock();
         let clauses = List<CatchClause>.new();
-        loop {
-            // a clause may stand on the next line
-            var k = 0;
-            while (this.peek(k).kind == .Newline) {
-                k += 1;
-            }
-            if (!this.isWord(this.peek(k), "catch")) {
-                break;
-            }
-            this.skipNewlines();
-            let at = this.advance();
-            try this.expect(.LParen, "LYS-PAR0019", "'(' after 'catch'");
-            let name = try this.expect(.Ident, "LYS-PAR0026", "the clause's binding, or '_'");
-            let types = List<TypeExpr>.new();
-            var isSet = false;
-            if (this.at(.Colon)) {
-                this.advance();
-                types.push(try this.parseType());
-            } else if (this.atWord("in")) {
-                this.advance();
-                isSet = true;
-                if (this.at(.LBracket)) {
-                    this.advance();
-                    loop {
-                        types.push(try this.parseType());
-                        if (!this.at(.Comma)) {
-                            break;
-                        }
-                        this.advance();
-                    }
-                    try this.expect(.RBracket, "LYS-PAR0004", "']' after the clause's types");
-                } else {
-                    types.push(try this.parseType());
-                }
-            }
-            try this.expect(.RParen, "LYS-PAR0008", "')' after the clause");
-            let clauseBody = try this.parseBlock();
-            clauses.push(
-                CatchClause {
-                    name = this.text(name),
-                    types = types.toArray(),
-                    isSet = isSet,
-                    body = clauseBody,
-                    span = this.since(at),
-                }
-            );
+        while (this.catchAhead()) {
+            clauses.push(try this.parseCatch(false));
         }
         return Stmt.Try(body, clauses.toArray(), this.since(first));
+    }
+
+    /// Whether a clause follows, on this line or the next.
+    mut fn catchAhead(): bool {
+        var k = 0;
+        while (this.peek(k).kind == .Newline) {
+            k += 1;
+        }
+        return this.isWord(this.peek(k), "catch");
+    }
+
+    /// A clause: its head, and its body — a block, or in the expression form a value, whose
+    /// block is the clause's body (06 §6 rule 4).
+    mut fn parseCatch(valued: bool): CatchClause throws SyntaxError {
+        this.skipNewlines();
+        let at = this.advance();
+        try this.expect(.LParen, "LYS-PAR0019", "'(' after 'catch'");
+        let name = try this.expect(.Ident, "LYS-PAR0026", "the clause's binding, or '_'");
+        let types = List<TypeExpr>.new();
+        var isSet = false;
+        if (this.at(.Colon)) {
+            this.advance();
+            types.push(try this.parseType());
+        } else if (this.atWord("in")) {
+            this.advance();
+            isSet = true;
+            if (this.at(.LBracket)) {
+                this.advance();
+                loop {
+                    types.push(try this.parseType());
+                    if (!this.at(.Comma)) {
+                        break;
+                    }
+                    this.advance();
+                }
+                try this.expect(.RBracket, "LYS-PAR0004", "']' after the clause's types");
+            } else {
+                types.push(try this.parseType());
+            }
+        }
+        try this.expect(.RParen, "LYS-PAR0008", "')' after the clause");
+        var clauseBody = Block { stmts = [], span = this.spanOf(at) };
+        if (valued) {
+            let vt = this.current();
+            let value = try this.parseExpr();
+            clauseBody = valueBody(value, this.since(vt));
+        } else {
+            clauseBody = try this.parseBlock();
+        }
+        return CatchClause {
+            name = this.text(name),
+            types = types.toArray(),
+            isSet = isSet,
+            body = clauseBody,
+            span = this.since(at),
+        };
     }
 
     /// `let name: T = value`, `var name = value`; the type or the value may be left out.
@@ -1306,7 +1318,20 @@ class Parser {
                 left = try this.typeOperator(left, t, first);
                 continue;
             }
+            let startsWithTry = this.atWord("try");
             let right = try this.parseBinary(r);
+            // `try?`, `try!` and a `try` with clauses stand at the start of what they cover; the
+            // right of an assignment is such a start (06 §3 rule 2)
+            if (startsWithTry && t.kind != .Assign && assignmentOp(t.kind) == null) {
+                match (right) {
+                    .TryOpt(_, _) | .TryBang(_, _) | .TryCatch(_, _, _) => this.report(
+                        "LYS-PAR0050",
+                        "a 'try?', 'try!' or 'try' with clauses right of an operator: put it at the start, or in parentheses",
+                        t
+                    ),
+                    _ => { }
+                }
+            }
             left = try this.infix(left, t, l, right, first);
         }
         return left;
@@ -1639,10 +1664,32 @@ class Parser {
         if (w == "match") {
             return try this.parseMatch();
         }
-        // `try e`: the mark, which covers what stands to its right; without effect (05 Th)
+        // `try e`: the mark, which covers what stands to its right; without effect (05 Th).
+        // `try?` and `try!` with the sign against the keyword, `try e catch …` (06 §6)
         if (w == "try") {
             this.advance();
+            let sign = this.current();
+            if ((sign.kind == .Question || sign.kind == .Bang) && sign.start == t.end) {
+                this.advance();
+                let operand = try this.parseExpr();
+                if (this.catchAhead()) {
+                    this.report(
+                        "LYS-PAR0051",
+                        f"'try{this.text(sign)}' takes no clause: a clause belongs to a plain 'try'",
+                        this.current()
+                    );
+                }
+                return if (sign.kind == .Question) Expr.TryOpt(boxed(operand), this.since(t))
+                    else Expr.TryBang(boxed(operand), this.since(t));
+            }
             let marked = try this.parseExpr();
+            if (this.catchAhead()) {
+                let clauses = List<CatchClause>.new();
+                while (this.catchAhead()) {
+                    clauses.push(try this.parseCatch(true));
+                }
+                return Expr.TryCatch(boxed(marked), clauses.toArray(), this.since(t));
+            }
             return Expr.TryMark(boxed(marked), this.since(t));
         }
         // `throw e` where a value stands, of type `never` (06 §1 rule 3)
@@ -2575,4 +2622,13 @@ fn endsTypeArgs(k: TokenKind): bool {
         || k == .Dot
         || k == .EqEq
         || k == .NotEq;
+}
+
+/// A clause's value as its body: a value block is its own block; any other value the block
+/// that gives it.
+fn valueBody(value: Expr, at: Span): Block {
+    return match (value) {
+        .Block(b, _) => b,
+        _ => Block { stmts = [Stmt.Expr(value, at)], span = at },
+    };
 }

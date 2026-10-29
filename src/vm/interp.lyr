@@ -524,6 +524,13 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 let text = if (m is ScriptString) m.text else "panic";
                 return panicOut(module, frames, fi, pc, "LYS-RT0008", text);
             }
+            // a panic of the code `b`: `try!` on an error is `LYS-RT0010` (S4d)
+            .PanicC => {
+                let m = r[br + a];
+                let text = if (m is ScriptString) m.text else "panic";
+                let code = if (b < 10) f"LYS-RT000{b}" else f"LYS-RT00{b}";
+                return panicOut(module, frames, fi, pc, code, text);
+            }
             .AddW => {
                 s[bs + a] = ((s[bs + b] as int) +% (s[bs + c] as int)) as uint64;
                 pc += 1;

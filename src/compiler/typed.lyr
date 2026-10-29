@@ -308,7 +308,7 @@ fn typeOf(e: TExpr): Ty {
         .GenericValue(_, _, t) => t,
         .CallStaticD(_, _, _, t) => t,
         .TextParam(_, _, t) => t,
-        .Throw(_) | .Rethrow(_, _) => Ty.Never,
+        .Throw(_) | .Rethrow(_, _) | .Panic(_, _) => Ty.Never,
         .Unknown => Ty.Unknown,
     };
 }
@@ -452,6 +452,8 @@ enum TExpr :: [Debug] {
     /// `throw e` of a clause's binding in its clause: the error it took goes on with its record,
     /// the locals of both (06 §4 rule 4, S4b).
     Rethrow(int, int),
+    /// A panic with the message given and the code `LYS-RT<n>`: `try!` on an error (S4d).
+    Panic(Box<TExpr>, int),
     Unknown,
 }
 
@@ -497,7 +499,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         .Payload(x, _, _, _, _) | .Upcast(x, _) | .BoxOf(x, _, _) | .Unbox(x, _) => [x.value],
         .IsType(x, _, _) | .IsIface(x, _, _) | .IsParam(x, _, _) | .DescOfValue(x, _) => [x.value],
         .DescArg(x, _, _) | .DescVariant(x, _, _) | .DebugParam(x, _, _) => [x.value],
-        .TextParam(x, _, _) | .Throw(x) | .Block(_, x, _) => [x.value],
+        .TextParam(x, _, _) | .Throw(x) | .Block(_, x, _) | .Panic(x, _) => [x.value],
         .Binary(x, _, y, _) | .Coalesce(x, y, _) | .SameRef(x, y) | .IsDesc(x, y) => [
             x.value,
             y.value,

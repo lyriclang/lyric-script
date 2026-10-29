@@ -1393,6 +1393,10 @@ class FnGen {
             .Rethrow(caught, record) => {
                 this.emit(Op.Rethrow, this.localLoc[caught].r, this.localLoc[record].r, 0);
             }
+            .Panic(x, code) => {
+                let at = this.any(x.value);
+                this.emit(Op.PanicC, at.r, code, 0);
+            }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)
             .CallStaticD(slot, d, args, t) => {

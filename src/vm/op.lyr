@@ -99,6 +99,8 @@ pub enum Op :: [Variants, Equatable] {
     // S4a: throwing (06 §5); S4b: the same error going on, with its record.
     Throw,
     Rethrow,
+    // S4d: a panic with a code of its own, `LYS-RT<b>`.
+    PanicC,
 }
 
 /// What an operand of an operation names.
@@ -228,6 +230,7 @@ pub fn info(op: Op): OpInfo {
         .CallS => OpInfo { mnemonic = "call.s", operands = [.Imm, .ScalarBase, .RefBase] },
         .Throw => OpInfo { mnemonic = "throw", operands = [.Ref] },
         .Rethrow => OpInfo { mnemonic = "rethrow", operands = [.Ref, .Ref] },
+        .PanicC => OpInfo { mnemonic = "panic.c", operands = [.Ref, .Imm] },
     };
 }
 

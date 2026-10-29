@@ -3,6 +3,7 @@
 import std.collections { List };
 import lyric_script.compiler.ast {
     Block,
+    CatchClause,
     Conformance,
     Decl,
     Expr,
@@ -207,24 +208,26 @@ fn showFieldPatterns(fields: FieldPattern[]): string {
     return parts.toArray().join(" ");
 }
 
+/// A `try`'s clauses, each ` (catch e: T {…})`.
+fn showClauses(clauses: CatchClause[]): string {
+    let parts = List<string>.new();
+    for (c in clauses) {
+        let tys = List<string>.new();
+        for (t in c.types) {
+            tys.push(showType(t));
+        }
+        let typed = if (tys.length() == 0) ""
+            else if (c.isSet) " in [" + tys.toArray().join(", ") + "]"
+                else ": " + tys.toArray().join(", ");
+        parts.push(" (catch " + c.name + typed + " " + showBlock(c.body) + ")");
+    }
+    return parts.toArray().join("");
+}
+
 fn showStmt(s: Stmt): string {
     return match (s) {
         .Throw(e, _) => "(throw " + showExpr(e) + ")",
-        .Try(body, clauses, _) => {
-            let parts = List<string>.new();
-            parts.push("(try " + showBlock(body));
-            for (c in clauses) {
-                let tys = List<string>.new();
-                for (t in c.types) {
-                    tys.push(showType(t));
-                }
-                let typed = if (tys.length() == 0) ""
-                    else if (c.isSet) " in [" + tys.toArray().join(", ") + "]"
-                        else ": " + tys.toArray().join(", ");
-                parts.push(" (catch " + c.name + typed + " " + showBlock(c.body) + ")");
-            }
-            parts.toArray().join("") + ")"
-        }
+        .Try(body, clauses, _) => "(try " + showBlock(body) + showClauses(clauses) + ")",
         .Expr(e, _) => showExpr(e),
         .Let(isVar, name, ty, value, _) => {
             let word = if (isVar) "var" else "let";
@@ -281,6 +284,9 @@ fn showExpr(e: Expr): string {
     return match (e) {
         .Throw(x, _) => "(throw " + showExpr(x.value) + ")",
         .TryMark(x, _) => "(try " + showExpr(x.value) + ")",
+        .TryOpt(x, _) => "(try? " + showExpr(x.value) + ")",
+        .TryBang(x, _) => "(try! " + showExpr(x.value) + ")",
+        .TryCatch(x, clauses, _) => "(try " + showExpr(x.value) + showClauses(clauses) + ")",
         .Int(n, _) => f"{n}",
         .Float(x, _) => f"{x}",
         .Bool(b, _) => if (b) "true" else "false",

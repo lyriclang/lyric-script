@@ -394,6 +394,18 @@ severity = "error"
 area = "06-errors"
 summary = "A `throws` names two or more types without brackets: `throws [A, B]`. Lyric 5's LYR-PAR0049."
 
+[LYS-PAR0050]
+title = "a 'try?', 'try!' or 'try' with clauses right of an operator"
+severity = "error"
+area = "06-errors"
+summary = "The forms that give a value of their own stand at the start of what they cover — a binding's value, an argument, the right of `=` — not right of an operator; put them in parentheses. Lyric 5's LYR-PAR0050."
+
+[LYS-PAR0051]
+title = "a clause after 'try?' or 'try!'"
+severity = "error"
+area = "06-errors"
+summary = "`try?` and `try!` take every error themselves; a `catch` belongs to a plain `try`. Lyric 5's LYR-PAR0051."
+
 [LYS-PAR0053]
 title = "a visibility word where none belongs"
 severity = "error"
@@ -594,6 +606,12 @@ title = "a throw the function's written 'throws' does not cover"
 severity = "error"
 area = "06-errors"
 summary = "A function writes `throws`, and its body may throw a type the list does not cover — by a `throw`, by a call, or anything through a function value or an interface member without `throws`. Script infers what a function throws and holds a written `throws` as a contract (05 Th); the diagnostic names the type and the line it comes from. Lyric 5's LYR-SEM0034."
+
+[LYS-SEM0035]
+title = "a clause without a type that is not last"
+severity = "error"
+area = "06-errors"
+summary = "`catch (e)` or `catch (_)` takes every error, so a clause below it takes nothing: it stands last. Lyric 5's LYR-SEM0035."
 
 [LYS-SEM0036]
 title = "a try block without a catch"
@@ -805,6 +823,24 @@ severity = "error"
 area = "06-errors"
 summary = "A function's `throws [ … ]` names the same error type more than once. Lyric 5's LYR-SEM0137."
 
+[LYS-SEM0140]
+title = "'try?' over what gives no value, where a value is wanted"
+severity = "error"
+area = "06-errors"
+summary = "`try? e` gives `e`'s value or `null`; over an `e` without a value it only drops the error, and stands as a statement. Lyric 5's LYR-SEM0140."
+
+[LYS-SEM0141]
+title = "a type caught twice in one try"
+severity = "error"
+area = "06-errors"
+summary = "Two clauses of one `try`, or one set, name the same error type; the second takes nothing. Lyric 5's LYR-SEM0141."
+
+[LYS-SEM0142]
+title = "a clause no error can reach"
+severity = "error"
+area = "06-errors"
+summary = "A clause's type is covered by a type a clause above it catches — `catch (e: IoError)` above `catch (e: Disk)` where `Disk` conforms to `IoError`, or `Error` above anything —, so no error reaches it. Lyric 5's LYR-SEM0142."
+
 [LYS-SEM0147]
 title = "'break' or 'continue' outside a loop"
 severity = "error"
@@ -908,6 +944,12 @@ title = "a conversion to char of no Unicode scalar value"
 severity = "panic"
 area = "08-expressions"
 summary = "An `int` converted with `as char` is negative, beyond 0x10FFFF, or a surrogate. The code and its meaning are Lyric 5's LYR-RT0009."
+
+[LYS-RT0010]
+title = "'try!' on an error"
+severity = "panic"
+area = "06-errors"
+summary = "Something under `try!` threw: the script ends with a panic that gives the error's message, exit code 101. The code and its meaning are Lyric 5's LYR-RT0010."
 
 [LYS-CLI0004]
 title = "an unknown option"

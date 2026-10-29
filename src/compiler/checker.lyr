@@ -109,6 +109,22 @@ fn checkModule(parsed: Module): Checked {
     };
 }
 
+/// A clause's head: the test it makes of the error, the types it takes (none for every error),
+/// the statement that binds the error.
+struct ClauseHead {
+    test: ?TExpr,
+    takes: Ty[],
+    bind: TStmt[],
+}
+
+/// A match over the binding of a clause that carries a set: its clause's key, the types its
+/// arms take, where it stands (05 K7).
+struct LaterMatch {
+    key: string,
+    types: Ty[],
+    at: Span,
+}
+
 /// A loop being checked: `loop` gives the value of its breaks, `while` and `for` give none.
 class LoopCtx {
     isLoop: bool,
@@ -172,9 +188,11 @@ class FnCtx {
     captures: List<Capture>,
     captureIndex: Map<string, int>,
     boxed: List<bool>,
-    // a clause's binding: the locals the error it took and its record are in (06 §4 rule 4)
+    // a clause's binding: the locals the error it took and its record are in (06 §4 rule 4); and
+    // for the binding of a clause without a type or of a set, its clause, "<fn>:<local>:<k>"
     var clauseErrors: Map<int, int> = Map<int, int>.new(),
     var clauseRecords: Map<int, int> = Map<int, int>.new(),
+    var clauseKeys: Map<int, string> = Map<int, string>.new(),
 
     static fn new(fnIndex: int, returns: Ty, isMain: bool, fixing: bool): FnCtx {
         let scopes = List<Scope>.new();
@@ -231,6 +249,8 @@ class Checker {
     var identityIndex: int = -1,
     // where each function writes its `throws` (S4c)
     var throwsAt: Map<int, Span> = Map<int, Span>.new(),
+    // the matches over a clause's set, checked once the sets are known (05 K7)
+    var laterMatches: List<LaterMatch> = List<LaterMatch>.new(),
     // the synthesized equality of each struct and enum compared, by type; its Debug form
     eqFns: Map<int, int>,
     debugFns: Map<int, int>,
@@ -635,6 +655,33 @@ class Checker {
         }
         let sets = ThrowSets.of(this.types.toArray(), this.functions.toArray(), ei);
         sets.infer();
+        // a match over a clause's set covers the set (05 K7)
+        for (m in this.laterMatches) {
+            let reached = sets.reachedAt(m.key);
+            if (reached.any) {
+                this.errorHelp(
+                    "LYS-SEM0050",
+                    f"this match does not cover every value: any error may reach the clause (line {reached.anyLine})",
+                    "add an arm with '_'",
+                    m.at
+                );
+                continue;
+            }
+            var j = 0;
+            while (j < reached.types.length()) {
+                let t = reached.types[j];
+                if (!sets.coveredWithin(t, m.types, m.key)) {
+                    this.errorHelp(
+                        "LYS-SEM0050",
+                        f"this match does not cover every value: no arm takes _: {this.tyName(t)}",
+                        "add an arm for it, or one with '_'",
+                        m.at
+                    );
+                    break;
+                }
+                j += 1;
+            }
+        }
         var k = 0;
         while (k < this.functions.length()) {
             let written = this.functions[k].throws;
@@ -2980,6 +3027,7 @@ class Checker {
             .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Variant(_, _) | .Unit | .Unknown => e,
             .Throw(x) => TExpr.Throw(this.specBox(x, a)),
             .Rethrow(_, _) => e,
+            .Panic(x, code) => TExpr.Panic(this.specBox(x, a), code),
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -4009,58 +4057,288 @@ class Checker {
         let before = this.ctx.unassigned;
         let b = this.block(body);
         var after = this.ctx.unassigned;
-        let err = this.errorTy();
-        let caught = this.hidden(err, at);
+        let caught = this.hidden(this.errorTy(), at);
         // the error's record, a value of the VM's own; one reference, never read as an `Any`
         let record = this.hidden(Ty.Named(this.anyIndex), at);
         let out = List<TClause>.new();
+        let seen = List<Ty>.new();
+        var k = 0;
         for (c in clauses) {
-            if (c.isSet) {
-                this.notYet("a clause over a set of types", "S4d", c.span);
-                continue;
-            }
             this.ctx.unassigned = before;
             this.pushScope();
-            let error = TExpr.Local(caught, err);
-            var test: ?TExpr = null;
-            var value = error;
-            var bound = err;
-            var takes: Ty[] = [];
-            if (c.types.length() > 0) {
-                let target = this.resolveType(c.types[0]);
-                value = TExpr.Unknown;
-                bound = Ty.Unknown;
-                if (target != .Unknown && err != .Unknown) {
-                    if (this.throwable(target)) {
-                        test = this.typeTest(error, target, c.span);
-                        value = this.heldAs(error, target);
-                        bound = target;
-                        takes = [target];
-                    } else {
-                        this.error(
-                            "LYS-SEM0030",
-                            f"a clause catches {this.tyName(target)}, which is not an Error",
-                            c.span
-                        );
-                    }
-                }
-            }
+            let head = this.clauseHead(c, k, clauses, caught, record, seen);
             let stmts = List<TStmt>.new();
-            if (c.name != "_") {
-                let id = this.declareLocal(c.name, bound, false, c.span);
-                stmts.push(TStmt.SetLocal(id, value, c.span.line));
-                this.ctx.clauseErrors.insert(id, caught);
-                this.ctx.clauseRecords.insert(id, record);
-            }
+            stmts.pushAll(head.bind);
             for (s in this.block(c.body)) {
                 stmts.push(s);
             }
             this.popScope();
             after = after.union(this.ctx.unassigned);
-            out.push(TClause { test = test, body = stmts.toArray(), types = takes });
+            out.push(TClause { test = head.test, body = stmts.toArray(), types = head.takes });
+            k += 1;
         }
         this.ctx.unassigned = after;
         return TStmt.Try(b, caught, record, out.toArray(), at.line);
+    }
+
+    /// Clause `k`'s head, in the clause's own scope: the test it makes of the error, the types
+    /// it takes and the binding. `catch (e: T)` binds a `T`; `catch (e in [A, B])` and
+    /// `catch (e)` an `Error`, which carries the set that reaches the clause (05 K7). A type is
+    /// an `Error` (`LYS-SEM0030`), caught once (`LYS-SEM0141`) and not covered by a type caught
+    /// before (`LYS-SEM0142`); the clause without a type stands last (`LYS-SEM0035`).
+    mut fn clauseHead(
+        c: CatchClause,
+        k: int,
+        clauses: CatchClause[],
+        caught: int,
+        record: int,
+        seen: List<Ty>
+    ): ClauseHead {
+        let err = this.errorTy();
+        let error = TExpr.Local(caught, err);
+        // below a clause without a type, its own error is the one said (06 §4 rule 5)
+        var belowAll = false;
+        var j = 0;
+        while (j < k) {
+            belowAll = belowAll || clauses[j].types.length() == 0;
+            j += 1;
+        }
+        if (c.types.length() == 0 && k < clauses.length() - 1) {
+            this.error(
+                "LYS-SEM0035",
+                "a clause without a type takes every error: it stands last",
+                c.span
+            );
+        }
+        let takes = List<Ty>.new();
+        var known = true;
+        for (written in c.types) {
+            let target = this.resolveType(written);
+            if (target == .Unknown || err == .Unknown) {
+                known = false;
+                continue;
+            }
+            if (!this.throwable(target)) {
+                this.error(
+                    "LYS-SEM0030",
+                    f"a clause catches {this.tyName(target)}, which is not an Error",
+                    c.span
+                );
+                known = false;
+                continue;
+            }
+            if (!belowAll) {
+                var twice = false;
+                var above: ?Ty = null;
+                for (s in seen) {
+                    if (s == target) {
+                        twice = true;
+                    } else if (above == null && this.catches(s, target)) {
+                        above = s;
+                    }
+                }
+                if (twice) {
+                    this.error(
+                        "LYS-SEM0141",
+                        f"{this.tyName(target)} is caught twice in this try",
+                        c.span
+                    );
+                } else if (above != null) {
+                    this.error(
+                        "LYS-SEM0142",
+                        f"no error reaches this clause: {this.tyName(above)} above takes every {this.tyName(target)}",
+                        c.span
+                    );
+                }
+            }
+            seen.push(target);
+            takes.push(target);
+        }
+        var test: ?TExpr = null;
+        var value = error;
+        var bound = err;
+        if (c.types.length() > 0) {
+            if (!known) {
+                value = TExpr.Unknown;
+                bound = Ty.Unknown;
+            } else if (takes.length() == 1) {
+                // a typed clause, and a set of one (06 §4 rule 2)
+                test = this.typeTest(error, takes[0], c.span);
+                value = this.heldAs(error, takes[0]);
+                bound = takes[0];
+            } else {
+                for (t in takes) {
+                    let one = this.typeTest(error, t, c.span);
+                    if (one != null) {
+                        let before = test;
+                        test = if (before != null) TExpr.Binary(
+                            boxE(before),
+                            BinaryOp.Or,
+                            boxE(one),
+                            Ty.Bool
+                        )
+                            else one;
+                    }
+                }
+            }
+        }
+        let bind = List<TStmt>.new();
+        if (c.name != "_") {
+            let id = this.declareLocal(c.name, bound, false, c.span);
+            bind.push(TStmt.SetLocal(id, value, c.span.line));
+            this.ctx.clauseErrors.insert(id, caught);
+            this.ctx.clauseRecords.insert(id, record);
+            if (takes.length() != 1 && known) {
+                this.ctx.clauseKeys.insert(id, f"{this.ctx.fnIndex}:{caught}:{k}");
+            }
+        }
+        return ClauseHead { test = test, takes = takes.toArray(), bind = bind.toArray() };
+    }
+
+    /// Whether a clause of `by` takes every error of `t`: `by` is `Error`, or an interface `t`
+    /// conforms to (06 §3 rule 4).
+    mut fn catches(by: Ty, t: Ty): bool {
+        if (by == t || by == this.errorTy()) {
+            return true;
+        }
+        return match (by) {
+            .Named(ii) => this.types[ii].kind == .Interface && this.conformsTo(t, ii),
+            _ => false,
+        };
+    }
+
+    /// `try? e`: `e`'s value as an optional, `null` where something under it throws; not
+    /// flattened — over a `?int`, a `??int` (06 §6 rule 1). Over what gives no value only as a
+    /// statement (`LYS-SEM0140`).
+    mut fn tryOpt(x: Expr, asStmt: bool, at: Span): TExpr {
+        let v = this.expr(x, null);
+        let t = typeOf(v);
+        let caught = this.hidden(this.errorTy(), at);
+        let record = this.hidden(Ty.Named(this.anyIndex), at);
+        if (t == .Void || t == .Never || t == .Unknown) {
+            if (t == .Void && !asStmt) {
+                this.error(
+                    "LYS-SEM0140",
+                    "'try?' over what gives no value stands as a statement",
+                    at
+                );
+            }
+            let handler = TClause { test = null, body = [], types = [] };
+            return TExpr.Block(
+                [TStmt.Try([TStmt.Expr(v, at.line)], caught, record, [handler], at.line)],
+                boxE(TExpr.Unit),
+                Ty.Void
+            );
+        }
+        let ot = Ty.Optional(boxTy(t));
+        let r = this.hidden(ot, at);
+        let handler = TClause {
+            test = null,
+            body = [TStmt.SetLocal(r, TExpr.Null(ot), at.line)],
+            types = [],
+        };
+        let wrapped = this.fit(v, ot) ?? v;
+        return TExpr.Block(
+            [TStmt.Try([TStmt.SetLocal(r, wrapped, at.line)], caught, record, [handler], at.line)],
+            boxE(TExpr.Local(r, ot)),
+            ot
+        );
+    }
+
+    /// `try! e`: `e`'s value; where something under it throws, the panic `LYS-RT0010` with the
+    /// error's message (06 §6 rule 2).
+    mut fn tryBang(x: Expr, expected: ?Ty, at: Span): TExpr {
+        let v = this.expr(x, expected);
+        let t = typeOf(v);
+        let err = this.errorTy();
+        let caught = this.hidden(err, at);
+        let record = this.hidden(Ty.Named(this.anyIndex), at);
+        let message = TExpr.Native(
+            Native.Concat,
+            [
+                TExpr.Str("'try!' on an error: "),
+                TExpr.CallIface(this.errorSlot("message"), [TExpr.Local(caught, err)], Ty.Str),
+            ],
+            Ty.Str
+        );
+        let handler = TClause {
+            test = null,
+            body = [TStmt.Expr(TExpr.Panic(boxE(message), 10), at.line)],
+            types = [],
+        };
+        if (t == .Void || t == .Never || t == .Unknown) {
+            return TExpr.Block(
+                [TStmt.Try([TStmt.Expr(v, at.line)], caught, record, [handler], at.line)],
+                boxE(TExpr.Unit),
+                t
+            );
+        }
+        let r = this.hidden(t, at);
+        return TExpr.Block(
+            [TStmt.Try([TStmt.SetLocal(r, v, at.line)], caught, record, [handler], at.line)],
+            boxE(TExpr.Local(r, t)),
+            t
+        );
+    }
+
+    /// `try e catch (x: A) v catch (y) w`: `e`'s value, or the value of the clause that took the
+    /// error; the parts give one type as a match's arms do (06 §6 rule 4). As a statement the
+    /// parts give none.
+    mut fn tryCatch(x: Expr, clauses: CatchClause[], expected: ?Ty, asStmt: bool, at: Span): TExpr {
+        let before = this.ctx.unassigned;
+        let v = this.expr(x, if (asStmt) null else expected);
+        var after = this.reached(v);
+        let caught = this.hidden(this.errorTy(), at);
+        let record = this.hidden(Ty.Named(this.anyIndex), at);
+        let heads = List<ClauseHead>.new();
+        let values = List<TExpr>.new();
+        let seen = List<Ty>.new();
+        var k = 0;
+        for (c in clauses) {
+            this.ctx.unassigned = before;
+            this.pushScope();
+            heads.push(this.clauseHead(c, k, clauses, caught, record, seen));
+            let value = this.valueBlock(c.body, if (asStmt) null else expected);
+            this.popScope();
+            after = after.union(this.reached(value));
+            values.push(value);
+            k += 1;
+        }
+        this.ctx.unassigned = after;
+        var t = Ty.Void;
+        if (!asStmt) {
+            if (expected != null) {
+                t = expected;
+            } else {
+                t = typeOf(v);
+                for (value in values) {
+                    t = this.unify(t, typeOf(value), at);
+                }
+            }
+        }
+        let valued = t != .Void && t != .Never && t != .Unknown;
+        let r = if (valued) this.hidden(t, at) else -1;
+        let out = List<TClause>.new();
+        k = 0;
+        for (head in heads) {
+            let stmts = List<TStmt>.new();
+            stmts.pushAll(head.bind);
+            let value = values[k];
+            stmts.push(
+                if (valued) TStmt.SetLocal(r, this.coerce(value, t, spanOf(x)), at.line)
+                    else TStmt.Expr(value, at.line)
+            );
+            out.push(TClause { test = head.test, body = stmts.toArray(), types = head.takes });
+            k += 1;
+        }
+        let body = if (valued) TStmt.SetLocal(r, this.coerce(v, t, spanOf(x)), at.line)
+            else TStmt.Expr(v, at.line);
+        let tail = if (valued) TExpr.Local(r, t) else TExpr.Unit;
+        return TExpr.Block(
+            [TStmt.Try([body], caught, record, out.toArray(), at.line)],
+            boxE(tail),
+            if (valued) t else if (t == .Never) Ty.Never else Ty.Void
+        );
     }
 
     /// `e.backtrace()`: a `?Backtrace` of the prelude, the text of the record's frames.
@@ -4192,10 +4470,13 @@ class Checker {
     mut fn exprStmt(e: Expr, at: Span): TStmt {
         let checked = match (e) {
             .Match(x, arms, matchAt) => this.matchOf(x.value, arms, null, true, matchAt),
+            .TryOpt(x, tryAt) => this.tryOpt(x.value, true, tryAt),
+            .TryCatch(x, clauses, tryAt) => this.tryCatch(x.value, clauses, null, true, tryAt),
             _ => this.expr(e, null),
         };
         let effect = match (unmarked(e)) {
             .Call(_, _, _) | .Assign(_, _, _, _) | .Loop(_, _, _) | .Match(_, _, _) => true,
+            .TryOpt(_, _) | .TryBang(_, _) | .TryCatch(_, _, _) => true,
             _ => false,
         };
         if (!effect && typeOf(checked) != .Unknown) {
@@ -4402,7 +4683,20 @@ class Checker {
             bodies.push(body);
         }
         this.ctx.unassigned = if (arms.length() == 0) before else after;
-        this.coverage(arms, t, at);
+        // over a clause's binding that carries a set, the arms cover the set (05 K7): known once
+        // the sets are inferred
+        var setKey: ?string = null;
+        match (v) {
+            .Local(id, _) => {
+                setKey = this.ctx.clauseKeys.get(id);
+            }
+            _ => { }
+        }
+        if (let key = setKey) {
+            this.coverageLater(arms, key, at);
+        } else {
+            this.coverage(arms, t, at);
+        }
         var rt = Ty.Void;
         if (!isStmt) {
             if (expected != null) {
@@ -4485,6 +4779,36 @@ class Checker {
                 "add an arm for it, or one with '_'",
                 at
             );
+        }
+    }
+
+    /// The types a match over a clause's set takes, kept to check against the set once it is
+    /// known; nothing to check where an arm takes every value.
+    mut fn coverageLater(arms: MatchArm[], key: string, at: Span): void {
+        let types = List<Ty>.new();
+        for (arm in arms) {
+            if (arm.guard != null) {
+                continue;
+            }
+            if (irrefutable(arm.pattern)) {
+                return;
+            }
+            this.patternTypes(arm.pattern, types);
+        }
+        if (!this.ctx.fixing) {
+            this.laterMatches.push(LaterMatch { key = key, types = types.toArray(), at = at });
+        }
+    }
+
+    mut fn patternTypes(p: Pattern, out: List<Ty>): void {
+        match (p) {
+            .Typed(_, written, _) => out.push(this.resolveType(written)),
+            .Or(alternatives, _) => {
+                for (a in alternatives) {
+                    this.patternTypes(a, out);
+                }
+            }
+            _ => { }
         }
     }
 
@@ -5650,6 +5974,9 @@ class Checker {
             .Throw(value, _) => this.throwOf(value.value),
             // `try e` marks `e` and changes nothing (05 Th)
             .TryMark(marked, _) => this.expr(marked.value, expected),
+            .TryOpt(x, at) => this.tryOpt(x.value, false, at),
+            .TryBang(x, at) => this.tryBang(x.value, expected, at),
+            .TryCatch(x, clauses, at) => this.tryCatch(x.value, clauses, expected, false, at),
             // where the place's type conforms, built by its literal protocol (03 Lit)
             .Int(n, _) => this.literalOf(
                 TExpr.Int(n),
@@ -9810,7 +10137,14 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
         }
         .Lambda(_, _, body, _, _) => exprAny(body.value, onStmt, onExpr),
         .Throw(x, _) => exprAny(x.value, onStmt, onExpr),
-        .TryMark(x, _) => exprAny(x.value, onStmt, onExpr),
+        .TryMark(x, _) | .TryOpt(x, _) | .TryBang(x, _) => exprAny(x.value, onStmt, onExpr),
+        .TryCatch(x, clauses, _) => {
+            var found = exprAny(x.value, onStmt, onExpr);
+            for (c in clauses) {
+                found = found || blockAny(c.body, onStmt, onExpr);
+            }
+            found
+        }
         .Is(x, _, _) => exprAny(x.value, onStmt, onExpr),
         .Instance(x, _, _) => exprAny(x.value, onStmt, onExpr),
         .VariantInit(_, _, fields, _) => {
@@ -9846,7 +10180,7 @@ fn unmarked(e: Expr): Expr {
 fn spanOf(e: Expr): Span {
     return match (e) {
         .Throw(_, at) => at,
-        .TryMark(_, at) => at,
+        .TryMark(_, at) | .TryOpt(_, at) | .TryBang(_, at) | .TryCatch(_, _, at) => at,
         .Int(_, at) => at,
         .Float(_, at) => at,
         .Bool(_, at) => at,

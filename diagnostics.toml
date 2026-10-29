@@ -583,6 +583,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "A conformer's method takes the member's parameters and gives its result, exactly — its own type where the interface writes `Self` —, and is static where the member is. Lyric 5's LYR-SEM0042."
 
+[LYS-SEM0043]
+title = "two defaults of one name, which the type does not write"
+severity = "error"
+area = "05-interfaces"
+summary = "A type conforms to two interfaces whose defaults give a member of the same name and writes none itself: it writes the member, one function for both. Lyric 5's LYR-SEM0043."
+
 [LYS-SEM0045]
 title = "a lambda parameter whose type nothing gives"
 severity = "error"
@@ -733,6 +739,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "`extend T { … }` adds to a struct, a class, an enum or a built-in type; an interface is not extended directly. Lyric 5's LYR-SEM0124."
 
+[LYS-SEM0125]
+title = "a qualified call's receiver that does not conform"
+severity = "error"
+area = "05-interfaces"
+summary = "`I.m(x, …)` calls the member of interface `I` with `x` as its receiver; `x`'s type conforms to `I`. Lyric 5's LYR-SEM0125."
+
 [LYS-SEM0126]
 title = "an interface that is a constraint only, written as a value's type"
 severity = "error"
@@ -816,6 +828,12 @@ title = "a 'return' without the value the function returns"
 severity = "error"
 area = "07-statements"
 summary = "The function has a result type; its `return` gives a value. Lyric 5's LYR-SEM0226."
+
+[LYS-SEM0231]
+title = "a static member called through its interface"
+severity = "error"
+area = "05-interfaces"
+summary = "`Make.make(s)` is refused: the interface has no value to call it for; it is called on a type that conforms, `Item.make(s)`, or through a type parameter, `T.make(s)`. Lyric 5's LYR-SEM0231."
 
 [LYS-SEM0900]
 title = "a width type of Lyric 5"

@@ -148,3 +148,27 @@ fn aConformanceByDelegationForwardsToTheField(): void {
         ["LYS-SEM0123"]
     );
 }
+
+let qualified = "interface A {\n    fn d(): int = 1\n}\ninterface B {\n    fn d(): int = 2\n}\nstruct T :: [A, B] {\n    x: int\n\n    fn d(): int = 3\n}\nstruct U :: [A] {\n    x: int\n}\ninterface W {\n    fn walk(): int\n}\nstruct Dog :: [W] {\n    fn walk(): int = 4\n}\nfn viaT<X :: [W]>(x: X): int = W.walk(x)\n";
+
+@Test
+fn theQualifiedCallNamesTheInterface(): void {
+    // the type's own member answers both interfaces; a default; through a type parameter and an
+    // interface value
+    let e = "fn e(): int {\n    let w: W = Dog { }\n    return T { x = 1 }.d() * 100000 + A.d(T { x = 1 }) * 10000 + A.d(U { x = 1 }) * 1000 + W.walk(Dog { }) * 100 + viaT(Dog { }) * 10 + W.walk(w)\n}";
+    assertEq(value(qualified + e, "e"), 331444);
+}
+
+@Test
+fn whatOneMethodSetRefuses(): void {
+    // two defaults of one name the type does not write
+    assertEq(errs(qualified + "struct S :: [A, B] {\n    x: int\n}"), ["LYS-SEM0043"]);
+    // a receiver that does not conform, and none
+    assertEq(errs(qualified + "let n = A.d(3)"), ["LYS-SEM0125"]);
+    assertEq(errs(qualified + "let n = A.d()"), ["LYS-SEM0014"]);
+    // a static member through its interface
+    assertEq(
+        errs("interface Make {\n    static fn make(n: int): Self\n}\nlet m = Make.make(1)"),
+        ["LYS-SEM0231"]
+    );
+}

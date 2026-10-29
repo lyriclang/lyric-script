@@ -1516,6 +1516,8 @@ class Checker {
         for (x in info.ifaces) {
             all.push(x);
         }
+        // the defaults the type takes, by member name (05 §3 rule 2)
+        let defaults = Map<string, int>.new();
         // a generic block's: for the instances that meet its constraints (05 §13 rule 3)
         if (this.blockCond.length() > 0) {
             for (ii in added) {
@@ -1585,7 +1587,17 @@ class Checker {
                     info.methods.insert(member, forward);
                     info.witness.insert(slot, forward);
                 } else if (!this.functions[declared].abstract) {
-                    // the default, its `this` the interface value
+                    // the default, its `this` the interface value; two of one name from two
+                    // interfaces are the type's to settle (05 §3 rule 2)
+                    let other = defaults.get(member);
+                    if (other != null && other != declared) {
+                        this.error(
+                            "LYS-SEM0043",
+                            f"'{info.name}' gets '{member}' from two interfaces' defaults: write it, one function for both",
+                            conforms[0].span
+                        );
+                    }
+                    defaults.insert(member, declared);
                     info.witness.insert(slot, declared);
                 } else {
                     this.error(
@@ -8287,6 +8299,70 @@ class Checker {
         }
     }
 
+    /// `I.m(x, …)`: member `m` of interface `I` with `x` as its receiver — the implementation
+    /// `x`'s type has for `I` (05 §4 rule 1); a static member is reached on a type, not through
+    /// its interface (rule 2).
+    mut fn qualifiedCall(ii: int, method: string, args: Arg[], at: Span): TExpr {
+        let iface = this.types[ii];
+        let found = this.ifaceMember(ii, method);
+        if (found == null) {
+            this.error("LYS-SEM0012", f"'{iface.name}' has no member '{method}'", at);
+            return TExpr.Unknown;
+        }
+        let (fi, slot) = found;
+        if (this.functions[fi].isStatic) {
+            this.error(
+                "LYS-SEM0231",
+                f"'{iface.name}.{method}' is static: call it on a type that conforms, or through a type parameter, T.{method}(…)",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        if (args.length() == 0) {
+            this.error("LYS-SEM0014", f"the receiver comes first: {iface.name}.{method}(x, …)", at);
+            return TExpr.Unknown;
+        }
+        let recv = this.expr(args[0].value, null);
+        let t = typeOf(recv);
+        if (t == .Unknown) {
+            return TExpr.Unknown;
+        }
+        if (!this.conformsTo(t, ii)) {
+            this.error(
+                "LYS-SEM0125",
+                f"{this.tyName(t)} is no {iface.name}",
+                spanOf(args[0].value)
+            );
+            return TExpr.Unknown;
+        }
+        let rest = List<Arg>.new();
+        var k = 1;
+        while (k < args.length()) {
+            rest.push(args[k]);
+            k += 1;
+        }
+        if (this.selfGeneric(fi)) {
+            this.presetBinds = [t];
+        }
+        let call = this.callAmong(method, [fi], recv, rest.toArray(), at);
+        this.presetBinds = [];
+        let parts = match (call) {
+            .Call(_, all, rt) => (all, rt),
+            .CallGeneric(_, _, all, rt) => (all, rt),
+            _ => {
+                return call;
+            }
+        };
+        let (all, rt) = parts;
+        return match (t) {
+            // a type parameter: through the constraint, in each copy the argument's own
+            .Param(pk) => TExpr.CallConstraint(pk, ii, method, slot, all, rt),
+            .Named(i) => if (this.types[i].kind == .Interface) TExpr.CallIface(slot, all, rt)
+                else TExpr.CallBound(t, ii, method, slot, all, rt),
+            _ => TExpr.CallBound(t, ii, method, slot, all, rt),
+        };
+    }
+
     /// `T.parse(s)`: a static member of a constraint of type parameter `k` (05 §7 rule 2), the
     /// argument's own in each copy.
     mut fn paramStatic(k: int, method: string, args: Arg[], at: Span): TExpr {
@@ -8335,6 +8411,9 @@ class Checker {
 
     mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
         let info = this.types[typeIndex];
+        if (info.kind == .Interface) {
+            return this.qualifiedCall(typeIndex, method, args, at);
+        }
         // `Shape.Num(3)`: a variant with a payload by position
         let k = this.variantIndex(typeIndex, method);
         if (k >= 0) {

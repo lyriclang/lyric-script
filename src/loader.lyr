@@ -518,7 +518,7 @@ fn gitPackage(l: Loaded, w: Wanted): ?string {
             return null;
         }
         try? createDirAll(join(cache, "git"));
-        if (git(["clone", "--bare", "--quiet", dep.gitWritten, repo], null) == null) {
+        if (git(["clone", "--bare", "--quiet", dep.git, repo], null) == null) {
             docError(l, w.doc, dep.line, "LYS-PKG0007", f"'{dep.gitWritten}' cannot be reached");
             l.exit = 2;
             return null;

@@ -952,3 +952,22 @@ Mutanten hinzu: ein Kanal, der schließt, während der Select wartet), alle rot 
 Mutanten in zwei Läufen, alle wie vorher aufgeschrieben; „das Weck-Flag wird übergangen“ blieb als
 äquivalent aus (nach dem Wecken ist die Beobachtungsliste leer, `park.w` läuft ohnehin weiter).
 Tests 336 → 340, Fälle 308 → 315.
+
+**S6d3, Ergebnis (2026-10-29).** Der Lauf hält seine Zeitgeber auf einer eigenen monotonen Uhr
+(Lyric 5s `Monotonic`): vor jedem Schritt wecken die fälligen ihre Schläfer hinter den bereiten Tasks
+— in der Reihenfolge ihrer Fristen — oder schließen den Kanal ihres `Timer`; ist kein Task bereit,
+schläft der Lauf (Lyric-5-`sleep`) bis zum frühesten, erst ohne Zeitgeber ist es eine Verklemmung.
+Ops `sleep`, `timer.after`; Format 18. `Duration` (privates Feld, `of…`-Funktionen), `sleep`,
+`Timer.after`, `TimedOut`, `.timeout(d)` im Select und `withTimeout` sind Prelude-Quelltext;
+`withTimeout` startet seinen Block in einem eigenen Scope, damit dessen Scheitern nur aus
+`withTimeout` kommt und nicht den Lauf scheitern lässt (Script-Besonderheit: das Top-Level ist ein
+Scope). Gefunden: `execute` fragte den VM-Task mit `yieldNow()` ab und hätte geschlafen; nach einem
+erfolglosen Nachgeben schläft es jetzt eine Millisekunde. Und das Flag „das Programm startet Tasks“
+setzte jedes `scope.spawn`, über die Prelude also jedes Programm — es endete mit einem `join`; das
+fing der S6a-Test „nur ein Programm, das Tasks startet, endet mit `join`“, das Flag gehört jetzt
+dem einfachen `spawn` allein (der erste Fix griff nicht: der Wächter des Patch-Skripts übersprang eine
+Löschung, deren neuer Text im alten steckte). Spec 10 Regel 17, elf Fälle, alle rot gegen S6d2;
+drei Mutanten in zwei Läufen, alle wie vorher aufgeschrieben; drei naheliegende blieben aus (bei
+einem fälligen Zeitgeber ist die Reihenfolge gleich, ein Lauf ohne Schlafen kreist nur, ein beim
+Abbruch stehengebliebener Zeitgeber ließe einen beendeten Task wieder anlaufen). Tests 340 → 343,
+Fälle 315 → 326.

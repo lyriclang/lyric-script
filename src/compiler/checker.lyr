@@ -44,6 +44,7 @@ import lyric_script.compiler.ast {
     unaryText,
 };
 import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.parser { parse };
 import lyric_script.compiler.typed {
     FieldInfo,
     FixedTy,
@@ -74,9 +75,22 @@ struct Checked {
     warnings: Diagnostic[],
 }
 
+/// The interfaces of the prelude written in Lyric-Script: the literal protocols (03 Lit), each a
+/// static member that builds the conforming type from a literal of its kind.
+let preludeSource: string = "interface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\n";
+
 /// Checks a parsed module.
-fn checkModule(module: Module): Checked {
+fn checkModule(parsed: Module): Checked {
     let c = Checker.new();
+    // the prelude's interfaces before the script's declarations
+    let items = List<Item>.new();
+    for (item in parse(preludeSource).module.items) {
+        items.push(item);
+    }
+    for (item in parsed.items) {
+        items.push(item);
+    }
+    let module = Module { frontmatter = parsed.frontmatter, items = items.toArray() };
     c.declare(module);
     c.checkMain(module);
     c.checkBodies();
@@ -331,6 +345,61 @@ class Checker {
                 help = help,
             }
         );
+    }
+
+    /// A literal where its place's type takes it through a literal protocol (03 Lit): the type's
+    /// own `from…Literal(lit)` — of an optional's value type too; nowhere else, and never a value
+    /// that is no literal.
+    mut fn literalOf(lit: TExpr, proto: string, member: string, expected: ?Ty): TExpr {
+        if (expected == null) {
+            return lit;
+        }
+        let target = match (expected) {
+            .Optional(inner) => inner.value,
+            _ => expected,
+        };
+        return this.literalBuilt(lit, proto, member, target) ?? lit;
+    }
+
+    /// The call of `target`'s `member` with the literal (none for `null`), where `target`
+    /// conforms to the protocol; `null` where it does not.
+    mut fn literalBuilt(lit: ?TExpr, proto: string, member: string, target: Ty): ?TExpr {
+        let pi = this.typeIndex.get(proto);
+        if (pi == null) {
+            return null;
+        }
+        let args: TExpr[] = if (lit != null) [lit] else [];
+        match (target) {
+            .Named(i) => {
+                let info = this.types[i];
+                if (info.kind == .Interface || !this.conformsTo(target, pi)) {
+                    return null;
+                }
+                let tmpl = if (info.template >= 0 && info.template != i) info.template else i;
+                let own = this.types[tmpl].methods.get(member);
+                if (own == null) {
+                    return null;
+                }
+                if (this.functions[own].typeParams.length() > 0) {
+                    return TExpr.CallGeneric(own, info.args, args, target);
+                }
+                return TExpr.Call(own, args, target);
+            }
+            .Param(k) => {
+                if (!this.conformsTo(target, pi)) {
+                    return null;
+                }
+                let found = this.ifaceMember(pi, member);
+                if (found == null) {
+                    return null;
+                }
+                let (_, slot) = found;
+                return TExpr.CallStatic(k, pi, member, slot, args, target);
+            }
+            _ => {
+                return null;
+            }
+        }
     }
 
     /// What a later milestone builds: reported, and the expression read as unknown.
@@ -5058,15 +5127,40 @@ class Checker {
     /// Checks an expression; `expected` is the type its place takes, where one is known.
     mut fn expr(e: Expr, expected: ?Ty): TExpr {
         return match (e) {
-            .Int(n, _) => TExpr.Int(n),
-            .Float(x, _) => TExpr.Float(x),
-            .Bool(b, _) => TExpr.Bool(b),
+            // where the place's type conforms, built by its literal protocol (03 Lit)
+            .Int(n, _) => this.literalOf(
+                TExpr.Int(n),
+                "FromIntLiteral",
+                "fromIntLiteral",
+                expected
+            ),
+            .Float(x, _) => this.literalOf(
+                TExpr.Float(x),
+                "FromFloatLiteral",
+                "fromFloatLiteral",
+                expected
+            ),
+            .Bool(b, _) => this.literalOf(
+                TExpr.Bool(b),
+                "FromBoolLiteral",
+                "fromBoolLiteral",
+                expected
+            ),
             .Char(c, _) => TExpr.Char(c),
-            .Str(s, _) => TExpr.Str(s),
+            .Str(s, _) => this.literalOf(
+                TExpr.Str(s),
+                "FromStringLiteral",
+                "fromStringLiteral",
+                expected
+            ),
             .Bytes(_, at) => this.notYet("a byte string", "S7 (Bytes)", at),
             .Interpolated(segments, at) => this.interpolated(segments, at),
             .Null(_) => {
                 let t = expected ?? Ty.NullLit;
+                let built = this.literalBuilt(null, "FromNullLiteral", "fromNullLiteral", t);
+                if (built != null) {
+                    return built;
+                }
                 match (t) {
                     .Optional(_) => TExpr.Null(t),
                     _ => TExpr.Null(Ty.NullLit),

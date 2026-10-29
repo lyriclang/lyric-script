@@ -1,0 +1,69 @@
+// The literal protocols (S3i, design/v1 03 Lit): a literal where its place's type conforms is
+// built by the type's static `from…Literal` — never a value that is no literal; run in the VM.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let types = "struct Money :: [FromIntLiteral, FromStringLiteral, FromFloatLiteral] {\n    cents: int\n\n    static fn fromIntLiteral(v: int): Money = Money { cents = v * 100 }\n    static fn fromStringLiteral(v: string): Money = Money { cents = 1 }\n    static fn fromFloatLiteral(v: float): Money = Money { cents = (v * 100.0) as int }\n}\nclass Flag :: [FromBoolLiteral, FromNullLiteral] {\n    var on: int = 0\n\n    static fn fromBoolLiteral(v: bool): Flag {\n        let f = Flag { }\n        f.on = if (v) 1 else 0\n        return f\n    }\n    static fn fromNullLiteral(): Flag {\n        let f = Flag { }\n        f.on = -1\n        return f\n    }\n}\nfn twice(m: Money): int = m.cents * 2\nfn make<T :: [FromIntLiteral]>(): T {\n    let x: T = 7\n    return x\n}\n";
+
+@Test
+fn aLiteralIsBuiltByItsPlacesType(): void {
+    // a binding, an optional's value, an argument, a type parameter's
+    let e = "fn e(): int {\n    let a: Money = 5\n    let b: Money = \"x\"\n    let c: ?Money = 3\n    let d: Money = 1.5\n    return a.cents + b.cents + (c?.cents ?? 0) + d.cents + twice(2) + make<Money>().cents\n}";
+    assertEq(value(types + e, "e"), 2051);
+}
+
+@Test
+fn trueAndNullToo(): void {
+    let e = "fn e(): int {\n    let x: Flag = true\n    let y: Flag = null\n    return x.on * 10 + y.on\n}";
+    assertEq(value(types + e, "e"), 9);
+}
+
+@Test
+fn onlyALiteral(): void {
+    // a value that is no literal is never converted
+    assertEq(errs(types + "fn g(): Money {\n    let n = 5\n    return n\n}"), ["LYS-SEM0001"]);
+    // a type without the protocol takes no literal
+    assertEq(errs("struct Plain {\n    x: int\n}\nlet p: Plain = 5"), ["LYS-SEM0001"]);
+    // a conformer gives the static
+    assertEq(errs("struct Half :: [FromIntLiteral] {\n    x: int\n}"), ["LYS-SEM0020"]);
+}

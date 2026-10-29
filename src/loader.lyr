@@ -6,12 +6,16 @@
 //! package `pkg`, `pkg` alone its `src/lib.lyrs`, and a module imports from its own package and
 //! from those its manifest declares.
 import std.collections { List, Map };
-import std.fs { DirEntry, absolute, exists, readDir, readText };
+import std.crypto { sha256 };
+import std.fs { DirEntry, absolute, createDirAll, exists, readDir, readText, removeAll, rename };
+import std.os { pid };
+import std.process { Command };
 import std.path { fileName, join, normalize, parent, stem };
 import lyric_script { version };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };
-import lyric_script.package { manifestName, readManifest, toolchainAllows };
+import lyric_script.cache { cacheRoot };
+import lyric_script.package { Dep, isVersion, manifestName, readManifest, toolchainAllows };
 
 /// A package of the program: its name, its root folder, and the packages its manifest declares,
 /// by name (S5b).
@@ -39,8 +43,10 @@ class Loaded {
     pkgs: List<Pkg>,
     docPaths: List<string>,
     docTexts: List<string>,
-    // 2 where a fault of the environment stops the program (`LYS-PKG0009`), else 0
+    // 2 where a fault of the environment stops the program (`LYS-PKG0007`, `LYS-PKG0009`), else 0
     var exit: int = 0,
+    // `--offline`: nothing is fetched (S5c)
+    var offline: bool = false,
 
     /// The text the cache keys the program by: the entry's alone where it is the one file, else
     /// every file's module name and text.
@@ -73,8 +79,8 @@ struct Target {
     message: string,
 }
 
-/// Reads the program whose entry is `path`, its text `text`.
-fn loadProgram(path: string, text: string): Loaded {
+/// Reads the program whose entry is `path`, its text `text`; `offline`, fetching nothing.
+fn loadProgram(path: string, text: string, offline: bool = false): Loaded {
     let l = Loaded {
         paths = List<string>.new(),
         texts = List<string>.new(),
@@ -87,6 +93,7 @@ fn loadProgram(path: string, text: string): Loaded {
         pkgs = List<Pkg>.new(),
         docPaths = List<string>.new(),
         docTexts = List<string>.new(),
+        offline = offline,
     };
     l.paths.push(path);
     l.texts.push(text);
@@ -312,27 +319,49 @@ fn packageRoot(path: string): ?(string, string) {
     return (root, rel.toArray().join("/"));
 }
 
-/// A dependency to read: its folder, the name the depending manifest gives it, where that
-/// manifest declares it, and the package that declares it; `from` -1 for the root package.
+/// A dependency to read: its folder — empty for one read from git —, the dependency as the
+/// depending manifest writes it, where that manifest declares it, the package that declares it
+/// and whether that package was read from git; `from` -1 for the root package.
 struct Wanted {
     root: string,
-    name: string,
+    dep: Dep,
     doc: int,
-    line: int,
     from: int,
+    fromGit: bool = false,
 }
 
 /// Reads the package at `root` and every package its dependencies reach, each once (Lyric 5 15
 /// §1–§2): a manifest's faults at their lines; a folder without the package its dependent names
-/// (`LYS-PKG0004`); two folders for one name (`LYS-PKG0005`); a toolchain the package asks more
-/// of (`LYS-PKG0009`).
+/// (`LYS-PKG0004`); two folders for one name (`LYS-PKG0005`); a revision or a package a
+/// repository does not have (`LYS-PKG0006`); a repository that cannot be reached, and a
+/// toolchain the package asks more of, faults of the environment (`LYS-PKG0007`, `LYS-PKG0009`).
 fn loadPackages(root: string, l: Loaded): void {
     let queue = List<Wanted>.new();
-    queue.push(Wanted { root = root, name = "", doc = -1, line = 0, from = -1 });
+    queue.push(Wanted { root = root, dep = Dep { name = "", line = 0 }, doc = -1, from = -1 });
     var k = 0;
     while (k < queue.length()) {
-        let w = queue[k];
+        var w = queue[k];
         k += 1;
+        let dep = w.dep;
+        if (dep.git != "") {
+            if (dep.path != "") {
+                continue;
+            }
+            let fetched = gitPackage(l, w);
+            if (fetched == null) {
+                continue;
+            }
+            w = w with { root = fetched };
+        } else if (w.fromGit) {
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                "LYS-PKG0004",
+                f"'{dep.name}' is read from a folder, and a package read from git names its own dependencies by git"
+            );
+            continue;
+        }
         // a folder reached again is the package read before
         var known = -1;
         var j = 0;
@@ -343,19 +372,29 @@ fn loadPackages(root: string, l: Loaded): void {
             j += 1;
         }
         if (known >= 0) {
-            l.pkgs[w.from].deps.insert(w.name, known);
+            l.pkgs[w.from].deps.insert(dep.name, known);
             continue;
         }
         let mpath = below(w.root, manifestName);
         let text = try? readText(mpath);
         if (text == null) {
-            docError(
-                l,
-                w.doc,
-                w.line,
-                "LYS-PKG0004",
-                f"no package at '{w.root}': it holds no {manifestName}"
-            );
+            if (dep.git != "") {
+                docError(
+                    l,
+                    w.doc,
+                    dep.line,
+                    "LYS-PKG0006",
+                    f"'{dep.gitWritten}' holds no package at its root: there is no {manifestName}"
+                );
+            } else {
+                docError(
+                    l,
+                    w.doc,
+                    dep.line,
+                    "LYS-PKG0004",
+                    f"no package at '{w.root}': it holds no {manifestName}"
+                );
+            }
             continue;
         }
         let d = l.docPaths.length();
@@ -369,15 +408,32 @@ fn loadPackages(root: string, l: Loaded): void {
         if (m == null) {
             continue;
         }
-        if (w.from >= 0 && m.name != w.name) {
+        if (w.from >= 0 && m.name != dep.name) {
+            let code = if (dep.git != "") "LYS-PKG0006" else "LYS-PKG0004";
+            let place = if (dep.git != "") dep.gitWritten else w.root;
             docError(
                 l,
                 w.doc,
-                w.line,
-                "LYS-PKG0004",
-                f"'{w.root}' holds the package '{m.name}', not '{w.name}'"
+                dep.line,
+                code,
+                f"'{place}' holds the package '{m.name}', not '{dep.name}'"
             );
             continue;
+        }
+        // a tag that is a version asks for that version
+        if (dep.revKind == "tag") {
+            let tagged = if (dep.rev.startsWith("v")) dep.rev[1..dep.rev.length()].toString()
+                else dep.rev;
+            if (isVersion(tagged) && tagged != m.version) {
+                docError(
+                    l,
+                    w.doc,
+                    dep.line,
+                    "LYS-PKG0006",
+                    f"the tag '{dep.rev}' of '{dep.gitWritten}' holds the version {m.version}"
+                );
+                continue;
+            }
         }
         let asked = m.toolchain;
         if (asked != null && !toolchainAllows(asked, version)) {
@@ -395,7 +451,7 @@ fn loadPackages(root: string, l: Loaded): void {
                 docError(
                     l,
                     w.doc,
-                    w.line,
+                    dep.line,
                     "LYS-PKG0005",
                     f"two packages named '{m.name}': '{other.root}' and '{w.root}'"
                 );
@@ -406,18 +462,175 @@ fn loadPackages(root: string, l: Loaded): void {
         if (w.from >= 0) {
             l.pkgs[w.from].deps.insert(m.name, index);
         }
-        for (dep in m.deps) {
+        for (next in m.deps) {
             queue.push(
                 Wanted {
-                    root = normalize(below(w.root, dep.path)),
-                    name = dep.name,
+                    root = if (next.git != "") "" else normalize(below(w.root, next.path)),
+                    dep = next,
                     doc = d,
-                    line = dep.line,
                     from = index,
+                    fromGit = w.fromGit || dep.git != "",
                 }
             );
         }
     }
+}
+
+/// The folder of a git dependency's package: the repository cloned bare into the user's cache
+/// once, fetched where a branch is asked for or the revision is not there yet, and the commit's
+/// tree checked out once, `<cache>/src/<repository>/<commit>` (Lyric 5 15 §2 rules 2–3). `null`
+/// where it fails, reported: a revision the repository does not have (`LYS-PKG0006`), a
+/// repository that cannot be reached or, `--offline`, is not in the cache (`LYS-PKG0007`).
+fn gitPackage(l: Loaded, w: Wanted): ?string {
+    let dep = w.dep;
+    let cache = cacheRoot();
+    if (cache == null) {
+        docError(l, w.doc, dep.line, "LYS-PKG0007", "there is no cache to keep a repository in");
+        l.exit = 2;
+        return null;
+    }
+    let key = hexOf(sha256(dep.git.toBytes()[..]))[0..16].toString();
+    let repo = join(cache, "git", key);
+    var fetched = false;
+    if (!exists(repo)) {
+        if (l.offline) {
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                "LYS-PKG0007",
+                f"'{dep.gitWritten}' is not in the cache, and --offline fetches nothing"
+            );
+            l.exit = 2;
+            return null;
+        }
+        try? createDirAll(join(cache, "git"));
+        if (git(["clone", "--bare", "--quiet", dep.gitWritten, repo], null) == null) {
+            docError(l, w.doc, dep.line, "LYS-PKG0007", f"'{dep.gitWritten}' cannot be reached");
+            l.exit = 2;
+            return null;
+        }
+        fetched = true;
+    }
+    var revKind = dep.revKind;
+    var rev = dep.rev;
+    if (revKind == "") {
+        // the branch the repository's HEAD names
+        let head = git(["symbolic-ref", "--quiet", "HEAD"], repo) ?? "refs/heads/main";
+        revKind = "branch";
+        rev = if (head.startsWith("refs/heads/")) head[11..head.length()].toString() else head;
+    }
+    let ref = match (revKind) {
+        "tag" => f"refs/tags/{rev}^{{commit}}",
+        "branch" => f"refs/heads/{rev}^{{commit}}",
+        _ => f"{rev}^{{commit}}",
+    };
+    // a branch moves: read at its head; a tag or a commit once it is there
+    if (revKind == "branch" && !fetched && !l.offline) {
+        fetched = fetch(repo);
+    }
+    var commit = git(["rev-parse", "--verify", "--quiet", ref], repo);
+    if (commit == null && !fetched && !l.offline) {
+        fetch(repo);
+        commit = git(["rev-parse", "--verify", "--quiet", ref], repo);
+    }
+    let id = commit;
+    if (id == null) {
+        let what = if (revKind == "rev") "commit" else revKind;
+        docError(
+            l,
+            w.doc,
+            dep.line,
+            if (l.offline) "LYS-PKG0007" else "LYS-PKG0006",
+            if (l.offline) f"'{dep.gitWritten}' has no {what} '{rev}' in the cache, and --offline fetches nothing"
+                else f"'{dep.gitWritten}' has no {what} '{rev}'"
+        );
+        if (l.offline) {
+            l.exit = 2;
+        }
+        return null;
+    }
+    let dir = join(cache, "src", key, id);
+    if (!exists(dir)) {
+        let partial = f"{dir}.{pid()}.partial";
+        try? createDirAll(partial);
+        let done = git(
+            [
+                "--git-dir",
+                repo,
+                "--work-tree",
+                partial,
+                "checkout",
+                "--quiet",
+                "--force",
+                id,
+                "--",
+                ".",
+            ],
+            null
+        );
+        if (done != null) {
+            try? rename(partial, dir);
+        }
+        if (!exists(dir)) {
+            try? removeAll(partial);
+            {
+                docError(
+                    l,
+                    w.doc,
+                    dep.line,
+                    "LYS-PKG0007",
+                    f"the commit {id} of '{dep.gitWritten}' cannot be checked out into the cache"
+                );
+                l.exit = 2;
+                return null;
+            }
+        }
+    }
+    return dir;
+}
+
+/// Fetches every branch and tag of the bare clone `repo` from its origin; whether it did.
+fn fetch(repo: string): bool {
+    return git(
+        [
+            "fetch",
+            "--quiet",
+            "--force",
+            "origin",
+            "+refs/heads/*:refs/heads/*",
+            "+refs/tags/*:refs/tags/*",
+        ],
+        repo
+    )
+        != null;
+}
+
+/// Runs `git` with `args`, in `cwd` where given: what it writes, trimmed; `null` where it fails.
+fn git(args: string[], cwd: ?string): ?string {
+    let run = Command { program = "git", args = args, cwd = cwd, stdout = .Piped, stderr = .Piped };
+    let out = try run.output() catch (_) {
+        return null;
+    };
+    if (!out.status.success()) {
+        return null;
+    }
+    let text = try string.fromUtf8(out.stdout[..]) catch (_) {
+        return null;
+    };
+    return text.trim().toString();
+}
+
+/// Bytes as lowercase hexadecimal digits.
+fn hexOf(bytes: uint8[32]): string {
+    let digits = "0123456789abcdef";
+    let out = List<string>.new();
+    for (b in bytes) {
+        let v = b as int;
+        out.push(digits[v / 16..v / 16 + 1].toString());
+        out.push(digits[v % 16..v % 16 + 1].toString());
+    }
+    return out.toArray().join("");
 }
 
 /// An error at `line` of manifest `doc`.

@@ -481,6 +481,18 @@ severity = "error"
 area = "15-project"
 summary = "A program holds one package of each name: two folders for one name are refused. Lyric 5's LYR-PKG0005."
 
+[LYS-PKG0006]
+title = "a revision or a package a repository does not have"
+severity = "error"
+area = "15-project"
+summary = "A git dependency's tag, branch or commit is not in its repository, the repository holds no package at its root or another one, or a tag that is a version names a manifest of another version. Lyric 5's LYR-PKG0006."
+
+[LYS-PKG0007]
+title = "a repository that cannot be reached"
+severity = "error"
+area = "15-project"
+summary = "A git dependency's repository cannot be cloned or fetched, or with `--offline` the cache does not hold what is asked for: a fault of the environment, with exit code 2. Lyric 5's LYR-PKG0007."
+
 [LYS-PKG0009]
 title = "a toolchain below what a package asks for"
 severity = "error"

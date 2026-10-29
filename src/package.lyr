@@ -18,12 +18,18 @@ struct Manifest {
     deps: Dep[],
 }
 
-/// A dependency read from a directory: its name, the directory relative to the manifest, and
-/// the line it is declared on.
+/// A dependency: its name and the line it is declared on; read from a folder relative to the
+/// manifest, `path`, or from a repository — `git` its URL in its normal form, `gitWritten` as
+/// written — at a revision: `revKind` "tag", "branch" or "rev", empty for the branch the
+/// repository's `HEAD` names.
 struct Dep {
     name: string,
-    path: string,
     line: int,
+    path: string = "",
+    git: string = "",
+    gitWritten: string = "",
+    revKind: string = "",
+    rev: string = "",
 }
 
 /// What reading a manifest gave: the manifest, `null` where it has errors, and the errors, each
@@ -194,6 +200,58 @@ fn versionOf(text: string): ?int[] {
     return if (parts.length() == 3) parts.toArray() else null;
 }
 
+/// Whether `url` names a repository: `https://`, `http://`, `ssh://`, `git://`, `file://`, or
+/// `user@host:path` (Lyric 5 15 §2 rule 2).
+fn isGitUrl(url: string): bool {
+    for (scheme in ["https://", "http://", "ssh://", "git://", "file://"]) {
+        if (url.startsWith(scheme) && url.length() > scheme.length()) {
+            return true;
+        }
+    }
+    let at = url.find('@');
+    let colon = url.find(':');
+    return at != null && colon != null && at > 0 && colon > at + 1 && colon < url.length() - 1;
+}
+
+/// A repository's URL in its normal form, as it is compared, cached and locked: a `/` and a
+/// `.git` at its end dropped, the scheme and the host in lower case (Lyric 5 15 §2 rule 2).
+fn normalUrl(url: string): string {
+    var u = url;
+    while (u.endsWith("/")) {
+        u = u[0..u.length() - 1].toString();
+    }
+    if (u.endsWith(".git")) {
+        u = u[0..u.length() - 4].toString();
+    }
+    let scheme = u.find("://");
+    if (scheme != null) {
+        let rest = u[scheme + 3..u.length()].toString();
+        let slash = rest.find('/') ?? rest.length();
+        return u[0..scheme + 3].toString().toLower()
+            + rest[0..slash].toString().toLower()
+            + rest[slash..rest.length()].toString();
+    }
+    // `user@host:path`: the host in lower case
+    let at = u.find('@') ?? -1;
+    let colon = u.find(':') ?? u.length();
+    return u[0..at + 1].toString()
+        + u[at + 1..colon].toString().toLower()
+        + u[colon..u.length()].toString();
+}
+
+/// A commit's id or the first 7 to 64 of its hexadecimal digits.
+fn isRevision(rev: string): bool {
+    if (rev.length() < 7 || rev.length() > 64) {
+        return false;
+    }
+    for (c in rev.chars()) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// A semantic version: three numbers, then an optional pre-release and build part.
 fn isVersion(text: string): bool {
     let cut = text.find('-') ?? text.find('+');
@@ -306,8 +364,9 @@ class ManifestReader {
         }
     }
 
-    /// `geo = { path = "../geo" }` (Lyric 5 15 §2 rule 1); a git dependency comes with S5c, a
-    /// version alone is a registry's form, which 1.0 has none of.
+    /// `geo = { path = "../geo" }` or `geo = { git = "…", tag = "v1.0.0" }` (Lyric 5 15 §2 rules
+    /// 1–2): a folder, or one revision of a repository — a tag, a branch, a commit, or the branch
+    /// its `HEAD` names; a version alone is a registry's form, which 1.0 has none of.
     mut fn dependency(t: TomlTable, name: string): ?Dep {
         let line = this.lineOf("dependencies", name);
         let spec = match (t.get(name)) {
@@ -317,7 +376,7 @@ class ManifestReader {
                     "LYS-PKG0003",
                     "dependencies",
                     name,
-                    f"'{name}' names a version alone, a registry's form: Lyric-Script 1.0 has no registry; write {{ path = \"…\" }}"
+                    f"'{name}' names a version alone, a registry's form: Lyric-Script 1.0 has no registry; write {{ path = \"…\" }} or {{ git = \"…\" }}"
                 );
                 return null;
             }
@@ -326,7 +385,7 @@ class ManifestReader {
                     "LYS-PKG0002",
                     "dependencies",
                     name,
-                    f"'{name}' is a table: {{ path = \"…\" }}"
+                    f"'{name}' is a table: {{ path = \"…\" }} or {{ git = \"…\" }}"
                 );
                 return null;
             }
@@ -335,44 +394,88 @@ class ManifestReader {
             this.key("LYS-PKG0002", "dependencies", name, f"'{name}' is no package name");
             return null;
         }
-        var path: ?string = null;
+        var d = Dep { name = name, line = line };
+        var revisions = 0;
         for (k in spec.keys()) {
+            if (k != "path" && k != "git" && k != "tag" && k != "branch" && k != "rev") {
+                this.key(
+                    "LYS-PKG0003",
+                    "dependencies",
+                    name,
+                    f"a dependency takes no '{k}': path, or git with tag, branch or rev"
+                );
+                return null;
+            }
+            let value = match (spec.get(k)) {
+                .String(s) => s,
+                _ => {
+                    this.key("LYS-PKG0002", "dependencies", name, f"'{name}'s {k} is a string");
+                    return null;
+                }
+            };
             match (k) {
                 "path" => {
-                    path = match (spec.get(k)) {
-                        .String(s) => s,
-                        _ => {
-                            this.key(
-                                "LYS-PKG0002",
-                                "dependencies",
-                                name,
-                                f"'{name}'s path is a string"
-                            );
-                            null
-                        }
-                    };
+                    d = d with { path = value };
                 }
-                "git" | "tag" | "branch" | "rev" => {
-                    this.notYet(name, "dependencies", "S5c (Git and the lock)");
-                    return null;
+                "git" => {
+                    if (!isGitUrl(value)) {
+                        this.key(
+                            "LYS-PKG0002",
+                            "dependencies",
+                            name,
+                            f"'{value}' is no repository's URL: https://, http://, ssh://, git://, file:// or user@host:path"
+                        );
+                        return null;
+                    }
+                    d = d with { git = normalUrl(value), gitWritten = value };
+                }
+                "tag" | "branch" | "rev" => {
+                    if (k == "rev" && !isRevision(value)) {
+                        this.key(
+                            "LYS-PKG0002",
+                            "dependencies",
+                            name,
+                            f"'{value}' is no commit: 7 to 64 hexadecimal digits"
+                        );
+                        return null;
+                    }
+                    d = d with { revKind = k, rev = value };
+                    revisions += 1;
                 }
                 _ => {
                     this.key(
                         "LYS-PKG0003",
                         "dependencies",
                         name,
-                        f"a dependency takes no '{k}': {{ path = \"…\" }}"
+                        f"a dependency takes no '{k}': path, or git with tag, branch or rev"
                     );
                     return null;
                 }
             }
         }
-        let found = path;
-        if (found == null) {
-            this.key("LYS-PKG0002", "dependencies", name, f"'{name}' names no path");
+        if (d.path == "" && d.git == "") {
+            this.key("LYS-PKG0002", "dependencies", name, f"'{name}' names no path and no git");
             return null;
         }
-        return Dep { name = name, path = found, line = line };
+        if (d.path != "" && (d.git != "" || revisions > 0)) {
+            this.key(
+                "LYS-PKG0002",
+                "dependencies",
+                name,
+                f"'{name}' is read from a folder or from git, not both"
+            );
+            return null;
+        }
+        if (revisions > 1) {
+            this.key(
+                "LYS-PKG0002",
+                "dependencies",
+                name,
+                f"'{name}' names one revision: a tag, a branch or a rev"
+            );
+            return null;
+        }
+        return d;
     }
 
     /// A float or a date and time anywhere: no value a manifest takes (Lyric 5 15 §1 rule 1).

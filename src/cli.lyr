@@ -29,6 +29,7 @@ fn usage(): void {
     println("");
     println("options of run and check:");
     println("  --json     the diagnostics as JSON lines on standard output");
+    println("  --offline  fetch nothing: a git dependency is read from the cache alone");
     println("  version    print the version (also --version)");
     println("  help       print this text (also --help)");
     println("  asm FILE   run a .lyrsasm file's 'main' (bytecode in its text form)");
@@ -80,8 +81,8 @@ fn main(): int {
             return 2;
         }
         return match (command) {
-            "run" => runScript(file, o.json),
-            "check" => checkScript(file, o.json),
+            "run" => runScript(file, o.json, o.offline),
+            "check" => checkScript(file, o.json, o.offline),
             _ => runAsm(file),
         };
     }
@@ -91,7 +92,7 @@ fn main(): int {
         if (o.fault != 0) {
             return o.fault;
         }
-        return runScript(command, o.json);
+        return runScript(command, o.json, o.offline);
     }
     eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
     eprintln("  = help: lyric-script help lists the commands");
@@ -102,6 +103,7 @@ fn main(): int {
 struct Options {
     file: ?string,
     json: bool,
+    offline: bool = false,
     // the exit code of a fault in them, reported already; 0 for none
     fault: int,
 }
@@ -109,11 +111,14 @@ struct Options {
 fn options(given: string[], from: int, file: ?string): Options {
     var found = file;
     var json = false;
+    var offline = false;
     var k = from;
     while (k < given.length()) {
         let a = given[k];
         if (a == "--json") {
             json = true;
+        } else if (a == "--offline") {
+            offline = true;
         } else if (a.startsWith("-")) {
             eprintln(f"error[LYS-CLI0004]: unknown option '{a}'");
             eprintln("  = help: lyric-script help lists the options");
@@ -126,7 +131,7 @@ fn options(given: string[], from: int, file: ?string): Options {
         }
         k += 1;
     }
-    return Options { file = found, json = json, fault = 0 };
+    return Options { file = found, json = json, offline = offline, fault = 0 };
 }
 
 fn readScript(path: string): ?string {
@@ -137,12 +142,12 @@ fn readScript(path: string): ?string {
 }
 
 /// Checks a script: 1 where it has errors, 0 where it has none; warnings are printed either way.
-fn checkScript(path: string, json: bool): int {
+fn checkScript(path: string, json: bool, offline: bool): int {
     let text = readScript(path);
     if (text == null) {
         return 2;
     }
-    let loaded = loadProgram(path, text);
+    let loaded = loadProgram(path, text, offline);
     if (compile(loaded, json).module != null) {
         return 0;
     }
@@ -151,7 +156,7 @@ fn checkScript(path: string, json: bool): int {
 
 /// Runs a script: 0 at its end, 1 where it does not compile or an error leaves it, 101 for a
 /// panic.
-fn runScript(path: string, json: bool): int {
+fn runScript(path: string, json: bool, offline: bool): int {
     let text = readScript(path);
     if (text == null) {
         return 2;
@@ -166,7 +171,7 @@ fn runScript(path: string, json: bool): int {
             return done;
         }
     }
-    let loaded = loadProgram(path, text);
+    let loaded = loadProgram(path, text, offline);
     let key = loaded.cacheText();
     if (!alone) {
         let done = runCached(key, json);

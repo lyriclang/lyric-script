@@ -3,7 +3,7 @@
 // take, and what comes with later slices, refused at its line.
 import std.collections { List };
 import std.test { assertEq, assertTrue };
-import lyric_script.package { readManifest, toolchainAllows };
+import lyric_script.package { normalUrl, readManifest, toolchainAllows };
 
 /// The codes of a manifest's errors, each with its line.
 fn said(text: string): string[] {
@@ -87,13 +87,38 @@ fn aManifestTakesWhatItKnows(): void {
         ["LYS-PKG0001@4"]
     );
     assertEq(said("[package]\nname = \"a\"\nname = \"b\"\n"), ["LYS-PKG0001@3"]);
-    assertEq(
-        said(
-            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n[dependencies]\ngeo = { git = \"https://x\" }\n"
-        ),
-        ["LYS-NYI0001@5"]
-    );
     assertEq(said("[package]\nname = \"a\"\nversion = \"1.0.0\"\n[override]\n"), ["LYS-NYI0001@4"]);
+}
+
+/// The errors of a manifest whose one dependency, `geo`, is written `spec`.
+fn depSaid(spec: string): string[] {
+    return said(f"[package]\nname = \"a\"\nversion = \"1.0.0\"\n[dependencies]\ngeo = {spec}\n");
+}
+
+@Test
+fn aGitDependencyNamesOneRevisionOfARepository(): void {
+    // a URL of its forms; a tag, a branch, a commit, or none; not beside a path
+    assertEq(depSaid("{ git = \"https://example.com/org/geo.git\", tag = \"v1.0.0\" }"), []);
+    assertEq(depSaid("{ git = \"git@example.com:org/geo\", branch = \"main\" }"), []);
+    assertEq(depSaid("{ git = \"file:///tmp/geo\", rev = \"0123abc\" }"), []);
+    assertEq(depSaid("{ git = \"ssh://host/geo\" }"), []);
+    assertEq(depSaid("{ git = \"example.com/geo\" }"), ["LYS-PKG0002@5"]);
+    assertEq(
+        depSaid("{ git = \"https://x/geo\", tag = \"v1\", branch = \"main\" }"),
+        ["LYS-PKG0002@5"]
+    );
+    assertEq(depSaid("{ git = \"https://x/geo\", rev = \"xyz\" }"), ["LYS-PKG0002@5"]);
+    assertEq(depSaid("{ path = \"g\", git = \"https://x/geo\" }"), ["LYS-PKG0002@5"]);
+    assertEq(depSaid("{ path = \"g\", tag = \"v1.0.0\" }"), ["LYS-PKG0002@5"]);
+}
+
+@Test
+fn aRepositoryIsKnownByItsUrlsNormalForm(): void {
+    // a `/` and a `.git` at the end dropped, the scheme and the host in lower case, the rest kept
+    assertEq(normalUrl("HTTPS://Example.com/Org/geo.git/"), "https://example.com/Org/geo");
+    assertEq(normalUrl("https://example.com/Org/geo"), "https://example.com/Org/geo");
+    assertEq(normalUrl("git@Example.COM:Org/geo.git"), "git@example.com:Org/geo");
+    assertEq(normalUrl("file:///Tmp/Repos/geo/"), "file:///Tmp/Repos/geo");
 }
 
 @Test

@@ -178,6 +178,9 @@ class TypeInfo {
     var answers: Map<string, Ty> = Map<string, Ty>.new(),
     // its constants, `static let`, by name: the globals that hold them (S3i)
     var staticLets: Map<string, int> = Map<string, int>.new(),
+    // a generic type's conformances a block gives under constraints: the block's parameters,
+    // by interface (05 §13 rule 3)
+    var condIfaces: Map<int, TypeParamInfo[]> = Map<int, TypeParamInfo[]>.new(),
 }
 
 struct ParamInfo :: [Debug] {
@@ -214,6 +217,9 @@ class FnInfo {
     // a shared copy's hidden parameters (S3i): the locals that receive the descriptors of its
     // type arguments, after the parameters
     var descParams: int[] = [],
+    // a member of a generic extend block: the block's parameters, whose constraints an instance
+    // meets or has no such member (05 §13 rule 2)
+    var blockParams: TypeParamInfo[] = [],
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).

@@ -255,6 +255,8 @@ class Checker {
     staticInits: List<StaticInit>,
     // a generic function's copy as a value: its thunk holding the descriptors, by copy
     descThunks: Map<string, int>,
+    // while a generic block's conformances are checked: its parameters (05 §13 rule 3)
+    var blockCond: TypeParamInfo[] = [],
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -508,7 +510,13 @@ class Checker {
                         .Enum(e) => this.conform(e.name, e.conforms),
                         .Extend(x) => {
                             match (x.target) {
-                                .Named(name, _, _) => this.conform(name, x.conforms),
+                                .Named(name, _, _) => {
+                                    this.blockCond = if (x.typeParams.length()
+                                        > 0) this.typeParamsOf(x.typeParams)
+                                        else [];
+                                    this.conform(name, x.conforms);
+                                    this.blockCond = [];
+                                }
                                 _ => { }
                             }
                         }
@@ -844,6 +852,22 @@ class Checker {
         info.answers = fixed;
         this.fixedForms.insert(key, index);
         return Ty.Named(index);
+    }
+
+    /// Whether `args` meet the constraints of a generic block's parameters.
+    mut fn meetsBlock(args: Ty[], params: TypeParamInfo[]): bool {
+        var k = 0;
+        for (tp in params) {
+            if (k < args.length()) {
+                for (c in tp.constraints) {
+                    if (args[k] != .Unknown && !this.conformsTo(args[k], c)) {
+                        return false;
+                    }
+                }
+            }
+            k += 1;
+        }
+        return true;
     }
 
     /// The bounds of associated type `name` of interface `ii`.
@@ -1205,6 +1229,10 @@ class Checker {
             return;
         }
         let info = this.types[index];
+        if (x.typeParams.length() > 0) {
+            this.declareBlock(index, x);
+            return;
+        }
         this.declareAnswers(index, x.answers);
         this.declareStatics(index, x.statics);
         for (m in x.methods) {
@@ -1214,6 +1242,73 @@ class Checker {
             }
             info.methods.insert(m.name, this.declareFn(m, index));
         }
+    }
+
+    /// `extend<T :: [Show]> Box<T> { … }`: members of every instance whose arguments meet the
+    /// block's constraints (05 §13 rules 1–2); the target the type at the block's parameters, in
+    /// its order.
+    mut fn declareBlock(index: int, x: ExtendDecl): void {
+        let info = this.types[index];
+        let targs: TypeExpr[] = match (x.target) {
+            .Named(_, args, _) => args,
+            _ => [],
+        };
+        var plain = info.typeParams.length() == x.typeParams.length()
+            && targs.length() == x.typeParams.length();
+        var k = 0;
+        while (plain && k < targs.length()) {
+            let named = match (targs[k]) {
+                .Named(n, inner, _) => if (inner.length() == 0) n else "",
+                _ => "",
+            };
+            plain = named == x.typeParams[k].name;
+            k += 1;
+        }
+        if (!plain) {
+            this.notYet(
+                "an extend block on a target other than its type at the block's parameters",
+                "S3i (generic extends)",
+                x.span
+            );
+            return;
+        }
+        let block = this.typeParamsOf(x.typeParams);
+        // a member's parameters: the type's, with the block's constraints added
+        let merged = List<TypeParamInfo>.new();
+        var j = 0;
+        for (tp in block) {
+            let cs = List<int>.new();
+            for (c in info.typeParams[j].constraints) {
+                cs.push(c);
+            }
+            for (c in tp.constraints) {
+                cs.push(c);
+            }
+            merged.push(TypeParamInfo { name = tp.name, constraints = cs.toArray() });
+            j += 1;
+        }
+        let scope = Map<string, int>.new();
+        j = 0;
+        for (tp in x.typeParams) {
+            scope.insert(tp.name, j);
+            j += 1;
+        }
+        let savedScope = this.typeParams;
+        let savedDeclaring = this.declaringParams;
+        this.typeParams = scope;
+        this.declaringParams = merged.toArray();
+        for (m in x.methods) {
+            if (info.methods.containsKey(m.name)) {
+                this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
+                continue;
+            }
+            let fi = this.declareFn(m, index);
+            this.functions[fi].typeParams = merged.toArray();
+            this.functions[fi].blockParams = block;
+            info.methods.insert(m.name, fi);
+        }
+        this.typeParams = savedScope;
+        this.declaringParams = savedDeclaring;
     }
 
     /// The entry of the type `name` names: one of the program, or a built-in's; -1 for none.
@@ -1391,6 +1486,19 @@ class Checker {
                     via.insert(a, field);
                 }
             }
+            // one conformance per type and interface, from whichever site (05 §13 rule 4)
+            var twice = false;
+            for (x in info.ifaces) {
+                twice = twice || x == ii;
+            }
+            if (twice) {
+                this.error(
+                    "LYS-SEM0133",
+                    f"'{info.name}' conforms to '{this.types[ii].name}' at a second site",
+                    c.span
+                );
+                continue;
+            }
             for (a in this.ancestry(ii)) {
                 var known = false;
                 for (x in info.ifaces) {
@@ -1407,6 +1515,12 @@ class Checker {
         let all = List<int>.new();
         for (x in info.ifaces) {
             all.push(x);
+        }
+        // a generic block's: for the instances that meet its constraints (05 §13 rule 3)
+        if (this.blockCond.length() > 0) {
+            for (ii in added) {
+                info.condIfaces.insert(ii, this.blockCond);
+            }
         }
         for (ii in added) {
             all.push(ii);
@@ -1628,6 +1742,11 @@ class Checker {
                 var found = false;
                 for (x in kinds) {
                     found = found || x == ii;
+                }
+                // given by a generic block: where the instance's arguments meet its constraints
+                let cond = this.types[i].condIfaces.get(ii);
+                if (found && cond != null && i != j) {
+                    found = this.meetsBlock(this.types[j].args, cond);
                 }
                 found
             }
@@ -8065,6 +8184,17 @@ class Checker {
                     };
                 }
                 let m = this.types[i].methods.get(method);
+                // a generic block's member: on an instance that meets its constraints (rule 2)
+                if (m != null
+                    && this.functions[m].blockParams.length() > 0
+                    && !this.meetsBlock(this.types[i].args, this.functions[m].blockParams)) {
+                    this.error(
+                        "LYS-SEM0134",
+                        f"'{this.types[i].name}' has no method '{method}': its block asks more of the type's arguments",
+                        memberAt
+                    );
+                    return TExpr.Unknown;
+                }
                 if (m != null
                     && this.functions[m].typeParams.length() > 0
                     && this.types[i].args.length() > 0) {

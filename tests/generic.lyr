@@ -111,3 +111,28 @@ fn whatGenericTypesRefuse(): void {
     assertEq(errs(types + "let p: Pair<int> = Pair { first = 1, second = 2 }"), ["LYS-SEM0026"]);
     assertEq(errs(types + "let o = Opt.None"), ["LYS-SEM0060"]);
 }
+
+let blocks = "interface Show {\n    fn show(): string\n}\nstruct Box<T> {\n    v: T\n}\nextend<T :: [Show]> Box<T> :: [Show] {\n    fn show(): string = \"box \" + this.v.show()\n}\nextend<T> Box<T> {\n    fn get(): T = this.v\n}\nstruct S :: [Show] {\n    fn show(): string = \"s\"\n}\nfn showIt<X :: [Show]>(x: X): string = x.show()\n";
+
+@Test
+fn aBlockGivesItsInstancesMembers(): void {
+    // `Box<S>` is a `Show` since `S` is, `Box<Box<S>>` since `Box<S>` is; `get` is on every one
+    let e = "fn e(): int {\n    var n = 0\n    if (showIt(Box { v = S { } }) == \"box s\") {\n        n += 1\n    }\n    if (Box { v = 3 }.get() == 3) {\n        n += 2\n    }\n    if (showIt(Box { v = Box { v = S { } } }) == \"box box s\") {\n        n += 4\n    }\n    return n\n}";
+    assertEq(value(blocks + e, "e"), 7);
+}
+
+@Test
+fn whatBlocksRefuse(): void {
+    // an instance whose argument misses the block's constraints has neither the member nor the
+    // conformance
+    assertEq(errs(blocks + "let s = Box { v = 3 }.show()"), ["LYS-SEM0134"]);
+    assertEq(errs(blocks + "let s = showIt(Box { v = 3 })"), ["LYS-SEM0028"]);
+    // one conformance per type and interface
+    assertEq(
+        errs(
+            blocks
+                + "struct D :: [Show] {\n    fn show(): string = \"d\"\n}\nextend D :: [Show] {\n}"
+        ),
+        ["LYS-SEM0133"]
+    );
+}

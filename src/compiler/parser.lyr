@@ -328,7 +328,7 @@ class Parser {
             || (this.atWord("sealed") && this.isWord(this.peek(1), "interface"))) {
             return Item.Decl(Decl.Interface(try this.parseInterface(isPub, first)));
         }
-        if (this.atWord("extend") && this.peek(1).kind == .Ident) {
+        if (this.atWord("extend") && (this.peek(1).kind == .Ident || this.peek(1).kind == .Lt)) {
             return Item.Decl(Decl.Extend(try this.parseExtend(first)));
         }
         if (this.pos > 0 && this.tokens[this.pos - 1].start == first.start) {
@@ -803,6 +803,11 @@ class Parser {
     /// `extend T { … }`, `extend T :: [I] { … }`: methods, and conformances, for a type.
     mut fn parseExtend(first: Token): ExtendDecl throws SyntaxError {
         this.advance();
+        // `extend<T :: [Show]> Box<T>`: a block of type parameters (05 §13 rule 1)
+        var typeParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            typeParams = try this.parseTypeParams();
+        }
         let target = try this.parseType();
         let conforms = try this.parseConformances(false);
         this.skipNewlines();
@@ -833,6 +838,7 @@ class Parser {
             );
         }
         return ExtendDecl {
+            typeParams = typeParams,
             answers = answers.toArray(),
             statics = statics.toArray(),
             target = target,

@@ -275,6 +275,8 @@ struct ExtendDecl :: [Debug] {
     conforms: Conformance[],
     methods: FnDecl[],
     span: Span,
+    // `extend<T :: [Show]> Box<T>`: the block's type parameters (05 §13 rule 1)
+    typeParams: TypeParam[] = [],
     answers: TypeAnswer[] = [],
     statics: StaticLet[] = [],
 }

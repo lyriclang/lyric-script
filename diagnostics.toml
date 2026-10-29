@@ -781,6 +781,18 @@ severity = "error"
 area = "07-statements"
 summary = "A `loop` gives a value at every break, or at none. Lyric 5's LYR-SEM0149."
 
+[LYS-SEM0133]
+title = "a conformance at a second site"
+severity = "error"
+area = "05-interfaces"
+summary = "A type conforms to an interface once, from whichever site — its own list, an extend block, a generic block; a second site for the same interface is refused where it stands. Lyric 5's LYR-SEM0133."
+
+[LYS-SEM0134]
+title = "a generic block's member on an instance that does not meet its constraints"
+severity = "error"
+area = "05-interfaces"
+summary = "A member of `extend<T :: [Show]> Box<T> { … }` is there on the instances whose arguments meet the block's constraints and on no other: `Box<int>` has no such member when `int` is no `Show`. Lyric 5's LYR-SEM0134."
+
 [LYS-SEM0160]
 title = "an associated type's answer does not meet its bound"
 severity = "error"

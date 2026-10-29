@@ -493,11 +493,23 @@ severity = "error"
 area = "15-project"
 summary = "A git dependency's repository cannot be cloned or fetched, or with `--offline` the cache does not hold what is asked for: a fault of the environment, with exit code 2. Lyric 5's LYR-PKG0007."
 
+[LYS-PKG0008]
+title = "content that is not what the lock holds"
+severity = "error"
+area = "15-project"
+summary = "A revision the lock holds is read at its commit: content whose hash is not the lock's, or a locked commit the repository does not have, is refused. Lyric 5's LYR-PKG0008."
+
 [LYS-PKG0009]
 title = "a toolchain below what a package asks for"
 severity = "error"
 area = "15-project"
 summary = "A package's `toolchain` names the least toolchain that builds it; a toolchain below it refuses the program with exit code 2, a fault of the environment and not of the script. A development build counts as its version. Lyric 5's LYR-PKG0009."
+
+[LYS-PKG0011]
+title = "a lock that --locked would change"
+severity = "error"
+area = "15-project"
+summary = "Under `--locked` the lock is taken as it is and nothing is written: a revision the graph reads that the lock does not hold, an entry the graph no longer reads, or no lock where the program reads from git is refused. Lyric 5's LYR-PKG0011."
 
 [LYS-RES0001]
 title = "a name imported beside a declaration, or imported twice"
@@ -1160,3 +1172,9 @@ title = "a package without a program"
 severity = "error"
 area = "14-cli"
 summary = "`lyric-script run` or `check` without a file, in a package's folder, takes its `src/main.lyrs`; a package without one has no program to name. The exit code is 2."
+
+[LYS-CLI0006]
+title = "an update of a package not read from git"
+severity = "error"
+area = "14-cli"
+summary = "`lyric-script update` names a package that no git dependency of the program is. The exit code is 2."

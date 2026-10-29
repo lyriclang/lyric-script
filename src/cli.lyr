@@ -11,7 +11,7 @@ import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.checker { ProgramUnit, checkModule };
 import lyric_script.compiler.codegen { generate, scriptEntry };
 import lyric_script.compiler.render { SourceLines, renderJson, renderSummary, renderText };
-import lyric_script.loader { Loaded, loadProgram };
+import lyric_script.loader { LoadOptions, Loaded, loadProgram, packageRoot };
 import lyric_script.package { manifestName };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
@@ -30,6 +30,8 @@ fn usage(): void {
     println("options of run and check:");
     println("  --json     the diagnostics as JSON lines on standard output");
     println("  --offline  fetch nothing: a git dependency is read from the cache alone");
+    println("  --locked   take lyric-script.lock as it is, and write nothing");
+    println("  update [PACKAGE…]  read the git dependencies anew and write the lock");
     println("  version    print the version (also --version)");
     println("  help       print this text (also --help)");
     println("  asm FILE   run a .lyrsasm file's 'main' (bytecode in its text form)");
@@ -49,6 +51,9 @@ fn main(): int {
     if (command == "--help" || command == "help") {
         usage();
         return 0;
+    }
+    if (command == "update") {
+        return update(given);
     }
     if (command == "clean" && given.length() == 2) {
         let dir = clean();
@@ -81,8 +86,8 @@ fn main(): int {
             return 2;
         }
         return match (command) {
-            "run" => runScript(file, o.json, o.offline),
-            "check" => checkScript(file, o.json, o.offline),
+            "run" => runScript(file, o.json, how(o)),
+            "check" => checkScript(file, o.json, how(o)),
             _ => runAsm(file),
         };
     }
@@ -92,11 +97,60 @@ fn main(): int {
         if (o.fault != 0) {
             return o.fault;
         }
-        return runScript(command, o.json, o.offline);
+        return runScript(command, o.json, how(o));
     }
     eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
     eprintln("  = help: lyric-script help lists the commands");
     return 2;
+}
+
+/// How the options read a program.
+fn how(o: Options): LoadOptions {
+    return LoadOptions { offline = o.offline, locked = o.locked };
+}
+
+/// `lyric-script update [package…]` in a package's folder (Lyric 5 15 §3 rule 3): reads every
+/// package from git anew — or those it names, the others staying at their commits — and writes
+/// the lock; runs nothing.
+fn update(given: string[]): int {
+    if (!exists(manifestName)) {
+        eprintln(f"error[LYS-CLI0005]: 'update' reads a package: there is no {manifestName} here");
+        return 2;
+    }
+    let names = List<string>.new();
+    var k = 2;
+    while (k < given.length()) {
+        if (given[k].startsWith("-")) {
+            eprintln(f"error[LYS-CLI0004]: unknown option '{given[k]}'");
+            return 2;
+        }
+        names.push(given[k]);
+        k += 1;
+    }
+    // the program's modules are read from its entry, or a library's root module
+    let entry = if (exists("src/main.lyrs")) "src/main.lyrs" else "src/lib.lyrs";
+    let text = readScript(entry);
+    if (text == null) {
+        return 2;
+    }
+    let loaded = loadProgram(entry, text, LoadOptions { update = true, only = names.toArray() });
+    for (n in names) {
+        var read = false;
+        for (e in loaded.lockNew) {
+            if (e.name == n) {
+                read = true;
+            }
+        }
+        if (!read) {
+            eprintln(f"error[LYS-CLI0006]: no package named '{n}' is read from git");
+            return 2;
+        }
+    }
+    let r = compile(loaded, false);
+    if (r.module == null) {
+        return if (loaded.exit != 0) loaded.exit else 1;
+    }
+    return 0;
 }
 
 /// What follows a command: its one file and its options.
@@ -104,6 +158,7 @@ struct Options {
     file: ?string,
     json: bool,
     offline: bool = false,
+    locked: bool = false,
     // the exit code of a fault in them, reported already; 0 for none
     fault: int,
 }
@@ -112,6 +167,7 @@ fn options(given: string[], from: int, file: ?string): Options {
     var found = file;
     var json = false;
     var offline = false;
+    var locked = false;
     var k = from;
     while (k < given.length()) {
         let a = given[k];
@@ -119,6 +175,8 @@ fn options(given: string[], from: int, file: ?string): Options {
             json = true;
         } else if (a == "--offline") {
             offline = true;
+        } else if (a == "--locked") {
+            locked = true;
         } else if (a.startsWith("-")) {
             eprintln(f"error[LYS-CLI0004]: unknown option '{a}'");
             eprintln("  = help: lyric-script help lists the options");
@@ -131,7 +189,7 @@ fn options(given: string[], from: int, file: ?string): Options {
         }
         k += 1;
     }
-    return Options { file = found, json = json, offline = offline, fault = 0 };
+    return Options { file = found, json = json, offline = offline, locked = locked, fault = 0 };
 }
 
 fn readScript(path: string): ?string {
@@ -142,12 +200,12 @@ fn readScript(path: string): ?string {
 }
 
 /// Checks a script: 1 where it has errors, 0 where it has none; warnings are printed either way.
-fn checkScript(path: string, json: bool, offline: bool): int {
+fn checkScript(path: string, json: bool, how: LoadOptions): int {
     let text = readScript(path);
     if (text == null) {
         return 2;
     }
-    let loaded = loadProgram(path, text, offline);
+    let loaded = loadProgram(path, text, how);
     if (compile(loaded, json).module != null) {
         return 0;
     }
@@ -156,24 +214,25 @@ fn checkScript(path: string, json: bool, offline: bool): int {
 
 /// Runs a script: 0 at its end, 1 where it does not compile or an error leaves it, 101 for a
 /// panic.
-fn runScript(path: string, json: bool, offline: bool): int {
+fn runScript(path: string, json: bool, how: LoadOptions): int {
     let text = readScript(path);
     if (text == null) {
         return 2;
     }
     // a script compiled before, without a warning, runs from its bytecode (11 Fmt); a program of
-    // modules is keyed by all of its files' texts, a script without an import by its own before
-    // it is parsed
-    let alone = !text.contains("import");
+    // modules is keyed by all of its files' texts, a script without an import and outside a
+    // package by its own before it is parsed; a program whose reading found a fault never runs
+    // from the cache
+    let alone = !text.contains("import") && packageRoot(path) == null;
     if (alone) {
         let done = runCached(text, json);
         if (done != null) {
             return done;
         }
     }
-    let loaded = loadProgram(path, text, offline);
+    let loaded = loadProgram(path, text, how);
     let key = loaded.cacheText();
-    if (!alone) {
+    if (!alone && loaded.errors.length() == 0 && loaded.exit == 0) {
         let done = runCached(key, json);
         if (done != null) {
             return done;

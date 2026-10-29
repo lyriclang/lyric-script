@@ -7,7 +7,19 @@
 //! from those its manifest declares.
 import std.collections { List, Map };
 import std.crypto { sha256 };
-import std.fs { DirEntry, absolute, createDirAll, exists, readDir, readText, removeAll, rename };
+import std.fs {
+    DirEntry,
+    absolute,
+    createDirAll,
+    exists,
+    readBytes,
+    readDir,
+    readText,
+    remove,
+    removeAll,
+    rename,
+    writeText,
+};
 import std.os { pid };
 import std.process { Command };
 import std.path { fileName, join, normalize, parent, stem };
@@ -15,6 +27,7 @@ import lyric_script { version };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.cache { cacheRoot };
+import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
 import lyric_script.package { Dep, isVersion, manifestName, readManifest, toolchainAllows };
 
 /// A package of the program: its name, its root folder, and the packages its manifest declares,
@@ -50,6 +63,11 @@ class Loaded {
     var exit: int = 0,
     // `--offline`: nothing is fetched (S5c)
     var offline: bool = false,
+    var how: LoadOptions = LoadOptions { },
+    // the lock as read, its manifest index, and what this build read from git (S5c2)
+    var lockOld: LockEntry[] = [],
+    var lockDoc: int = -1,
+    var lockNew: List<LockEntry> = List<LockEntry>.new(),
 
     /// The text the cache keys the program by: the entry's alone where it is the one file, else
     /// every file's module name and text.
@@ -82,8 +100,17 @@ struct Target {
     message: string,
 }
 
-/// Reads the program whose entry is `path`, its text `text`; `offline`, fetching nothing.
-fn loadProgram(path: string, text: string, offline: bool = false): Loaded {
+/// How a program is read (S5c): `offline` fetches nothing; `locked` takes the lock as it is;
+/// `update` reads every package from git anew, or those `only` names.
+struct LoadOptions {
+    offline: bool = false,
+    locked: bool = false,
+    update: bool = false,
+    only: string[] = [],
+}
+
+/// Reads the program whose entry is `path`, its text `text`.
+fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): Loaded {
     let l = Loaded {
         paths = List<string>.new(),
         texts = List<string>.new(),
@@ -96,7 +123,8 @@ fn loadProgram(path: string, text: string, offline: bool = false): Loaded {
         pkgs = List<Pkg>.new(),
         docPaths = List<string>.new(),
         docTexts = List<string>.new(),
-        offline = offline,
+        offline = how.offline,
+        how = how,
     };
     l.paths.push(path);
     l.texts.push(text);
@@ -105,7 +133,9 @@ fn loadProgram(path: string, text: string, offline: bool = false): Loaded {
     let inPackage = packageRoot(path);
     if (inPackage != null) {
         let (root, rel) = inPackage;
+        readLockOf(root, l);
         loadPackages(root, l);
+        settleLock(root, l);
         if (l.pkgs.length() == 0) {
             // the root manifest does not read: its errors are all there is to say
             l.parses.push(parse(text, 0));
@@ -353,14 +383,17 @@ fn loadPackages(root: string, l: Loaded): void {
         var w = queue[k];
         k += 1;
         let dep = w.dep;
+        var gotten: ?Fetched = null;
         if (dep.git != "") {
             if (dep.path != "") {
                 continue;
             }
-            let fetched = gitPackage(l, w);
-            if (fetched == null) {
+            let got = gitPackage(l, w);
+            if (got == null) {
                 continue;
             }
+            let fetched = got.dir;
+            gotten = got;
             w = w with { root = fetched };
         } else if (w.fromGit) {
             docError(
@@ -469,6 +502,19 @@ fn loadPackages(root: string, l: Loaded): void {
         }
         let index = l.pkgs.length();
         l.pkgs.push(Pkg { name = m.name, root = w.root, deps = Map<string, int>.new() });
+        let g = gotten;
+        if (g != null) {
+            l.lockNew.push(
+                LockEntry {
+                    name = m.name,
+                    version = m.version,
+                    repository = dep.git,
+                    revision = g.revision,
+                    commit = g.commit,
+                    hash = g.hash,
+                }
+            );
+        }
         for (next in m.deps) {
             l.pkgs[index].declared.push(next.name);
         }
@@ -489,13 +535,51 @@ fn loadPackages(root: string, l: Loaded): void {
     }
 }
 
+/// What a git dependency gave: the folder of its package, the revision as the manifest asks for
+/// it, the commit and its content's hash.
+struct Fetched {
+    dir: string,
+    revision: string,
+    commit: string,
+    hash: string,
+}
+
+/// The revision a dependency asks for, as the lock writes it: `tag v1.0.0`, `branch main`,
+/// `rev 0123abc`, `HEAD`.
+fn revisionOf(dep: Dep): string {
+    return if (dep.revKind == "") "HEAD" else f"{dep.revKind} {dep.rev}";
+}
+
 /// The folder of a git dependency's package: the repository cloned bare into the user's cache
-/// once, fetched where a branch is asked for or the revision is not there yet, and the commit's
-/// tree checked out once, `<cache>/src/<repository>/<commit>` (Lyric 5 15 §2 rules 2–3). `null`
-/// where it fails, reported: a revision the repository does not have (`LYS-PKG0006`), a
-/// repository that cannot be reached or, `--offline`, is not in the cache (`LYS-PKG0007`).
-fn gitPackage(l: Loaded, w: Wanted): ?string {
+/// once, the commit's tree checked out once, `<cache>/src/<repository>/<commit>` (Lyric 5 15 §2
+/// rules 2–3). A revision the lock holds is read at its commit, and its content must be what the
+/// lock holds (§3 rule 2, `LYS-PKG0008`); one it does not hold is resolved — fetched where a branch
+/// is asked for or the revision is not there yet —, unless `--locked` takes the lock as it is
+/// (`LYS-PKG0011`). `null` where it fails, reported: a revision the repository does not have
+/// (`LYS-PKG0006`), a repository that cannot be reached or, `--offline`, is not in the cache
+/// (`LYS-PKG0007`).
+fn gitPackage(l: Loaded, w: Wanted): ?Fetched {
     let dep = w.dep;
+    let revision = revisionOf(dep);
+    let anew = l.how.update && (l.how.only.length() == 0 || contains(l.how.only, dep.name));
+    var locked: ?LockEntry = null;
+    if (!anew) {
+        for (e in l.lockOld) {
+            if (e.repository == dep.git && e.revision == revision) {
+                locked = e;
+            }
+        }
+    }
+    if (locked == null && l.how.locked) {
+        docError(
+            l,
+            w.doc,
+            dep.line,
+            "LYS-PKG0011",
+            f"the lock holds no {revision} of '{dep.gitWritten}', and --locked takes it as it is"
+        );
+        return null;
+    }
     let cache = cacheRoot();
     if (cache == null) {
         docError(l, w.doc, dep.line, "LYS-PKG0007", "there is no cache to keep a repository in");
@@ -525,43 +609,73 @@ fn gitPackage(l: Loaded, w: Wanted): ?string {
         }
         fetched = true;
     }
-    var revKind = dep.revKind;
-    var rev = dep.rev;
-    if (revKind == "") {
-        // the branch the repository's HEAD names
-        let head = git(["symbolic-ref", "--quiet", "HEAD"], repo) ?? "refs/heads/main";
-        revKind = "branch";
-        rev = if (head.startsWith("refs/heads/")) head[11..head.length()].toString() else head;
-    }
-    let ref = match (revKind) {
-        "tag" => f"refs/tags/{rev}^{{commit}}",
-        "branch" => f"refs/heads/{rev}^{{commit}}",
-        _ => f"{rev}^{{commit}}",
-    };
-    // a branch moves: read at its head; a tag or a commit once it is there
-    if (revKind == "branch" && !fetched && !l.offline) {
+    // `update` reads from the repository as it is now
+    if (anew && !fetched && !l.offline) {
         fetched = fetch(repo);
     }
-    var commit = git(["rev-parse", "--verify", "--quiet", ref], repo);
-    if (commit == null && !fetched && !l.offline) {
-        fetch(repo);
-        commit = git(["rev-parse", "--verify", "--quiet", ref], repo);
-    }
-    let id = commit;
-    if (id == null) {
-        let what = if (revKind == "rev") "commit" else revKind;
-        docError(
-            l,
-            w.doc,
-            dep.line,
-            if (l.offline) "LYS-PKG0007" else "LYS-PKG0006",
-            if (l.offline) f"'{dep.gitWritten}' has no {what} '{rev}' in the cache, and --offline fetches nothing"
-                else f"'{dep.gitWritten}' has no {what} '{rev}'"
-        );
-        if (l.offline) {
-            l.exit = 2;
+    var id = "";
+    let held = locked;
+    if (held != null) {
+        // a locked revision: at its commit, whatever the branch or the tag says now
+        var there = git(["rev-parse", "--verify", "--quiet", held.commit + "^{commit}"], repo);
+        if (there == null && !fetched && !l.offline) {
+            fetch(repo);
+            there = git(["rev-parse", "--verify", "--quiet", held.commit + "^{commit}"], repo);
         }
-        return null;
+        if (there == null) {
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                if (l.offline) "LYS-PKG0007" else "LYS-PKG0008",
+                f"the locked commit {held.commit} of '{dep.gitWritten}' is not in the repository"
+            );
+            if (l.offline) {
+                l.exit = 2;
+            }
+            return null;
+        }
+        id = there;
+    } else {
+        var revKind = dep.revKind;
+        var rev = dep.rev;
+        if (revKind == "") {
+            // the branch the repository's HEAD names
+            let head = git(["symbolic-ref", "--quiet", "HEAD"], repo) ?? "refs/heads/main";
+            revKind = "branch";
+            rev = if (head.startsWith("refs/heads/")) head[11..head.length()].toString() else head;
+        }
+        let ref = match (revKind) {
+            "tag" => f"refs/tags/{rev}^{{commit}}",
+            "branch" => f"refs/heads/{rev}^{{commit}}",
+            _ => f"{rev}^{{commit}}",
+        };
+        // a branch moves: read at its head; a tag or a commit once it is there
+        if (revKind == "branch" && !fetched && !l.offline) {
+            fetched = fetch(repo);
+        }
+        var commit = git(["rev-parse", "--verify", "--quiet", ref], repo);
+        if (commit == null && !fetched && !l.offline) {
+            fetch(repo);
+            commit = git(["rev-parse", "--verify", "--quiet", ref], repo);
+        }
+        let found = commit;
+        if (found == null) {
+            let what = if (revKind == "rev") "commit" else revKind;
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                if (l.offline) "LYS-PKG0007" else "LYS-PKG0006",
+                if (l.offline) f"'{dep.gitWritten}' has no {what} '{rev}' in the cache, and --offline fetches nothing"
+                    else f"'{dep.gitWritten}' has no {what} '{rev}'"
+            );
+            if (l.offline) {
+                l.exit = 2;
+            }
+            return null;
+        }
+        id = found;
     }
     let dir = join(cache, "src", key, id);
     if (!exists(dir)) {
@@ -587,20 +701,139 @@ fn gitPackage(l: Loaded, w: Wanted): ?string {
         }
         if (!exists(dir)) {
             try? removeAll(partial);
-            {
-                docError(
-                    l,
-                    w.doc,
-                    dep.line,
-                    "LYS-PKG0007",
-                    f"the commit {id} of '{dep.gitWritten}' cannot be checked out into the cache"
-                );
-                l.exit = 2;
-                return null;
-            }
+            docError(
+                l,
+                w.doc,
+                dep.line,
+                "LYS-PKG0007",
+                f"the commit {id} of '{dep.gitWritten}' cannot be checked out into the cache"
+            );
+            l.exit = 2;
+            return null;
         }
     }
-    return dir;
+    let hash = contentHash(contentOf(dir));
+    if (held != null && hash != held.hash) {
+        docError(
+            l,
+            w.doc,
+            dep.line,
+            "LYS-PKG0008",
+            f"the content of {id} of '{dep.gitWritten}' is not what the lock holds"
+        );
+        return null;
+    }
+    return Fetched { dir = dir, revision = revision, commit = id, hash = hash };
+}
+
+/// A package's content as the lock hashes it (Lyric 5 15 §2 rule 4): its manifest, the files
+/// under `src/`, and the files `README*` and `LICENSE*` at its root — each path with `/` between
+/// folders, and its bytes.
+fn contentOf(dir: string): (string, uint8[])[] {
+    let out = List<(string, uint8[])>.new();
+    for (e in entriesOf(dir)) {
+        if (e.isFile
+            && (e.name == manifestName
+                || e.name.startsWith("README")
+                || e.name.startsWith("LICENSE"))) {
+            out.push((e.name, (try? readBytes(e.path)) ?? []));
+        }
+    }
+    filesBelow(join(dir, "src"), "src", out);
+    return out.toArray();
+}
+
+fn filesBelow(dir: string, rel: string, out: List<(string, uint8[])>): void {
+    for (e in entriesOf(dir)) {
+        let path = rel + "/" + e.name;
+        if (e.isDir) {
+            filesBelow(e.path, path, out);
+        } else if (e.isFile) {
+            out.push((path, (try? readBytes(e.path)) ?? []));
+        }
+    }
+}
+
+/// The root package's lock, where there is one: read before the packages (Lyric 5 15 §3); one that
+/// does not read is refused (`LYS-PKG0001`).
+fn readLockOf(root: string, l: Loaded): void {
+    let path = below(root, lockName);
+    let text = try? readText(path);
+    if (text == null) {
+        return;
+    }
+    let d = l.docPaths.length();
+    l.docPaths.push(path);
+    l.docTexts.push(text);
+    l.lockDoc = d;
+    let read = readLock(text);
+    let fault = read.fault;
+    if (fault != null) {
+        docError(l, d, read.line, "LYS-PKG0001", fault);
+        return;
+    }
+    l.lockOld = read.entries;
+}
+
+/// After the packages: under `--locked` the lock is as it was — none where the program reads
+/// nothing from git, nothing it holds that the graph no longer reads (`LYS-PKG0011`) —; else, where
+/// all read, the lock is written where what was read changed, and goes where nothing is read from
+/// git (§3 rules 1, 4).
+fn settleLock(root: string, l: Loaded): void {
+    let now = l.lockNew.toArray();
+    if (l.how.locked) {
+        if (l.lockDoc < 0 && now.length() > 0) {
+            docError(
+                l,
+                0,
+                0,
+                "LYS-PKG0011",
+                f"the program reads from git, and --locked finds no {lockName}"
+            );
+            return;
+        }
+        for (e in l.lockOld) {
+            var read = false;
+            for (n in now) {
+                if (n == e) {
+                    read = true;
+                }
+            }
+            if (!read && l.errors.length() == 0) {
+                docError(
+                    l,
+                    l.lockDoc,
+                    1,
+                    "LYS-PKG0011",
+                    f"the lock holds {e.revision} of '{e.repository}', which the program no longer reads"
+                );
+            }
+        }
+        return;
+    }
+    if (l.errors.length() > 0) {
+        return;
+    }
+    let path = below(root, lockName);
+    if (now.length() == 0) {
+        if (l.lockDoc >= 0) {
+            try? remove(path);
+        }
+        return;
+    }
+    let text = writeLock(now);
+    if (l.lockDoc < 0 || writeLock(l.lockOld) != text) {
+        try? writeText(path, text);
+    }
+}
+
+fn contains(xs: string[], x: string): bool {
+    for (y in xs) {
+        if (y == x) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Fetches every branch and tag of the bare clone `repo` from its origin; whether it did.

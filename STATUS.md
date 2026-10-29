@@ -177,7 +177,9 @@ Exit criterion: a concurrent example.
 - **S6c1 done** — `task.cancel()`: a cancelled task's waits throw `Cancelled`; the top level's
   first failure cancels the others; `spawnDetached { }`; bytecode format 13. The conformance runner
   has a timeout of 60 s a call.
-- Next: **S6c2** — `TaskScope`.
+- **S6c2 done** — `TaskScope`: `new`, `spawn`, `close()` waits and throws the first failure,
+  `cancel()`; bytecode format 14.
+- Next: **S6c3** — `TaskStatus<T>` with its values, `PanicInfo`, `isDone()`.
 
 ## Working mode
 

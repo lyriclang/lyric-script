@@ -893,3 +893,15 @@ ganz abschalten, würden aus demselben Grund hängen und blieben aus; sechs endl
 alle wie vorher aufgeschrieben. Ein S6a-Test nahm ausgerechnet `cancel()` als Methode, die ein Task
 nicht hat — Vorhersage verfehlt, Test auf `stop()`. Spec 10 Regeln 11–12, neun Fälle, alle rot gegen
 S6b3. Tests 319 → 324, Fälle 277 → 286.
+
+**S6c2, Ergebnis (2026-10-29).** `TaskScope.new()` (Op `scope.new`; der Checker fängt den statischen
+Aufruf ab), `scope.spawn { }` (`spawn.s`, der Task gehört dem Scope statt dem Top-Level), `close()`
+(`scope.close`: wartet wie `join` über die Tasks des Scopes, dann wirft er das erste Scheitern oder
+paniert erneut; ein abgebrochener Task, der hier wartet, bricht die Tasks des Scopes ab und wartet
+weiter, Regel 4), `scope.cancel()`; ein geschlossener Scope nimmt keinen Task (`RT0008`, Lyric 5s
+Code der Panik). Das erste Scheitern eines Scope-Tasks bricht dessen Geschwister ab, nicht die des
+Top-Levels. `TaskScope :: Closeable` in der Prelude, `using let` schließt ihn; kein Interfacewert
+(wie Task und Koroutine). Format 14. Spec 10 Regel 13, acht Fälle, alle rot gegen S6c1; sechs
+Mutanten in drei Läufen, alle wie vorher aufgeschrieben — drei davon (kein Abbruch der Geschwister,
+keiner beim Warten in `close`, `scope.cancel` ohne Wirkung) hängen einen Fall auf und fallen über das
+Zeitlimit des Runners, das S6c1 brachte. Tests 324 → 328, Fälle 286 → 294.

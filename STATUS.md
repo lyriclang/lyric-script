@@ -21,7 +21,13 @@ Lyric 4.x status up to the 4.6 cut is archived at
   hello.lyrs` in CI on every Tier 1 target — lexer, parser, checker and code generator for the
   core, diagnostics as text and JSON, the bytecode cache; measurement point 2: warm 1.36 ms, cold
   1.66 ms (targets 10 and 50 ms).
-- **Open milestone: S3** — the type system complete.
+- **S3 done** (2026-10-29, lyric-script#5, lyric-spec#384, tag `s3-complete`): the type system
+  complete — optionals, definite assignment, tuples, enums with payloads and `match`, function
+  values, interfaces, generics with descriptors as values of the VM, equality and the Debug form
+  without a list, `with`, `Self` and static members, associated types, the literal protocols,
+  generic extend blocks; 191 tests, 115 conformance cases. Three bugs since S3g found and fixed
+  on the way, and one silent choice (05 §3 rule 2).
+- **Open milestone: S4** — errors and control.
 
 ## Milestones
 
@@ -30,8 +36,8 @@ Lyric 4.x status up to the 4.6 cut is archived at
 | S0 | Cut and scaffold | M | **done** 2026-10-28 |
 | S1 | VM core | L | **done** 2026-10-28 |
 | S2 | Front-end core | XL | **done** 2026-10-28 |
-| S3 | Type system complete | L | **open** |
-| S4 | Errors and control | M | — |
+| S3 | Type system complete | L | **done** 2026-10-29 |
+| S4 | Errors and control | M | **open** |
 | S5 | Modules and packages | M | — |
 | S6 | Coroutines and tasks | L | — |
 | S7 | std core | XL | — |
@@ -77,7 +83,7 @@ Exit criterion: hand-written bytecode runs in CI on every Tier 1 target; measure
 
 Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; measurement point 2 recorded.
 
-### S3 — open
+### S3 — done
 
 | Slice | State |
 |---|---|
@@ -92,6 +98,14 @@ Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; meas
 | S3i runtime descriptors | done — every type has a descriptor, a value of the VM: a shared copy gets its arguments' (hidden parameters, or its receiver's) and builds the exact type, a lambda of it holds them, a generic function is a value; values print through their table. `Self` and static members (`static fn`, `static let`), associated types (answers, defaults, bounds, paths, fixations, the value form `Iterator<Item = int>`), the literal protocols, generic extend blocks with conditional conformance, one method set (two defaults of one name: `LYS-SEM0043`; before, the first was taken in silence) and the qualified call `I.m(x)`. Found on the way: three bugs since S3g (a shared copy built `Pair<Any>`; a constrained parameter handed on said `SEM0028`; a lambda of a shared copy erased `T`). With S7: a generic type's constant, blocks on one instance, on built-in constructors and blanket blocks, one name implemented apart per interface (05 §3 rule 4) |
 
 Exit criterion: generic code and interfaces in scripts, in CI; the delta's chapter 03 with its cases.
+
+### S4 — open
+
+Errors and control (plan 14, S4): VM exceptions, inferred error sets, a written `throws` checked,
+`try?`/`try!`/`try … catch`, `catch (e in […])`, `defer`/`using`, `loop`/`break value`, `never`
+(05). The slices are made precise in 14 before the work starts.
+
+Exit criterion: the error examples run; exit codes 1 and 101.
 
 ## Working mode
 

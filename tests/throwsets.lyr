@@ -156,3 +156,20 @@ fn theMarkChangesNothing(): void {
     assertEq(value(source, "f"), 2);
     assertEq(value(source, "h"), 3);
 }
+
+@Test
+fn implementationsAreSaidInTheOrderOfTheirMembers(): void {
+    // by the member's slot, not by a map's order, which changes from run to run
+    var iface = "interface Store {\n";
+    var impl = "struct Mem :: Store {\n";
+    for (name in ["a", "b", "c", "d", "e"]) {
+        iface = iface + f"    fn {name}(): int throws A\n";
+        impl = impl + f"    fn {name}(): int {{\n        throw B {{ }}\n    }}\n";
+    }
+    let parsed = parse(kinds + iface + "}\n" + impl + "}");
+    let said = List<string>.new();
+    for (e in checkModule(parsed.module).errors) {
+        said.push(e.message[0..7].toString());
+    }
+    assertEq(said.toArray(), ["'Mem.a'", "'Mem.b'", "'Mem.c'", "'Mem.d'", "'Mem.e'"]);
+}

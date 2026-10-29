@@ -451,6 +451,12 @@ summary = "`[\"a\": 1, \"b\": 2]`: every entry is `key: value` (spec 2 D5)."
 # The checker (S2d). A code means what Lyric 5's LYR-SEM code of the same number means;
 # Lyric-Script's own codes start at 0900.
 
+[LYS-RES0001]
+title = "a name imported beside a declaration, or imported twice"
+severity = "error"
+area = "04-modules"
+summary = "A module imports a name it declares itself, or two of its imports bind the same name. The declaration keeps its name; the import is reported. Lyric 5's LYR-RES0001."
+
 [LYS-RES0003]
 title = "an import of a module that does not exist"
 severity = "error"

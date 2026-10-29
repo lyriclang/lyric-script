@@ -1,0 +1,186 @@
+// The modules of one root (S5a; Lyric 5 04 §4, Script 07 Top/Path/V5): an import binds a module's
+// names — selectively, or the module under its name —; `pub import` passes them on; a `private`
+// declaration stays in its file; an imported module runs no statement but its bindings and does
+// not see the entry's names; each diagnostic names its file.
+import std.collections { List };
+import std.test { assertEq };
+import lyric_script.compiler.checker { Checked, ProgramUnit, checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+
+/// A program: the entry, file 0, and its modules, each a name and a text, in the order their
+/// imports need — files 1….
+fn checked(entry: string, mods: (string, string)[]): Checked {
+    let units = List<ProgramUnit>.new();
+    var k = 0;
+    while (k < mods.length()) {
+        let (name, text) = mods[k];
+        let parsed = parse(text, k + 1);
+        for (e in parsed.errors) {
+            assertEq(e.message, "", "the module parses");
+        }
+        units.push(ProgramUnit { name = name, module = parsed.module, file = k + 1 });
+        k += 1;
+    }
+    let parsed = parse(entry);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the entry parses");
+    }
+    return checkModule(parsed.module, units.toArray());
+}
+
+fn compiled(entry: string, mods: (string, string)[]): Module {
+    let c = checked(entry, mods);
+    for (e in c.errors) {
+        assertEq(e.message, "", "the program checks");
+    }
+    let module = generate(c.program, "t");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(entry: string, mods: (string, string)[], f: string): int {
+    return match (run(compiled(entry, mods), f, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+/// The codes of a program's errors and warnings, each with the file it is about.
+fn said(entry: string, mods: (string, string)[]): string[] {
+    let c = checked(entry, mods);
+    let out = List<string>.new();
+    for (e in c.errors) {
+        out.push(f"{e.code}@{e.file}:{e.line}");
+    }
+    for (w in c.warnings) {
+        out.push(f"{w.code}@{w.file}:{w.line}");
+    }
+    return out.toArray();
+}
+
+let util: (string, string) = ("util", "fn twice(x: int): int = x * 2\nfn hidden(): int = 1\n");
+
+@Test
+fn anImportBindsTheModulesNames(): void {
+    // selectively, under another name with `as`; the module under its name, or another
+    assertEq(value("import util { twice }\nfn go(): int = twice(21)", [util], "go"), 42);
+    assertEq(value("import util { twice as t }\nfn go(): int = t(4)", [util], "go"), 8);
+    assertEq(value("import util\nfn go(): int = util.twice(5)", [util], "go"), 10);
+    assertEq(value("import util as u\nfn go(): int = u.twice(6)", [util], "go"), 12);
+}
+
+@Test
+fn aModulesTypeIsNamedThroughTheModule(): void {
+    let shapes = (
+        "shapes",
+        "struct Point {\n    x: int,\n    y: int,\n}\nfn make(x: int, y: int): Point = Point { x = x, y = y }\n"
+    );
+    assertEq(
+        value(
+            "import shapes\nfn go(): int {\n    let p: shapes.Point = shapes.make(1, 2)\n    return p.x + p.y\n}",
+            [shapes],
+            "go"
+        ),
+        3
+    );
+}
+
+@Test
+fn twoModulesMayDeclareTheSameName(): void {
+    // each declaration is its module's: the entry takes one under another name
+    let a = ("a", "fn f(): int = 1\n");
+    let b = ("b", "fn f(): int = 2\n");
+    assertEq(
+        value("import a { f }\nimport b { f as g }\nfn go(): int = f() * 10 + g()", [a, b], "go"),
+        12
+    );
+}
+
+@Test
+fn aPubImportPassesItsNamesOn(): void {
+    let back = ("back", "fn helper(): int = 7\n");
+    let front = ("front", "pub import back { helper }\n");
+    assertEq(value("import front { helper }\nfn go(): int = helper()", [back, front], "go"), 7);
+    assertEq(value("import front\nfn go(): int = front.helper()", [back, front], "go"), 7);
+}
+
+@Test
+fn whatAnImportNamesTheModuleDeclaresAndShows(): void {
+    // a name it does not declare; one it keeps to its file, imported or reached through it
+    let lib = ("lib", "private fn hidden(): int = 1\nfn shown(): int = 2\n");
+    assertEq(said("import lib { nothing }", [lib]), ["LYS-RES0004@0:1"]);
+    assertEq(said("import lib { hidden }", [lib]), ["LYS-RES0009@0:1"]);
+    assertEq(said("import lib\nlet x = lib.hidden()", [lib]), ["LYS-RES0009@0:2"]);
+    assertEq(said("import lib { shown }\nlet x = shown()", [lib]), []);
+}
+
+@Test
+fn aNameIsBoundOnceInAModule(): void {
+    // an import beside a declaration of the module — the declaration keeps its name —, or two
+    // imports of one name
+    let a = ("a", "fn f(): int = 1\nstruct k {\n    v: int,\n}\n");
+    let b = ("b", "fn f(): int = 2\n");
+    // the module's own `f` is the one read: a string, not the import's int
+    assertEq(
+        said("import a { f }\nfn f(): string = \"own\"\nlet x: string = f()", [a]),
+        ["LYS-RES0001@0:1"]
+    );
+    assertEq(said("import a { f }\nimport b { f }\nlet x = f()", [a, b]), ["LYS-RES0001@0:2"]);
+    assertEq(
+        said(
+            "import n { m }\nlet x = m()",
+            [a, ("n", "import a { k }\nfn k(): int = 0\nfn m(): int = k()\n")]
+        ),
+        ["LYS-RES0001@2:1"]
+    );
+}
+
+@Test
+fn anImportNothingUsesWarnsInTheOrderWritten(): void {
+    let lib = ("lib", "fn a(): int = 1\nfn b(): int = 2\nfn c(): int = 3\nfn d(): int = 4\n");
+    assertEq(
+        said("import lib { a, b, c, d }\nimport lib as l\nlet x = c()", [lib]),
+        ["LYS-SEM0072@0:1", "LYS-SEM0072@0:1", "LYS-SEM0072@0:1", "LYS-SEM0072@0:2"]
+    );
+    let c = checked("import lib { a, b, c, d }\nlet x = c()", [lib]);
+    let names = List<string>.new();
+    for (w in c.warnings) {
+        names.push(w.message);
+    }
+    assertEq(
+        names.toArray(),
+        [
+            "the import 'a' is never used",
+            "the import 'b' is never used",
+            "the import 'd' is never used",
+        ]
+    );
+}
+
+@Test
+fn anImportedModuleRunsOnlyItsBindings(): void {
+    // its other statements are said not to run; its `let`s are globals of the program
+    let lib = ("lib", "let base = 20\nprintln(\"no\")\nfn get(): int = base + 1\n");
+    assertEq(said("import lib { get }\nlet x = get()", [lib]), ["LYS-SEM0905@1:2"]);
+}
+
+@Test
+fn anImportedModuleSeesOnlyWhatItImports(): void {
+    // the entry's names are the entry's
+    let lib = ("lib", "fn g(): int = secret()\n");
+    assertEq(
+        said("import lib { g }\nfn secret(): int = 7\nlet x = g()", [lib]),
+        ["LYS-SEM0002@1:1"]
+    );
+}
+
+@Test
+fn aDiagnosticNamesItsFile(): void {
+    let lib = ("lib", "fn ok(): int = 1\n\nfn bad(): int = \"no\"\n");
+    assertEq(said("import lib { ok }\nlet x = ok()", [lib]), ["LYS-SEM0001@1:3"]);
+}

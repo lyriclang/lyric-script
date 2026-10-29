@@ -165,6 +165,7 @@ class ModuleNames {
 /// What an import binds under a name, where, and whether anything used it.
 class ImportUse {
     name: string,
+    mod: int,
     at: Span,
     var used: bool = false,
 }
@@ -440,13 +441,30 @@ class Checker {
         return path + "::" + name;
     }
 
-    /// The current module sees a declaration of its own by its name.
+    /// The current module sees a declaration of its own by its name, before a name an import
+    /// binds beside it (`LYS-RES0001`, said with the imports).
     mut fn register(name: string): void {
         if (this.mod > 0) {
             this.viewOf(this.mod).insert(name, this.declKey(name));
         } else if (this.mod == 0) {
             this.entryNames.insert(name);
+            let view = this.modScopes.get(0);
+            if (view != null) {
+                view.names.remove(name);
+            }
         }
+    }
+
+    /// Whether module `m` declares `name` itself.
+    mut fn declaresOwn(m: int, name: string): bool {
+        if (m <= 0) {
+            return this.entryNames.contains(name);
+        }
+        let key = (this.modNames.get(m) ?? "") + "::" + name;
+        return this.typeIndex.containsKey(key)
+            || this.fnByName.containsKey(key)
+            || this.globalIndex.containsKey(key)
+            || this.aliases.containsKey(key);
     }
 
     /// The module a qualified or aliased import binds under `name` here; `null` for none.
@@ -495,11 +513,17 @@ class Checker {
             for (it in im.items) {
                 let key = this.exportKey(target, it.name);
                 let bound = it.alias ?? it.name;
-                this.viewOf(this.mod).insert(bound, key);
+                if (!this.noteImport(bound, it.span, im.isPub)) {
+                    continue;
+                }
+                // a declaration of the module's own keeps its name
+                let own = this.viewOf(this.mod).get(bound);
+                if (!(this.mod == 0 && this.entryNames.contains(bound))
+                    && (own == null || own != this.declKey(bound))) {
+                    this.viewOf(this.mod).insert(bound, key);
+                }
                 if (im.isPub) {
                     this.reexports.insert(this.declKey(bound), key);
-                } else {
-                    this.noteImport(bound, it.span);
                 }
                 this.imported.push(
                     ImportCheck {
@@ -516,19 +540,29 @@ class Checker {
             return;
         }
         let bound = im.alias ?? im.path[im.path.length() - 1];
+        if (!this.noteImport(bound, im.span, im.isPub)) {
+            return;
+        }
         let known = this.modAliases.get(this.mod);
         let aliases = if (known != null) known
             else ModuleNames { modules = Map<string, int>.new() };
         aliases.modules.insert(bound, target);
         this.modAliases.insert(this.mod, aliases);
-        if (!im.isPub) {
-            this.noteImport(bound, im.span);
-        }
     }
 
     /// What the selective imports name: a declaration of the module (`LYS-RES0004`) its file does
     /// not keep to itself (`LYS-RES0009`); and the imports nothing uses (`LYS-SEM0072`).
     mut fn checkImports(): void {
+        for (use in this.importOrder) {
+            if (this.declaresOwn(use.mod, use.name)) {
+                this.error(
+                    "LYS-RES0001",
+                    f"'{use.name}' is imported here and declared in this module too",
+                    use.at
+                );
+                use.used = true;
+            }
+        }
         for (c in this.imported) {
             let known = this.typeIndex.containsKey(c.key)
                 || this.fnByName.containsKey(c.key)
@@ -550,11 +584,19 @@ class Checker {
         }
     }
 
-    /// An import that binds `bound` in the current module: unused until a name reads it.
-    mut fn noteImport(bound: string, at: Span): void {
-        let use = ImportUse { name = bound, at = at };
-        this.importUses.insert(f"{this.mod}:{bound}", use);
+    /// An import that binds `bound` in the current module: unused until a name reads it, unless
+    /// it passes the name on. `false` where an import of the module binds the name already
+    /// (`LYS-RES0001`).
+    mut fn noteImport(bound: string, at: Span, isPub: bool): bool {
+        let slot = f"{this.mod}:{bound}";
+        if (this.importUses.containsKey(slot)) {
+            this.error("LYS-RES0001", f"'{bound}' is imported twice in this module", at);
+            return false;
+        }
+        let use = ImportUse { name = bound, mod = this.mod, at = at, used = isPub };
+        this.importUses.insert(slot, use);
         this.importOrder.push(use);
+        return true;
     }
 
     /// The imports nothing used, once every body is checked.
@@ -10028,6 +10070,10 @@ class Checker {
         let key = this.exportKey(target, name);
         let candidates = this.fnByName.get(key);
         if (candidates != null) {
+            if (this.privateKeys.contains(key) && target != this.mod) {
+                let path = this.modNames.get(target) ?? "";
+                this.error("LYS-RES0009", f"'{name}' is private to the module '{path}'", nameAt);
+            }
             return this.callAmong(name, candidates.toArray(), null, args, at);
         }
         let index = this.typeIndex.get(key);

@@ -212,8 +212,12 @@ Script modules, S7b lists, S7c iterators, S7d maps and sets, S7e strings and for
 `BigInt`, `Bytes`, S7g I/O and files, S7h processes, environment, time, S7i batteries, S7j the
 VM's call path, S7k measurement point 3.
 
-- Next: **S7a** — `import std.<m>` from Script sources in the binary; natives as intrinsics; the
-  rights table fixed.
+- **S7a done** — `import std.<m>` from Script sources in the binary (`std/`, `comptime embed`), a
+  package of their own; the prelude a file too; natives of the std as `__module_name(…)` in a
+  function whose signature is theirs; `std.os` (`env`), `std.fs` (`exists`); the rights table
+  fixed, `LYRIC_SCRIPT_RIGHTS` retired; bytecode format 20. The conformance runner reads
+  `stderr-has:` of a rejected case.
+- Next: **S7b** — lists: `T[]` native in the VM, literals, indexing, the methods.
 
 ## Working mode
 

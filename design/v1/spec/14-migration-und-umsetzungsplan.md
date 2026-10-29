@@ -1052,3 +1052,22 @@ ab (`budget.charge(n)`, 01 S5c) und bekommt seinen Test im Slice, der es bringt;
 Deadline in langen Schleifen kommt mit dem Budget (S8). **Spec**: Kapitel 12 wächst je Slice um
 Regeln und Fälle; die Sprachteile (Literale, Index, `for`, Synthese) gehen in 03, 07, 08 und 09.
 Austrittskriterium: die Zielprogramme laufen in der CI; Messpunkt 3 ≥ 5×.
+
+**S7a, Ergebnis (2026-10-29).** Die Script-Quellen der std liegen in `std/` neben `src/` und kommen
+über Lyric 5s `comptime embed` ins Binary (`src/stdsrc.lyr`: Modulliste, Quelltext je Name, die
+Prelude); auch die Prelude ist jetzt eine Datei statt eines Strings im Checker. `import std.<m>`
+nimmt nie eine Datei des Programms oder ein Paket — ein Pfad mit `std` vorn geht in die Tabelle,
+ein fehlendes Modul ist `RES0003`; die Module bilden ein eigenes Paket (`internal` bleibt ihres)
+und werden mit dem Programm übersetzt, ihr Text geht also in den Cache-Schlüssel. Natives der
+std: `__os_env(name)` im Rumpf einer std-Funktion ruft `os.env` der VM-Tabelle, der Typ ist die
+Signatur der Funktion; der Codegenerator vergleicht die Slots mit der Tabelle. Erste Module:
+`std.os` (`env`) und `std.fs` (`exists`), Format 20. Die Rechtetabelle ist fest (Spec 17 Regel 1):
+`std.fs` → `file`, `std.net`/`std.http` → `net`, `std.process` → `process`, `std.os`, `std.time`
+und `std.random` → `os` — `std.random` nur bis S7f, das den geseedeten Generator vom System
+trennt —, jedes andere Modul nichts; `LYRIC_SCRIPT_RIGHTS` retiriert, die Rechte-Fälle
+importieren echte Module. Gefunden: der Runner ignorierte `stderr-has:` in einem abgelehnten
+Fall still (ein neuer Fall war darum gegen S6 grün) — er liest jetzt die Diagnosen. Spec 12
+Regel 2, vier Fälle neu, drei Rechte-Fälle umgeschrieben und einer dazu; sieben rot gegen S6, der
+achte (nur die std erreicht die Natives) hütet den Zugang. Mutanten in drei Läufen: alle
+gefangen, einer zusätzlich von einem S6d2-Test, den die Vorhersage vergessen hatte; das Entfernen
+der Slot-Prüfung ist heute unbeobachtbar (kein Native weicht ab). Tests 344 → 348, Fälle 331 → 336.

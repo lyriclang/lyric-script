@@ -1729,6 +1729,18 @@ class FnGen {
                 let sem = this.any(x.value);
                 this.emit(Op.SemAvail, dst.s, sem.r, 0);
             }
+            // S6d2: the prelude's select
+            .ChanReady(x) => {
+                let ch = this.any(x.value);
+                this.emit(Op.ChanReady, dst.s, ch.r, 0);
+            }
+            .ChanWatch(x) => {
+                let ch = this.any(x.value);
+                this.emit(Op.ChanWatch, ch.r, 0, 0);
+            }
+            .ParkWatched => {
+                this.emit(Op.ParkW, 0, 0, 0);
+            }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);
                 this.emit(Op.TaskSt, dst.s, task.r, 0);

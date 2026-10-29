@@ -271,6 +271,8 @@ fn typeOf(e: TExpr): Ty {
         .ChanSend(_, _) | .ChanClose(_) | .SemAcquire(_) | .SemRelease(_) => Ty.Void,
         .SemTry(_) => Ty.Bool,
         .SemAvail(_) => Ty.Int,
+        .ChanReady(_) => Ty.Bool,
+        .ChanWatch(_) | .ParkWatched => Ty.Void,
         .Int(_) => Ty.Int,
         .Float(_) => Ty.Float,
         .Bool(_) => Ty.Bool,
@@ -514,6 +516,10 @@ enum TExpr :: [Debug] {
     SemTry(Box<TExpr>),
     SemRelease(Box<TExpr>),
     SemAvail(Box<TExpr>),
+    /// S6d2: the prelude's select — a channel ready; a watch of it; the wait for a stir.
+    ChanReady(Box<TExpr>),
+    ChanWatch(Box<TExpr>),
+    ParkWatched,
     Unknown,
 }
 
@@ -577,6 +583,8 @@ fn exprsIn(e: TExpr): TExpr[] {
         .ChanNew(x, _) | .ChanRecv(x, _) | .ChanClose(x) | .SemNew(x, _) => [x.value],
         .SemAcquire(x) | .SemTry(x) | .SemRelease(x) | .SemAvail(x) => [x.value],
         .ChanSend(x, v) => [x.value, v.value],
+        .ChanReady(x) | .ChanWatch(x) => [x.value],
+        .ParkWatched => [],
         .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
         .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],
         .CapturedCell(_, _) | .CellOf(_, _) | .DescOfType(_, _) | .GenericValue(_, _, _) => [],

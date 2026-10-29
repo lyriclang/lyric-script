@@ -146,6 +146,11 @@ pub enum Op :: [Variants, Equatable] {
     SemTry,
     SemRelease,
     SemAvail,
+    // S6d2: the prelude's select — whether a channel can be received from without a wait; the
+    // running task watches a channel; the task waits until a channel it watches stirs.
+    ChanReady,
+    ChanWatch,
+    ParkW,
 }
 
 /// What an operand of an operation names.
@@ -308,6 +313,9 @@ pub fn info(op: Op): OpInfo {
         .SemTry => OpInfo { mnemonic = "sem.try", operands = [.Scalar, .Ref] },
         .SemRelease => OpInfo { mnemonic = "sem.release", operands = [.Ref] },
         .SemAvail => OpInfo { mnemonic = "sem.avail", operands = [.Scalar, .Ref] },
+        .ChanReady => OpInfo { mnemonic = "chan.ready", operands = [.Scalar, .Ref] },
+        .ChanWatch => OpInfo { mnemonic = "chan.watch", operands = [.Ref] },
+        .ParkW => OpInfo { mnemonic = "park.w", operands = [] },
     };
 }
 

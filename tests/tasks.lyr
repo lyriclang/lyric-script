@@ -531,3 +531,34 @@ fn channelsAndSemaphoresAreChecked(): void {
         ["LYS-SEM0034"]
     );
 }
+
+// Select (S6d2): the prelude's `Select`/`Selection` over the VM's watches.
+@Test
+fn aSelectRunsTheReadyCase(): void {
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let x = Channel<int>.new(1)\n    let y = Channel<int>.new(1)\n"
+        + "    y.send(8)\n    Select.on(x) { v => b.n = 1 }.on(y) { v => b.n = v ?? 0 }.run()\n    return b.n\n}";
+    assertEq(value(src, "f"), 8);
+}
+
+@Test
+fn aSelectWaitsForASend(): void {
+    // unbuffered: the sender that comes to wait wakes the select
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let x = Channel<int>.new()\n    spawn {\n        yieldNow()\n"
+        + "        x.send(9)\n    }\n    Select.on(x) { v => b.n = v ?? 0 }.run()\n    return b.n\n}";
+    assertEq(value(src, "f"), 9);
+}
+
+@Test
+fn aSelectWakesOnABufferedSend(): void {
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let x = Channel<int>.new(1)\n    spawn { x.send(6) }\n"
+        + "    Select.on(x) { v => b.n = v ?? 0 }.run()\n    return b.n\n}";
+    assertEq(value(src, "f"), 6);
+}
+
+@Test
+fn theSelectsIntrinsicsAreThePreludesAlone(): void {
+    assertEq(errs("let a = Channel<int>.new()\nlet r = __chanReady(a)"), ["LYS-SEM0002"]);
+}

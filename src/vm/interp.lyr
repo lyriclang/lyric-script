@@ -153,6 +153,9 @@ class TaskState {
     var sendItem: ?Item = null,
     var sendState: int = 0,
     var granted: bool = false,
+    // S6d2: the channels a select of it watches, and whether one of them stirred
+    watching: List<ScriptChannel> = List<ScriptChannel>.new(),
+    var woken: bool = false,
     // what an error that left the task threw, and its record: what `await` throws again
     var thrown: HeapRef = nilRef(),
     var record: HeapRef = nilRef(),
@@ -265,6 +268,8 @@ pub class ScriptChannel :: [HeapRef] {
     buffer: List<Item>,
     receivers: List<TaskState>,
     senders: List<TaskState>,
+    // S6d2: the tasks whose select watches it: woken when it can be received from
+    watchers: List<TaskState> = List<TaskState>.new(),
     var closed: bool = false,
 
     pub fn desc(): ?TypeDesc {
@@ -485,6 +490,29 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
         removeFrom(sem.waiters, st);
         st.waitingSem = null;
         shared.queue.push(st);
+    }
+    // S6d2: a select's wait ends as well
+    if (st.watching.length() > 0) {
+        unwatchAll(st);
+        shared.queue.push(st);
+    }
+}
+
+/// Takes `st` off the watch of every channel its select watches (S6d2).
+fn unwatchAll(st: TaskState): void {
+    for (c in st.watching) {
+        removeFrom(c.watchers, st);
+    }
+    st.watching.clear();
+}
+
+/// Wakes the selects that watch `ch`, which can be received from now: each looks at its cases
+/// again (S6d2).
+fn wakeWatchers(ch: ScriptChannel, shared: RunShared): void {
+    for (w in ch.watchers.toArray()) {
+        unwatchAll(w);
+        w.woken = true;
+        shared.queue.push(w);
     }
 }
 
@@ -1948,11 +1976,13 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     pc += 1;
                 } else if (ch.buffer.length() < ch.capacity) {
                     ch.buffer.push(item);
+                    wakeWatchers(ch, shared);
                     pc += 1;
                 } else {
                     t.sendItem = item;
                     t.waitingChan = ch;
                     ch.senders.push(t);
+                    wakeWatchers(ch, shared);
                     t.s = s;
                     t.r = r;
                     t.fi = fi;
@@ -2045,6 +2075,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 let ch = r[br + a];
                 if (ch is ScriptChannel && !ch.closed) {
                     ch.closed = true;
+                    wakeWatchers(ch, shared);
                     for (w in ch.receivers) {
                         wake(w, shared);
                     }
@@ -2147,6 +2178,55 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 let sem = r[br + b];
                 s[bs + a] = (if (sem is ScriptSemaphore) sem.permits else 0) as uint64;
                 pc += 1;
+            }
+            // S6d2: whether the channel in `b` can be received from without a wait — a value in its
+            // buffer, a sender waiting, or closed (Lyric 5 10 §7 rule 2)
+            .ChanReady => {
+                let ch = r[br + b];
+                s[bs + a] = truth(
+                    ch is ScriptChannel
+                        && (ch.buffer.length() > 0 || ch.senders.length() > 0 || ch.closed)
+                );
+                pc += 1;
+            }
+            .ChanWatch => {
+                let ch = r[br + a];
+                if (ch is ScriptChannel) {
+                    ch.watchers.push(t);
+                    t.watching.push(ch);
+                }
+                pc += 1;
+            }
+            // the select waits until a channel it watches stirs — a wait (rule 4)
+            .ParkW => {
+                if (t.woken) {
+                    t.woken = false;
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    unwatchAll(t);
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (t.watching.length() == 0) {
+                    pc += 1;
+                    continue;
+                }
+                t.s = s;
+                t.r = r;
+                t.fi = fi;
+                t.pc = pc;
+                t.bs = bs;
+                t.br = br;
+                t.report = report;
+                t.frames = frames;
+                return Outcome.Switch;
             }
             .ScopeCancel => {
                 let sc = r[br + a];

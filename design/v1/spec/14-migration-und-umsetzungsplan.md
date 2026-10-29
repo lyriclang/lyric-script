@@ -802,8 +802,9 @@ Tests 278 → 292, Fälle 230 → 241.
 — eigene Kontexte im ziehenden Task, Ops `co.new`, `co.next`, `yield.v`, `co.res`, `co.done`,
 Format 11 — und Koroutinen-Funktionen mit `yield`, Ergebnis über `return`, `next()`, `result()`,
 `isDone()` (Lyric 5 10 §1 Regeln 1–6). **S6b2**: Generator-Lambdas und `sequence { }` (Regeln
-11–12), `close()` mit `Cancelled` am `yield`, `using let` (Regeln 9–10), `for` über eine Koroutine,
-ein `yield` in einer gerufenen Funktion (Regel 13), Identität (Regel 14). `Coroutine :: Iterator`
+11–12), `for` über eine Koroutine. **S6b3** (nach S6b1 abgespalten, weil S6b2 sonst zu groß würde):
+`close()` mit `Cancelled` am `yield`, `using let` (Regeln 9–10), ein `yield` in einer gerufenen
+Funktion (Regel 13), Identität (Regel 14). `Coroutine :: Iterator`
 kommt mit dem Iterator-`for` in **S7**; bis dahin kennt `for` nur Ranges und, ab S6b2, Koroutinen.
 
 **S6b1, Ergebnis (2026-10-29).** Eine Koroutine läuft auf eigenen Registern und Rahmen im Task,
@@ -825,3 +826,21 @@ ist bis S6b2 `NYI`. Spec 10 Regeln 4–6, 13 Fälle, alle rot gegen S6a; acht Mu
 Läufen (Flag des Yields, Referenzen am Ende, Fehler ans Ziehen, kein Ergebnis; `SEM0038`,
 `SEM0039`, `deep`, kein erneutes Werfen), alle wie vorher aufgeschrieben. Der Katalog-Check fing
 `RT0014` vor dem ersten Lauf. Tests 292 → 306, Fälle 241 → 254.
+
+**S6b2, Ergebnis (2026-10-29).** Ein Lambda, dessen Block ein eigenes `yield` hat, ist ein
+Generator: sein Rumpf wird zum internen Aufruf `<generator>(Block)`, den der Checker mit dem
+erwarteten Typ prüft — der geschriebene Ergebnistyp oder der des Orts gibt `Y` und `R`, sonst
+vereinheitlichen sich Yields und Returns zu ihnen (`unify`, `SEM0016`). Dafür ein stiller erster
+Durchgang (wie bei 03 Leer: Fehler schweigen, erzeugte Funktionen werden zurückgenommen) und ein
+zweiter gegen die gefundenen Typen, damit ein `yield 1` vor einem `yield 2.5` umgewandelt wird
+statt als Float-Bits gelesen. `SEM0046` für einen Pfad ohne Ergebnis. `sequence { … }` erkennt der
+Checker wie `spawn` und gibt den Generator des Blocks direkt (`R` = `void`). `for (x in c)` über
+eine Koroutine senkt der Checker zu `while (let x = c.next())` über eine verborgene Lokale, die
+die Koroutine einmal hält; `Coroutine<void>` → `SEM0007`. Gefunden: die Vorausschau auf ein Lambda
+zählte nur runde Klammern, `(x: int): Pair<int, int> => x` war kein Lambda (Parser-Fehler seit S3,
+jetzt `<`/`>` als Tiefe). Spec 10 Regeln 7–8, zehn Fälle, alle rot gegen S6b1; sechs Mutanten in
+zwei Läufen, zwei Vorhersagen verfehlt: `>>` ohne eigene Zählung ist äquivalent (die Tiefe wird nur
+zu hoch, ein Komma beendet die Vorausschau nie zu früh — der `>>`-Test ist ein Pin des Verhaltens,
+kein roter Fall), und zwei Mutanten im selben Lauf (Ort ignoriert, Returns ohne Ableitung) gaben
+zusammen `R` = `void` und so einen zweiten Fall rot; jeder hat seinen eigenen Fänger. Tests 306 →
+312, Fälle 254 → 264.

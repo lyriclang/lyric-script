@@ -169,8 +169,9 @@ Exit criterion: a concurrent example.
 - **S6b1 done** — coroutines: contexts of their own within the pulling task (a wait parks the
   task), coroutine functions, `yield`, `return` as the result, `next()`, `result()`, `isDone()`;
   bytecode format 11.
-- Next: **S6b2** — generator lambdas, `sequence`, `for` over a coroutine, `close()` and `using`,
-  a `yield` in a called function, identity.
+- **S6b2 done** — generator lambdas (types from the place, or inferred by a quiet first pass),
+  `sequence { }`, `for` over a coroutine; the lambda lookahead takes `<…>` as brackets.
+- Next: **S6b3** — `close()` with `Cancelled`, `using`, a `yield` in a called function, identity.
 
 ## Working mode
 

@@ -1,0 +1,67 @@
+// The standard library's modules (S7a; Script 12 Src): Script sources in the binary, compiled with
+// the program as a package of their own; the VM's natives, which only they call.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.compiler.checker { Checked, ProgramUnit, checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.stdsrc { stdBelow, stdModules, stdPackage, stdSource };
+
+/// The codes of a program whose entry is `entry` and which imports the module `name`, `text`, of
+/// the package `pkg`.
+fn codesWith(entry: string, name: string, text: string, pkg: int): string[] {
+    let unit = ProgramUnit { name = name, module = parse(text, 1).module, file = 1, package = pkg };
+    let c = checkModule(parse(entry).module, [unit]);
+    let codes = List<string>.new();
+    for (e in c.errors) {
+        codes.push(f"{e.code}@{e.file}:{e.line}");
+    }
+    return codes.toArray();
+}
+
+@Test
+fn theStandardLibrarysModulesAreInTheBinary(): void {
+    for (m in stdModules) {
+        assertTrue(stdSource(m) != null, m);
+    }
+    assertEq(stdSource("std.nothere"), null);
+    assertEq(stdSource("std"), null);
+    assertEq(stdBelow("std"), ["fs", "os"]);
+    assertEq(stdBelow("std.fs"), []);
+}
+
+@Test
+fn everyModuleOfTheStandardLibraryCompiles(): void {
+    // its natives' slots meet the VM's table, or the code generator stops
+    for (m in stdModules) {
+        let text = stdSource(m) ?? "";
+        let unit = ProgramUnit {
+            name = m,
+            module = parse(text, 1).module,
+            file = 1,
+            package = stdPackage,
+        };
+        let c = checkModule(parse(f"import {m}\n").module, [unit]);
+        assertEq(c.errors.length(), 0, m);
+        generate(c.program, "t");
+    }
+}
+
+@Test
+fn onlyTheStandardLibraryCallsTheVmsNatives(): void {
+    let text = "fn e(): ?string = __os_env(\"X\")\n";
+    assertEq(codesWith("import t { e }\nlet v = e()", "t", text, 0), ["LYS-SEM0002@1:1"]);
+    assertEq(codesWith("import std.t { e }\nlet v = e()", "std.t", text, stdPackage), []);
+}
+
+@Test
+fn aModuleOfTheStandardLibraryKeepsItsInternalNames(): void {
+    let text = "internal fn helper(): int = 1\nfn open(): int = helper()\n";
+    assertEq(codesWith("import std.t { open }\nlet v = open()", "std.t", text, stdPackage), []);
+    assertEq(
+        codesWith("import std.t { helper }\nlet v = helper()", "std.t", text, stdPackage),
+        ["LYS-RES0009@0:1"]
+    );
+    // the same module in the program's own package shows it
+    assertEq(codesWith("import t { helper }\nlet v = helper()", "t", text, 0), []);
+}

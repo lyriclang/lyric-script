@@ -1,0 +1,4 @@
+//! The file system (12; Lyric 5's `std.fs`). A module of the right `file` (01 S1).
+
+/// Whether something — a file, a folder — is at `path`.
+fn exists(path: string): bool = __fs_exists(path)

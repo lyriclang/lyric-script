@@ -1,0 +1,210 @@
+//! The prelude (07 V3 I8): what every module names without an import, written in Lyric-Script and
+//! parsed before the program as no file of it. The literal protocols (03 Lit), each a static
+//! member that builds the conforming type from a literal of its kind; `Error`, the root of what is
+//! thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was first
+//! thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core); tasks,
+//! coroutines, scopes, channels, semaphores, `select` and time (S6; 07 N2-N9). Its `__` names are
+//! the VM's intrinsics, which only the prelude and the standard library's modules can call.
+interface Error {
+    fn message(): string
+    fn cause(): ?Error {
+        return null
+    }
+}
+class Exception :: Error {
+    text: string
+    inner: ?Error = null
+    static fn new(message: string, cause: ?Error = null): Exception {
+        return Exception { text = message, inner = cause }
+    }
+    fn message(): string {
+        return this.text
+    }
+    fn cause(): ?Error {
+        return this.inner
+    }
+}
+struct Backtrace {
+    text: string
+    fn show(): string = this.text
+}
+interface Closeable {
+    fn close()
+}
+interface FromIntLiteral {
+    static fn fromIntLiteral(v: int): Self
+}
+interface FromFloatLiteral {
+    static fn fromFloatLiteral(v: float): Self
+}
+interface FromStringLiteral {
+    static fn fromStringLiteral(v: string): Self
+}
+interface FromBoolLiteral {
+    static fn fromBoolLiteral(v: bool): Self
+}
+interface FromNullLiteral {
+    static fn fromNullLiteral(): Self
+}
+class Task<T> {
+}
+class PanicInfo {
+    code: string
+    message: string
+    trace: string
+}
+enum TaskStatus<T> {
+    Running,
+    Done(T),
+    Failed(Error),
+    Cancelled,
+    Panicked(PanicInfo),
+}
+class Coroutine<Y, R> :: [Identity, Closeable] {
+    fn close() {
+    }
+}
+class Cancelled :: Error {
+    fn message(): string = "cancelled"
+}
+class TaskScope :: Closeable {
+    fn close() {
+    }
+}
+class ChannelClosed :: Error {
+    fn message(): string = "channel closed"
+}
+class Channel<T> {
+}
+class Semaphore {
+}
+interface SelectCase {
+    fn ready(): bool
+    fn watch()
+    fn fire()
+}
+class ChannelCase<T> :: SelectCase {
+    channel: Channel<T>
+    body: fn(?T) -> void
+    fn ready(): bool = __chanReady(this.channel)
+    fn watch() {
+        __chanWatch(this.channel)
+    }
+    fn fire() {
+        let f = this.body
+        f(this.channel.recv())
+    }
+}
+class CaseNode {
+    entry: SelectCase
+    var next: ?CaseNode = null
+}
+class Selection {
+    var first: ?CaseNode = null
+    var last: ?CaseNode = null
+    var timeoutNanos: int = -1
+    var onTimeout: ?fn() -> void = null
+    fn on<T>(c: Channel<T>, body: fn(?T) -> void): Selection {
+        let node = CaseNode { entry = ChannelCase { channel = c, body = body } }
+        if (let tail = this.last) {
+            tail.next = node
+        } else {
+            this.first = node
+        }
+        this.last = node
+        return this
+    }
+    fn timeout(d: Duration, body: fn() -> void): Selection {
+        this.timeoutNanos = if (d.nanos() > 0) d.nanos() else 0
+        this.onTimeout = body
+        return this
+    }
+    fn run() {
+        var timer: ?Channel<void> = null
+        while (true) {
+            var n = this.first
+            while (let c = n) {
+                if (c.entry.ready()) {
+                    c.entry.fire()
+                    return
+                }
+                n = c.next
+            }
+            if (let late = this.onTimeout) {
+                if (this.timeoutNanos == 0) {
+                    late()
+                    return
+                }
+                if (timer == null) {
+                    timer = Timer.after(Duration.ofNanos(this.timeoutNanos))
+                }
+                if (let tc = timer) {
+                    if (__chanReady(tc)) {
+                        late()
+                        return
+                    }
+                    __chanWatch(tc)
+                }
+            }
+            n = this.first
+            while (let c = n) {
+                c.entry.watch()
+                n = c.next
+            }
+            __parkWatched()
+        }
+    }
+}
+class Select {
+    static fn on<T>(c: Channel<T>, body: fn(?T) -> void): Selection = Selection { }.on(c, body)
+}
+struct Duration {
+    private nanosCount: int
+    static fn ofNanos(n: int): Duration = Duration { nanosCount = n }
+    static fn ofMicros(n: int): Duration = Duration { nanosCount = n * 1000 }
+    static fn ofMillis(n: int): Duration = Duration { nanosCount = n * 1000000 }
+    static fn ofSecs(n: int): Duration = Duration { nanosCount = n * 1000000000 }
+    static fn ofMinutes(n: int): Duration = Duration { nanosCount = n * 60000000000 }
+    static fn ofHours(n: int): Duration = Duration { nanosCount = n * 3600000000000 }
+    fn nanos(): int = this.nanosCount
+    fn millis(): int = this.nanosCount / 1000000
+    fn secs(): int = this.nanosCount / 1000000000
+}
+fn sleep(d: Duration) {
+    __sleep(d.nanos())
+}
+class Timer {
+    static fn after(d: Duration): Channel<void> = __timerAfter(d.nanos())
+}
+fn readLine(): ?string = __readLine()
+class TimedOut :: Error {
+    fn message(): string = "timed out"
+}
+class TimeoutFlag {
+    var late: bool = false
+}
+fn withTimeout<T>(d: Duration, body: fn() -> T): T {
+    let flag = TimeoutFlag { }
+    let scope = TaskScope.new()
+    let work = scope.spawn { body() }
+    let timer = scope.spawn {
+        sleep(d)
+        flag.late = true
+        work.cancel()
+    }
+    defer {
+        timer.cancel()
+        try {
+            scope.close()
+        } catch (e) {
+        }
+    }
+    try {
+        return work.await()
+    } catch (e: Cancelled) {
+        if (flag.late) {
+            throw TimedOut { }
+        }
+        throw e
+    }
+}

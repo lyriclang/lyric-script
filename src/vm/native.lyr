@@ -1,8 +1,9 @@
 //! The VM's natives (design/v1, 11 and 12): what a script reaches that is no bytecode. A native is
 //! called as a function is (`call.n`, the S1 convention): its arguments stand in consecutive
 //! registers from the call's bases, and its result lands at the base of its file. S2 has the
-//! prelude's output and the operations on strings the core needs; the standard library's natives
-//! follow with S7.
+//! prelude's output and the operations on strings the core needs; S7 the standard library's
+//! (S7a): a module of `std` calls one as `__os_env(name)` in the body of a function whose
+//! signature is the native's — the compiler checks the slots against this table.
 
 /// A native, by what it does.
 enum NativeFn :: [Equatable] {
@@ -23,6 +24,10 @@ enum NativeFn :: [Equatable] {
     /// The frames of an error's record as text, a line `    at <function> (line <n>)` each,
     /// innermost first (S4b).
     TraceText,
+    /// `std.os.env(name)`: the environment variable's value, `null` where it is not set.
+    OsEnv,
+    /// `std.fs.exists(path)`: whether something is at the path.
+    FsExists,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -36,7 +41,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 10;
+let nativeCount: int = 12;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -50,7 +55,9 @@ fn nativeOf(n: int): NativeFn {
         6 => NativeFn.CharToStr,
         7 => NativeFn.StrEq,
         8 => NativeFn.StrCmp,
-        _ => NativeFn.TraceText,
+        9 => NativeFn.TraceText,
+        10 => NativeFn.OsEnv,
+        _ => NativeFn.FsExists,
     };
 }
 
@@ -67,6 +74,8 @@ fn nativeNumber(n: NativeFn): int {
         .StrEq => 7,
         .StrCmp => 8,
         .TraceText => 9,
+        .OsEnv => 10,
+        .FsExists => 11,
     };
 }
 
@@ -82,7 +91,22 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .StrEq => sig("string.eq", 0, 2, true, false),
         .StrCmp => sig("string.cmp", 0, 2, true, false),
         .TraceText => sig("error.trace", 0, 1, false, true),
+        .OsEnv => sig("os.env", 0, 1, false, true),
+        .FsExists => sig("fs.exists", 0, 1, true, false),
     };
+}
+
+/// The native of a name of the table, `os.env`; `null` where none has it.
+fn nativeNamed(name: string): ?NativeFn {
+    var k = 0;
+    while (k < nativeCount) {
+        let n = nativeOf(k);
+        if (nativeInfo(n).name == name) {
+            return n;
+        }
+        k += 1;
+    }
+    return null;
 }
 
 fn sig(name: string, scalars: int, refs: int, returnsScalar: bool, returnsRef: bool): NativeInfo {

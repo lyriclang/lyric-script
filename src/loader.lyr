@@ -29,6 +29,7 @@ import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.cache { cacheRoot };
 import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
 import lyric_script.rights { classOf };
+import lyric_script.stdsrc { stdBelow, stdPackage, stdSource };
 import lyric_script.vm.module { RightUse };
 import lyric_script.package {
     Dep,
@@ -218,6 +219,25 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
                 file = i,
             };
             var j = indexOf(l.names, name);
+            if (j < 0 && (im.path[0] == "std" || l.pkgOf[i] == stdPackage)) {
+                // the standard library's modules come with the toolchain (S7a): `std` names no
+                // package of the program, and a module of it imports only its own
+                let text = if (im.path[0] == "std") stdSource(name) else null;
+                if (text == null) {
+                    l.errors.push(
+                        where with {
+                            message = f"no module '{name}': the standard library has none of that name",
+                        }
+                    );
+                    continue;
+                }
+                j = l.paths.length();
+                l.paths.push(f"<{name}>");
+                l.texts.push(text);
+                l.names.push(name);
+                l.pkgOf.push(stdPackage);
+                l.subs.push(stdBelow(name));
+            }
             if (j < 0) {
                 // a script's own modules keep the path rule; its dependencies, by their names
                 let byPath = l.pkgs.length() == 0

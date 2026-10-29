@@ -17,7 +17,9 @@
 //! the record's frames its trace.
 import std.collections { List };
 import std.core { arrayOf };
+import std.fs { exists };
 import std.io { print, println, stdin };
+import std.os { env };
 import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
 import std.time { Duration, Monotonic };
 import lyric_script.vm.op { Instr };
@@ -2778,6 +2780,14 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         }
                         r[y] = ScriptString { text = lines.toArray().join("\n") };
                     }
+                    .OsEnv => {
+                        if (let v = env(textOf(r[y]))) {
+                            r[y] = ScriptString { text = v };
+                        } else {
+                            r[y] = nil;
+                        }
+                    }
+                    .FsExists => s[x] = truth(exists(textOf(r[y]))),
                 }
                 pc += 1;
             }

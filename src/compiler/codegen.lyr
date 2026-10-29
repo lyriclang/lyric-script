@@ -33,7 +33,7 @@ import lyric_script.vm.module {
     optionalKind,
     tupleKind,
 };
-import lyric_script.vm.native { NativeFn, nativeInfo, nativeNumber };
+import lyric_script.vm.native { NativeFn, nativeInfo, nativeNumber, nativeOf };
 import lyric_script.vm.op { Instr, Op };
 
 /// The name of the function that runs a script's top-level code (07 Top).
@@ -2087,6 +2087,23 @@ class FnGen {
         this.arguments(args, bs, br);
         let nf = nativeFn(n);
         let info = nativeInfo(nf);
+        let fromStd = match (n) {
+            .Std(_) => true,
+            _ => false,
+        };
+        if (fromStd) {
+            // a native of the standard library takes what its source declares: the same slots
+            var ns = 0;
+            var nr = 0;
+            for (arg in args) {
+                let (cs, cr) = this.slots(typeOf(arg));
+                ns += cs;
+                nr += cr;
+            }
+            if (ns != info.scalars || nr != info.refs) {
+                panic(f"the native '{info.name}' takes other values than its source declares");
+            }
+        }
         this.need(
             bs + info.scalars + (if (info.returnsScalar) 1 else 0),
             br + info.refs + (if (info.returnsRef) 1 else 0)
@@ -2239,5 +2256,6 @@ fn nativeFn(n: Native): NativeFn {
         .StrEq => NativeFn.StrEq,
         .StrCmp => NativeFn.StrCmp,
         .TraceText => NativeFn.TraceText,
+        .Std(k) => nativeOf(k),
     };
 }

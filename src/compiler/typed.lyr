@@ -253,6 +253,8 @@ enum Native :: [Equatable, Debug] {
     StrCmp,
     /// The frames of an error's record as text (S4b).
     TraceText,
+    /// A native of the standard library, by its number in the VM's table (S7a).
+    Std(int),
 }
 
 /// The type of a checked expression.

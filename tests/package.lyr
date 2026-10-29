@@ -3,7 +3,14 @@
 // take, and what comes with later slices, refused at its line.
 import std.collections { List };
 import std.test { assertEq, assertTrue };
-import lyric_script.package { normalUrl, readManifest, toolchainAllows };
+import lyric_script.package {
+    normalUrl,
+    readManifest,
+    tagVersion,
+    toolchainAllows,
+    versionBelow,
+    versionLine,
+};
 
 /// The codes of a manifest's errors, each with its line.
 fn said(text: string): string[] {
@@ -87,7 +94,42 @@ fn aManifestTakesWhatItKnows(): void {
         ["LYS-PKG0001@4"]
     );
     assertEq(said("[package]\nname = \"a\"\nname = \"b\"\n"), ["LYS-PKG0001@3"]);
-    assertEq(said("[package]\nname = \"a\"\nversion = \"1.0.0\"\n[override]\n"), ["LYS-NYI0001@4"]);
+    assertEq(said("[package]\nname = \"a\"\nversion = \"1.0.0\"\n[lints]\n"), ["LYS-NYI0001@4"]);
+}
+
+@Test
+fn anOverrideReadsAFolderAndPatternsNameFiles(): void {
+    let base = "[package]\nname = \"a\"\nversion = \"1.0.0\"\n";
+    let read = readManifest(
+        base
+            + "include = [\"src/**\", \"README.md\"]\nexclude = [\"src/tests/*\"]\n[override]\nunits = { path = \"../units\" }\n"
+    );
+    assertEq(read.errors.length(), 0);
+    let m = read.manifest;
+    if (m != null) {
+        assertEq(m.include, ["src/**", "README.md"]);
+        assertEq(m.exclude, ["src/tests/*"]);
+        assertEq(m.overrides.length(), 1);
+        assertEq(m.overrides[0].path, "../units");
+        assertEq(m.overrides[0].line, 7);
+    }
+    assertEq(said(base + "[override]\nunits = { git = \"https://x/units\" }\n"), ["LYS-PKG0003@5"]);
+    assertEq(said(base + "include = [\"/abs\"]\n"), ["LYS-PKG0002@4"]);
+    assertEq(said(base + "exclude = [\"../up\"]\n"), ["LYS-PKG0002@4"]);
+}
+
+@Test
+fn aVersionsLineIsItsMajorOrBelowOneItsMinor(): void {
+    assertEq(tagVersion("v1.2.0"), "1.2.0");
+    assertEq(tagVersion("1.2.0"), "1.2.0");
+    assertEq(tagVersion("release"), null);
+    assertEq(versionLine("1.4.2"), "1");
+    assertEq(versionLine("0.3.9"), "0.3");
+    assertEq(versionLine("0.0.4"), "0.0.4");
+    assertEq(versionBelow("1.2.0", "1.10.0"), true);
+    assertEq(versionBelow("1.10.0", "1.2.0"), false);
+    assertEq(versionBelow("1.2.0-rc.1", "1.2.0"), true);
+    assertEq(versionBelow("1.2.0", "1.2.0"), false);
 }
 
 /// The errors of a manifest whose one dependency, `geo`, is written `spec`.

@@ -505,6 +505,12 @@ severity = "error"
 area = "15-project"
 summary = "A package's `toolchain` names the least toolchain that builds it; a toolchain below it refuses the program with exit code 2, a fault of the environment and not of the script. A development build counts as its version. Lyric 5's LYR-PKG0009."
 
+[LYS-PKG0010]
+title = "packages that depend on each other"
+severity = "error"
+area = "15-project"
+summary = "No package depends on itself, at once or through others: a cycle is refused with its path, `app -> geo -> app`. A package's dependencies are read before it, and a cycle has no first one. Lyric 5's LYR-PKG0010."
+
 [LYS-PKG0011]
 title = "a lock that --locked would change"
 severity = "error"

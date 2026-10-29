@@ -16,6 +16,11 @@ struct Manifest {
     edition: string,
     toolchain: ?string,
     deps: Dep[],
+    // `[override]`: a folder for a name, wherever the graph asks for it (read in the root's)
+    overrides: Dep[] = [],
+    // the package content's patterns, where the manifest names them (S5c3)
+    include: string[] = [],
+    exclude: string[] = [],
 }
 
 /// A dependency: its name and the line it is declared on; read from a folder relative to the
@@ -61,7 +66,7 @@ fn readManifest(text: string): ManifestRead {
     for (key in root.keys()) {
         match (key) {
             "package" | "dependencies" => { }
-            "override" => r.notYet(key, "", "S5c (Git and the lock)"),
+            "override" => { }
             "lints" => r.notYet(key, "", "S11 (the lints)"),
             _ => r.unknown(key, ""),
         }
@@ -120,7 +125,7 @@ fn readManifest(text: string): ManifestRead {
                 r.textOf(pkg, "package", key, false);
             }
             "authors" => r.texts(pkg, "package", key),
-            "include" | "exclude" => r.notYet(key, "package", "S5c (Git and the lock)"),
+            "include" | "exclude" => r.patterns(pkg, key),
             _ => r.unknown(key, "package"),
         }
     }
@@ -137,6 +142,29 @@ fn readManifest(text: string): ManifestRead {
         null => { }
         _ => r.key("LYS-PKG0002", "dependencies", "", "[dependencies] is a table"),
     }
+    // `[override] units = { path = "…" }`: a folder, never git (Lyric 5 15 §2 rule 6)
+    let overrides = List<Dep>.new();
+    match (root.get("override")) {
+        .Table(t) => {
+            for (name in t.keys()) {
+                let d = r.dependency(t, name, "override");
+                if (d != null) {
+                    if (d.git != "") {
+                        r.key(
+                            "LYS-PKG0003",
+                            "override",
+                            name,
+                            f"an override reads a folder: {{ path = \"…\" }}, not git"
+                        );
+                    } else {
+                        overrides.push(d);
+                    }
+                }
+            }
+        }
+        null => { }
+        _ => r.key("LYS-PKG0002", "override", "", "[override] is a table"),
+    }
     if (r.errors.length() == 0) {
         manifest = Manifest {
             name = name,
@@ -144,6 +172,9 @@ fn readManifest(text: string): ManifestRead {
             edition = edition,
             toolchain = toolchain,
             deps = deps.toArray(),
+            overrides = overrides.toArray(),
+            include = r.listOf(pkg, "include"),
+            exclude = r.listOf(pkg, "exclude"),
         };
     }
     return ManifestRead { manifest = manifest, errors = r.errors.toArray() };
@@ -250,6 +281,41 @@ fn isRevision(rev: string): bool {
         }
     }
     return true;
+}
+
+/// The version a tag names, `v1.2.0` or `1.2.0`; `null` for a tag that is no version.
+fn tagVersion(tag: string): ?string {
+    let v = if (tag.startsWith("v")) tag[1..tag.length()].toString() else tag;
+    return if (isVersion(v)) v else null;
+}
+
+/// A version's line (Lyric 5 15 §2 rule 6): the same major version; below 1, the same minor;
+/// below 0.1, the version alone — `1`, `0.3`, `0.0.4`.
+fn versionLine(version: string): string {
+    let n = versionOf(version) ?? [0, 0, 0];
+    if (n[0] > 0) {
+        return f"{n[0]}";
+    }
+    if (n[1] > 0) {
+        return f"0.{n[1]}";
+    }
+    return f"0.0.{n[2]}";
+}
+
+/// Whether version `a` is below `b`: by their numbers, a pre-release below its release.
+fn versionBelow(a: string, b: string): bool {
+    let x = versionOf(a) ?? [0, 0, 0];
+    let y = versionOf(b) ?? [0, 0, 0];
+    var k = 0;
+    while (k < 3) {
+        if (x[k] != y[k]) {
+            return x[k] < y[k];
+        }
+        k += 1;
+    }
+    let pa = a.contains("-");
+    let pb = b.contains("-");
+    return (pa && !pb) || (pa && pb && a < b);
 }
 
 /// A semantic version: three numbers, then an optional pre-release and build part.
@@ -367,14 +433,14 @@ class ManifestReader {
     /// `geo = { path = "../geo" }` or `geo = { git = "…", tag = "v1.0.0" }` (Lyric 5 15 §2 rules
     /// 1–2): a folder, or one revision of a repository — a tag, a branch, a commit, or the branch
     /// its `HEAD` names; a version alone is a registry's form, which 1.0 has none of.
-    mut fn dependency(t: TomlTable, name: string): ?Dep {
-        let line = this.lineOf("dependencies", name);
+    mut fn dependency(t: TomlTable, name: string, section: string = "dependencies"): ?Dep {
+        let line = this.lineOf(section, name);
         let spec = match (t.get(name)) {
             .Table(d) => d,
             .String(_) => {
                 this.key(
                     "LYS-PKG0003",
-                    "dependencies",
+                    section,
                     name,
                     f"'{name}' names a version alone, a registry's form: Lyric-Script 1.0 has no registry; write {{ path = \"…\" }} or {{ git = \"…\" }}"
                 );
@@ -383,7 +449,7 @@ class ManifestReader {
             _ => {
                 this.key(
                     "LYS-PKG0002",
-                    "dependencies",
+                    section,
                     name,
                     f"'{name}' is a table: {{ path = \"…\" }} or {{ git = \"…\" }}"
                 );
@@ -391,7 +457,7 @@ class ManifestReader {
             }
         };
         if (!isPackageName(name)) {
-            this.key("LYS-PKG0002", "dependencies", name, f"'{name}' is no package name");
+            this.key("LYS-PKG0002", section, name, f"'{name}' is no package name");
             return null;
         }
         var d = Dep { name = name, line = line };
@@ -400,7 +466,7 @@ class ManifestReader {
             if (k != "path" && k != "git" && k != "tag" && k != "branch" && k != "rev") {
                 this.key(
                     "LYS-PKG0003",
-                    "dependencies",
+                    section,
                     name,
                     f"a dependency takes no '{k}': path, or git with tag, branch or rev"
                 );
@@ -409,7 +475,7 @@ class ManifestReader {
             let value = match (spec.get(k)) {
                 .String(s) => s,
                 _ => {
-                    this.key("LYS-PKG0002", "dependencies", name, f"'{name}'s {k} is a string");
+                    this.key("LYS-PKG0002", section, name, f"'{name}'s {k} is a string");
                     return null;
                 }
             };
@@ -421,7 +487,7 @@ class ManifestReader {
                     if (!isGitUrl(value)) {
                         this.key(
                             "LYS-PKG0002",
-                            "dependencies",
+                            section,
                             name,
                             f"'{value}' is no repository's URL: https://, http://, ssh://, git://, file:// or user@host:path"
                         );
@@ -433,7 +499,7 @@ class ManifestReader {
                     if (k == "rev" && !isRevision(value)) {
                         this.key(
                             "LYS-PKG0002",
-                            "dependencies",
+                            section,
                             name,
                             f"'{value}' is no commit: 7 to 64 hexadecimal digits"
                         );
@@ -445,7 +511,7 @@ class ManifestReader {
                 _ => {
                     this.key(
                         "LYS-PKG0003",
-                        "dependencies",
+                        section,
                         name,
                         f"a dependency takes no '{k}': path, or git with tag, branch or rev"
                     );
@@ -454,13 +520,13 @@ class ManifestReader {
             }
         }
         if (d.path == "" && d.git == "") {
-            this.key("LYS-PKG0002", "dependencies", name, f"'{name}' names no path and no git");
+            this.key("LYS-PKG0002", section, name, f"'{name}' names no path and no git");
             return null;
         }
         if (d.path != "" && (d.git != "" || revisions > 0)) {
             this.key(
                 "LYS-PKG0002",
-                "dependencies",
+                section,
                 name,
                 f"'{name}' is read from a folder or from git, not both"
             );
@@ -469,13 +535,46 @@ class ManifestReader {
         if (revisions > 1) {
             this.key(
                 "LYS-PKG0002",
-                "dependencies",
+                section,
                 name,
                 f"'{name}' names one revision: a tag, a branch or a rev"
             );
             return null;
         }
         return d;
+    }
+
+    /// `include` or `exclude`: an array of patterns relative to the package's root, `/` between
+    /// folders, `*`, `?` and `**` their wildcards (Lyric 5 15 §2 rule 4).
+    mut fn patterns(t: TomlTable, key: string): void {
+        this.texts(t, "package", key);
+        for (p in this.listOf(t, key)) {
+            if (p.isEmpty() || p.startsWith("/") || p.contains("\\") || p.contains("..")) {
+                this.key(
+                    "LYS-PKG0002",
+                    "package",
+                    key,
+                    f"'{p}' is no pattern of the package's files: relative, '/' between folders"
+                );
+            }
+        }
+    }
+
+    /// The strings of an array under `key`; none where it is no such array.
+    mut fn listOf(t: TomlTable, key: string): string[] {
+        let out = List<string>.new();
+        match (t.get(key)) {
+            .Array(xs) => {
+                for (x in xs) {
+                    match (x) {
+                        .String(s) => out.push(s),
+                        _ => { }
+                    }
+                }
+            }
+            _ => { }
+        }
+        return out.toArray();
     }
 
     /// A float or a date and time anywhere: no value a manifest takes (Lyric 5 15 §1 rule 1).

@@ -23,6 +23,9 @@ class Pkg {
     name: string,
     root: string,
     deps: Map<string, int>,
+    // every name its manifest declares, read or not: an import of one that failed says nothing
+    // more than the manifest's error
+    declared: List<string> = List<string>.new(),
 }
 
 /// A program as read: each file's path, text, parse, module name, submodules and package, in the
@@ -147,6 +150,9 @@ fn loadProgram(path: string, text: string, offline: bool = false): Loaded {
             if (j < 0) {
                 let t = if (l.pkgs.length() == 0) plainTarget(folder, im.path)
                     else packageTarget(l, l.pkgOf[i], im.path);
+                if (t.code == "quiet") {
+                    continue;
+                }
                 if (t.code != "") {
                     l.errors.push(where with { code = t.code, message = t.message });
                     continue;
@@ -227,6 +233,10 @@ fn packageTarget(l: Loaded, from: int, path: string[]): Target {
     };
     let p = if (head == own.name) from else own.deps.get(head) ?? -1;
     if (p < 0) {
+        // a dependency that did not read is reported at its manifest already
+        if (indexOf(own.declared, head) >= 0) {
+            return none with { code = "quiet" };
+        }
         for (other in l.pkgs) {
             if (other.name == head) {
                 return none with {
@@ -459,6 +469,9 @@ fn loadPackages(root: string, l: Loaded): void {
         }
         let index = l.pkgs.length();
         l.pkgs.push(Pkg { name = m.name, root = w.root, deps = Map<string, int>.new() });
+        for (next in m.deps) {
+            l.pkgs[index].declared.push(next.name);
+        }
         if (w.from >= 0) {
             l.pkgs[w.from].deps.insert(m.name, index);
         }

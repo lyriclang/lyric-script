@@ -141,6 +141,10 @@ class TaskState {
     var report: ?Report = null,
     // the script's handle of a spawned task; none for the run's first
     var handle: ?ScriptTask = null,
+    // S6c1: the task it waits for, where it waits for one — a cancel takes it out of their
+    // waiters —, and whether it gave way and stands in the queue
+    var waitingOn: ?ScriptTask = null,
+    var yielded: bool = false,
     // what an error that left the task threw, and its record: what `await` throws again
     var thrown: HeapRef = nilRef(),
     var record: HeapRef = nilRef(),
@@ -227,6 +231,9 @@ pub class ScriptTask :: [HeapRef] {
     state: TaskState,
     var result: ?Outcome = null,
     waiters: List<TaskState>,
+    // S6c1: cancelled, its waits throw `Cancelled`; detached, nobody waits for it
+    var cancelled: bool = false,
+    detached: bool = false,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -306,13 +313,40 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                     return out;
                 }
                 h.result = out;
-                if (shared.failed == null) {
+                if (shared.failed == null && !h.detached) {
+                    // a task that ends with `Cancelled` is no failure (Lyric 5 10 §4 rule 2)
+                    var failed = false;
                     match (out) {
-                        .Error(_) | .Panic(_) => shared.failed = h,
+                        .Error(_) => {
+                            failed = !isCancelled(module, h.state.thrown);
+                        }
+                        .Panic(_) => {
+                            failed = true;
+                        }
+                        _ => { }
+                    }
+                    if (failed) {
+                        shared.failed = h;
+                        // the first failure cancels the scope's other tasks (§4 rule 2, §5 rule 3;
+                        // 07 End)
+                        for (x in shared.tasks) {
+                            if (!x.detached) {
+                                cancelTask(x, shared);
+                            }
+                        }
+                    }
+                }
+                // a detached task's panic ends the run: nobody could look at it (§5 rule 4)
+                if (h.detached) {
+                    match (out) {
+                        .Panic(_) => {
+                            return out;
+                        }
                         _ => { }
                     }
                 }
                 for (w in h.waiters) {
+                    w.waitingOn = null;
                     shared.queue.push(w);
                 }
                 h.waiters.clear();
@@ -326,6 +360,50 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             trace = [],
         }
     );
+}
+
+/// Whether `v` is the prelude's `Cancelled` (S6c1).
+fn isCancelled(module: Module, v: HeapRef): bool {
+    if (module.cancelledType < 0 || !(v is ScriptObject)) {
+        return false;
+    }
+    return same(v.typeDesc, module.types[module.cancelledType]);
+}
+
+/// A new `Cancelled`, which a wait in a cancelled task throws (S6c1).
+fn newCancelled(module: Module): HeapRef {
+    if (module.cancelledType < 0) {
+        return nilRef();
+    }
+    let t = module.types[module.cancelledType];
+    return ScriptObject {
+        typeDesc = t,
+        scalars = [0 as uint64] * t.scalarFields.length(),
+        refs = refArray(t.refFields.length()),
+    };
+}
+
+/// Cancels task `h` (Lyric 5 10 §3 rule 1): marked, so that its waits throw `Cancelled`, and taken
+/// out of the wait it is in, which throws at once; a task that has ended stays as it ended.
+fn cancelTask(h: ScriptTask, shared: RunShared): void {
+    if (h.result != null) {
+        return;
+    }
+    h.cancelled = true;
+    let st = h.state;
+    let w = st.waitingOn;
+    if (w != null) {
+        var k = 0;
+        while (k < w.waiters.length()) {
+            if (same(w.waiters[k], st)) {
+                w.waiters.removeAt(k);
+                break;
+            }
+            k += 1;
+        }
+        st.waitingOn = null;
+        shared.queue.push(st);
+    }
 }
 
 /// Whether `x` and `y` are one object: `sameRef`'s kinds, and a coroutine and a task, which this
@@ -1564,6 +1642,14 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     pc += 1;
                 }
             }
+            // S6c1: the task in `a` cancelled (Lyric 5 10 §3 rule 1)
+            .TaskCancel => {
+                let o = r[br + a];
+                if (o is ScriptTask) {
+                    cancelTask(o, shared);
+                }
+                pc += 1;
+            }
             .CoKey => {
                 let o = r[br + a];
                 if (o is ScriptCoroutine) {
@@ -1576,8 +1662,9 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 s[bs + a] = truth(o is ScriptCoroutine && o.state == 3);
                 pc += 1;
             }
-            // S6a: a task of the closure in `b`, queued; the spawner goes on (07 N8)
-            .Spawn => {
+            // S6a: a task of the closure in `b`, queued; the spawner goes on (07 N8); `spawn.d` one
+            // nobody waits for (S6c1)
+            .Spawn | .SpawnD => {
                 let env = r[br + b];
                 var target = -1;
                 if (env is ScriptObject) {
@@ -1601,7 +1688,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     fi = target,
                 };
                 child.r[0] = env;
-                let handle = ScriptTask { state = child, waiters = List<TaskState>.new() };
+                let handle = ScriptTask {
+                    state = child,
+                    waiters = List<TaskState>.new(),
+                    detached = ins.op == .SpawnD,
+                };
                 child.handle = handle;
                 shared.queue.push(child);
                 shared.tasks.push(handle);
@@ -1612,12 +1703,24 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // or its error — `s[a]` 1, the error at `r[b]`, its record at `r[b+1]` —; a task still
             // running is waited for, the await run again when it ends
             .Await => {
+                // S6c1: a wait in a cancelled task throws `Cancelled` (Lyric 5 10 §3 rule 1)
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    t.yielded = false;
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
                 let o = r[br + c];
                 if (!(o is ScriptTask)) {
                     return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an await of no task");
                 }
                 let res = o.result;
                 if (res == null) {
+                    t.waitingOn = o;
                     o.waiters.push(t);
                     t.s = s;
                     t.r = r;
@@ -1664,17 +1767,34 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             }
             // S6a: the task gives way, to the queue's back (07 N8)
             .Yield => {
-                pc += 1;
-                shared.queue.push(t);
-                t.s = s;
-                t.r = r;
-                t.fi = fi;
-                t.pc = pc;
-                t.bs = bs;
-                t.br = br;
-                t.report = report;
-                t.frames = frames;
-                return Outcome.Switch;
+                // S6c1: a wait in a cancelled task throws `Cancelled` (Lyric 5 10 §3 rule 1)
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    t.yielded = false;
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (t.yielded) {
+                    // back from the queue: the wait is over
+                    t.yielded = false;
+                    pc += 1;
+                } else {
+                    t.yielded = true;
+                    shared.queue.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
             }
             // S6a: the status of the task in `b`, as `TaskStatus` numbers it
             .TaskSt => {
@@ -1684,7 +1804,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     let res = o.result;
                     if (res != null) {
                         st = match (res) {
-                            .Error(_) => 2,
+                            .Error(_) => if (isCancelled(module, o.state.thrown)) 4 else 2,
                             .Panic(_) => 3,
                             _ => 1,
                         };
@@ -1699,12 +1819,13 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             .Join => {
                 var open: ?ScriptTask = null;
                 for (h in shared.tasks) {
-                    if (h.result == null && open == null) {
+                    if (h.result == null && open == null && !h.detached) {
                         open = h;
                     }
                 }
                 let waiting = open;
                 if (waiting != null) {
+                    t.waitingOn = waiting;
                     waiting.waiters.push(t);
                     t.s = s;
                     t.r = r;

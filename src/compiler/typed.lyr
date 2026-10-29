@@ -262,7 +262,7 @@ fn typeOf(e: TExpr): Ty {
         .YieldNow => Ty.Void,
         .CoNew(_, t) | .CoNext(_, t) | .CoResult(_, t) => t,
         .CoDone(_) => Ty.Bool,
-        .CoClose(_, _) => Ty.Void,
+        .CoClose(_, _) | .SpawnDetached(_) | .TaskCancel(_) => Ty.Void,
         .Int(_) => Ty.Int,
         .Float(_) => Ty.Float,
         .Bool(_) => Ty.Bool,
@@ -482,6 +482,9 @@ enum TExpr :: [Debug] {
     CoDone(Box<TExpr>),
     /// S6b3: a close; the second the `Cancelled` its yield throws (Lyric 5 10 §1 rule 9).
     CoClose(Box<TExpr>, Box<TExpr>),
+    /// S6c1: `spawnDetached { … }`, a task nobody waits for; `t.cancel()`.
+    SpawnDetached(Box<TExpr>),
+    TaskCancel(Box<TExpr>),
     Unknown,
 }
 
@@ -537,6 +540,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         .YieldNow => [],
         .CoNew(x, _) | .CoNext(x, _) | .CoResult(x, _) | .CoDone(x) => [x.value],
         .CoClose(x, c) => [x.value, c.value],
+        .SpawnDetached(x) | .TaskCancel(x) => [x.value],
         .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
         .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],
         .CapturedCell(_, _) | .CellOf(_, _) | .DescOfType(_, _) | .GenericValue(_, _, _) => [],
@@ -651,6 +655,8 @@ struct Program {
     errorCause: int = -1,
     // whether the program spawns a task: its top level then ends with a join (S6a)
     spawns: bool = false,
+    // the prelude's `Cancelled`, which a wait in a cancelled task throws (S6c1)
+    cancelled: int = -1,
 }
 
 /// How many scalar and reference slots a value of the type holds (11 V2): one of its file for a

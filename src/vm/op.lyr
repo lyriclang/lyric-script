@@ -122,6 +122,9 @@ pub enum Op :: [Variants, Equatable] {
     CoClose,
     YieldD,
     CoKey,
+    // S6c1: a task nobody waits for; a cancel of a task.
+    SpawnD,
+    TaskCancel,
 }
 
 /// What an operand of an operation names.
@@ -266,6 +269,8 @@ pub fn info(op: Op): OpInfo {
         .CoClose => OpInfo { mnemonic = "co.close", operands = [.Scalar, .Ref, .Ref] },
         .YieldD => OpInfo { mnemonic = "yield.d", operands = [.Scalar, .Ref, .Imm] },
         .CoKey => OpInfo { mnemonic = "co.key", operands = [.Ref, .Imm] },
+        .SpawnD => OpInfo { mnemonic = "spawn.d", operands = [.Ref, .Ref] },
+        .TaskCancel => OpInfo { mnemonic = "task.cancel", operands = [.Ref] },
     };
 }
 

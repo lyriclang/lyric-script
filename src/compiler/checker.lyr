@@ -476,6 +476,7 @@ class Checker {
             errorMessage = this.errorSlot("message"),
             errorCause = this.errorSlot("cause"),
             spawns = this.spawns,
+            cancelled = this.typeIndex.get("Cancelled") ?? -1,
         };
     }
 
@@ -1184,7 +1185,12 @@ class Checker {
         if (ei < 0) {
             return;
         }
-        let sets = ThrowSets.of(this.types.toArray(), this.functions.toArray(), ei);
+        let sets = ThrowSets.of(
+            this.types.toArray(),
+            this.functions.toArray(),
+            ei,
+            this.typeIndex.get("Cancelled") ?? -1
+        );
         sets.infer();
         // a match over a clause's set covers the set (05 K7)
         for (m in this.laterMatches) {
@@ -3730,6 +3736,8 @@ class Checker {
             .CoResult(x, t) => TExpr.CoResult(this.specBox(x, a), this.subst(t, a)),
             .CoDone(x) => TExpr.CoDone(this.specBox(x, a)),
             .CoClose(x, c) => TExpr.CoClose(this.specBox(x, a), this.specBox(c, a)),
+            .SpawnDetached(x) => TExpr.SpawnDetached(this.specBox(x, a)),
+            .TaskCancel(x) => TExpr.TaskCancel(this.specBox(x, a)),
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -8545,6 +8553,35 @@ class Checker {
         };
     }
 
+    /// `spawnDetached { … }` (Lyric 5 10 §2 rule 3): a task nobody waits for — the top level's end
+    /// neither —, whose block may throw `Cancelled` alone: any other error it handles itself, as
+    /// if it had written `throws Cancelled` (`LYS-SEM0034`).
+    mut fn spawnDetachedOf(args: Arg[], at: Span): TExpr {
+        if (args.length() != 1) {
+            this.error("LYS-SEM0014", "spawnDetached takes one block: spawnDetached { … }", at);
+            return TExpr.Unknown;
+        }
+        let want = Ty.Fn(FnTy { params = [], result = boxTy(Ty.Void) });
+        let closure = this.expr(args[0].value, want);
+        match (closure) {
+            .Closure(index, _, _) => {
+                this.functions[index].throws = [this.cancelledTy()];
+                this.throwsAt.insert(index, at);
+            }
+            _ => {
+                if (typeOf(closure) != .Unknown) {
+                    this.error(
+                        "LYS-SEM0001",
+                        f"expected a block, found {this.tyName(typeOf(closure))}",
+                        at
+                    );
+                }
+                return TExpr.Unknown;
+            }
+        }
+        return TExpr.SpawnDetached(boxE(closure));
+    }
+
     /// A method of a `Task<T>` (07 N4): `await()` its value, `status()` where it stands; `null`
     /// where `i` is no task's type.
     mut fn taskMethod(receiver: TExpr, i: int, method: string, args: Arg[], at: Span): ?TExpr {
@@ -8558,12 +8595,18 @@ class Checker {
         let value = if (this.types[i].args.length() > 0) this.types[i].args[0] else Ty.Unknown;
         return match (method) {
             "await" => TExpr.Await(boxE(receiver), value),
+            // its waits throw `Cancelled` from now on (Lyric 5 10 §3 rule 1)
+            "cancel" => TExpr.TaskCancel(boxE(receiver)),
             "status" => TExpr.TaskStatus(
                 boxE(receiver),
                 Ty.Named(this.typeIndex.get("TaskStatus") ?? -1)
             ),
             _ => {
-                this.error("LYS-SEM0012", f"a task has no method '{method}': await, status", at);
+                this.error(
+                    "LYS-SEM0012",
+                    f"a task has no method '{method}': await, status, cancel",
+                    at
+                );
                 TExpr.Unknown
             }
         };
@@ -9509,6 +9552,9 @@ class Checker {
                 // a task (07 N4): `spawn { … }`; the task gives way: `yieldNow()` (N8)
                 if (name == "spawn") {
                     return this.spawnOf(args, at);
+                }
+                if (name == "spawnDetached") {
+                    return this.spawnDetachedOf(args, at);
                 }
                 // `sequence { … }` (Lyric 5 10 §1 rule 12)
                 if (name == "sequence") {
@@ -11903,7 +11949,7 @@ fn keyIn(path: string, m: int, name: string): string {
 /// The prelude's functions the compiler knows rather than declares.
 fn isPreludeFn(name: string): bool {
     return match (name) {
-        "print" | "println" | "panic" | "unreachable" | "todo" | "assert" | "spawn" | "yieldNow" | "sequence" => true,
+        "print" | "println" | "panic" | "unreachable" | "todo" | "assert" | "spawn" | "yieldNow" | "sequence" | "spawnDetached" => true,
         _ => false,
     };
 }

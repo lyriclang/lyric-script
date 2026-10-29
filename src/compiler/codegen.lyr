@@ -56,6 +56,11 @@ fn generate(p: Program, name: string): Module {
     for (d in layout.structural.descs) {
         types.push(d);
     }
+    // the prelude's `Cancelled`, which the VM makes where a wait in a cancelled task throws (S6c1)
+    var cancelledType = -1;
+    if (p.cancelled >= 0 && p.cancelled < layout.moduleType.length()) {
+        cancelledType = layout.moduleType[p.cancelled];
+    }
     return Module {
         name = name,
         functions = functions.toArray(),
@@ -64,6 +69,7 @@ fn generate(p: Program, name: string): Module {
         globalsR = layout.globalsR,
         errorMessage = p.errorMessage,
         errorCause = p.errorCause,
+        cancelledType = cancelledType,
     };
 }
 
@@ -1601,6 +1607,18 @@ class FnGen {
                 this.emit(Op.Rethrow, br, br + 1, 0);
                 this.patch(ok, this.here());
                 this.move(dst, Loc { s = bs + 1, r = br }, t);
+            }
+            // S6c1: a task nobody waits for, its handle in a register of its own; a cancel
+            .SpawnDetached(x) => {
+                let at = this.any(x.value);
+                let h = this.nextR;
+                this.nextR += 1;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.SpawnD, h, at.r, 0);
+            }
+            .TaskCancel(x) => {
+                let task = this.any(x.value);
+                this.emit(Op.TaskCancel, task.r, 0, 0);
             }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);

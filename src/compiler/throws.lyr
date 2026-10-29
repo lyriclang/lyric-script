@@ -86,10 +86,17 @@ class ThrowSets {
     // and what reached each clause, by "<fn>:<local>:<k>", for a match over its set (05 K7)
     reaching: Map<int, Thrown>,
     reached: Map<string, Thrown>,
+    // the prelude's `Cancelled`: what a wait throws in a cancelled task (S6c1)
+    cancelled: int,
     var line: int = 0,
     var current: int = -1,
 
-    static fn of(types: TypeInfo[], functions: FnInfo[], errorIndex: int): ThrowSets {
+    static fn of(
+        types: TypeInfo[],
+        functions: FnInfo[],
+        errorIndex: int,
+        cancelled: int
+    ): ThrowSets {
         let sets = List<Thrown>.new();
         for (_ in functions) {
             sets.push(Thrown.none());
@@ -120,6 +127,7 @@ class ThrowSets {
             types = types,
             functions = functions,
             errorIndex = errorIndex,
+            cancelled = cancelled,
             sets = sets,
             members = members,
             impls = impls,
@@ -261,6 +269,12 @@ class ThrowSets {
             .CoNext(_, _) => out.addAny(this.line),
             // a close throws what the body throws on its way out (S6b3)
             .CoClose(_, _) => out.addAny(this.line),
+            // a wait throws `Cancelled` in a cancelled task (Lyric 5 10 §2 rule 7)
+            .YieldNow => {
+                if (this.cancelled >= 0) {
+                    out.add(Ty.Named(this.cancelled), this.line);
+                }
+            }
             _ => { }
         }
         for (x in exprsIn(e)) {

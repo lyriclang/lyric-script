@@ -316,8 +316,9 @@ fn aTaskIsTypedByItsBlock(): void {
 }
 
 @Test
-fn aTaskHasAwaitAndStatus(): void {
-    assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.cancel()\n}"), ["LYS-SEM0012"]);
+fn aTaskHasAwaitStatusAndCancel(): void {
+    assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.stop()\n}"), ["LYS-SEM0012"]);
+    assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.cancel()\n}"), []);
     assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.await(1)\n}"), ["LYS-SEM0014"]);
     assertEq(errs("fn f() {\n    yieldNow(1)\n}"), ["LYS-SEM0014"]);
 }
@@ -362,4 +363,68 @@ fn onlyAProgramThatSpawnsEndsWithAJoin(): void {
     assertTrue(!disassemble(generate(plain.program, "t")).contains("join"), "no task, no join");
     let spawning = checkModule(parse("spawn { 1 }").module);
     assertTrue(disassemble(generate(spawning.program, "t")).contains("join"), "a join");
+}
+
+// Cancellation (S6c1): `t.cancel()` makes the task's waits throw `Cancelled`; a detached task is
+// none the top level's end waits for.
+@Test
+fn aCancelEndsTheWaitWithCancelled(): void {
+    let src = "fn f(): int {\n    let t = spawn {\n        while (true) {\n            yieldNow()\n        }\n    }\n"
+        + "    yieldNow()\n    t.cancel()\n    var caught = 0\n    try {\n        t.await()\n    } catch (e: Cancelled) {\n"
+        + "        caught = 1\n    }\n    return caught * 10 + (if (t.status() == TaskStatus.Cancelled) 1 else 0)\n}";
+    assertEq(value(src, "f"), 11);
+}
+
+@Test
+fn aWaitAfterACaughtCancelThrowsAgain(): void {
+    let src = "class B {\n    var n: int = 0\n}\nfn f(): int {\n    let b = B { }\n    let t = spawn {\n"
+        + "        try {\n            yieldNow()\n        } catch (e: Cancelled) {\n            b.n += 1\n        }\n"
+        + "        try {\n            yieldNow()\n        } catch (e: Cancelled) {\n            b.n += 1\n        }\n    }\n"
+        + "    t.cancel()\n    t.await()\n    return b.n\n}";
+    assertEq(value(src, "f"), 2);
+}
+
+@Test
+fn aTaskThatNeverWaitsIsNotCancelled(): void {
+    let src = "fn f(): int {\n    let t = spawn { 21 * 2 }\n    t.cancel()\n    return t.await()\n}";
+    assertEq(value(src, "f"), 42);
+}
+
+@Test
+fn aDetachedTaskIsNoneTheEndWaitsFor(): void {
+    // `join` waits for the scope's tasks: the detached one, which would set the box, never ran
+    let text = types
+        + "\n"
+        + """
+        fn work(r) regs 1 2
+            get.r r1, r0, Fn.box
+            load.i s0, 1
+            set.s r1, Box.n, s0
+            ret
+        end
+
+        fn main() -> s regs 2 4
+            new r1, Box
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            set.r r0, Fn.box, r1
+            spawn.d r2, r0
+            join s1, r2
+            get.s s0, r1, Box.n
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text)), 0);
+}
+
+@Test
+fn cancellationIsChecked(): void {
+    // a detached block handles every error but `Cancelled`; a wait throws `Cancelled`
+    assertEq(
+        errs("fn f() {\n    spawnDetached {\n        throw Exception(\"x\")\n    }\n}"),
+        ["LYS-SEM0034"]
+    );
+    assertEq(errs("fn f() throws Exception {\n    yieldNow()\n}"), ["LYS-SEM0034"]);
+    assertEq(errs("fn f() throws Cancelled {\n    yieldNow()\n}"), []);
 }

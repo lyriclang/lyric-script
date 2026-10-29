@@ -328,30 +328,37 @@ class Parser {
         // visible beyond its file unless `private` (02 V); `pub` and `internal` are taken
         var isPub = true;
         var worded = false;
+        var inPackage = false;
         if (this.atWord("pub") || this.atWord("internal") || this.atWord("private")) {
             isPub = !this.atWord("private");
             worded = this.atWord("pub");
+            inPackage = this.atWord("internal");
             this.advance();
         }
         if (this.atWord("import")) {
             return Item.Decl(Decl.Import(try this.parseImport(worded, first)));
         }
         if (this.atWord("fn")) {
-            return Item.Decl(Decl.Fn(try this.parseFn(isPub, false, first)));
+            let f = try this.parseFn(isPub, false, first);
+            return Item.Decl(Decl.Fn(f with { isInternal = inPackage }));
         }
         if (this.atWord("struct") || this.atWord("class")) {
-            return Item.Decl(Decl.Type(try this.parseTypeDecl(isPub, first)));
+            let t = try this.parseTypeDecl(isPub, first);
+            return Item.Decl(Decl.Type(t with { isInternal = inPackage }));
         }
         if (this.atWord("enum")) {
-            return Item.Decl(Decl.Enum(try this.parseEnum(isPub, first)));
+            let e = try this.parseEnum(isPub, first);
+            return Item.Decl(Decl.Enum(e with { isInternal = inPackage }));
         }
         if (this.atWord("type") && this.peek(1).kind == .Ident) {
-            return Item.Decl(Decl.Alias(try this.parseAlias(isPub, first)));
+            let a = try this.parseAlias(isPub, first);
+            return Item.Decl(Decl.Alias(a with { isInternal = inPackage }));
         }
         // `sealed` is a word only before `interface`
         if (this.atWord("interface")
             || (this.atWord("sealed") && this.isWord(this.peek(1), "interface"))) {
-            return Item.Decl(Decl.Interface(try this.parseInterface(isPub, first)));
+            let i = try this.parseInterface(isPub, first);
+            return Item.Decl(Decl.Interface(i with { isInternal = inPackage }));
         }
         if (this.atWord("extend") && (this.peek(1).kind == .Ident || this.peek(1).kind == .Lt)) {
             return Item.Decl(Decl.Extend(try this.parseExtend(first)));
@@ -580,8 +587,10 @@ class Parser {
         }
         // a member is seen where its type is unless `private` (02 V; Lyric 5 04 §3 rule 6)
         var isPub = true;
+        var inPackage = false;
         if (this.atWord("pub") || this.atWord("internal") || this.atWord("private")) {
             isPub = !this.atWord("private");
+            inPackage = this.atWord("internal");
             this.advance();
         }
         var isStatic = false;
@@ -590,7 +599,8 @@ class Parser {
             this.advance();
         }
         if (this.atWord("fn")) {
-            methods.push(try this.parseFn(isPub, isStatic, first));
+            let f = try this.parseFn(isPub, isStatic, first);
+            methods.push(f with { isInternal = inPackage });
             return;
         }
         // `static let zero: int = 0`: a constant of the type (05 §7 rule 2)
@@ -618,6 +628,7 @@ class Parser {
                 default = dflt,
                 isVar = isVar,
                 isPub = isPub,
+                isInternal = inPackage,
                 span = this.since(first),
             }
         );

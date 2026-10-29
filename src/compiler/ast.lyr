@@ -298,6 +298,8 @@ struct InterfaceDecl :: [Debug] {
     members: FnDecl[],
     sealed: bool,
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
     assoc: AssocDecl[] = [],
     statics: StaticLet[] = [],
@@ -353,6 +355,8 @@ struct FnDecl :: [Debug] {
     returns: ?TypeExpr,
     body: FnBody,
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     isStatic: bool,
     span: Span,
     throws: ?ThrowsClause = null,
@@ -372,6 +376,8 @@ struct FieldDecl :: [Debug] {
     default: ?Expr,
     isVar: bool,
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
 }
 
@@ -384,6 +390,8 @@ struct TypeDecl :: [Debug] {
     fields: FieldDecl[],
     methods: FnDecl[],
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
     answers: TypeAnswer[] = [],
     statics: StaticLet[] = [],
@@ -406,6 +414,8 @@ struct EnumDecl :: [Debug] {
     variants: Variant[],
     methods: FnDecl[],
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
     answers: TypeAnswer[] = [],
     statics: StaticLet[] = [],
@@ -416,6 +426,8 @@ struct AliasDecl :: [Debug] {
     name: string,
     type: TypeExpr,
     isPub: bool,
+    /// `internal`: seen in its own package alone (07 V2, S5b).
+    isInternal: bool = false,
     span: Span,
 }
 

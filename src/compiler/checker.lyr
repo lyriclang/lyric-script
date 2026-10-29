@@ -93,6 +93,8 @@ struct ProgramUnit {
     file: int,
     /// The last segments of its submodules: the modules in the folder of its name (S5a2).
     submodules: string[] = [],
+    /// The package it is of, by its place among the program's packages; 0 the entry's (S5b).
+    package: int = 0,
 }
 
 /// Checks a program: its entry, file 0, with the modules it imports, given in the order their
@@ -106,6 +108,7 @@ fn checkModule(parsed: Module, imported: ProgramUnit[] = []): Checked {
     }
     for (u in imported) {
         c.modNames.insert(u.file, u.name);
+        c.modPkg.insert(u.file, u.package);
         let subs = Set<string>.new();
         for (n in u.submodules) {
             subs.insert(n);
@@ -344,6 +347,9 @@ class Checker {
     var imported: List<ImportCheck> = List<ImportCheck>.new(),
     // the keys of what is `private`: its file's alone (02 V)
     var privateKeys: Set<string> = Set<string>.new(),
+    // the keys of what is `internal`: its package's alone (07 V2, S5b); each module's package
+    var internalKeys: Set<string> = Set<string>.new(),
+    var modPkg: Map<int, int> = Map<int, int>.new(),
     // each module's submodules, by its file (S5a2)
     var submodules: Map<int, Names> = Map<int, Names>.new(),
     // a `pub import`'s names: the key under the passing module to the key it passes on
@@ -499,19 +505,41 @@ class Checker {
         );
     }
 
-    /// A declaration of the current module kept to its file (`private`, 02 V).
-    mut fn keepPrivate(name: string, isPub: bool): void {
+    /// A declaration of the current module kept to its file (`private`, 02 V) or to its package
+    /// (`internal`, 07 V2).
+    mut fn keepPrivate(name: string, isPub: bool, isInternal: bool): void {
         if (!isPub) {
             this.privateKeys.insert(this.declKey(name));
+        } else if (isInternal) {
+            this.internalKeys.insert(this.declKey(name));
         }
     }
 
-    /// Whether the current module may name the declaration `key` of module `target`, `name`: a
-    /// `private` one in its own file alone (`LYS-RES0009`).
+    /// The package of module `m`: the entry's, 0, where none is known.
+    mut fn pkgOf(m: int): int {
+        return this.modPkg.get(m) ?? 0;
+    }
+
+    /// Why module `from` may not name the declaration `key` of module `target`, `name`: a
+    /// `private` one is named in its own file alone, an `internal` one in its own package
+    /// (`LYS-RES0009`); `null` where it may.
+    mut fn hiddenFrom(key: string, name: string, target: int, from: int): ?string {
+        let path = this.modNames.get(target) ?? "";
+        if (this.privateKeys.contains(key) && target != from) {
+            return f"'{name}' is private to the module '{path}'";
+        }
+        if (this.internalKeys.contains(key) && this.pkgOf(target) != this.pkgOf(from)) {
+            return f"'{name}' is internal to the package of the module '{path}'";
+        }
+        return null;
+    }
+
+    /// Whether the current module may name the declaration `key` of module `target`, `name`
+    /// (`LYS-RES0009`).
     mut fn maySee(key: string, name: string, target: int, at: Span): bool {
-        if (this.privateKeys.contains(key) && target != this.mod) {
-            let path = this.modNames.get(target) ?? "";
-            this.error("LYS-RES0009", f"'{name}' is private to the module '{path}'", at);
+        let why = this.hiddenFrom(key, name, target, this.mod);
+        if (why != null) {
+            this.error("LYS-RES0009", why, at);
             return false;
         }
         return true;
@@ -576,6 +604,10 @@ class Checker {
             this.error("LYS-RES0009", f"'{t.name}.{member}' is private to its type's file", at);
             return false;
         }
+        if (this.pkgOf(t.mod) != this.pkgOf(this.mod) && t.internalNames.contains(member)) {
+            this.error("LYS-RES0009", f"'{t.name}.{member}' is internal to its type's package", at);
+            return false;
+        }
         return true;
     }
 
@@ -588,8 +620,9 @@ class Checker {
         if (t.mod == this.mod) {
             return;
         }
+        let otherPkg = this.pkgOf(t.mod) != this.pkgOf(this.mod);
         for (f in t.fields) {
-            if (t.hidden.contains(f.name)) {
+            if (t.hidden.contains(f.name) || (otherPkg && t.internalNames.contains(f.name))) {
                 this.error(
                     "LYS-RES0009",
                     f"'{t.name}' has the private field '{f.name}': a function of its module builds it",
@@ -723,11 +756,12 @@ class Checker {
                 || this.fnByName.containsKey(c.key)
                 || this.globalIndex.containsKey(c.key)
                 || this.aliases.containsKey(c.key);
-            let wrong = !known || (this.privateKeys.contains(c.key) && c.from != c.target);
+            let why = if (known) this.hiddenFrom(c.key, c.name, c.target, c.from) else null;
+            let wrong = !known || why != null;
             if (!known) {
                 this.error("LYS-RES0004", f"the module '{c.path}' declares no '{c.name}'", c.at);
-            } else if (wrong) {
-                this.error("LYS-RES0009", f"'{c.name}' is private to the module '{c.path}'", c.at);
+            } else if (why != null) {
+                this.error("LYS-RES0009", why, c.at);
             }
             if (wrong) {
                 // an import said to be wrong is not also said to be unused
@@ -940,15 +974,15 @@ class Checker {
                                 if (t.isClass) TypeKind.Class else TypeKind.Struct,
                                 t.span
                             );
-                            this.keepPrivate(t.name, t.isPub);
+                            this.keepPrivate(t.name, t.isPub, t.isInternal);
                         }
                         .Enum(e) => {
                             this.declareTypeName(e.name, TypeKind.Enum, e.span);
-                            this.keepPrivate(e.name, e.isPub);
+                            this.keepPrivate(e.name, e.isPub, e.isInternal);
                         }
                         .Interface(i) => {
                             this.declareTypeName(i.name, TypeKind.Interface, i.span);
-                            this.keepPrivate(i.name, i.isPub);
+                            this.keepPrivate(i.name, i.isPub, i.isInternal);
                         }
                         .Extend(_) => { }
                         .Alias(a) => {
@@ -958,10 +992,10 @@ class Checker {
                             } else {
                                 this.aliases.insert(key, a);
                                 this.register(a.name, a.span);
-                                this.keepPrivate(a.name, a.isPub);
+                                this.keepPrivate(a.name, a.isPub, a.isInternal);
                             }
                         }
-                        .Fn(f) => this.keepPrivate(f.name, f.isPub),
+                        .Fn(f) => this.keepPrivate(f.name, f.isPub, f.isInternal),
                         .Import(im) => this.bindImport(im),
                     }
                 }
@@ -1304,6 +1338,8 @@ class Checker {
             );
             if (!f.isPub) {
                 info.hidden.insert(f.name);
+            } else if (f.isInternal) {
+                info.internalNames.insert(f.name);
             }
         }
         info.fields = fields.toArray();
@@ -1316,6 +1352,8 @@ class Checker {
             info.methods.insert(m.name, this.declareFn(m, index));
             if (!m.isPub) {
                 info.hidden.insert(m.name);
+            } else if (m.isInternal) {
+                info.internalNames.insert(m.name);
             }
         }
     }
@@ -2565,6 +2603,8 @@ class Checker {
             info.methods.insert(m.name, this.declareFn(m, index));
             if (!m.isPub) {
                 info.hidden.insert(m.name);
+            } else if (m.isInternal) {
+                info.internalNames.insert(m.name);
             }
         }
     }
@@ -10349,10 +10389,7 @@ class Checker {
         let key = this.exportKey(target, name);
         let candidates = this.fnByName.get(key);
         if (candidates != null) {
-            if (this.privateKeys.contains(key) && target != this.mod) {
-                let path = this.modNames.get(target) ?? "";
-                this.error("LYS-RES0009", f"'{name}' is private to the module '{path}'", nameAt);
-            }
+            this.maySee(key, name, target, nameAt);
             return this.callAmong(name, candidates.toArray(), null, args, at);
         }
         let index = this.typeIndex.get(key);

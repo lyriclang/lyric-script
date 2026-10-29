@@ -145,6 +145,8 @@ class TypeInfo {
     // which that file alone names (S5a2)
     var mod: int = 0,
     var hidden: Set<string> = Set<string>.new(),
+    // the names of its `internal` fields and methods, which its package alone names (S5b)
+    var internalNames: Set<string> = Set<string>.new(),
     var fields: FieldInfo[] = [],
     var variants: string[] = [],
     // each variant's payload — positions named "0", "1", … — and whether it has named fields

@@ -608,3 +608,24 @@ S5a; Tests 245 → 256, Fälle 165 → 179. Mutanten mit vorher geschriebener Vo
 Lauf trafen 3 von 4 — die Reihenfolge der ungenutzten Importe sah ein Test mit vier Einträgen
 nicht; auf ein Dutzend geschärft, dann trafen beide Reihenfolge-Mutanten, der alte
 `keys()`-Weg von `SEM0042` eingeschlossen; die übrigen fünf wie vorhergesagt.
+
+**S5a2, Ergebnis (2026-10-29).** Der Einstieg ist ein Modul wie jedes: seine Deklarationen unter
+`::<name>`, nur das Prelude bar; so verdeckt ein Name eines Moduls den des Prelude mit Warnung
+(`SEM0153`), statt mit ihm zu kollidieren, und ein eingebauter Typname ist keiner Deklaration
+(`RES0011`, jetzt auch für Funktionen und Bindungen). Ein Typ über sein Modul — `util.Point { … }`,
+`util.Box<int>`, `util.Shape.Rect { … }`, `util.Shape.Dot`, `util.Counter.start()` —; `private`
+an Typen, Feldern und Methoden: ein Typ merkt sich sein Modul und die Namen seiner privaten
+Mitglieder, jede Zugriffsstelle fragt `mayName`, Initialisierer und `with` fragen `mayBuild`
+(Lyric 5 §3 R6–R7). Mitglieder ohne Wort sind jetzt öffentlich wie Deklarationen (vorher las
+der Parser nur `pub`). Der Lader prüft jeden Pfadteil gegen das Verzeichnis (exakte Schreibung
+auch auf Windows/macOS, `RES0003`) und gibt jedem Modul seine Untermodule mit (`RES0012`).
+`fn main` ist der Einstieg eines Skripts ohne Anweisungen, sein `int` der Exit-Code; beides ist
+„zwei Einstiege“ (`SEM0906`), eine andere Form `SEM0021`. Ein Rahmen eines importierten Moduls
+nennt seine Datei, `at f (util/deep.lyrs:2)`; die Bytecode-Funktion trägt sie (Format 8), die
+Rahmen des Einstiegs bleiben `(line n)` (P16). Gefunden: ein Lambda mit Ausdrucksrumpf ohne
+Wert führte seinen Rumpf nie aus (`() => say()` rief `say` nicht), seit S3e — der Rumpf wurde
+für ein `return` ohne Wert verworfen; dazu der Fall in 03. Spec 04 Regeln 10–15 und Regel 1
+(exakte Namen), 06 Regel 3 (die Datei), 14 Regel 3 (Schlüssel über alle Dateien); 12 Fälle,
+alle rot gegen S4. Tests 256 → 263, Fälle 179 → 192. Zwei Testerwartungen waren falsch, nicht
+der Code: Importe werden vor den Funktionen gebunden (ihre Warnung steht vorn), und
+`import x { y }` bindet `y`, nicht `x`. Mutanten (8, in zwei Läufen) alle wie vorhergesagt.

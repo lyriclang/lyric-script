@@ -2243,7 +2243,15 @@ class Parser {
         if (this.at(.Lt)) {
             this.advance();
             loop {
-                args.push(try this.parseType());
+                // `Iterator<Item = int>`: an associated type fixed, written `=Item` (05 §8 rule 6)
+                if (this.at(.Ident) && this.peek(1).kind == .Assign) {
+                    let fname = this.advance();
+                    this.advance();
+                    let fty = try this.parseType();
+                    args.push(TypeExpr.Named("=" + this.text(fname), [fty], this.since(fname)));
+                } else {
+                    args.push(try this.parseType());
+                }
                 if (!this.at(.Comma)) {
                     break;
                 }

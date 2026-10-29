@@ -171,6 +171,8 @@ class TypeInfo {
     var selfParam: bool = false,
     var constraintOnly: bool = false,
     var onlyWhy: string = "",
+    // a constraint only whatever is fixed: a member names `Self` itself, or is static or generic
+    var hardOnly: bool = false,
     // an interface's associated types; a type's answers to them, by name (S3i)
     var assocNames: string[] = [],
     var answers: Map<string, Ty> = Map<string, Ty>.new(),

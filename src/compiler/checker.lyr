@@ -234,6 +234,8 @@ class Checker {
     // an associated type's default and its bounds, by "<interface>.<name>"
     assocDefaults: Map<string, TypeExpr>,
     assocBounds: Map<string, int[]>,
+    // the interfaces with fixed associated types, the types of values (05 §8 rule 6)
+    fixedForms: Map<string, int>,
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -269,6 +271,7 @@ class Checker {
             debugFns = Map<int, int>.new(),
             assocDefaults = Map<string, TypeExpr>.new(),
             assocBounds = Map<string, int[]>.new(),
+            fixedForms = Map<string, int>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -584,21 +587,30 @@ class Checker {
             }
             info.assocNames = assoc.toArray();
             for (m in i.members) {
-                var names = m.isStatic;
+                // `Self` itself, or a static: a constraint only whatever is fixed; `Self.Item`
+                // alone reads an associated type, which a value's type may fix (rule 6)
+                var itself = m.isStatic;
+                var through = false;
                 for (p in m.params) {
-                    names = names || mentionsSelf(p.type);
+                    itself = itself || mentionsSelfItself(p.type);
+                    through = through || mentionsSelf(p.type);
                 }
                 let r = m.returns;
                 if (r != null) {
-                    names = names || mentionsSelf(r);
+                    itself = itself || mentionsSelfItself(r);
+                    through = through || mentionsSelf(r);
                 }
-                if (names && !info.selfParam) {
+                if (itself || through) {
                     info.selfParam = true;
+                }
+                if (itself && !info.hardOnly) {
+                    info.hardOnly = true;
                     info.constraintOnly = true;
                     info.onlyWhy = if (m.isStatic) f"its member '{m.name}' is static"
                         else f"its member '{m.name}' names 'Self' beyond the receiver";
                 }
-                if (m.typeParams.length() > 0 && !info.constraintOnly) {
+                if (m.typeParams.length() > 0 && !info.hardOnly) {
+                    info.hardOnly = true;
                     info.constraintOnly = true;
                     info.onlyWhy = f"its member '{m.name}' is generic";
                 }
@@ -617,6 +629,7 @@ class Checker {
                     let pi = this.typeIndex.get(p.name);
                     if (pi != null && this.types[pi].constraintOnly) {
                         this.types[index].constraintOnly = true;
+                        this.types[index].hardOnly = this.types[pi].hardOnly;
                         this.types[index].onlyWhy = f"its parent '{p.name}' is one";
                         changed = true;
                     }
@@ -661,6 +674,91 @@ class Checker {
             k += 1;
         }
         return base;
+    }
+
+    /// `Iterator<Item = int>`: the interface as the type of a value, its associated types fixed
+    /// (05 §8 rule 6) — every one of them, where no member names `Self` itself or is static or
+    /// generic (`LYS-SEM0126` otherwise). One entry per interface and fixations: a child of the
+    /// interface, which gives the members, with the fixed types as its answers.
+    mut fn fixedInterface(ii: int, args: TypeExpr[], at: Span): Ty {
+        let base = this.types[ii];
+        let fixed = Map<string, Ty>.new();
+        let names = List<string>.new();
+        for (x in args) {
+            let item = match (x) {
+                .Named(n, inner, _) => if (n.startsWith("=")
+                    && inner.length() == 1) n[1..].toString()
+                    else "",
+                _ => "",
+            };
+            if (item == "") {
+                this.error(
+                    "LYS-SEM0026",
+                    f"'{base.name}' takes no type arguments: it fixes associated types, {base.name}<Item = T>",
+                    at
+                );
+                return Ty.Unknown;
+            }
+            var declared = false;
+            for (a in this.ancestry(ii)) {
+                for (n in this.types[a].assocNames) {
+                    declared = declared || n == item;
+                }
+            }
+            if (!declared) {
+                this.error(
+                    "LYS-SEM0128",
+                    f"'{base.name}' declares no associated type '{item}'",
+                    at
+                );
+                return Ty.Unknown;
+            }
+            let ty = match (x) {
+                .Named(_, inner, _) => this.resolveType(inner[0]),
+                _ => Ty.Unknown,
+            };
+            fixed.insert(item, ty);
+            names.push(f"{item} = {this.tyName(ty)}");
+        }
+        if (base.hardOnly) {
+            this.error(
+                "LYS-SEM0126",
+                f"'{base.name}' is a constraint only, no value of it arises: {base.onlyWhy}",
+                at
+            );
+            return Ty.Unknown;
+        }
+        for (a in this.ancestry(ii)) {
+            for (n in this.types[a].assocNames) {
+                if (!fixed.containsKey(n)) {
+                    this.error(
+                        "LYS-SEM0126",
+                        f"'{base.name}' as a value's type answers every associated type: '{n}' is left open",
+                        at
+                    );
+                    return Ty.Unknown;
+                }
+            }
+        }
+        let key = f"{ii}<{names.toArray().join(", ")}>";
+        let known = this.fixedForms.get(key);
+        if (known != null) {
+            return Ty.Named(known);
+        }
+        let index = this.types.length();
+        this.types.push(
+            TypeInfo {
+                name = f"{base.name}<{names.toArray().join(", ")}>",
+                kind = TypeKind.Interface,
+                methods = Map<string, int>.new(),
+            }
+        );
+        let info = this.types[index];
+        info.template = ii;
+        info.parents = [ii];
+        info.answers = fixed;
+        this.fixedForms.insert(key, index);
+        return Ty.Named(index);
     }
 
     /// The bounds of associated type `name` of interface `ii`.
@@ -1306,6 +1404,29 @@ class Checker {
     /// Whether a value of type `t` is a value of interface `ii`: its type conforms, or it is an
     /// interface value of a child.
     mut fn conformsTo(t: Ty, ii: int): bool {
+        // a value form: the interface, its fixed associated types answered alike (05 §8 rule 6)
+        let target = this.types[ii];
+        if (target.kind == .Interface && target.template >= 0 && target.template != ii) {
+            match (t) {
+                .Named(j) => {
+                    if (j == ii) {
+                        return true;
+                    }
+                }
+                _ => { }
+            }
+            if (!this.conformsTo(t, target.template)) {
+                return false;
+            }
+            for (n in target.answers.keys()) {
+                let want = target.answers.get(n) ?? Ty.Unknown;
+                let got = this.answerThrough(t, n, nowhereSpan);
+                if (!sameOrUnknown(got, want)) {
+                    return false;
+                }
+            }
+            return true;
+        }
         // every struct, class, enum and built-in value is an `Any`, an interface value too
         if (ii == this.anyIndex) {
             return match (t) {
@@ -1654,6 +1775,10 @@ class Checker {
     mut fn resolveNamedType(name: string, args: TypeExpr[], at: Span): Ty {
         if (name.contains(".")) {
             return this.assocPath(name, at);
+        }
+        let ifc = this.typeIndex.get(name);
+        if (ifc != null && this.types[ifc].kind == .Interface && args.length() > 0) {
+            return this.fixedInterface(ifc, args, at);
         }
         let param = this.typeParams.get(name);
         if (param != null && args.length() == 0) {
@@ -2550,6 +2675,11 @@ class Checker {
         match (concrete) {
             .Assoc(_, _, _) | .Param(_) => {
                 return TExpr.CallIface(slot, all, rt);
+            }
+            .Named(i) => {
+                if (this.types[i].kind == .Interface) {
+                    return TExpr.CallIface(slot, all, rt);
+                }
             }
             _ => { }
         }
@@ -7502,9 +7632,15 @@ class Checker {
                         return TExpr.Unknown;
                     }
                     let (fi, slot) = found;
+                    // through a value form `Self.Item` reads the fixed type (05 §8 rule 6)
+                    if (this.selfGeneric(fi)) {
+                        this.presetBinds = [t];
+                    }
                     let call = this.callAmong(method, [fi], receiver, args, at);
+                    this.presetBinds = [];
                     return match (call) {
                         .Call(_, all, rt) => TExpr.CallIface(slot, all, rt),
+                        .CallGeneric(_, _, all, rt) => TExpr.CallIface(slot, all, rt),
                         _ => call,
                     };
                 }
@@ -8357,6 +8493,35 @@ struct WithUpdate {
 /// Whether `a` is `b`, or one of them unknown after a fault reported already.
 fn sameOrUnknown(a: Ty, b: Ty): bool {
     return a == b || a == .Unknown || b == .Unknown;
+}
+
+/// Whether a written type names `Self` itself, not one of its associated types.
+fn mentionsSelfItself(t: TypeExpr): bool {
+    return match (t) {
+        .Named(name, args, _) => {
+            var found = name == "Self";
+            for (x in args) {
+                found = found || mentionsSelfItself(x);
+            }
+            found
+        }
+        .Optional(inner, _) => mentionsSelfItself(inner.value),
+        .List(inner, _) => mentionsSelfItself(inner.value),
+        .Tuple(elements, _, _) => {
+            var found = false;
+            for (x in elements) {
+                found = found || mentionsSelfItself(x);
+            }
+            found
+        }
+        .Fn(params, result, _) => {
+            var found = mentionsSelfItself(result.value);
+            for (x in params) {
+                found = found || mentionsSelfItself(x);
+            }
+            found
+        }
+    };
 }
 
 /// Whether a written type names `Self`.

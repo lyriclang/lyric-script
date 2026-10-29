@@ -130,3 +130,31 @@ fn whatFixationsRefuse(): void {
         ["LYS-SEM0128"]
     );
 }
+
+@Test
+fn aValueFormFixesEveryAnswer(): void {
+    // `Iterator<Item = int>` is a value's type: its `next` gives an `int`, and it is an
+    // `Iterator` where a generic asks for one
+    let e = "fn counter(): Iterator<Item = int> = Counter { }\nfn total(it: Iterator<Item = int>): int {\n    var t = 0\n    var x = it.next()\n    while (x != null) {\n        t += x\n        x = it.next()\n    }\n    return t\n}\nfn e(): int = total(counter()) * 10 + count(counter())";
+    assertEq(value(iterating + e, "e"), 63);
+}
+
+@Test
+fn whatValueFormsRefuse(): void {
+    // a type whose answer is another
+    assertEq(
+        errs(iterating + summing + "let w: Iterator<Item = int> = Words { }"),
+        ["LYS-SEM0001"]
+    );
+    // an associated type left open
+    assertEq(errs(iterating + "let i: Iterator = Counter { }"), ["LYS-SEM0126"]);
+    // a name the interface does not declare
+    assertEq(errs(iterating + "let x: Iterator<Size = int> = Counter { }"), ["LYS-SEM0128"]);
+    // a member that names `Self` itself: a constraint only whatever is fixed
+    assertEq(
+        errs(
+            "interface Same {\n    type Item\n    fn same(o: Self): bool\n}\nfn f(x: Same<Item = int>): int = 1"
+        ),
+        ["LYS-SEM0126"]
+    );
+}

@@ -217,7 +217,11 @@ VM's call path, S7k measurement point 3.
   function whose signature is theirs; `std.os` (`env`), `std.fs` (`exists`); the rights table
   fixed, `LYRIC_SCRIPT_RIGHTS` retired; bytecode format 20. The conformance runner reads
   `stderr-has:` of a rejected case.
-- Next: **S7b** — lists: `T[]` native in the VM, literals, indexing, the methods.
+- **S7b1 done** (S7b split in three) — lists: `T[]` native in the VM, its elements' slots apart;
+  literals, indexing with the bound (`LYS-RT0003`), `length`/`push`/`pop`, a `for` over a list,
+  the Debug form; bytecode format 21.
+- Next: **S7b2** — the rest of the list's methods, slices, `+`, `*`, `in`, `==`, the empty
+  literal's first use, a list as an interface value.
 
 ## Working mode
 

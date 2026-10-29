@@ -1071,3 +1071,28 @@ Regel 2, vier Fälle neu, drei Rechte-Fälle umgeschrieben und einer dazu; siebe
 achte (nur die std erreicht die Natives) hütet den Zugang. Mutanten in drei Läufen: alle
 gefangen, einer zusätzlich von einem S6d2-Test, den die Vorhersage vergessen hatte; das Entfernen
 der Slot-Prüfung ist heute unbeobachtbar (kein Native weicht ab). Tests 344 → 348, Fälle 331 → 336.
+
+**S7b, geteilt (2026-10-29).** Zu groß für einen Slice; drei Teile. **S7b1** das Listen-Objekt der
+VM, Literale mit dem Typ des Orts, Index lesen und schreiben, `length`/`push`/`pop`, `for` über
+eine Liste, die Debug-Form. **S7b2** die übrigen Methoden von Lyric 5s `List` ohne Sichten, `^n`,
+kopierende Slices, `+`, `xs * n` (Kostenregeln), `in`/`!in`, `==`, das leere Literal mit der
+ersten Verwendung (03 Leer), `FromArrayLiteral`, eine Liste als Interfacewert mit Deskriptor,
+`typeOf([1, 2])`, `e.suppressed()`. **S7b3** `Index<K>`/`IndexSet<K>` für eigene Typen und die
+Array-Muster.
+
+**S7b1, Ergebnis (2026-10-29).** `ScriptArray` hält die Skalar- und die Referenz-Slots seiner
+Elemente getrennt, `ns` und `nr` je Element (`List<int>` ungeboxt, ein Tupel als seine Slots);
+zehn Ops (`list.new`, `list.push`, `list.get.s/.r/.n`, `list.set.s/.r/.n`, `list.len`,
+`list.pop`), die Ein-Slot-Formen am Ort, die mehrteiligen über Index und Liste an den Basen;
+Format 21. Im Compiler ein `TExpr.ListOp` für alle Operationen und ein `Place.Item` für
+`xs[i] = v` und `xs[i] op= v` (Liste und Index einmal ausgewertet). Ein Literal hat den Typ des
+Orts, sonst den seiner Elemente — ein `int` unter `float`s wird `float` (03 Mix) —; `[]` braucht
+den Ort bis S7b2. `for (x in xs)` ist eine Indexschleife über die einmal gehaltene Liste, die
+Länge vor jedem Schritt gelesen, die Bindung je Element frisch. Die Debug-Form ist eine
+Funktion je Listentyp; über einem Typparameter erst mit S7c. Ein Index außerhalb ist
+`LYS-RT0003` (Lyric 5s Nummer). Was bis S7b2 fehlt — `==`, eine Liste als Interfacewert —, sagt
+jetzt `NYI0001` statt eines Fehlers, der wie eine Regel klang; ein Pin auf „Listenliteral noch
+nicht“ retirierte mit seiner Regel. Spec 03 Regeln 16–17, 07 Regel 6, 08 Regel 3, acht Fälle,
+alle rot gegen S7a; drei VM-Tests in Assembler halten die Konvention der Basen fest. Vier
+Mutanten in einem Lauf, alle wie vorhergesagt gefangen; ein fünfter (`pop` ohne die Kennung der
+schlichten Referenz) ist äquivalent. Tests 348 → 351, Fälle 336 → 344.

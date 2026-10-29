@@ -844,3 +844,25 @@ zu hoch, ein Komma beendet die Vorausschau nie zu früh — der `>>`-Test ist ei
 kein roter Fall), und zwei Mutanten im selben Lauf (Ort ignoriert, Returns ohne Ableitung) gaben
 zusammen `R` = `void` und so einen zweiten Fall rot; jeder hat seinen eigenen Fänger. Tests 306 →
 312, Fälle 254 → 264.
+
+**S6b3, Ergebnis (2026-10-29).** `close()` (Op `co.close`, der Code baut das `Cancelled`): eine nie
+gezogene oder fertige Koroutine endet; eine geparkte läuft an ihrem `yield` weiter, das dort das
+`Cancelled` wirft — die VM schleust es als synthetisches `throw` am Kopf der Interpreter-Schleife
+ein (ein Flag, ein Register über dem Rahmen), so dass Handler und `defer` der Stelle greifen. Endet
+der Rumpf mit genau diesem `Cancelled`, ist der `close` fertig; was ein `defer` dabei warf, wirft
+er, das erste, der Rest hineinunterdrückt; ein anderer Fehler kommt heraus; ein `yield` danach und
+ein `close` der laufenden paniken (`RT0014`). `Coroutine :: [Identity, Closeable]` in der Prelude,
+`Cancelled` dazu (P17: Prelude oder `std.task`); `using let` schließt, eine fallengelassene
+Koroutine warnt nicht. Ein `yield` außerhalb des eigenen Rumpfs (Regel 13) wird `yield.d` mit dem
+Typschlüssel seines Werts (Debug-Text des Typs, je Programm nummeriert), `co.key` gibt der
+Koroutine den ihres `Y`; jede `yield` wirft für die Mengen `Cancelled` (eine Funktion mit
+geschriebenem `throws` deckt es, `SEM0034`). Format 12. Gefunden: `eq.r` verglich über `sameRef`,
+das nur `ScriptObject`, `ScriptString` und `Nil` kennt — zwei Verweise auf eine Koroutine (und
+einen Task) waren nie gleich (Probe vorher `false`); und ein Task war seit S6a in `Any`
+umwandelbar, obwohl die VM ihn ohne Deskriptor hält — Tasks und Koroutinen sind bis S7 keine
+Interfacewerte (Abweichung in Spec 10). Spec 10 Regeln 9–10, 13 Fälle, zwölf rot gegen S6b2 (der
+dreizehnte, kein Interfacewert, ist ein Pin: unter S6b2 war die Koroutine gar nicht `Closeable`).
+Sechs Mutanten in zwei Läufen, alle gefangen; eine Vorhersage vor dem Lauf korrigiert (ohne
+Einschleusen läuft das `yield` erneut und paniert sofort), und `a_yield_after_the_close_panics`
+bleibt unter diesem Mutanten aus dem falschen Grund grün — ein Panikfall vergleicht nur den Code;
+die Unit-Tests fangen ihn. Tests 312 → 319, Fälle 264 → 277.

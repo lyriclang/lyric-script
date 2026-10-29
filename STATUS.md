@@ -171,7 +171,10 @@ Exit criterion: a concurrent example.
   bytecode format 11.
 - **S6b2 done** — generator lambdas (types from the place, or inferred by a quiet first pass),
   `sequence { }`, `for` over a coroutine; the lambda lookahead takes `<…>` as brackets.
-- Next: **S6b3** — `close()` with `Cancelled`, `using`, a `yield` in a called function, identity.
+- **S6b3 done** — `close()` throws `Cancelled` at the parked yield (defers run, a defer's error
+  comes out), `using`, a `yield` in a called function met at run time, a coroutine an identity;
+  bytecode format 12. Tasks and coroutines are no interface values until S7. Open: P17.
+- Next: **S6c** — cancellation and scopes.
 
 ## Working mode
 
@@ -222,4 +225,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P14 | A call through an interface member that writes no `throws` throws what the member's implementations in the script throw (S4c). 05 K names `Error` for function values, host and native modules only; "anything" for members would make `e.message()` break every written `throws`. A host-provided implementation (S8) is not in the union — it would have to write its set. Keep the union, or ask members to write `throws`? | S4c |
 | P15 | A `return`, or a `break`/`continue` to a loop outside it, in a defer's body is refused (`LYS-SEM0904`, S4e): the defer runs on the error path too, where the jump would drop the error. Lyric 5's spec does not say what such a jump does (its 06 §5 is silent, its compiler treats a defer's jumps as not the loop's). Keep the refusal, or take Lyric 5's answer once it gives one? | S4e |
 | P16 | A frame of an imported module's function names its file below the root, `at f (util/deep.lyrs:2)`; the entry's frames keep `(line n)` (S5a2), so a single script's report reads as before. Lyric 5 names the file in every frame. Keep the mixed form, or name the entry's file too? | S5a2 |
+| P17 | `spawn`, `yieldNow`, `sequence`, `Task`, `TaskStatus`, `Coroutine` and `Cancelled` stand in the prelude (S6a–S6b3); Lyric 5 has them in `std.task` (10 §2), `sequence` in `std.core`, and 07 V3 I8 lists the prelude without them. Keep them in the prelude — a script starts tasks without an import — or move them to `std.task` with the std core (S7), as Lyric 5 does? | S6a |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

@@ -939,3 +939,16 @@ nicht gab. Format 16. Spec 10 Regeln 14–15, zehn Fälle, alle rot gegen S6c3; 
 Läufen, alle wie vorher aufgeschrieben (ohne Hänger: jede Verklemmung paniert mit `RT0018`). Ein
 Fall kam beim Entwerfen der Mutanten hinzu: die Regel, dass der Wert eines wartenden Senders auf den
 frei gewordenen Pufferplatz rückt, hatte keine Probe. Tests 330 → 336, Fälle 298 → 308.
+
+**S6d2, Ergebnis (2026-10-29).** `Select.on(c) { v => … }.on(…) { … }.run()` ist Prelude-Quelltext in
+Script: eine Kette von Fällen hinter dem Interface `SelectCase` (`ChannelCase<T>`: bereit?, beobachten,
+feuern = `body(channel.recv())`), `Selection.on<T>` als generische Methode, `run()` feuert den ersten
+bereiten Fall, sonst beobachtet es alle Kanäle und parkt. Die VM gibt dafür drei Intrinsics, die nur
+Quelltext der Prelude rufen kann (`__chanReady`, `__chanWatch`, `__parkWatched`; Benutzercode sieht
+die Namen nicht, `SEM0002`): `chan.ready`, `chan.watch`, `park.w`. Ein gepufferter Wert, ein Sender,
+der zu warten beginnt, und ein `close` wecken die Beobachter eines Kanals; ein Abbruch nimmt den Task
+von allen Beobachtungen. Format 17. Spec 10 Regel 16, sieben Fälle (einer kam beim Entwerfen der
+Mutanten hinzu: ein Kanal, der schließt, während der Select wartet), alle rot gegen S6d1; fünf
+Mutanten in zwei Läufen, alle wie vorher aufgeschrieben; „das Weck-Flag wird übergangen“ blieb als
+äquivalent aus (nach dem Wecken ist die Beobachtungsliste leer, `park.w` läuft ohnehin weiter).
+Tests 336 → 340, Fälle 308 → 315.

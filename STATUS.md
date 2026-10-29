@@ -183,7 +183,9 @@ Exit criterion: a concurrent example.
   bytecode format 15. S6c (cancellation and scopes) complete.
 - **S6d1 done** — `Channel<T>` (send, recv, close, `ChannelClosed`), `Semaphore`; bytecode
   format 16.
-- Next: **S6d2** — `select` (prelude source over three VM intrinsics), then **S6d3** time.
+- **S6d2 done** — `Select.on(c) { }.on(…) { }.run()`, prelude source over three VM intrinsics;
+  bytecode format 17.
+- Next: **S6d3** — time: `Duration`, `sleep`, `Timer.after`, a select's timeout, `withTimeout`.
 
 ## Working mode
 

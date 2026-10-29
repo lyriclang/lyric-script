@@ -1,9 +1,11 @@
 //! Thrown sets (S4c; Script 05 K, Th; Lyric 5 06 §2–§4): what each function may throw, inferred
 //! from its body — the types its `throw`s throw and the sets of what it calls, less what the
 //! clauses of its `try`s take — as a fixpoint over the call graph, which closes a recursion. A
-//! call through a function value, or through an interface member that writes no `throws`, may
-//! throw anything: an `Error` (02 K2). A clause's `throw e` of its binding throws what reached
-//! the clause (05 K7). The sets are the checker's to hold the written `throws` against.
+//! call through a function value may throw anything: an `Error` (02 K2). A call through an
+//! interface member throws what the member writes, or else what its implementations in the
+//! program throw — a script knows every conformer. A clause's `throw e` of its binding throws
+//! what reached the clause (05 K7). The sets are the checker's to hold the written `throws`
+//! against.
 import std.collections { List, Map };
 import lyric_script.compiler.typed {
     FnInfo,
@@ -77,8 +79,9 @@ class ThrowSets {
     // `Error`'s entry
     errorIndex: int,
     sets: List<Thrown>,
-    // the interface member each slot is
+    // the interface member each slot is, and the functions that implement it in the program
     members: Map<int, int>,
+    impls: Map<int, List<int>>,
     // while a clause is walked: what reached it, by the local its `try` receives the error in
     reaching: Map<int, Thrown>,
     var line: int = 0,
@@ -90,6 +93,7 @@ class ThrowSets {
             sets.push(Thrown.none());
         }
         let members = Map<int, int>.new();
+        let impls = Map<int, List<int>>.new();
         for (t in types) {
             if (t.kind == .Interface) {
                 for (name in t.slotOf.keys()) {
@@ -97,6 +101,15 @@ class ThrowSets {
                     let m = t.methods.get(name);
                     if (slot != null && m != null) {
                         members.insert(slot, m);
+                    }
+                }
+            } else {
+                for (slot in t.witness.keys()) {
+                    let f = t.witness.get(slot);
+                    if (f != null) {
+                        var list = impls.get(slot) ?? List<int>.new();
+                        list.push(f);
+                        impls.insert(slot, list);
                     }
                 }
             }
@@ -107,6 +120,7 @@ class ThrowSets {
             errorIndex = errorIndex,
             sets = sets,
             members = members,
+            impls = impls,
             reaching = Map<int, Thrown>.new(),
         };
     }
@@ -218,16 +232,19 @@ class ThrowSets {
         return out;
     }
 
-    /// What a call through the member of `slot` may throw: what it writes, or anything.
+    /// What a call through the member of `slot` may throw: what it writes, or else what its
+    /// implementations throw.
     mut fn memberSet(slot: int): Thrown {
         let out = Thrown.none();
         let m = this.members.get(slot);
         let written = if (m != null) this.functions[m].throws else null;
-        if (written == null) {
-            out.addAny(this.line);
-        } else {
+        if (written != null) {
             for (t in written) {
                 this.addType(out, t);
+            }
+        } else if (let fs = this.impls.get(slot)) {
+            for (f in fs) {
+                out.addAll(this.sets[f]);
             }
         }
         return out;

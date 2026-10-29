@@ -122,14 +122,19 @@ fn anImplementationThrowsAtMostItsMember(): void {
         errs(store + "struct Mem :: Store {\n    fn load(): int {\n        throw A { }\n    }\n}"),
         []
     );
-    // a call through the member throws what it writes; one without `throws` anything
+    // a call through the member throws what it writes, whatever the implementations throw
     assertEq(errs(store + "fn use(s: Store): int throws A = s.load()"), []);
+    assertEq(errs(store + "fn use(s: Store): int throws B = s.load()"), ["LYS-SEM0034"]);
+    // one without `throws`: what its implementations in the script throw
+    let src = kinds
+        + "interface Src {\n    fn get(): int\n}\nfn use(s: Src): int throws A = s.get()\n";
     assertEq(
-        errs(
-            kinds + "interface Src {\n    fn get(): int\n}\nfn use(s: Src): int throws A = s.get()"
-        ),
+        errs(src + "struct S :: Src {\n    fn get(): int {\n        throw B { }\n    }\n}"),
         ["LYS-SEM0034"]
     );
+    assertEq(errs(src + "struct S :: Src {\n    fn get(): int = 1\n}"), []);
+    // an error's message throws what the messages throw: here nothing
+    assertEq(errs(kinds + "fn say(e: Error): string throws A = e.message() + \" once\""), []);
 }
 
 @Test

@@ -5,7 +5,7 @@
 import std.collections { List };
 import std.test { assertEq };
 import lyric_script.compiler.checker { Checked, ProgramUnit, checkModule };
-import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.codegen { generate, scriptEntry };
 import lyric_script.compiler.parser { parse };
 import lyric_script.vm.interp { run };
 import lyric_script.vm.module { Module, check };
@@ -184,4 +184,114 @@ fn anImportedModuleSeesOnlyWhatItImports(): void {
 fn aDiagnosticNamesItsFile(): void {
     let lib = ("lib", "fn ok(): int = 1\n\nfn bad(): int = \"no\"\n");
     assertEq(said("import lib { ok }\nlet x = ok()", [lib]), ["LYS-SEM0001@1:3"]);
+}
+
+let shapes: (string, string) = (
+    "shapes",
+    "struct Point {\n    x: int,\n    y: int,\n}\nstruct Box<T> {\n    item: T,\n}\nenum Shape {\n    Rect { w: int, h: int },\n    Dot,\n}\nfn area(s: Shape): int = match (s) {\n    .Rect { w, h } => w * h,\n    .Dot => 0,\n}\nclass Counter {\n    var n: int = 0\n    static fn start(): Counter = Counter { }\n    fn next(): int {\n        this.n += 1\n        return this.n\n    }\n}\n"
+);
+
+@Test
+fn aTypeIsNamedThroughItsModule(): void {
+    // built, generic with its arguments, its variants, its static functions (S5a2)
+    let entry = "import shapes\nfn go(): int {\n    let p = shapes.Point { x = 1, y = 2 }\n    let b: shapes.Box<int> = shapes.Box { item = 10 }\n    let r = shapes.Shape.Rect { w = 2, h = 50 }\n    let c = shapes.Counter.start()\n    c.next()\n    return p.x + p.y + b.item + shapes.area(r) + shapes.area(shapes.Shape.Dot) + c.next() * 1000\n}";
+    assertEq(value(entry, [shapes], "go"), 2113);
+}
+
+@Test
+fn aPrivateMemberStaysInItsTypesFile(): void {
+    // read, called, built, copied with `with`; the type itself through its module
+    let lib = (
+        "lib",
+        "struct S {\n    private code: int,\n    shown: int,\n    private fn peek(): int = this.code\n    fn open(): int = this.peek()\n}\nfn make(): S = S { code = 4, shown = 1 }\nprivate struct Hidden {\n    v: int,\n}\n"
+    );
+    assertEq(said("import lib { make }\nlet s = make()\nlet a = s.shown + s.open()", [lib]), []);
+    assertEq(
+        said("import lib { make }\nlet s = make()\nlet a = s.code", [lib]),
+        ["LYS-RES0009@0:3"]
+    );
+    assertEq(
+        said("import lib { make }\nlet s = make()\nlet a = s.peek()", [lib]),
+        ["LYS-RES0009@0:3"]
+    );
+    assertEq(
+        said("import lib { S }\nlet s = S { code = 1, shown = 2 }", [lib]),
+        ["LYS-RES0009@0:2"]
+    );
+    assertEq(
+        said("import lib { make }\nlet s = make()\nlet t = s with { shown = 3 }", [lib]),
+        ["LYS-RES0009@0:3"]
+    );
+    assertEq(said("import lib\nlet h = lib.Hidden { v = 1 }", [lib]), ["LYS-RES0009@0:2"]);
+}
+
+@Test
+fn aNameHidesThePreludesAndTakesNoBuiltinTypes(): void {
+    // the module's own wins, warned; a builtin type's name is no declaration's
+    assertEq(said("struct Exception {\n    m: string,\n}", []), ["LYS-SEM0153@0:1"]);
+    assertEq(said("fn println(s: string) {\n}\nprintln(\"x\")", []), ["LYS-SEM0153@0:1"]);
+    let lib = ("lib", "fn assert(b: bool): bool = b\n");
+    // the imports are bound before the functions are declared
+    assertEq(
+        said("import lib { assert }\nlet x = assert(true)", [lib]),
+        ["LYS-SEM0153@0:1", "LYS-SEM0153@1:1"]
+    );
+    assertEq(said("struct int {\n    v: int,\n}", []), ["LYS-RES0011@0:1"]);
+    assertEq(said("fn string(): int = 1", []), ["LYS-RES0011@0:1"]);
+    assertEq(said("let bool = 1", []), ["LYS-RES0011@0:1"]);
+}
+
+@Test
+fn aNameIsNotAlsoASubmodule(): void {
+    // `a/b/x.lyrs` beside `a.b`: `x` declared or imported in `a.b`, imported or not; a name
+    // an import binds is what counts, `y` of `import x { y }` none
+    assertEq(subCodes("fn x(): int = 1\nfn z(): int = x()\n"), ["LYS-RES0012@2:1"]);
+    assertEq(subCodes("import x\nfn z(): int = x.y()\n"), ["LYS-RES0012@2:1"]);
+    assertEq(subCodes("import x { y }\nfn z(): int = y()\n"), []);
+}
+
+/// The errors of a program whose module `a.b` — `b`, its text — has the submodule `x`, beside a
+/// top-level module `x`.
+fn subCodes(b: string): string[] {
+    let units = [
+        ProgramUnit { name = "x", module = parse("fn y(): int = 1\n", 1).module, file = 1 },
+        ProgramUnit { name = "a.b", module = parse(b, 2).module, file = 2, submodules = ["x"] },
+    ];
+    let c = checkModule(parse("import a.b { z }\nlet v = z()").module, units);
+    let codes = List<string>.new();
+    for (e in c.errors) {
+        codes.push(f"{e.code}@{e.file}:{e.line}");
+    }
+    return codes.toArray();
+}
+
+@Test
+fn fnMainIsTheEntryOfAScriptWithoutStatements(): void {
+    // after the bindings; its int is the script's result; with statements it is a second entry
+    let m = compiled("let base = 40\nfn main(): int {\n    return base + 2\n}", []);
+    let result = match (run(m, scriptEntry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -1,
+    };
+    assertEq(result, 42);
+    assertEq(said("println(1)\nfn main() {\n}", []), ["LYS-SEM0906@0:2"]);
+    assertEq(said("fn main(x: int) {\n}", []), ["LYS-SEM0021@0:1"]);
+    assertEq(said("fn main(): string = \"no\"", []), ["LYS-SEM0021@0:1"]);
+    // a module's `main` is a function like any
+    assertEq(
+        value("import lib as l\nfn go(): int = l.main()", [("lib", "fn main(): int = 9\n")], "go"),
+        9
+    );
+}
+
+@Test
+fn aFrameOfAModuleNamesItsFile(): void {
+    // relative to the root; the entry's frames keep their line alone
+    let deep = ("util.deep", "fn fail() {\n    throw Exception(\"deep\")\n}\n");
+    let m = compiled("import util.deep { fail }\nfn go() {\n    fail()\n}", [deep]);
+    let trace: string[] = match (run(m, "go", [], -1)) {
+        .Error(e) => e.trace,
+        _ => [],
+    };
+    assertEq(trace, ["at fail (util/deep.lyrs:2)", "at go (line 3)"]);
 }

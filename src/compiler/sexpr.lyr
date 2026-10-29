@@ -278,6 +278,7 @@ fn showStmt(s: Stmt): string {
         .Break(_, value, _) => if (value != null) "(break " + showExpr(value) + ")" else "(break)",
         .Continue(_, _) => "(continue)",
         .Return(value, _) => if (value != null) "(return " + showExpr(value) + ")" else "(return)",
+        .Yield(value, _) => if (value != null) "(yield " + showExpr(value) + ")" else "(yield)",
         .Block(b, _) => showBlock(b),
         .IfLet(pattern, value, then, otherwise, _) => {
             let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";

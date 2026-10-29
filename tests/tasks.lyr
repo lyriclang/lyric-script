@@ -1,0 +1,598 @@
+// Tasks in the VM (S6a; Script 07 N4, N8, End; 11 Co): hand-written programs spawn closures as
+// tasks, await their values or errors, give way with `yield`, and end the top level with `join`;
+// tasks run one at a time, each until it ends or waits.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.asm { assemble, disassemble };
+import lyric_script.vm.interp { Outcome, execute, run };
+
+fn runText(text: string): Outcome {
+    return execute(try! assemble(text, "t"), "main", [], -1);
+}
+
+fn scalar(o: Outcome): int {
+    return match (o) {
+        .Scalar(bits) => bits as int,
+        .Panic(p) => -1000,
+        _ => -999999,
+    };
+}
+
+// a function value: its function's index, and a box a task and its spawner share
+let types: string = """
+    type Fn scalar f ref box
+    type Box scalar n
+    type Oops
+    type Fault scalar n
+    """;
+
+@Test
+fn aTaskGivesItsValueToAwait(): void {
+    let text = types
+        + "\n"
+        + """
+        fn work(r) -> s regs 1 1
+            load.i s0, 21
+            add.i s0, s0, s0
+            ret.s s0
+        end
+
+        fn main() -> s regs 3 3
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            await s0, r2, r1
+            ret.s s1
+        end
+        """;
+    assertEq(scalar(runText(text)), 42);
+}
+
+@Test
+fn tasksTakeTurnsWhereTheyWaitOrGiveWay(): void {
+    // the spawner goes on until it waits; `yield` lets the other run (07 N8)
+    let text = types
+        + "\n"
+        + """
+        fn work(r) regs 2 2
+            get.r r1, r0, Fn.box
+            get.s s0, r1, Box.n
+            load.i s1, 10
+            mul.i s0, s0, s1
+            add.imm s0, s0, 2
+            set.s r1, Box.n, s0
+            ret
+        end
+
+        fn main() -> s regs 4 4
+            new r1, Box
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            set.r r0, Fn.box, r1
+            spawn r2, r0
+            load.i s0, 1
+            set.s r1, Box.n, s0
+            yield
+            get.s s0, r1, Box.n
+            load.i s1, 10
+            mul.i s0, s0, s1
+            add.imm s0, s0, 3
+            set.s r1, Box.n, s0
+            await s2, r3, r2
+            get.s s0, r1, Box.n
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text)), 123);
+}
+
+@Test
+fn aTasksStatusTellsWhetherItEnded(): void {
+    let text = types
+        + "\n"
+        + """
+        fn work(r) regs 0 1
+            ret
+        end
+
+        fn main() -> s regs 4 3
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            task.st s3, r1
+            await s1, r2, r1
+            task.st s2, r1
+            load.i s0, 10
+            mul.i s3, s3, s0
+            add.i s0, s3, s2
+            ret.s s0
+        end
+        """;
+    // running (0) before, done (1) after
+    assertEq(scalar(runText(text)), 1);
+}
+
+@Test
+fn aTasksErrorReachesAwaitAndJoin(): void {
+    // `s[a]` 1 and the error where the value would be; unawaited, `join` gives it at the end
+    let text = types
+        + "\n"
+        + """
+        fn work(r) -> s regs 0 2
+            new r1, Oops
+            throw r1
+        end
+
+        fn main() -> s regs 4 5
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            await s1, r2, r1
+            spawn r4, r0
+            join s2, r2
+            load.i s0, 10
+            mul.i s1, s1, s0
+            add.i s0, s1, s2
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text)), 11);
+}
+
+// two tasks that fail: `a` (function 0) gives way first, `b` (function 1) does not — `b` ends first
+let twoFail: string = """
+    fn main() -> s regs 2 5
+        new r0, Fn
+        load.i s0, 0
+        set.s r0, Fn.f, s0
+        spawn r1, r0
+        new r0, Fn
+        load.i s0, 1
+        set.s r0, Fn.f, s0
+        spawn r2, r0
+        join s1, r3
+        get.s s0, r3, Fault.n
+        ret.s s0
+    end
+    """;
+
+@Test
+fn theFirstTaskToFailIsTheOneJoinGives(): void {
+    // as a scope's close (Lyric 5 10 §4 rule 2): the first to end with an error, not the first
+    // spawned
+    let text = types
+        + "\n"
+        + """
+        fn a(r) -> s regs 1 2
+            yield
+            new r1, Fault
+            load.i s0, 1
+            set.s r1, Fault.n, s0
+            throw r1
+        end
+
+        fn b(r) -> s regs 1 2
+            new r1, Fault
+            load.i s0, 2
+            set.s r1, Fault.n, s0
+            throw r1
+        end
+        """
+        + "\n"
+        + twoFail;
+    assertEq(scalar(runText(text)), 2);
+}
+
+@Test
+fn aLaterPanicLeavesTheFirstError(): void {
+    // a panic is a failure as an error is (§5 rule 3): the first of them is the scope's
+    let text = types
+        + "\n"
+        + """
+        fn a(r) -> s regs 1 2
+            new r1, Fault
+            load.i s0, 1
+            set.s r1, Fault.n, s0
+            throw r1
+        end
+
+        fn b(r) -> s regs 2 1
+            yield
+            load.i s0, 1
+            load.i s1, 0
+            div.i s0, s0, s1
+            ret.s s0
+        end
+        """
+        + "\n"
+        + twoFail;
+    assertEq(scalar(runText(text)), 1);
+}
+
+@Test
+fn aTaskThatWaitsForItselfLeavesNoneToRun(): void {
+    // the child awaits its own handle; the spawner awaits the child: none can go on
+    let text = types
+        + "\n"
+        + """
+        fn work(r) regs 1 3
+            get.r r1, r0, Fn.box
+            await s0, r2, r1
+            ret
+        end
+
+        fn main() regs 2 3
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            set.r r0, Fn.box, r1
+            await s0, r2, r1
+            ret
+        end
+        """;
+    match (runText(text)) {
+        .Panic(p) => assertEq(p.code, "LYS-RT0018"),
+        _ => assertTrue(false, "every task waits"),
+    }
+}
+
+@Test
+fn aPanicInATaskPanicsTheOneThatAwaitsIt(): void {
+    let text = types
+        + "\n"
+        + """
+        fn work(r) -> s regs 2 1
+            load.i s0, 1
+            load.i s1, 0
+            div.i s0, s0, s1
+            ret.s s0
+        end
+
+        fn main() -> s regs 2 3
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            spawn r1, r0
+            await s0, r2, r1
+            ret.s s1
+        end
+        """;
+    match (runText(text)) {
+        .Panic(p) => assertTrue(p.message.contains("zero"), p.message),
+        _ => assertTrue(false, "the panic reaches the awaiting task"),
+    }
+}
+
+// The language (S6a): `spawn { … }` gives a `Task<T>`, `await()` its value or its error,
+// `status()` where it stands; `yieldNow()` gives way.
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+fn value(source: string, entry: string): int {
+    let checked = checkModule(parse(source).module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    return match (run(generate(checked.program, "t"), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+@Test
+fn aSpawnedBlockGivesItsValue(): void {
+    assertEq(
+        value("fn f(): int {\n    let t = spawn { 21 * 2 }\n    return t.await()\n}", "f"),
+        42
+    );
+}
+
+@Test
+fn aTaskIsTypedByItsBlock(): void {
+    assertEq(
+        errs("fn f(): string {\n    let t = spawn { 1 }\n    return t.await()\n}"),
+        ["LYS-SEM0001"]
+    );
+    assertEq(errs("fn f() {\n    spawn((x: int): int => x)\n}"), ["LYS-SEM0001"]);
+    assertEq(errs("fn f() {\n    spawn(42)\n}"), ["LYS-SEM0001"]);
+    assertEq(errs("fn g(x: int): int = x\nfn f() {\n    spawn(g)\n}"), ["LYS-SEM0001"]);
+}
+
+@Test
+fn aTaskHasAwaitStatusAndCancel(): void {
+    assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.stop()\n}"), ["LYS-SEM0012"]);
+    assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.cancel()\n}"), []);
+    assertEq(errs("fn f() {\n    let t = spawn { 1 }\n    t.await(1)\n}"), ["LYS-SEM0014"]);
+    assertEq(errs("fn f() {\n    yieldNow(1)\n}"), ["LYS-SEM0014"]);
+}
+
+@Test
+fn awaitThrowsAnyError(): void {
+    // `Task<T>` carries no `throws` (07 N4; 03: no errors in function types)
+    let a = "struct A :: Error {\n    fn message(): string = \"a\"\n}\n";
+    assertEq(
+        errs(a + "fn f(): int throws A {\n    let t = spawn { 1 }\n    return t.await()\n}"),
+        ["LYS-SEM0034"]
+    );
+    assertEq(errs(a + "fn f(): int {\n    let t = spawn { 1 }\n    return t.await()\n}"), []);
+}
+
+@Test
+fn aTasksStatusTellsHowItEnded(): void {
+    let boom = "fn boom(): int {\n    throw Exception(\"boom\")\n}\n";
+    assertEq(
+        value(
+            boom
+                + "fn f(): int {\n    let t = spawn { boom() }\n    let got = try? t.await()\n"
+                + "    return match (t.status()) {\n        .Failed(e) => if (got == null && e.message() == \"boom\") 1 else 2,\n        _ => 3,\n    }\n}",
+            "f"
+        ),
+        1
+    );
+    // a panic ends the task, not the run, until something awaits it
+    assertEq(
+        value(
+            "fn f(): int {\n    let t = spawn { 1 / 0 }\n    yieldNow()\n"
+                + "    return match (t.status()) {\n        .Panicked(p) => if (p.code == \"LYS-RT0001\") 1 else 2,\n        _ => 0,\n    }\n}",
+            "f"
+        ),
+        1
+    );
+}
+
+@Test
+fn onlyAProgramThatSpawnsEndsWithAJoin(): void {
+    let plain = checkModule(parse("println(1)").module);
+    assertTrue(!disassemble(generate(plain.program, "t")).contains("join"), "no task, no join");
+    let spawning = checkModule(parse("spawn { 1 }").module);
+    assertTrue(disassemble(generate(spawning.program, "t")).contains("join"), "a join");
+}
+
+// Cancellation (S6c1): `t.cancel()` makes the task's waits throw `Cancelled`; a detached task is
+// none the top level's end waits for.
+@Test
+fn aCancelEndsTheWaitWithCancelled(): void {
+    let src = "fn f(): int {\n    let t = spawn {\n        while (true) {\n            yieldNow()\n        }\n    }\n"
+        + "    yieldNow()\n    t.cancel()\n    var caught = 0\n    try {\n        t.await()\n    } catch (e: Cancelled) {\n"
+        + "        caught = 1\n    }\n    let ended = match (t.status()) {\n        .Cancelled => 1,\n        _ => 0,\n    }\n    return caught * 10 + ended\n}";
+    assertEq(value(src, "f"), 11);
+}
+
+@Test
+fn aWaitAfterACaughtCancelThrowsAgain(): void {
+    let src = "class B {\n    var n: int = 0\n}\nfn f(): int {\n    let b = B { }\n    let t = spawn {\n"
+        + "        try {\n            yieldNow()\n        } catch (e: Cancelled) {\n            b.n += 1\n        }\n"
+        + "        try {\n            yieldNow()\n        } catch (e: Cancelled) {\n            b.n += 1\n        }\n    }\n"
+        + "    t.cancel()\n    t.await()\n    return b.n\n}";
+    assertEq(value(src, "f"), 2);
+}
+
+@Test
+fn aTaskThatNeverWaitsIsNotCancelled(): void {
+    let src = "fn f(): int {\n    let t = spawn { 21 * 2 }\n    t.cancel()\n    return t.await()\n}";
+    assertEq(value(src, "f"), 42);
+}
+
+@Test
+fn aDetachedTaskIsNoneTheEndWaitsFor(): void {
+    // `join` waits for the scope's tasks: the detached one, which would set the box, never ran
+    let text = types
+        + "\n"
+        + """
+        fn work(r) regs 1 2
+            get.r r1, r0, Fn.box
+            load.i s0, 1
+            set.s r1, Box.n, s0
+            ret
+        end
+
+        fn main() -> s regs 2 4
+            new r1, Box
+            new r0, Fn
+            load.i s0, 0
+            set.s r0, Fn.f, s0
+            set.r r0, Fn.box, r1
+            spawn.d r2, r0
+            join s1, r2
+            get.s s0, r1, Box.n
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text)), 0);
+}
+
+@Test
+fn cancellationIsChecked(): void {
+    // a detached block handles every error but `Cancelled`; a wait throws `Cancelled`
+    assertEq(
+        errs("fn f() {\n    spawnDetached {\n        throw Exception(\"x\")\n    }\n}"),
+        ["LYS-SEM0034"]
+    );
+    assertEq(errs("fn f() throws Exception {\n    yieldNow()\n}"), ["LYS-SEM0034"]);
+    assertEq(errs("fn f() throws Cancelled {\n    yieldNow()\n}"), []);
+}
+
+// Task scopes (S6c2): `close()` waits for the scope's tasks and throws the first failure.
+let boxed: string = "class B {\n    var n: int = 0\n}\n";
+
+@Test
+fn aScopeWaitsForItsTasks(): void {
+    let src = boxed
+        + "fn run(b: B) {\n    using let scope = TaskScope.new()\n    scope.spawn {\n        yieldNow()\n"
+        + "        b.n += 1\n    }\n}\nfn f(): int {\n    let b = B { }\n    run(b)\n    return b.n\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn theFirstFailureComesOutOfClose(): void {
+    let src = "fn fail(): int {\n    throw Exception(\"boom\")\n}\nfn run() {\n    using let scope = TaskScope.new()\n"
+        + "    scope.spawn { fail() }\n}\nfn f(): int {\n    try {\n        run()\n    } catch (e) {\n"
+        + "        return if (e.message() == \"boom\") 1 else 2\n    }\n    return 0\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn aScopesCancelReachesItsTasks(): void {
+    let src = boxed
+        + "fn run(b: B) {\n    using let scope = TaskScope.new()\n    scope.spawn {\n        try {\n"
+        + "            yieldNow()\n        } catch (e: Cancelled) {\n            b.n += 1\n        }\n    }\n"
+        + "    scope.cancel()\n}\nfn f(): int {\n    let b = B { }\n    run(b)\n    return b.n\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+@Test
+fn scopesAreChecked(): void {
+    assertEq(errs("let scope = TaskScope.new(1)"), ["LYS-SEM0014"]);
+    assertEq(errs("let scope = TaskScope.new()\nscope.join()"), ["LYS-SEM0012"]);
+    assertEq(errs("let x: Closeable = TaskScope.new()"), ["LYS-SEM0001"]);
+}
+
+// A task's status with its values (S6c3).
+@Test
+fn aDoneStatusHoldsTheValue(): void {
+    let src = "fn f(): int {\n    let t = spawn { 21 * 2 }\n    t.await()\n    return match (t.status()) {\n"
+        + "        .Done(v) => v,\n        _ => -1,\n    }\n}";
+    assertEq(value(src, "f"), 42);
+}
+
+@Test
+fn isDoneSaysWhetherTheTaskEnded(): void {
+    let src = "fn f(): int {\n    let t = spawn { 1 }\n    let before = t.isDone()\n    t.await()\n"
+        + "    return (if (before) 10 else 0) + (if (t.isDone()) 1 else 0)\n}";
+    assertEq(value(src, "f"), 1);
+}
+
+// Channels and semaphores (S6d1).
+@Test
+fn aChannelCarriesValuesInOrder(): void {
+    let src = "fn f(): int {\n    let c = Channel<int>.new()\n    spawn {\n        for (k in 1..=3) {\n            c.send(k)\n        }\n"
+        + "        c.close()\n    }\n    var s = 0\n    while (let v = c.recv()) {\n        s = s * 10 + v\n    }\n    return s\n}";
+    assertEq(value(src, "f"), 123);
+}
+
+@Test
+fn aBufferedChannelKeepsItsValuesPastTheClose(): void {
+    let src = "fn f(): int {\n    let c = Channel<int>.new(2)\n    c.send(7)\n    c.send(8)\n    c.close()\n"
+        + "    let a = c.recv() ?? 0\n    let b = c.recv() ?? 0\n    let e = c.recv() ?? 9\n    return a * 100 + b * 10 + e\n}";
+    assertEq(value(src, "f"), 789);
+}
+
+@Test
+fn aWaitingSendersValueTakesTheFreedPlace(): void {
+    // capacity 1: the second send waits; the receive that frees the place puts its value there
+    let src = "fn f(): int {\n    let c = Channel<int>.new(1)\n    spawn {\n        c.send(1)\n        c.send(2)\n        c.send(3)\n"
+        + "        c.close()\n    }\n    yieldNow()\n    var s = 0\n    while (let v = c.recv()) {\n        s = s * 10 + v\n    }\n    return s\n}";
+    assertEq(value(src, "f"), 123);
+}
+
+@Test
+fn aSendOnAClosedChannelThrows(): void {
+    let src = "fn f(): int {\n    let c = Channel<int>.new(1)\n    c.close()\n    try {\n        c.send(5)\n"
+        + "    } catch (e: ChannelClosed) {\n        return 6\n    }\n    return 0\n}";
+    assertEq(value(src, "f"), 6);
+}
+
+@Test
+fn aSemaphoreHandsItsPermitToTheWaiter(): void {
+    // the second task waits for the permit the first holds across its wait
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let sem = Semaphore.new(1)\n    let x = spawn {\n"
+        + "        sem.acquire()\n        b.n = b.n * 10 + 3\n        yieldNow()\n        b.n = b.n * 10 + 4\n        sem.release()\n    }\n"
+        + "    let y = spawn {\n        sem.acquire()\n        b.n = b.n * 10 + 5\n        sem.release()\n    }\n"
+        + "    x.await()\n    y.await()\n    return b.n * 10 + sem.available()\n}";
+    assertEq(value(src, "f"), 3451);
+}
+
+@Test
+fn channelsAndSemaphoresAreChecked(): void {
+    assertEq(errs("let c = Channel.new()"), ["LYS-SEM0060"]);
+    assertEq(errs("let c = Channel<int>.new()\nc.send(\"x\")"), ["LYS-SEM0001"]);
+    assertEq(errs("let c = Channel<int>.new()\nc.peek()"), ["LYS-SEM0012"]);
+    assertEq(errs("let s = Semaphore.new()"), ["LYS-SEM0014"]);
+    assertEq(
+        errs("fn f() throws Cancelled {\n    let c = Channel<int>.new(1)\n    c.send(1)\n}"),
+        ["LYS-SEM0034"]
+    );
+}
+
+// Select (S6d2): the prelude's `Select`/`Selection` over the VM's watches.
+@Test
+fn aSelectRunsTheReadyCase(): void {
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let x = Channel<int>.new(1)\n    let y = Channel<int>.new(1)\n"
+        + "    y.send(8)\n    Select.on(x) { v => b.n = 1 }.on(y) { v => b.n = v ?? 0 }.run()\n    return b.n\n}";
+    assertEq(value(src, "f"), 8);
+}
+
+@Test
+fn aSelectWaitsForASend(): void {
+    // unbuffered: the sender that comes to wait wakes the select
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let x = Channel<int>.new()\n    spawn {\n        yieldNow()\n"
+        + "        x.send(9)\n    }\n    Select.on(x) { v => b.n = v ?? 0 }.run()\n    return b.n\n}";
+    assertEq(value(src, "f"), 9);
+}
+
+@Test
+fn aSelectWakesOnABufferedSend(): void {
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let x = Channel<int>.new(1)\n    spawn { x.send(6) }\n"
+        + "    Select.on(x) { v => b.n = v ?? 0 }.run()\n    return b.n\n}";
+    assertEq(value(src, "f"), 6);
+}
+
+@Test
+fn theSelectsIntrinsicsAreThePreludesAlone(): void {
+    assertEq(errs("let a = Channel<int>.new()\nlet r = __chanReady(a)"), ["LYS-SEM0002"]);
+}
+
+// Time (S6d3): sleeps on the run's clock, timers, `withTimeout`.
+@Test
+fn sleepersWakeByTheirDeadlines(): void {
+    let src = boxed
+        + "fn f(): int {\n    let b = B { }\n    let x = spawn {\n        sleep(Duration.ofMillis(30))\n"
+        + "        b.n = b.n * 10 + 2\n    }\n    let y = spawn {\n        sleep(Duration.ofMillis(10))\n"
+        + "        b.n = b.n * 10 + 3\n    }\n    x.await()\n    y.await()\n    return b.n\n}";
+    assertEq(value(src, "f"), 32);
+}
+
+@Test
+fn withTimeoutGivesTheValueOrThrowsTimedOut(): void {
+    let src = "fn f(): int {\n    let v = withTimeout(Duration.ofMillis(500)) { 40 }\n    var late = 0\n    try {\n"
+        + "        withTimeout(Duration.ofMillis(5)) {\n            sleep(Duration.ofSecs(5))\n            1\n        }\n"
+        + "    } catch (e: TimedOut) {\n        late = 2\n    }\n    return v + late\n}";
+    assertEq(value(src, "f"), 42);
+}
+
+@Test
+fn timeIsChecked(): void {
+    assertEq(errs("let d = Duration { nanosCount = 1 }"), ["LYS-RES0009"]);
+    assertEq(
+        errs("fn f() throws Exception {\n    sleep(Duration.ofMillis(1))\n}"),
+        ["LYS-SEM0034"]
+    );
+}
+
+// A native that waits (S6e): `readLine()`.
+@Test
+fn readLineIsAWait(): void {
+    assertEq(errs("fn f(): string {\n    return readLine() ?? \"\"\n}"), []);
+    assertEq(errs("fn f() throws Exception {\n    let l = readLine()\n}"), ["LYS-SEM0034"]);
+}

@@ -86,10 +86,20 @@ class ThrowSets {
     // and what reached each clause, by "<fn>:<local>:<k>", for a match over its set (05 K7)
     reaching: Map<int, Thrown>,
     reached: Map<string, Thrown>,
+    // the prelude's `Cancelled`: what a wait throws in a cancelled task (S6c1)
+    cancelled: int,
+    // the prelude's `ChannelClosed`, what a send on a closed channel throws (S6d1)
+    channelClosed: int,
     var line: int = 0,
     var current: int = -1,
 
-    static fn of(types: TypeInfo[], functions: FnInfo[], errorIndex: int): ThrowSets {
+    static fn of(
+        types: TypeInfo[],
+        functions: FnInfo[],
+        errorIndex: int,
+        cancelled: int,
+        channelClosed: int
+    ): ThrowSets {
         let sets = List<Thrown>.new();
         for (_ in functions) {
             sets.push(Thrown.none());
@@ -120,6 +130,8 @@ class ThrowSets {
             types = types,
             functions = functions,
             errorIndex = errorIndex,
+            cancelled = cancelled,
+            channelClosed = channelClosed,
             sets = sets,
             members = members,
             impls = impls,
@@ -211,6 +223,17 @@ class ThrowSets {
                 out.addAll(rest);
                 out
             }
+            // a yield throws `Cancelled` where its coroutine is closed (Lyric 5 10 §1 rules 9, 13)
+            .Yield(v, cancelled, _, _) => {
+                let out = Thrown.none();
+                if (v != null) {
+                    out.addAll(this.exprSet(v));
+                }
+                if (cancelled != .Unknown) {
+                    out.add(cancelled, this.line);
+                }
+                out
+            }
             _ => {
                 let out = Thrown.none();
                 for (e in exprsOfStmt(s)) {
@@ -244,6 +267,33 @@ class ThrowSets {
             ),
             // a function value says nothing of what it throws (02 K2)
             .CallValue(_, _, _) | .CallStaticD(_, _, _, _) => out.addAny(this.line),
+            // a task's error comes back where it is awaited (S6a), any error, as a function value's
+            .Await(_, _) => out.addAny(this.line),
+            // a pull throws what the body throws: any error, the type says none (S6b; 03)
+            .CoNext(_, _) => out.addAny(this.line),
+            // a close throws what the body throws on its way out (S6b3); a scope's close the
+            // first failure of its tasks (S6c2)
+            .CoClose(_, _) | .ScopeClose(_) => out.addAny(this.line),
+            // a send throws `ChannelClosed`; it, a receive and an acquire wait (Lyric 5 10 §6, §10)
+            .ChanSend(_, _) => {
+                if (this.channelClosed >= 0) {
+                    out.add(Ty.Named(this.channelClosed), this.line);
+                }
+                if (this.cancelled >= 0) {
+                    out.add(Ty.Named(this.cancelled), this.line);
+                }
+            }
+            .ChanRecv(_, _) | .SemAcquire(_) | .ParkWatched | .Sleep(_) | .ReadLine => {
+                if (this.cancelled >= 0) {
+                    out.add(Ty.Named(this.cancelled), this.line);
+                }
+            }
+            // a wait throws `Cancelled` in a cancelled task (Lyric 5 10 §2 rule 7)
+            .YieldNow => {
+                if (this.cancelled >= 0) {
+                    out.add(Ty.Named(this.cancelled), this.line);
+                }
+            }
             _ => { }
         }
         for (x in exprsIn(e)) {

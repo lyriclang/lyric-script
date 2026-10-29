@@ -56,6 +56,15 @@ fn generate(p: Program, name: string): Module {
     for (d in layout.structural.descs) {
         types.push(d);
     }
+    // the prelude's `Cancelled`, which the VM makes where a wait in a cancelled task throws (S6c1)
+    var cancelledType = -1;
+    if (p.cancelled >= 0 && p.cancelled < layout.moduleType.length()) {
+        cancelledType = layout.moduleType[p.cancelled];
+    }
+    var channelClosedType = -1;
+    if (p.channelClosed >= 0 && p.channelClosed < layout.moduleType.length()) {
+        channelClosedType = layout.moduleType[p.channelClosed];
+    }
     return Module {
         name = name,
         functions = functions.toArray(),
@@ -64,6 +73,8 @@ fn generate(p: Program, name: string): Module {
         globalsR = layout.globalsR,
         errorMessage = p.errorMessage,
         errorCause = p.errorCause,
+        cancelledType = cancelledType,
+        channelClosedType = channelClosedType,
     };
 }
 
@@ -123,6 +134,8 @@ struct Placement {
     captureLoc: Loc[][],
     // a captured `var`'s box: its module type by the slots of the value it holds, "s,r"
     cellType: Map<string, int>,
+    // the key of each type a yield outside a coroutine's body meets at run time (S6b3)
+    typeKeys: Map<string, int>,
     // a scalar's or a string's box as an interface value: its module type by its type's entry
     boxType: int[],
     // each program type's fields: where their slots start in the object
@@ -397,6 +410,7 @@ struct Placement {
             boxType = boxType.toArray(),
             captureLoc = captureLoc.toArray(),
             cellType = cellType,
+            typeKeys = Map<string, int>.new(),
             fieldLoc = fieldLoc.toArray(),
             descs = all,
             typeDescOf = typeDescOf.toArray(),
@@ -725,6 +739,26 @@ class FnGen {
         return slotsOf(t, this.p.types);
     }
 
+    /// The key of a type, the same for one type throughout the program (S6b3).
+    mut fn typeKey(t: Ty): int {
+        let text = t.debug();
+        let known = this.layout.typeKeys.get(text);
+        if (known != null) {
+            return known;
+        }
+        let k = this.layout.typeKeys.length();
+        this.layout.typeKeys.insert(text, k);
+        return k;
+    }
+
+    /// The type arguments of a `Coroutine<Y, R>`, `[Y, R]` (S6b).
+    fn coArgs(t: Ty): Ty[] {
+        return match (t) {
+            .Named(i) => this.p.types[i].args,
+            _ => [],
+        };
+    }
+
     /// Room for a value of type `t` above the live registers.
     mut fn temp(t: Ty): Loc {
         let (ns, nr) = this.slots(t);
@@ -846,6 +880,45 @@ class FnGen {
     mut fn stmt(s: TStmt): void {
         let m = this.mark();
         match (s) {
+            // the top level's end (07 End): every task awaited, the first that failed thrown
+            // again — where the program spawns at all
+            // S6b: the value to the context that pulled; the coroutine parks (Lyric 5 10 §1 rule 2)
+            .Yield(v, _, dynamic, line) => {
+                this.line = line;
+                let vt = if (v != null) typeOf(v) else Ty.Void;
+                var sAt = 0;
+                var rAt = 0;
+                if (v != null) {
+                    let (ns, nr) = this.slots(typeOf(v));
+                    let at = this.any(v);
+                    if (ns > 0) {
+                        sAt = at.s;
+                    }
+                    if (nr > 0) {
+                        rAt = at.r;
+                    }
+                }
+                this.need(1, 1);
+                if (dynamic) {
+                    // its value's type meets the running coroutine's `Y` there (rule 13)
+                    this.emit(Op.YieldD, sAt, rAt, this.typeKey(vt));
+                } else {
+                    this.emit(Op.YieldV, sAt, rAt, 0);
+                }
+            }
+            .Join(line) => {
+                if (this.p.spawns && this.index == this.p.main) {
+                    this.line = line;
+                    let at = this.temp(Ty.Int).s;
+                    let er = this.nextR;
+                    this.nextR += 2;
+                    this.need(this.nextS, this.nextR);
+                    this.emit(Op.Join, at, er, 0);
+                    let ok = this.emit(Op.JumpIfNot, at, 0, 0);
+                    this.emit(Op.Rethrow, er, er + 1, 0);
+                    this.patch(ok, this.here());
+                }
+            }
             .Expr(e, line) => {
                 this.line = line;
                 this.effect(e);
@@ -1520,6 +1593,231 @@ class FnGen {
             .Panic(x, code) => {
                 let at = this.any(x.value);
                 this.emit(Op.PanicC, at.r, code, 0);
+            }
+            // S6a: a task of the closure; its value or its error thrown again; its status
+            .Spawn(x, _) => {
+                let at = this.any(x.value);
+                this.emit(Op.Spawn, dst.r, at.r, 0);
+            }
+            .Await(x, t) => {
+                let task = this.any(x.value);
+                let (ns, nr) = this.slots(t);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 1 + ns;
+                this.nextR += if (nr > 2) nr else 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.Await, bs, br, task.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
+                this.move(dst, Loc { s = bs + 1, r = br }, t);
+            }
+            // S6c1: a task nobody waits for, its handle in a register of its own; a cancel
+            .SpawnDetached(x) => {
+                let at = this.any(x.value);
+                let h = this.nextR;
+                this.nextR += 1;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.SpawnD, h, at.r, 0);
+            }
+            .TaskCancel(x) => {
+                let task = this.any(x.value);
+                this.emit(Op.TaskCancel, task.r, 0, 0);
+            }
+            // S6c2: a task scope; a task of it; its close, what it throws thrown again; its cancel
+            .ScopeNew(_) => {
+                this.emit(Op.ScopeNew, dst.r, 0, 0);
+            }
+            .ScopeSpawn(sc, x, _) => {
+                let scope = this.any(sc.value);
+                let at = this.any(x.value);
+                this.emit(Op.SpawnS, dst.r, at.r, scope.r);
+            }
+            .ScopeClose(x) => {
+                let scope = this.any(x.value);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 1;
+                this.nextR += 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.ScopeClose, bs, br, scope.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
+            }
+            .ScopeCancel(x) => {
+                let scope = this.any(x.value);
+                this.emit(Op.ScopeCancel, scope.r, 0, 0);
+            }
+            // S6c3: an ended task's value, its error, its panic's texts — read without a wait
+            .TaskValue(x, _) => {
+                let task = this.any(x.value);
+                let sa = if (dst.s >= 0) dst.s else 0;
+                let ra = if (dst.r >= 0) dst.r else 0;
+                this.need(1, 1);
+                this.emit(Op.TaskVal, sa, ra, task.r);
+            }
+            .TaskError(x, _) => {
+                let task = this.any(x.value);
+                this.emit(Op.TaskErr, dst.r, task.r, 0);
+            }
+            .PanicText(x, k) => {
+                let task = this.any(x.value);
+                this.emit(Op.TaskPInfo, dst.r, task.r, k);
+            }
+            // S6d1: a channel, the slots of its values in `c`
+            .ChanNew(n, t) => {
+                let cap = this.any(n.value);
+                let args = this.coArgs(t);
+                let (ns, nr) = if (args.length() == 1) this.slots(args[0]) else (0, 0);
+                this.emit(Op.ChanNew, dst.r, cap.s, ns * 256 + nr);
+            }
+            // a send: the value placed after the error's slots; `ChannelClosed` thrown again
+            .ChanSend(x, v) => {
+                let ch = this.any(x.value);
+                let vt = typeOf(v.value);
+                let (ns, nr) = this.slots(vt);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 1 + ns;
+                this.nextR += 2 + nr;
+                this.need(this.nextS, this.nextR);
+                this.to(v.value, Loc { s = bs + 1, r = br + 2 });
+                this.emit(Op.ChanSend, bs, br, ch.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
+            }
+            // a receive: `?T` where the VM leaves it, as a pull's
+            .ChanRecv(x, t) => {
+                let ch = this.any(x.value);
+                let inner = match (t) {
+                    .Optional(i) => i.value,
+                    _ => Ty.Unknown,
+                };
+                let (ns, nr) = this.slots(inner);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 2 + ns;
+                this.nextR += if (nr > 2) nr else 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.ChanRecv, bs, br, ch.r);
+                this.move(dst, Loc { s = bs + 1, r = br }, t);
+            }
+            .ChanClose(x) => {
+                let ch = this.any(x.value);
+                this.emit(Op.ChanClose, ch.r, 0, 0);
+            }
+            .SemNew(n, _) => {
+                let permits = this.any(n.value);
+                this.emit(Op.SemNew, dst.r, permits.s, 0);
+            }
+            .SemAcquire(x) => {
+                let sem = this.any(x.value);
+                this.emit(Op.SemAcquire, sem.r, 0, 0);
+            }
+            .SemTry(x) => {
+                let sem = this.any(x.value);
+                this.emit(Op.SemTry, dst.s, sem.r, 0);
+            }
+            .SemRelease(x) => {
+                let sem = this.any(x.value);
+                this.emit(Op.SemRelease, sem.r, 0, 0);
+            }
+            .SemAvail(x) => {
+                let sem = this.any(x.value);
+                this.emit(Op.SemAvail, dst.s, sem.r, 0);
+            }
+            // S6d2: the prelude's select
+            .ChanReady(x) => {
+                let ch = this.any(x.value);
+                this.emit(Op.ChanReady, dst.s, ch.r, 0);
+            }
+            .ChanWatch(x) => {
+                let ch = this.any(x.value);
+                this.emit(Op.ChanWatch, ch.r, 0, 0);
+            }
+            .ParkWatched => {
+                this.emit(Op.ParkW, 0, 0, 0);
+            }
+            // S6d3: the prelude's sleep and timers
+            .Sleep(x) => {
+                let d = this.any(x.value);
+                this.emit(Op.Sleep, d.s, 0, 0);
+            }
+            .TimerAfter(x, _) => {
+                let d = this.any(x.value);
+                this.emit(Op.TimerAfter, dst.r, d.s, 0);
+            }
+            // S6e: a line of standard input
+            .ReadLine => {
+                this.emit(Op.ReadLine, dst.r, 0, 0);
+            }
+            .TaskStatus(x, _) => {
+                let task = this.any(x.value);
+                this.emit(Op.TaskSt, dst.s, task.r, 0);
+            }
+            .YieldNow => {
+                this.emit(Op.Yield, 0, 0, 0);
+            }
+            // S6b: a coroutine of the closure, the slots of what it yields in `c`
+            .CoNew(x, t) => {
+                let at = this.any(x.value);
+                let args = this.coArgs(t);
+                let (ns, nr) = if (args.length() == 2) this.slots(args[0]) else (0, 0);
+                this.emit(Op.CoNew, dst.r, at.r, ns * 256 + nr);
+                if (args.length() == 2) {
+                    this.emit(Op.CoKey, dst.r, this.typeKey(args[0]), 0);
+                }
+            }
+            // a pull: its error thrown again; `?Y` where the VM leaves it — the value, its
+            // presence after its scalars
+            .CoNext(x, t) => {
+                let co = this.any(x.value);
+                let args = this.coArgs(typeOf(x.value));
+                let (ns, nr) = if (args.length() == 2) this.slots(args[0]) else (0, 0);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 2 + ns;
+                this.nextR += if (nr > 2) nr else 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.CoNext, bs, br, co.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
+                this.move(dst, Loc { s = bs + 1, r = br }, t);
+            }
+            .CoResult(x, t) => {
+                let co = this.any(x.value);
+                let args = this.coArgs(typeOf(x.value));
+                let (rs, rr) = if (args.length() == 2) this.slots(args[1]) else (0, 0);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += rs + 1;
+                this.nextR += rr;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.CoRes, bs, br, co.r);
+                this.move(dst, Loc { s = bs, r = br }, t);
+            }
+            .CoDone(x) => {
+                let co = this.any(x.value);
+                this.emit(Op.CoDone, dst.s, co.r, 0);
+            }
+            // S6b3: a close, the `Cancelled` handed in; what it throws thrown again
+            .CoClose(x, c) => {
+                let co = this.any(x.value);
+                let cancel = this.any(c.value);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 1;
+                this.nextR += 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.MoveR, br, cancel.r, 0);
+                this.emit(Op.CoClose, bs, br, co.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
             }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)

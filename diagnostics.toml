@@ -625,6 +625,12 @@ severity = "error"
 area = "03-types"
 summary = "The name names no type. Lyric 5's LYR-SEM0011."
 
+[LYS-SEM0007]
+title = "a value that cannot be iterated"
+severity = "error"
+area = "07-statements"
+summary = "A `for` walks a value that gives none to bind — a `Coroutine<void>`. Lyric 5's LYR-SEM0007."
+
 [LYS-SEM0012]
 title = "a member the type does not have"
 severity = "error"
@@ -751,6 +757,18 @@ severity = "error"
 area = "06-errors"
 summary = "A `try { … }` block has no `catch` clause: it takes none of its body's errors. Lyric 5's LYR-SEM0036."
 
+[LYS-SEM0038]
+title = "a bare yield in a coroutine that yields values"
+severity = "error"
+area = "10-concurrency"
+summary = "A `yield` without a value stands in a coroutine whose yield type is not `void`. Lyric 5's LYR-SEM0038."
+
+[LYS-SEM0039]
+title = "a value returned from a coroutine that returns nothing"
+severity = "error"
+area = "10-concurrency"
+summary = "A `return v` with a value stands in a coroutine whose type gives no result, `Coroutine<Y>` rather than `Coroutine<Y, R>`. Lyric 5's LYR-SEM0039."
+
 [LYS-SEM0042]
 title = "an implementation whose signature differs from the member's"
 severity = "error"
@@ -762,6 +780,12 @@ title = "two defaults of one name, which the type does not write"
 severity = "error"
 area = "05-interfaces"
 summary = "A type conforms to two interfaces whose defaults give a member of the same name and writes none itself: it writes the member, one function for both. Lyric 5's LYR-SEM0043."
+
+[LYS-SEM0046]
+title = "a lambda that can end without its value"
+severity = "error"
+area = "10-concurrency"
+summary = "A generator lambda whose result type is not `void` has a path that ends its body without returning the value. Lyric 5's LYR-SEM0046."
 
 [LYS-SEM0045]
 title = "a lambda parameter whose type nothing gives"
@@ -1172,6 +1196,18 @@ title = "not implemented"
 severity = "panic"
 area = "06-errors"
 summary = "`todo(message)` ran: `not implemented`, and the message where one is given. The code and its meaning are Lyric 5's LYR-RT0013."
+
+[LYS-RT0014]
+title = "a coroutine misused"
+severity = "panic"
+area = "10-concurrency"
+summary = "A coroutine is used against its rules: pulled or closed while it runs, a `yield` where no coroutine runs or after the coroutine was closed, or a yield of another type than the running coroutine's. The code and its meaning are Lyric 5's LYR-RT0014."
+
+[LYS-RT0018]
+title = "a deadlock"
+severity = "panic"
+area = "10-concurrency"
+summary = "Every task of the run waits — for another task — and nothing can wake one: the run panics, exit code 101. The code and its meaning are Lyric 5's LYR-RT0018."
 
 [LYS-CLI0004]
 title = "an unknown option"

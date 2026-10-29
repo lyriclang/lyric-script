@@ -88,6 +88,13 @@ fn aCapitalNameBeforeABraceIsAnInitializer(): void {
 }
 
 @Test
+fn aLambdasResultTypeMayHoldACommaInAngles(): void {
+    // the lookahead takes `<…>` as brackets: `Pair<int, int>` ends no lambda head (S6b2)
+    assertEq(errs("let f = (x: int): Pair<int, int> => x"), []);
+    assertEq(errs("let f = (x: int): List<Pair<int, int>> => x"), []);
+}
+
+@Test
 fn withIsAPostfix(): void {
     assertEq(show("p with { x = 1, pos.y = 2 }"), "(with p x=1 pos.y=2)");
     assertEq(show("p with {\n    x = 1\n    y = 2\n}"), "(with p x=1 y=2)");

@@ -98,6 +98,11 @@ pub class Module :: [Identity] {
     /// The slots of `Error`'s `message` and `cause`: what the VM asks an error that leaves every
     /// frame for its report (S4a); -1 in a module without `Error`.
     errorMessage: int = -1,
+    /// The module type of the prelude's `Cancelled`, which a wait in a cancelled task throws; -1
+    /// where the program has none (S6c1).
+    cancelledType: int = -1,
+    /// The module type of the prelude's `ChannelClosed` (S6d1).
+    channelClosedType: int = -1,
     errorCause: int = -1,
     /// The rights its imports ask for, each with where (01 S1, S5e): checked when it is loaded.
     var rights: RightUse[] = [],

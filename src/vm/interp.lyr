@@ -17,8 +17,9 @@
 //! the record's frames its trace.
 import std.collections { List };
 import std.core { arrayOf };
-import std.io { print, println };
-import std.task { spawn, yieldNow };
+import std.io { print, println, stdin };
+import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
+import std.time { Duration, Monotonic };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
@@ -51,6 +52,8 @@ pub enum Outcome {
     Error(ScriptError),
     /// The fuel ran out (design/v1, 01 S5); the run stopped at a backward jump or a call.
     Suspended,
+    /// A task waits or gave way (S6a): the scheduler runs another; never the outcome of a run.
+    Switch,
 }
 
 /// A panic of the script: its code, its message and the script's frames, innermost first.
@@ -106,6 +109,10 @@ pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcom
     let task = spawn(() => run(module, entry, args, fuel));
     while (!task.isDone()) {
         try? yieldNow();
+        // a VM that sleeps until a timer leaves this task nothing to wait for: no spinning (S6d3)
+        if (!task.isDone()) {
+            try? sleep(Duration.ofMillis(1));
+        }
     }
     return match (task.status()) {
         .Done(outcome) => outcome,
@@ -126,6 +133,275 @@ pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcom
     };
 }
 
+/// A task of the script (07 N4, 11 Co): its registers, its frames and where it stands, kept while
+/// another task runs.
+class TaskState {
+    var s: uint64[],
+    var r: HeapRef[],
+    var frames: List<CallFrame>,
+    var fi: int,
+    var pc: int = 0,
+    var bs: int = 0,
+    var br: int = 0,
+    var report: ?Report = null,
+    // the script's handle of a spawned task; none for the run's first
+    var handle: ?ScriptTask = null,
+    // S6c1: the task it waits for, where it waits for one — a cancel takes it out of their
+    // waiters —, and whether it gave way and stands in the queue
+    var waitingOn: ?ScriptTask = null,
+    var yielded: bool = false,
+    // S6d1: the channel or the semaphore it waits on; what a channel handed it; the value it waits
+    // to send, and how the send ended — 1 taken, 2 the channel closed —; a permit handed to it
+    var waitingChan: ?ScriptChannel = null,
+    var waitingSem: ?ScriptSemaphore = null,
+    var handoff: ?Item = null,
+    var sendItem: ?Item = null,
+    var sendState: int = 0,
+    var granted: bool = false,
+    // S6d2: the channels a select of it watches, and whether one of them stirred
+    watching: List<ScriptChannel> = List<ScriptChannel>.new(),
+    var woken: bool = false,
+    // S6d3: the timer it sleeps on, and whether it slept
+    var sleeping: ?TimerEntry = null,
+    var slept: bool = false,
+    // S6e: a native it waits for — the ticket of the one it waits for now, and what came
+    var nativePending: bool = false,
+    var nativeTicket: int = 0,
+    var nativeDone: bool = false,
+    var nativeText: ?string = null,
+    // what an error that left the task threw, and its record: what `await` throws again
+    var thrown: HeapRef = nilRef(),
+    var record: HeapRef = nilRef(),
+    // S6b: the contexts that pulled the coroutine running now, the innermost last; the fields
+    // above are the running context's
+    pullers: List<Pull> = List<Pull>.new(),
+}
+
+/// Where code stands: a task's, or a coroutine's while it is parked (S6b).
+class Context {
+    var s: uint64[],
+    var r: HeapRef[],
+    var frames: List<CallFrame>,
+    var fi: int,
+    var pc: int,
+    var bs: int,
+    var br: int,
+    var report: ?Report,
+}
+
+/// A pull in progress: the context that pulled, at the instruction after its `co.next`, the
+/// coroutine, and where the answer goes — the absolute registers of `co.next`'s `a` and `b`.
+class Pull {
+    ctx: Context,
+    co: ScriptCoroutine,
+    a: int,
+    b: int,
+    // a close's, not a pull's: the answer is only whether an error came (S6b3)
+    closing: bool = false,
+}
+
+/// A coroutine as the script holds it (Lyric 5 10 §1; 07 N2): its closure, its context while it
+/// is parked, the slots of what it yields and of its result, and its result once it has one.
+/// Its state: 0 never pulled, 1 parked at a yield, 2 running, 3 ended.
+pub class ScriptCoroutine :: [HeapRef] {
+    env: HeapRef,
+    ns: int,
+    nr: int,
+    rs: int,
+    rr: int,
+    var state: int = 0,
+    var ctx: ?Context = null,
+    var returned: bool = false,
+    var resS: uint64[] = [],
+    var resR: HeapRef[] = [],
+    // the `Cancelled` a close threw into it, and the key of its `Y` for a yield outside its own
+    // body (S6b3)
+    var cancel: HeapRef = nilRef(),
+    var ykey: int = -1,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// The context a coroutine starts in: its closure's function, the closure in `r[0]`; `null`
+/// where the closure names no function.
+fn coroutineStart(module: Module, env: HeapRef): ?Context {
+    var target = -1;
+    if (env is ScriptObject) {
+        target = env.scalars[0] as int;
+    }
+    if (target < 0 || target >= module.functions.length()) {
+        return null;
+    }
+    let callee = module.functions[target];
+    let x = Context {
+        s = [0 as uint64] * grown(0, callee.scalars),
+        r = refArray(grown(0, callee.refs)),
+        frames = List<CallFrame>.new(),
+        fi = target,
+        pc = 0,
+        bs = 0,
+        br = 0,
+        report = null,
+    };
+    x.r[0] = env;
+    return x;
+}
+
+/// A task as the script holds it (07 N4): its state, what it ended with once it has, and the
+/// tasks that wait for it.
+pub class ScriptTask :: [HeapRef] {
+    state: TaskState,
+    var result: ?Outcome = null,
+    waiters: List<TaskState>,
+    // S6c1: cancelled, its waits throw `Cancelled`; detached, nobody waits for it
+    var cancelled: bool = false,
+    detached: bool = false,
+    // S6c2: the task scope it belongs to; none for the top level's
+    scope: ?ScriptScope = null,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A value on its way through a channel: its slots (S6d1).
+class Item {
+    s: uint64[],
+    r: HeapRef[],
+}
+
+/// A channel (Lyric 5 10 §6): its buffer, the tasks waiting to receive and to send — a sender's
+/// value with it —, whether it is closed; `ns` and `nr` the slots of a value (S6d1).
+pub class ScriptChannel :: [HeapRef] {
+    capacity: int,
+    ns: int,
+    nr: int,
+    buffer: List<Item>,
+    receivers: List<TaskState>,
+    senders: List<TaskState>,
+    // S6d2: the tasks whose select watches it: woken when it can be received from
+    watchers: List<TaskState> = List<TaskState>.new(),
+    var closed: bool = false,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A semaphore (Lyric 5 10 §10 rule 7): its permits, and the tasks waiting for one (S6d1).
+pub class ScriptSemaphore :: [HeapRef] {
+    var permits: int,
+    waiters: List<TaskState>,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A task scope (Lyric 5 10 §4): its tasks, the first of them to fail, whether it has closed
+/// (S6c2).
+pub class ScriptScope :: [HeapRef] {
+    tasks: List<ScriptTask>,
+    var failed: ?ScriptTask = null,
+    var closed: bool = false,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// What every task of one run shares: the module, its globals, the descriptors made, the budget.
+class RunShared {
+    module: Module,
+    gs: uint64[],
+    gr: HeapRef[],
+    interning: Interning,
+    var budget: int,
+    // the tasks ready to run, from `head` on; every task spawned, in order (S6a)
+    queue: List<TaskState>,
+    var head: int = 0,
+    tasks: List<ScriptTask>,
+    // the first task to end with an error or a panic: what the top level's end gives (07 End;
+    // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
+    var failed: ?ScriptTask = null,
+    // S6d3: the run's timers, on its own monotonic clock
+    timers: List<TimerEntry> = List<TimerEntry>.new(),
+    var timerSeq: int = 0,
+    clock: Monotonic = Monotonic.now(),
+    // S6e: the script's tasks waiting for a native, and the Lyric 5 channel a native's task
+    // signals its end on
+    var pendingNatives: int = 0,
+    wakeups: Channel<int> = Channel<int>.new(64),
+}
+
+/// A timer of the run (S6d3): its deadline, in nanoseconds of the run's clock — its sequence
+/// number orders timers of one deadline —, and what it does then: wake a sleeping task, or close
+/// a timer's channel.
+class TimerEntry {
+    deadline: int,
+    seq: int,
+    task: ?TaskState = null,
+    channel: ?ScriptChannel = null,
+}
+
+/// The run's clock now, in nanoseconds (S6d3).
+fn nowNs(shared: RunShared): int {
+    return shared.clock.elapsed().nanos();
+}
+
+/// The timers whose time came, in the order of their deadlines: a sleeper wakes behind the ready
+/// tasks, a timer's channel closes (Lyric 5 10 §2 rule 5, §7 rule 5).
+fn fireDueTimers(shared: RunShared): void {
+    if (shared.timers.length() == 0) {
+        return;
+    }
+    let now = nowNs(shared);
+    while (true) {
+        var best = -1;
+        var k = 0;
+        while (k < shared.timers.length()) {
+            let e = shared.timers[k];
+            if (e.deadline <= now) {
+                if (best < 0) {
+                    best = k;
+                } else {
+                    let b = shared.timers[best];
+                    if (e.deadline < b.deadline || (e.deadline == b.deadline && e.seq < b.seq)) {
+                        best = k;
+                    }
+                }
+            }
+            k += 1;
+        }
+        if (best < 0) {
+            return;
+        }
+        let e = shared.timers.removeAt(best);
+        let st = e.task;
+        if (st != null) {
+            st.sleeping = null;
+            shared.queue.push(st);
+        }
+        let ch = e.channel;
+        if (ch != null) {
+            closeChannel(ch, shared);
+        }
+    }
+}
+
+/// The earliest deadline of the run's timers (S6d3).
+fn earliestDeadline(shared: RunShared): int {
+    var best = shared.timers[0].deadline;
+    for (e in shared.timers) {
+        if (e.deadline < best) {
+            best = e.deadline;
+        }
+    }
+    return best;
+}
+
 /// Runs `entry` of `module` on the current task; see `execute`.
 pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     var fi = -1;
@@ -141,29 +417,363 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             ScriptPanic { code = "LYS-ICE0001", message = f"no function '{entry}'", trace = [] }
         );
     }
-    var f = module.functions[fi];
-    var s: uint64[] = [0 as uint64] * grown(0, f.scalars);
-    var r: HeapRef[] = refArray(grown(0, f.refs));
+    let first = module.functions[fi];
+    let main = TaskState {
+        s = [0 as uint64] * grown(0, first.scalars),
+        r = refArray(grown(0, first.refs)),
+        frames = List<CallFrame>.new(),
+        fi = fi,
+    };
     var k = 0;
-    while (k < args.length() && k < f.paramsS) {
-        s[k] = args[k];
+    while (k < args.length() && k < first.paramsS) {
+        main.s[k] = args[k];
         k += 1;
     }
-    // the script's top-level bindings (07 Top), alive for this run
-    var gs: uint64[] = [0 as uint64] * module.globalsS;
-    var gr: HeapRef[] = refArray(module.globalsR);
-    // the descriptors of this run: the compiler's, and those shared copies make (S3i)
-    let interning = Interning.of(module);
-    let frames = List<CallFrame>.new();
-    // the report of an error no frame took, once one is asked (S4a)
-    var report: ?Report = null;
-    var code: Instr[] = f.code;
-    var pc = 0;
-    var bs = 0;
-    var br = 0;
-    var budget = fuel;
+    // the script's top-level bindings (07 Top), alive for this run; the descriptors of this run:
+    // the compiler's, and those shared copies make (S3i)
+    let shared = RunShared {
+        module = module,
+        gs = [0 as uint64] * module.globalsS,
+        gr = refArray(module.globalsR),
+        interning = Interning.of(module),
+        budget = fuel,
+        queue = List<TaskState>.new(),
+        tasks = List<ScriptTask>.new(),
+    };
+    // the scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits
+    shared.queue.push(main);
     while (true) {
-        let ins = code[pc];
+        // S6d3: the timers whose time came wake behind the ready tasks; with none ready, the run
+        // waits for the earliest — without timers that is a deadlock
+        fireDueTimers(shared);
+        // S6e: a native's Lyric 5 task gets its turn at every step while one is waited for
+        if (shared.pendingNatives > 0) {
+            try? yieldNow();
+        }
+        if (shared.head >= shared.queue.length()) {
+            // a native's end, or the earliest timer, ends the run's wait
+            if (shared.pendingNatives > 0) {
+                if (shared.timers.length() > 0) {
+                    let wait = earliestDeadline(shared) - nowNs(shared);
+                    if (wait > 0) {
+                        try? Select.on(shared.wakeups) { _ => { } }.timeout(
+                            Duration.ofNanos(wait)
+                        ) { }.run();
+                    }
+                } else {
+                    try? shared.wakeups.recv();
+                }
+                continue;
+            }
+            if (shared.timers.length() == 0) {
+                break;
+            }
+            let wait = earliestDeadline(shared) - nowNs(shared);
+            if (wait > 0) {
+                try? sleep(Duration.ofNanos(wait));
+            }
+            continue;
+        }
+        let t = shared.queue[shared.head];
+        shared.head += 1;
+        let out = runTask(t, shared);
+        match (out) {
+            .Switch => { }
+            // the budget holds the whole instance (N8, 01 S5b)
+            .Suspended => {
+                return out;
+            }
+            _ => {
+                let h = t.handle;
+                if (h == null) {
+                    // the run's first task: its end, after its `join`, is the run's
+                    return out;
+                }
+                h.result = out;
+                // a task of a scope fails its scope: the first cancels the scope's others (§4
+                // rule 2, §5 rule 3)
+                let sc = h.scope;
+                if (sc != null) {
+                    if (sc.failed == null && failedWith(module, h, out)) {
+                        sc.failed = h;
+                        for (x in sc.tasks) {
+                            cancelTask(x, shared);
+                        }
+                    }
+                } else if (shared.failed == null && !h.detached) {
+                    // a task that ends with `Cancelled` is no failure (Lyric 5 10 §4 rule 2)
+                    var failed = false;
+                    match (out) {
+                        .Error(_) => {
+                            failed = !isCancelled(module, h.state.thrown);
+                        }
+                        .Panic(_) => {
+                            failed = true;
+                        }
+                        _ => { }
+                    }
+                    if (failed) {
+                        shared.failed = h;
+                        // the first failure cancels the scope's other tasks (§4 rule 2, §5 rule 3;
+                        // 07 End)
+                        for (x in shared.tasks) {
+                            if (!x.detached) {
+                                cancelTask(x, shared);
+                            }
+                        }
+                    }
+                }
+                // a detached task's panic ends the run: nobody could look at it (§5 rule 4)
+                if (h.detached) {
+                    match (out) {
+                        .Panic(_) => {
+                            return out;
+                        }
+                        _ => { }
+                    }
+                }
+                for (w in h.waiters) {
+                    w.waitingOn = null;
+                    shared.queue.push(w);
+                }
+                h.waiters.clear();
+            }
+        }
+    }
+    return Outcome.Panic(
+        ScriptPanic {
+            code = "LYS-RT0018",
+            message = "every task waits for another: none can go on",
+            trace = [],
+        }
+    );
+}
+
+/// Whether `v` is the prelude's `Cancelled` (S6c1).
+fn isCancelled(module: Module, v: HeapRef): bool {
+    if (module.cancelledType < 0 || !(v is ScriptObject)) {
+        return false;
+    }
+    return same(v.typeDesc, module.types[module.cancelledType]);
+}
+
+/// Whether task `h`, which ended with `out`, failed: an error other than `Cancelled`, or a panic
+/// (Lyric 5 10 §4 rule 2, §5 rule 3).
+fn failedWith(module: Module, h: ScriptTask, out: Outcome): bool {
+    return match (out) {
+        .Error(_) => !isCancelled(module, h.state.thrown),
+        .Panic(_) => true,
+        _ => false,
+    };
+}
+
+/// A new `Cancelled`, which a wait in a cancelled task throws (S6c1).
+fn newCancelled(module: Module): HeapRef {
+    if (module.cancelledType < 0) {
+        return nilRef();
+    }
+    let t = module.types[module.cancelledType];
+    return ScriptObject {
+        typeDesc = t,
+        scalars = [0 as uint64] * t.scalarFields.length(),
+        refs = refArray(t.refFields.length()),
+    };
+}
+
+/// Cancels task `h` (Lyric 5 10 §3 rule 1): marked, so that its waits throw `Cancelled`, and taken
+/// out of the wait it is in, which throws at once; a task that has ended stays as it ended.
+fn cancelTask(h: ScriptTask, shared: RunShared): void {
+    if (h.result != null) {
+        return;
+    }
+    h.cancelled = true;
+    let st = h.state;
+    let w = st.waitingOn;
+    if (w != null) {
+        removeFrom(w.waiters, st);
+        st.waitingOn = null;
+        shared.queue.push(st);
+    }
+    // S6d1: a channel's or a semaphore's wait ends as well; a value it waited to send stays its own
+    let ch = st.waitingChan;
+    if (ch != null) {
+        removeFrom(ch.receivers, st);
+        removeFrom(ch.senders, st);
+        st.waitingChan = null;
+        st.sendItem = null;
+        shared.queue.push(st);
+    }
+    let sem = st.waitingSem;
+    if (sem != null) {
+        removeFrom(sem.waiters, st);
+        st.waitingSem = null;
+        shared.queue.push(st);
+    }
+    // S6d2: a select's wait ends as well
+    if (st.watching.length() > 0) {
+        unwatchAll(st);
+        shared.queue.push(st);
+    }
+    // S6e: and a native's
+    if (st.nativePending) {
+        st.nativePending = false;
+        shared.pendingNatives -= 1;
+        shared.queue.push(st);
+    }
+    // S6d3: and a sleep
+    let e = st.sleeping;
+    if (e != null) {
+        var k = 0;
+        while (k < shared.timers.length()) {
+            if (same(shared.timers[k], e)) {
+                shared.timers.removeAt(k);
+                break;
+            }
+            k += 1;
+        }
+        st.sleeping = null;
+        shared.queue.push(st);
+    }
+}
+
+/// Closes `ch` (Lyric 5 10 §6 rule 4): its receivers get none, its senders throw, its watchers
+/// look again; a closed channel stays as it is.
+fn closeChannel(ch: ScriptChannel, shared: RunShared): void {
+    if (ch.closed) {
+        return;
+    }
+    ch.closed = true;
+    wakeWatchers(ch, shared);
+    for (w in ch.receivers) {
+        wake(w, shared);
+    }
+    ch.receivers.clear();
+    for (w in ch.senders) {
+        w.sendItem = null;
+        w.sendState = 2;
+        wake(w, shared);
+    }
+    ch.senders.clear();
+}
+
+/// Takes `st` off the watch of every channel its select watches (S6d2).
+fn unwatchAll(st: TaskState): void {
+    for (c in st.watching) {
+        removeFrom(c.watchers, st);
+    }
+    st.watching.clear();
+}
+
+/// Wakes the selects that watch `ch`, which can be received from now: each looks at its cases
+/// again (S6d2).
+fn wakeWatchers(ch: ScriptChannel, shared: RunShared): void {
+    for (w in ch.watchers.toArray()) {
+        unwatchAll(w);
+        w.woken = true;
+        shared.queue.push(w);
+    }
+}
+
+/// Takes `st` out of `list`, where it stands in it.
+fn removeFrom(list: List<TaskState>, st: TaskState): void {
+    var k = 0;
+    while (k < list.length()) {
+        if (same(list[k], st)) {
+            list.removeAt(k);
+            return;
+        }
+        k += 1;
+    }
+}
+
+/// Wakes a task that waited on a channel or a semaphore: back into the queue (S6d1).
+fn wake(st: TaskState, shared: RunShared): void {
+    st.waitingChan = null;
+    st.waitingSem = null;
+    shared.queue.push(st);
+}
+
+/// A new `ChannelClosed`, which a send on a closed channel throws (S6d1).
+fn newChannelClosed(module: Module): HeapRef {
+    if (module.channelClosedType < 0) {
+        return nilRef();
+    }
+    let t = module.types[module.channelClosedType];
+    return ScriptObject {
+        typeDesc = t,
+        scalars = [0 as uint64] * t.scalarFields.length(),
+        refs = refArray(t.refFields.length()),
+    };
+}
+
+/// A pull's or a receive's answer with a value: no error, the value, its presence (S6d1).
+fn delivered(s: uint64[], r: HeapRef[], a: int, b: int, item: Item): void {
+    s[a] = 0 as uint64;
+    var k = 0;
+    while (k < item.s.length()) {
+        s[a + 1 + k] = item.s[k];
+        k += 1;
+    }
+    s[a + 1 + item.s.length()] = 1 as uint64;
+    k = 0;
+    while (k < item.r.length()) {
+        r[b + k] = item.r[k];
+        k += 1;
+    }
+}
+
+/// Whether `x` and `y` are one object: `sameRef`'s kinds, and a coroutine and a task, which this
+/// module holds (S6b3: a coroutine is an `Identity`, Lyric 5 10 §1 rule 14).
+fn sameHeld(x: HeapRef, y: HeapRef): bool {
+    if (x is ScriptCoroutine) {
+        return y is ScriptCoroutine && same(x, y);
+    }
+    if (x is ScriptTask) {
+        return y is ScriptTask && same(x, y);
+    }
+    return sameRef(x, y);
+}
+
+/// A pull's answer that the coroutine has ended: no error, no value — its slots cleared, its
+/// presence 0 (S6b).
+fn ended(s: uint64[], r: HeapRef[], a: int, b: int, ns: int, nr: int): void {
+    s[a] = 0 as uint64;
+    var k = 0;
+    while (k <= ns) {
+        s[a + 1 + k] = 0 as uint64;
+        k += 1;
+    }
+    k = 0;
+    while (k < nr) {
+        r[b + k] = nil;
+        k += 1;
+    }
+}
+
+/// Runs task `t` from where it stands until it ends — its outcome — or waits.
+fn runTask(t: TaskState, shared: RunShared): Outcome {
+    let module = shared.module;
+    let interning = shared.interning;
+    let gs = shared.gs;
+    let gr = shared.gr;
+    var fi = t.fi;
+    var f = module.functions[fi];
+    var s = t.s;
+    var r = t.r;
+    var frames = t.frames;
+    // the report of an error no frame took, once one is asked (S4a)
+    var report = t.report;
+    var code: Instr[] = f.code;
+    var pc = t.pc;
+    var bs = t.bs;
+    var br = t.br;
+    // S6b3: a close's `Cancelled`, thrown at the yield the coroutine parked at, from the register
+    // above the frame's
+    var inject = false;
+    while (true) {
+        let ins = if (inject) Instr { op = .Throw, a = f.refs as uint16, b = 0, c = 0 }
+            else code[pc];
+        inject = false;
         let a = ins.a as int;
         let b = ins.b as int;
         let c = ins.c as int;
@@ -305,7 +915,7 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 pc += 1;
             }
             .Same => {
-                s[bs + a] = truth(sameRef(r[br + b], r[br + c]));
+                s[bs + a] = truth(sameHeld(r[br + b], r[br + c]));
                 pc += 1;
             }
             .Not => {
@@ -322,8 +932,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             }
             .Jump => {
                 if (a <= pc) {
-                    budget = spend(budget);
-                    if (budget == -2) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
                         return Outcome.Suspended;
                     }
                 }
@@ -333,8 +943,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 let taken = (s[bs + a] != 0) == (ins.op == .JumpIf);
                 if (taken) {
                     if (b <= pc) {
-                        budget = spend(budget);
-                        if (budget == -2) {
+                        shared.budget = spend(shared.budget);
+                        if (shared.budget == -2) {
                             return Outcome.Suspended;
                         }
                     }
@@ -346,8 +956,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             .JumpLtI => {
                 if ((s[bs + a] as int) < (s[bs + b] as int)) {
                     if (c <= pc) {
-                        budget = spend(budget);
-                        if (budget == -2) {
+                        shared.budget = spend(shared.budget);
+                        if (shared.budget == -2) {
                             return Outcome.Suspended;
                         }
                     }
@@ -357,8 +967,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 }
             }
             .Call => {
-                budget = spend(budget);
-                if (budget == -2) {
+                shared.budget = spend(shared.budget);
+                if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 if (frames.length() >= maxDepth) {
@@ -400,6 +1010,40 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 }
                 let back = frames.pop();
                 if (back == null) {
+                    // S6b: a coroutine's body ended — its result kept, its pull answers that no
+                    // value came (Lyric 5 10 §1 rules 3–5)
+                    let p = t.pullers.pop();
+                    if (p != null) {
+                        let co = p.co;
+                        if (ins.op == .RetS) {
+                            co.resS = [s[bs]];
+                        } else if (ins.op == .RetR) {
+                            co.resR = [r[br]];
+                        } else if (ins.op == .RetN) {
+                            co.resS = firstScalars(s, bs, f.retS);
+                            co.resR = firstRefs(r, br, f.retR);
+                        }
+                        co.returned = true;
+                        co.state = 3;
+                        co.ctx = null;
+                        let x = p.ctx;
+                        s = x.s;
+                        r = x.r;
+                        frames = x.frames;
+                        fi = x.fi;
+                        f = module.functions[fi];
+                        code = f.code;
+                        pc = x.pc;
+                        bs = x.bs;
+                        br = x.br;
+                        report = x.report;
+                        if (p.closing) {
+                            s[p.a] = 0 as uint64;
+                        } else {
+                            ended(s, r, p.a, p.b, co.ns, co.nr);
+                        }
+                        continue;
+                    }
                     return match (ins.op) {
                         .RetS => Outcome.Scalar(s[bs]),
                         .RetR => Outcome.Ref(r[br]),
@@ -641,8 +1285,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             // a call through a function value: the value is the callee's first reference argument,
             // and its first scalar field names the function
             .CallV => {
-                budget = spend(budget);
-                if (budget == -2) {
+                shared.budget = spend(shared.budget);
+                if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 if (frames.length() >= maxDepth) {
@@ -681,8 +1325,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             // a call through an interface value: the receiver is the callee's first reference
             // argument, and its type's table names the function of slot `a`
             .CallI => {
-                budget = spend(budget);
-                if (budget == -2) {
+                shared.budget = spend(shared.budget);
+                if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 if (frames.length() >= maxDepth) {
@@ -724,8 +1368,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
             // S3i: a static member through a type's descriptor: the function in slot `a` of the
             // descriptor in reference register `c`, its arguments after it
             .CallS => {
-                budget = spend(budget);
-                if (budget == -2) {
+                shared.budget = spend(shared.budget);
+                if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 if (frames.length() >= maxDepth) {
@@ -949,6 +1593,53 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                         br = back.baseR;
                     }
                 } else {
+                    // S6b: out of a coroutine's body — it has ended, and the pull that ran into
+                    // the error throws it (Lyric 5 10 §1 rule 6)
+                    let p = t.pullers.pop();
+                    if (p != null) {
+                        let co = p.co;
+                        co.state = 3;
+                        co.ctx = null;
+                        let x = p.ctx;
+                        s = x.s;
+                        r = x.r;
+                        frames = x.frames;
+                        fi = x.fi;
+                        f = module.functions[fi];
+                        code = f.code;
+                        pc = x.pc;
+                        bs = x.bs;
+                        br = x.br;
+                        report = x.report;
+                        s[p.a] = 1 as uint64;
+                        r[p.b] = value;
+                        r[p.b + 1] = record;
+                        // a close's own `Cancelled` ends there; what a defer threw on the way out
+                        // comes out of the close, the first, the rest suppressed into it (rule 9)
+                        if (p.closing && sameRef(value, co.cancel)) {
+                            s[p.a] = 0 as uint64;
+                            if (record.suppressed.length() > 0) {
+                                let again = recordOf(frames, fi, pc);
+                                var k = 1;
+                                while (k < record.suppressed.length()) {
+                                    again.suppressed.push(record.suppressed[k]);
+                                    k += 1;
+                                }
+                                s[p.a] = 1 as uint64;
+                                r[p.b] = record.suppressed[0];
+                                r[p.b + 1] = again;
+                            }
+                        }
+                        continue;
+                    }
+                    if (t.handle != null) {
+                        // a spawned task fails: `await` and `join` throw its error again (S6a)
+                        t.thrown = value;
+                        t.record = record;
+                        return Outcome.Error(
+                            ScriptError { typeName = "", message = "", causes = [], trace = [] }
+                        );
+                    }
                     let rep = report;
                     if (rep != null) {
                         // thrown out of a report's call: the report ends with what it has
@@ -990,6 +1681,1069 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                         r = growRefs(r, br + f.refs);
                     }
                 }
+            }
+            // S6b: a coroutine of the closure in `b`, run by nothing yet; `c` the slots of what
+            // it yields, scalars × 256 + references; its result's from its function
+            .CoNew => {
+                let env = r[br + b];
+                var target = -1;
+                if (env is ScriptObject) {
+                    target = env.scalars[0] as int;
+                }
+                if (target < 0 || target >= module.functions.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a coroutine of no function"
+                    );
+                }
+                let body = module.functions[target];
+                let (rs, rr) = match (body.returns) {
+                    .Scalar => (1, 0),
+                    .Ref => (0, 1),
+                    .Slots => (body.retS, body.retR),
+                    _ => (0, 0),
+                };
+                r[br + a] = ScriptCoroutine {
+                    env = env,
+                    ns = c / 256,
+                    nr = c % 256,
+                    rs = rs,
+                    rr = rr,
+                };
+                pc += 1;
+            }
+            // S6b: a pull of the coroutine in `c`: it runs to its next yield or its end (Lyric 5
+            // 10 §1 rule 4); the answer at `s[a]` 0 and the value at `s[a+1]…`/`r[b]…`, its
+            // presence after its scalars — or `s[a]` 1, the error at `r[b]`, its record at `r[b+1]`
+            .CoNext => {
+                let o = r[br + c];
+                if (!(o is ScriptCoroutine)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a pull of no coroutine"
+                    );
+                }
+                if (o.state == 2) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a coroutine pulled while it runs"
+                    );
+                }
+                if (o.state == 3) {
+                    ended(s, r, bs + a, br + b, o.ns, o.nr);
+                    pc += 1;
+                } else {
+                    let x = o.ctx ?? coroutineStart(module, o.env);
+                    if (x == null) {
+                        return panicOut(
+                            module,
+                            frames,
+                            fi,
+                            pc,
+                            "LYS-ICE0001",
+                            "a coroutine of no function"
+                        );
+                    }
+                    t.pullers.push(
+                        Pull {
+                            ctx = Context {
+                                s = s,
+                                r = r,
+                                frames = frames,
+                                fi = fi,
+                                pc = pc + 1,
+                                bs = bs,
+                                br = br,
+                                report = report,
+                            },
+                            co = o,
+                            a = bs + a,
+                            b = br + b,
+                        }
+                    );
+                    o.state = 2;
+                    s = x.s;
+                    r = x.r;
+                    frames = x.frames;
+                    fi = x.fi;
+                    f = module.functions[fi];
+                    code = f.code;
+                    pc = x.pc;
+                    bs = x.bs;
+                    br = x.br;
+                    report = x.report;
+                }
+            }
+            // S6b: the running coroutine hands the value at `s[a]…`/`r[b]…` to the context that
+            // pulled it and parks (Lyric 5 10 §1 rule 2); where none pulled, a panic
+            .YieldV | .YieldD => {
+                let p = t.pullers.pop();
+                if (p == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a yield where no coroutine runs"
+                    );
+                }
+                if (p.closing) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a yield after the coroutine was closed"
+                    );
+                }
+                // S6b3: a yield in a function the coroutine calls meets its `Y` here (rule 13)
+                if (ins.op == .YieldD && c != p.co.ykey) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a yield of another type than the running coroutine's"
+                    );
+                }
+                let co = p.co;
+                let cs = s;
+                let cr = r;
+                let vs = bs + a;
+                let vr = br + b;
+                co.ctx = Context {
+                    s = s,
+                    r = r,
+                    frames = frames,
+                    fi = fi,
+                    pc = pc + 1,
+                    bs = bs,
+                    br = br,
+                    report = report,
+                };
+                co.state = 1;
+                let x = p.ctx;
+                s = x.s;
+                r = x.r;
+                frames = x.frames;
+                fi = x.fi;
+                f = module.functions[fi];
+                code = f.code;
+                pc = x.pc;
+                bs = x.bs;
+                br = x.br;
+                report = x.report;
+                s[p.a] = 0 as uint64;
+                var k = 0;
+                while (k < co.ns) {
+                    s[p.a + 1 + k] = cs[vs + k];
+                    k += 1;
+                }
+                s[p.a + 1 + co.ns] = 1 as uint64;
+                k = 0;
+                while (k < co.nr) {
+                    r[p.b + k] = cr[vr + k];
+                    k += 1;
+                }
+            }
+            // S6b: the coroutine's result at `s[a]…`/`r[b]…`, its presence after its scalars
+            // (rule 5)
+            .CoRes => {
+                let o = r[br + c];
+                if (!(o is ScriptCoroutine)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a result of no coroutine"
+                    );
+                }
+                var k = 0;
+                while (k < o.rs) {
+                    s[bs + a + k] = if (o.returned) o.resS[k] else 0 as uint64;
+                    k += 1;
+                }
+                s[bs + a + o.rs] = truth(o.returned);
+                k = 0;
+                while (k < o.rr) {
+                    r[br + b + k] = if (o.returned) o.resR[k] else nil;
+                    k += 1;
+                }
+                pc += 1;
+            }
+            // S6b3: a close (Lyric 5 10 §1 rule 9): one never pulled or ended ends; one parked at a
+            // yield runs on from it with that yield throwing the `Cancelled` in `r[b]`; `s[a]` 1
+            // and the error at `r[b]`, its record at `r[b+1]`, where the close throws
+            .CoClose => {
+                let o = r[br + c];
+                if (!(o is ScriptCoroutine)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a close of no coroutine"
+                    );
+                }
+                if (o.state == 2) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a coroutine closed while it runs"
+                    );
+                }
+                let x = o.ctx;
+                if (o.state == 1 && x != null) {
+                    o.cancel = r[br + b];
+                    t.pullers.push(
+                        Pull {
+                            ctx = Context {
+                                s = s,
+                                r = r,
+                                frames = frames,
+                                fi = fi,
+                                pc = pc + 1,
+                                bs = bs,
+                                br = br,
+                                report = report,
+                            },
+                            co = o,
+                            a = bs + a,
+                            b = br + b,
+                            closing = true,
+                        }
+                    );
+                    o.state = 2;
+                    s = x.s;
+                    r = x.r;
+                    frames = x.frames;
+                    fi = x.fi;
+                    f = module.functions[fi];
+                    code = f.code;
+                    pc = x.pc;
+                    bs = x.bs;
+                    br = x.br;
+                    report = x.report;
+                    pc -= 1;
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = o.cancel;
+                    inject = true;
+                } else {
+                    o.state = 3;
+                    o.ctx = null;
+                    s[bs + a] = 0 as uint64;
+                    pc += 1;
+                }
+            }
+            // S6c2: a task scope
+            .ScopeNew => {
+                r[br + a] = ScriptScope { tasks = List<ScriptTask>.new() };
+                pc += 1;
+            }
+            // S6c2: the scope in `c` closes (Lyric 5 10 §4 rules 1–4): it waits until every task of
+            // it has ended — a cancel of the closing task cancels them and goes on waiting —, then
+            // throws the first failure (`s[a]` 1, error `r[b]`, record `r[b+1]`) or panics its panic
+            .ScopeClose => {
+                let sc = r[br + c];
+                if (!(sc is ScriptScope)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a close of no scope");
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    for (x in sc.tasks) {
+                        cancelTask(x, shared);
+                    }
+                }
+                var open: ?ScriptTask = null;
+                for (h in sc.tasks) {
+                    if (h.result == null && open == null) {
+                        open = h;
+                    }
+                }
+                let waiting = open;
+                if (waiting != null) {
+                    t.waitingOn = waiting;
+                    waiting.waiters.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+                sc.closed = true;
+                s[bs + a] = 0 as uint64;
+                let h = sc.failed;
+                if (h != null) {
+                    match (h.result ?? Outcome.Switch) {
+                        .Panic(p) => {
+                            return Outcome.Panic(p);
+                        }
+                        _ => {
+                            s[bs + a] = 1 as uint64;
+                            r[br + b] = h.state.thrown;
+                            r[br + b + 1] = h.state.record;
+                        }
+                    }
+                }
+                pc += 1;
+            }
+            // S6c3: the value of the ended task in `c` at `s[a]…`/`r[b]…`, without a wait
+            .TaskVal => {
+                let o = r[br + c];
+                if (o is ScriptTask) {
+                    match (o.result ?? Outcome.Void) {
+                        .Scalar(v) => {
+                            s[bs + a] = v;
+                        }
+                        .Ref(v) => {
+                            r[br + b] = v;
+                        }
+                        .Slots(xs, ys) => {
+                            var k = 0;
+                            while (k < xs.length()) {
+                                s[bs + a + k] = xs[k];
+                                k += 1;
+                            }
+                            k = 0;
+                            while (k < ys.length()) {
+                                r[br + b + k] = ys[k];
+                                k += 1;
+                            }
+                        }
+                        _ => { }
+                    }
+                }
+                pc += 1;
+            }
+            // S6c3: the error the task in `b` ended with
+            .TaskErr => {
+                let o = r[br + b];
+                if (o is ScriptTask) {
+                    r[br + a] = o.state.thrown;
+                }
+                pc += 1;
+            }
+            // S6c3: the code (`c` 0), the message (1) or the trace (2) of the task's panic
+            .TaskPInfo => {
+                let o = r[br + b];
+                var text = "";
+                if (o is ScriptTask) {
+                    match (o.result ?? Outcome.Void) {
+                        .Panic(p) => {
+                            text = if (c == 0) p.code
+                                else if (c == 1) p.message else p.trace.join("\n");
+                        }
+                        _ => { }
+                    }
+                }
+                r[br + a] = ScriptString { text = text };
+                pc += 1;
+            }
+            // S6d1: a channel of capacity `s[b]`, `c` the slots of its values
+            .ChanNew => {
+                let capacity = s[bs + b] as int;
+                if (capacity < 0) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0008",
+                        "a channel's capacity is negative"
+                    );
+                }
+                r[br + a] = ScriptChannel {
+                    capacity = capacity,
+                    ns = c / 256,
+                    nr = c % 256,
+                    buffer = List<Item>.new(),
+                    receivers = List<TaskState>.new(),
+                    senders = List<TaskState>.new(),
+                };
+                pc += 1;
+            }
+            // S6d1: a send of the value at `s[a+1]…`/`r[b+2]…` on the channel in `c` (Lyric 5 10 §6
+            // rule 2): to a waiting receiver, or into the buffer while it has room, or the task waits
+            // until a receiver takes it; `s[a]` 1 and `ChannelClosed` at `r[b]`, its record at
+            // `r[b+1]`, where the channel is closed or closes meanwhile
+            .ChanSend => {
+                let ch = r[br + c];
+                if (!(ch is ScriptChannel)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a send on no channel");
+                }
+                // a send that went through is no wait any more: a cancel after it leaves it done
+                if (t.sendState == 1) {
+                    t.sendState = 0;
+                    s[bs + a] = 0 as uint64;
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (t.sendState == 2 || ch.closed) {
+                    t.sendState = 0;
+                    s[bs + a] = 1 as uint64;
+                    r[br + b] = newChannelClosed(module);
+                    r[br + b + 1] = recordOf(frames, fi, pc);
+                    pc += 1;
+                    continue;
+                }
+                let item = Item {
+                    s = firstScalars(s, bs + a + 1, ch.ns),
+                    r = firstRefs(r, br + b + 2, ch.nr),
+                };
+                s[bs + a] = 0 as uint64;
+                if (ch.receivers.length() > 0) {
+                    let w = ch.receivers.removeAt(0);
+                    w.handoff = item;
+                    wake(w, shared);
+                    pc += 1;
+                } else if (ch.buffer.length() < ch.capacity) {
+                    ch.buffer.push(item);
+                    wakeWatchers(ch, shared);
+                    pc += 1;
+                } else {
+                    t.sendItem = item;
+                    t.waitingChan = ch;
+                    ch.senders.push(t);
+                    wakeWatchers(ch, shared);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+            }
+            // S6d1: a receive from the channel in `c` (rule 3): the next value — from the buffer, a
+            // waiting sender's taking the freed place, or from a waiting sender — at `s[a+1]…`/
+            // `r[b]…` with its presence after; none once it is closed and nothing is left; or the
+            // task waits for one
+            .ChanRecv => {
+                let ch = r[br + c];
+                if (!(ch is ScriptChannel)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a receive of no channel"
+                    );
+                }
+                // a value handed over already is the receive's, a cancel after it notwithstanding
+                let got = t.handoff;
+                if (got != null) {
+                    t.handoff = null;
+                    delivered(s, r, bs + a, br + b, got);
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (ch.buffer.length() > 0) {
+                    let item = ch.buffer.removeAt(0);
+                    if (ch.senders.length() > 0) {
+                        let w = ch.senders.removeAt(0);
+                        let waited = w.sendItem;
+                        if (waited != null) {
+                            ch.buffer.push(waited);
+                        }
+                        w.sendItem = null;
+                        w.sendState = 1;
+                        wake(w, shared);
+                    }
+                    delivered(s, r, bs + a, br + b, item);
+                    pc += 1;
+                } else if (ch.senders.length() > 0) {
+                    let w = ch.senders.removeAt(0);
+                    let waited = w.sendItem;
+                    w.sendItem = null;
+                    w.sendState = 1;
+                    wake(w, shared);
+                    if (waited != null) {
+                        delivered(s, r, bs + a, br + b, waited);
+                    } else {
+                        ended(s, r, bs + a, br + b, ch.ns, ch.nr);
+                    }
+                    pc += 1;
+                } else if (ch.closed) {
+                    ended(s, r, bs + a, br + b, ch.ns, ch.nr);
+                    pc += 1;
+                } else {
+                    t.waitingChan = ch;
+                    ch.receivers.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+            }
+            // S6d1: the channel in `a` closes (rule 4): its receivers get none, its senders throw
+            .ChanClose => {
+                let ch = r[br + a];
+                if (ch is ScriptChannel) {
+                    closeChannel(ch, shared);
+                }
+                pc += 1;
+            }
+            // S6d3: the task sleeps `s[a]` nanoseconds on the run's clock (Lyric 5 10 §2 rule 5) — a
+            // wait; zero or less lets the ready tasks run first
+            .Sleep => {
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    t.slept = false;
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (t.slept) {
+                    t.slept = false;
+                    pc += 1;
+                    continue;
+                }
+                let d = s[bs + a] as int;
+                t.slept = true;
+                if (d <= 0) {
+                    shared.queue.push(t);
+                } else {
+                    let e = TimerEntry {
+                        deadline = nowNs(shared) + d,
+                        seq = shared.timerSeq,
+                        task = t,
+                    };
+                    shared.timerSeq += 1;
+                    shared.timers.push(e);
+                    t.sleeping = e;
+                }
+                t.s = s;
+                t.r = r;
+                t.fi = fi;
+                t.pc = pc;
+                t.bs = bs;
+                t.br = br;
+                t.report = report;
+                t.frames = frames;
+                return Outcome.Switch;
+            }
+            // S6e: a line of standard input at `r[a]`, none at its end — the first native that
+            // waits: a Lyric 5 task reads it while the script's task waits, and the others run
+            // (07 N6, 11 Co)
+            .ReadLine => {
+                if (t.nativeDone) {
+                    t.nativeDone = false;
+                    let line = t.nativeText;
+                    t.nativeText = null;
+                    if (line != null) {
+                        r[br + a] = ScriptString { text = line };
+                    } else {
+                        r[br + a] = nil;
+                    }
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                t.nativePending = true;
+                t.nativeTicket += 1;
+                let ticket = t.nativeTicket;
+                let st = t;
+                shared.pendingNatives += 1;
+                spawnDetached(
+                    () => {
+                        var text: ?string = null;
+                        let got = try? stdin().readLine();
+                        if (let g = got) {
+                            text = g;
+                        }
+                        // a task cancelled meanwhile waits no more: the line is dropped
+                        if (st.nativePending && st.nativeTicket == ticket) {
+                            st.nativePending = false;
+                            st.nativeDone = true;
+                            st.nativeText = text;
+                            shared.pendingNatives -= 1;
+                            shared.queue.push(st);
+                            try? shared.wakeups.send(1);
+                        }
+                    }
+                );
+                t.s = s;
+                t.r = r;
+                t.fi = fi;
+                t.pc = pc;
+                t.bs = bs;
+                t.br = br;
+                t.report = report;
+                t.frames = frames;
+                return Outcome.Switch;
+            }
+            // S6d3: a channel without values that closes once `s[b]` nanoseconds passed (§7 rule 5)
+            .TimerAfter => {
+                let ch = ScriptChannel {
+                    capacity = 0,
+                    ns = 0,
+                    nr = 0,
+                    buffer = List<Item>.new(),
+                    receivers = List<TaskState>.new(),
+                    senders = List<TaskState>.new(),
+                };
+                let d = s[bs + b] as int;
+                if (d <= 0) {
+                    closeChannel(ch, shared);
+                } else {
+                    shared.timers.push(
+                        TimerEntry {
+                            deadline = nowNs(shared) + d,
+                            seq = shared.timerSeq,
+                            channel = ch,
+                        }
+                    );
+                    shared.timerSeq += 1;
+                }
+                r[br + a] = ch;
+                pc += 1;
+            }
+            // S6d1: a semaphore of `s[b]` permits (Lyric 5 10 §10 rule 7)
+            .SemNew => {
+                let n = s[bs + b] as int;
+                if (n < 0) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0008",
+                        "a semaphore's permits are negative"
+                    );
+                }
+                r[br + a] = ScriptSemaphore { permits = n, waiters = List<TaskState>.new() };
+                pc += 1;
+            }
+            // S6d1: a permit of the semaphore in `a`, the task waiting while none is left
+            .SemAcquire => {
+                let sem = r[br + a];
+                if (!(sem is ScriptSemaphore)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "an acquire of no semaphore"
+                    );
+                }
+                // a permit handed over already is the task's, a cancel after it notwithstanding
+                if (t.granted) {
+                    t.granted = false;
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (sem.permits > 0) {
+                    sem.permits -= 1;
+                    pc += 1;
+                } else {
+                    t.waitingSem = sem;
+                    sem.waiters.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+            }
+            .SemTry => {
+                let sem = r[br + b];
+                var took = false;
+                if (sem is ScriptSemaphore && sem.permits > 0) {
+                    sem.permits -= 1;
+                    took = true;
+                }
+                s[bs + a] = truth(took);
+                pc += 1;
+            }
+            // a permit back: to the task that has waited longest, or to the count
+            .SemRelease => {
+                let sem = r[br + a];
+                if (sem is ScriptSemaphore) {
+                    if (sem.waiters.length() > 0) {
+                        let w = sem.waiters.removeAt(0);
+                        w.granted = true;
+                        wake(w, shared);
+                    } else {
+                        sem.permits += 1;
+                    }
+                }
+                pc += 1;
+            }
+            .SemAvail => {
+                let sem = r[br + b];
+                s[bs + a] = (if (sem is ScriptSemaphore) sem.permits else 0) as uint64;
+                pc += 1;
+            }
+            // S6d2: whether the channel in `b` can be received from without a wait — a value in its
+            // buffer, a sender waiting, or closed (Lyric 5 10 §7 rule 2)
+            .ChanReady => {
+                let ch = r[br + b];
+                s[bs + a] = truth(
+                    ch is ScriptChannel
+                        && (ch.buffer.length() > 0 || ch.senders.length() > 0 || ch.closed)
+                );
+                pc += 1;
+            }
+            .ChanWatch => {
+                let ch = r[br + a];
+                if (ch is ScriptChannel) {
+                    ch.watchers.push(t);
+                    t.watching.push(ch);
+                }
+                pc += 1;
+            }
+            // the select waits until a channel it watches stirs — a wait (rule 4)
+            .ParkW => {
+                if (t.woken) {
+                    t.woken = false;
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    unwatchAll(t);
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (t.watching.length() == 0) {
+                    pc += 1;
+                    continue;
+                }
+                t.s = s;
+                t.r = r;
+                t.fi = fi;
+                t.pc = pc;
+                t.bs = bs;
+                t.br = br;
+                t.report = report;
+                t.frames = frames;
+                return Outcome.Switch;
+            }
+            .ScopeCancel => {
+                let sc = r[br + a];
+                if (sc is ScriptScope) {
+                    for (x in sc.tasks) {
+                        cancelTask(x, shared);
+                    }
+                }
+                pc += 1;
+            }
+            // S6c1: the task in `a` cancelled (Lyric 5 10 §3 rule 1)
+            .TaskCancel => {
+                let o = r[br + a];
+                if (o is ScriptTask) {
+                    cancelTask(o, shared);
+                }
+                pc += 1;
+            }
+            .CoKey => {
+                let o = r[br + a];
+                if (o is ScriptCoroutine) {
+                    o.ykey = b;
+                }
+                pc += 1;
+            }
+            .CoDone => {
+                let o = r[br + b];
+                s[bs + a] = truth(o is ScriptCoroutine && o.state == 3);
+                pc += 1;
+            }
+            // S6a: a task of the closure in `b`, queued; the spawner goes on (07 N8); `spawn.d` one
+            // nobody waits for (S6c1)
+            .Spawn | .SpawnD | .SpawnS => {
+                // S6c2: a scope's task; a closed scope takes none (Lyric 5 10 §4 rule 5)
+                var scope: ?ScriptScope = null;
+                if (ins.op == .SpawnS) {
+                    let sc = r[br + c];
+                    if (sc is ScriptScope) {
+                        if (sc.closed) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0008",
+                                "a closed scope takes no task"
+                            );
+                        }
+                        scope = sc;
+                    }
+                }
+                let env = r[br + b];
+                var target = -1;
+                if (env is ScriptObject) {
+                    target = env.scalars[0] as int;
+                }
+                if (target < 0 || target >= module.functions.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a spawn of no function"
+                    );
+                }
+                let callee = module.functions[target];
+                let child = TaskState {
+                    s = [0 as uint64] * grown(0, callee.scalars),
+                    r = refArray(grown(0, callee.refs)),
+                    frames = List<CallFrame>.new(),
+                    fi = target,
+                };
+                child.r[0] = env;
+                let handle = ScriptTask {
+                    state = child,
+                    waiters = List<TaskState>.new(),
+                    detached = ins.op == .SpawnD,
+                    scope = scope,
+                };
+                child.handle = handle;
+                shared.queue.push(child);
+                let own = scope;
+                if (own != null) {
+                    own.tasks.push(handle);
+                } else {
+                    shared.tasks.push(handle);
+                }
+                r[br + a] = handle;
+                pc += 1;
+            }
+            // S6a: the value of the task in `c` — `s[a]` 0 and the value at `s[a+1]…`/`r[b]…` —,
+            // or its error — `s[a]` 1, the error at `r[b]`, its record at `r[b+1]` —; a task still
+            // running is waited for, the await run again when it ends
+            .Await => {
+                // S6c1: a wait in a cancelled task throws `Cancelled` (Lyric 5 10 §3 rule 1)
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    t.yielded = false;
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                let o = r[br + c];
+                if (!(o is ScriptTask)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an await of no task");
+                }
+                let res = o.result;
+                if (res == null) {
+                    t.waitingOn = o;
+                    o.waiters.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+                s[bs + a] = 0 as uint64;
+                match (res) {
+                    .Scalar(v) => {
+                        s[bs + a + 1] = v;
+                    }
+                    .Ref(v) => {
+                        r[br + b] = v;
+                    }
+                    .Slots(xs, ys) => {
+                        var k = 0;
+                        while (k < xs.length()) {
+                            s[bs + a + 1 + k] = xs[k];
+                            k += 1;
+                        }
+                        k = 0;
+                        while (k < ys.length()) {
+                            r[br + b + k] = ys[k];
+                            k += 1;
+                        }
+                    }
+                    .Error(_) => {
+                        s[bs + a] = 1 as uint64;
+                        r[br + b] = o.state.thrown;
+                        r[br + b + 1] = o.state.record;
+                    }
+                    // a panic in a task panics the one that awaits it (07 N4)
+                    .Panic(p) => {
+                        return Outcome.Panic(p);
+                    }
+                    _ => { }
+                }
+                pc += 1;
+            }
+            // S6a: the task gives way, to the queue's back (07 N8)
+            .Yield => {
+                // S6c1: a wait in a cancelled task throws `Cancelled` (Lyric 5 10 §3 rule 1)
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    t.yielded = false;
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (t.yielded) {
+                    // back from the queue: the wait is over
+                    t.yielded = false;
+                    pc += 1;
+                } else {
+                    t.yielded = true;
+                    shared.queue.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+            }
+            // S6a: the status of the task in `b`, as `TaskStatus` numbers it
+            .TaskSt => {
+                let o = r[br + b];
+                var st = 0;
+                if (o is ScriptTask) {
+                    let res = o.result;
+                    if (res != null) {
+                        st = match (res) {
+                            .Error(_) => if (isCancelled(module, o.state.thrown)) 4 else 2,
+                            .Panic(_) => 3,
+                            _ => 1,
+                        };
+                    }
+                }
+                s[bs + a] = st as uint64;
+                pc += 1;
+            }
+            // S6a: the end of the top level (07 End) — every task of the run ended, the first
+            // to fail thrown again here (`s[a]` 1, error `r[b]`, record `r[b+1]`), or its panic
+            // panicking the run
+            .Join => {
+                var open: ?ScriptTask = null;
+                for (h in shared.tasks) {
+                    if (h.result == null && open == null && !h.detached) {
+                        open = h;
+                    }
+                }
+                let waiting = open;
+                if (waiting != null) {
+                    t.waitingOn = waiting;
+                    waiting.waiters.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+                s[bs + a] = 0 as uint64;
+                let h = shared.failed;
+                if (h != null) {
+                    match (h.result ?? Outcome.Switch) {
+                        .Panic(p) => {
+                            return Outcome.Panic(p);
+                        }
+                        _ => {
+                            s[bs + a] = 1 as uint64;
+                            r[br + b] = h.state.thrown;
+                            r[br + b + 1] = h.state.record;
+                        }
+                    }
+                }
+                pc += 1;
             }
             // S4e: an error a defer threw while the one of record `a` was in flight goes with it
             .Suppress => {

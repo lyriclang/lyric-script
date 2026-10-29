@@ -751,3 +751,265 @@ verfehlt: ein Reihenfolgetest mit zu wenigen Einträgen (S5a), eine `--locked`-P
 andere verdeckte (S5c2), zwei sich maskierende Mutanten (S5e); jeweils geschärft oder getrennt
 nachgeprüft. Neue Werkzeugfalle: Lyric 5s Map ist bis etwa acht Einträge geordnet. 278 Tests,
 230 Fälle; Bytecode-Format 9.
+
+## S6 — Slices (Plan, Entwurf 2026-10-29)
+
+Ziel aus der Meilensteintabelle: Koroutinen und Tasks — Tasks auf VM-Frames, Scheduler je Instanz,
+Generatoren, `spawn`/`await`/`TaskScope` (Top-Level), Channels, `select`, `sleep`, `Timer`,
+`Semaphore`, Abbruch, `withTimeout`, I/O über Lyric-5-Tasks (07 End, Wait, N2–N9; 11 Co; Lyric 5
+10 §1–§7). N1, N7, N10 entfallen (eine Instanz, ein Thread).
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S6a Tasks in der VM** | die Frames des Interpreters je Task, eine Warteschlange je Instanz; `spawn { }` → `Task<T>`, `await()`, `status()` (`Running`/`Done`/`Failed`/`Panicked`/`Cancelled`), `yieldNow()`; kooperativ (N8); der Top-Level-Code ist ein `TaskScope` (End): Kinder am Ende abgewartet, der Fehler eines Kindes bricht die Geschwister ab und endet mit Exit 1 | Konformanzfälle |
+| **S6b Koroutinen** | `Coroutine<Y, R>`: `next(): ?Y`, `result()`, `isDone()`, `close()` (wirft drinnen `Cancelled`); Generator-Lambdas, `sequence { yield }`; `Coroutine :: Iterator`, `for` darüber; Warten im Generator parkt dessen Task (N3) | Konformanzfälle |
+| **S6c Abbruch und Scopes** | `task.cancel()` → `Cancelled` am nächsten Wartepunkt (N9), fangbar; `TaskScope { }`, `scope.cancel()`, `spawnDetached`, `withTimeout(d) { }`; Panik im Task → `Panicked`, `await()` paniert erneut (N4); `TaskStatus<T>` mit Wert, Fehler und `PanicInfo`, `isDone()` (Lyric 5 10 §2 Regeln 10–11; aus S6a) | Konformanzfälle |
+| **S6d Channels, select, Zeit** | `Channel<T>` gepuffert und ungepuffert, senden/empfangen/schließen; `select` als Builder; `sleep`, `Timer.after`; `Semaphore` (kein Mutex, N5); die Hauptschleife *standalone* wartet auf Zeitgeber; `withTimeout(d) { }` (aus S6c) | Konformanzfälle |
+| **S6e I/O über Lyric-5-Tasks** | ein wartendes Native startet einen Lyric-5-Task und parkt den Skript-Task (N6, 11 Co); die ersten Natives, die das brauchen (`readLine` von stdin, `sleep` auf der Uhr); ein Callback aus einem Native darf nicht warten (Fehler) | Konformanzfälle |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s6-complete`; Bereichszeilen gegen den Code | nebenläufiges Beispiel in der CI |
+
+Reihenfolge: a vor b vor c vor d vor e. Austrittskriterium: ein nebenläufiges Beispiel in der CI.
+
+**S6a, Ergebnis (2026-10-29).** Der Interpreter läuft je Task: `TaskState` hält Register, Rahmen
+und Stelle, `RunShared` Modul, Globale, Deskriptoren, Budget und Warteschlange; `run` ist der
+Scheduler (FIFO, kooperativ: ein Task läuft, bis er endet, wartet oder weicht), `runTask` lässt
+einen laufen. Neue Ops `spawn`, `await`, `yield`, `task.st`, `join` (Format 10). Ein Fehler, der
+einen Kind-Task verlässt, wird mit Datensatz gehalten statt gemeldet; `await` wirft ihn erneut,
+eine Panik paniert den Wartenden erneut. Sprache: `spawn { … }` → `Task<T>` (Prelude: `class
+Task<T>`, `enum TaskStatus`), `await()` und `status()` als Methoden, `yieldNow()`; für die
+geworfenen Mengen wirft `await` jedes `Error` (N4: `Task<T>` ohne `throws`). Das Ende des
+Top-Levels — nach `fn main`, wo es Einstieg ist — ist ein `join`, nur wo das Programm `spawn`
+enthält: es wartet alle Tasks ab, dann entscheidet das erste Scheitern nach End-Reihenfolge,
+Fehler und Panik gleich (Exit 1 bzw. 101), auch wo es erwartet und gefangen wurde (Lyric 5 10
+§4 Regel 2, §5 Regel 3; wie `TaskScope.ended` in Lyric 5s `std.task`). Eine Verklemmung paniert
+den Lauf (`RT0018`, Lyric 5s Code); Lyric 5 §2 Regel 12 lässt den ältesten wartenden Task panieren — da eine
+Panik nicht fangbar ist, kommt beides zum selben Ende. Vorgezogen aus S6c: `Panicked` und das
+erneute Panieren in `await()`, die der Scope braucht. Mit Uhr **S6c**: das Abbrechen der
+Geschwister beim ersten Scheitern, bis dahin laufen sie zu Ende; `TaskStatus<T>` mit Wert, Fehler
+und `PanicInfo` (Lyric 5 §2 Regel 11 — N4 nennt nur die Zustände, eine Abweichung ist nicht
+entschieden, also gilt Lyric 5) und `isDone()` (Regel 10). Gefunden: `join` nahm den ersten
+*gestarteten* gescheiterten Task und ließ eine Panik immer gewinnen — gegen Lyric 5s Scope, zwei
+VM-Tests rot gegen den alten Stand; `spawn(42)` lief ohne Diagnose durch; `SEM0023` stand in
+keinem Katalog (der Katalog-Check fing es) → `SEM0014`, ein Block mit Parametern `SEM0001` statt
+`SEM0045`, beim Lambda nicht mehr doppelt gemeldet; die Verklemmung trug einen eigenen Code
+`RT0900`, obwohl Lyric 5 sie als `RT0018` kennt (Spec 16 Regel 1) — umbenannt. Spec 10 Regeln 1–3, elf Fälle; die neun
+ersten rot gegen S5 geprüft, die End-Reihenfolge nageln die VM-Tests fest. Sieben Mutanten in drei
+Läufen (`join` ohne Scheitern, `Failed` als `Done`, `spawn(42)` still, `await` ohne Menge; `yield`
+ohne Wechsel, kein `join`; `await` ohne erneutes Werfen), alle wie vorher aufgeschrieben gefangen.
+Tests 278 → 292, Fälle 230 → 241.
+
+**S6b, Schnitt (2026-10-29).** Zwei Teile, je mit eigenem Ergebnis. **S6b1**: Koroutinen in der VM
+— eigene Kontexte im ziehenden Task, Ops `co.new`, `co.next`, `yield.v`, `co.res`, `co.done`,
+Format 11 — und Koroutinen-Funktionen mit `yield`, Ergebnis über `return`, `next()`, `result()`,
+`isDone()` (Lyric 5 10 §1 Regeln 1–6). **S6b2**: Generator-Lambdas und `sequence { }` (Regeln
+11–12), `for` über eine Koroutine. **S6b3** (nach S6b1 abgespalten, weil S6b2 sonst zu groß würde):
+`close()` mit `Cancelled` am `yield`, `using let` (Regeln 9–10), ein `yield` in einer gerufenen
+Funktion (Regel 13), Identität (Regel 14). `Coroutine :: Iterator`
+kommt mit dem Iterator-`for` in **S7**; bis dahin kennt `for` nur Ranges und, ab S6b2, Koroutinen.
+
+**S6b1, Ergebnis (2026-10-29).** Eine Koroutine läuft auf eigenen Registern und Rahmen im Task,
+der sie zieht: der Task hält den laufenden Kontext und einen Stapel der ziehenden (`Pull`), so
+dass ein Warten in der Koroutine — `yieldNow()`, `await` — den ganzen Task samt Kette parkt (N3,
+Lyric 5 §2 Regel 6). Ops `co.new` (die Slots von `Y` als Immediate, die von `R` aus der
+Rumpffunktion), `co.next` (Antwort in der Form von `?Y`: erst der Wert, dann das Flag — dieselbe
+Belegung wie jedes Optional, so dass der Code sie unverändert übernimmt), `yield.v`, `co.res`,
+`co.done`; Format 11. Ein Fehler, den der Rumpf nicht fängt, geht an den `co.next`, der ihn traf,
+und wird dort erneut geworfen; eine Panik geht an den Task. Ziehen einer laufenden Koroutine und
+ein `yield` ohne Koroutine paniken (`RT0014`). Im Checker: `Coroutine<Y, R>` in der Prelude,
+`Coroutine<Y>` = `Coroutine<Y, void>`; eine Funktion mit diesem Ergebnis und eigenem `yield`
+(außerhalb ihrer Lambdas — die AST-Läufe bekamen dafür `deep`) oder ohne Rückgabewert ist eine
+Koroutinen-Funktion: ihr Rumpf wird ein parameterloses Lambda, das Parameter und Empfänger
+einfängt, die Funktion gibt `co.new` davon zurück. `yield` (`SEM0038`), `return` (`SEM0039`,
+`SEM0017`), `next()` als `?Y`/`bool`/`??T`, `result()` (`SEM0012` ohne `R`), `isDone()`; ein Pull
+wirft für die Mengen jedes `Error` (03, wie `Task<T>`). Ein `yield` außerhalb des eigenen Rumpfs
+ist bis S6b2 `NYI`. Spec 10 Regeln 4–6, 13 Fälle, alle rot gegen S6a; acht Mutanten in drei
+Läufen (Flag des Yields, Referenzen am Ende, Fehler ans Ziehen, kein Ergebnis; `SEM0038`,
+`SEM0039`, `deep`, kein erneutes Werfen), alle wie vorher aufgeschrieben. Der Katalog-Check fing
+`RT0014` vor dem ersten Lauf. Tests 292 → 306, Fälle 241 → 254.
+
+**S6b2, Ergebnis (2026-10-29).** Ein Lambda, dessen Block ein eigenes `yield` hat, ist ein
+Generator: sein Rumpf wird zum internen Aufruf `<generator>(Block)`, den der Checker mit dem
+erwarteten Typ prüft — der geschriebene Ergebnistyp oder der des Orts gibt `Y` und `R`, sonst
+vereinheitlichen sich Yields und Returns zu ihnen (`unify`, `SEM0016`). Dafür ein stiller erster
+Durchgang (wie bei 03 Leer: Fehler schweigen, erzeugte Funktionen werden zurückgenommen) und ein
+zweiter gegen die gefundenen Typen, damit ein `yield 1` vor einem `yield 2.5` umgewandelt wird
+statt als Float-Bits gelesen. `SEM0046` für einen Pfad ohne Ergebnis. `sequence { … }` erkennt der
+Checker wie `spawn` und gibt den Generator des Blocks direkt (`R` = `void`). `for (x in c)` über
+eine Koroutine senkt der Checker zu `while (let x = c.next())` über eine verborgene Lokale, die
+die Koroutine einmal hält; `Coroutine<void>` → `SEM0007`. Gefunden: die Vorausschau auf ein Lambda
+zählte nur runde Klammern, `(x: int): Pair<int, int> => x` war kein Lambda (Parser-Fehler seit S3,
+jetzt `<`/`>` als Tiefe). Spec 10 Regeln 7–8, zehn Fälle, alle rot gegen S6b1; sechs Mutanten in
+zwei Läufen, zwei Vorhersagen verfehlt: `>>` ohne eigene Zählung ist äquivalent (die Tiefe wird nur
+zu hoch, ein Komma beendet die Vorausschau nie zu früh — der `>>`-Test ist ein Pin des Verhaltens,
+kein roter Fall), und zwei Mutanten im selben Lauf (Ort ignoriert, Returns ohne Ableitung) gaben
+zusammen `R` = `void` und so einen zweiten Fall rot; jeder hat seinen eigenen Fänger. Tests 306 →
+312, Fälle 254 → 264.
+
+**S6b3, Ergebnis (2026-10-29).** `close()` (Op `co.close`, der Code baut das `Cancelled`): eine nie
+gezogene oder fertige Koroutine endet; eine geparkte läuft an ihrem `yield` weiter, das dort das
+`Cancelled` wirft — die VM schleust es als synthetisches `throw` am Kopf der Interpreter-Schleife
+ein (ein Flag, ein Register über dem Rahmen), so dass Handler und `defer` der Stelle greifen. Endet
+der Rumpf mit genau diesem `Cancelled`, ist der `close` fertig; was ein `defer` dabei warf, wirft
+er, das erste, der Rest hineinunterdrückt; ein anderer Fehler kommt heraus; ein `yield` danach und
+ein `close` der laufenden paniken (`RT0014`). `Coroutine :: [Identity, Closeable]` in der Prelude,
+`Cancelled` dazu (P17: Prelude oder `std.task`); `using let` schließt, eine fallengelassene
+Koroutine warnt nicht. Ein `yield` außerhalb des eigenen Rumpfs (Regel 13) wird `yield.d` mit dem
+Typschlüssel seines Werts (Debug-Text des Typs, je Programm nummeriert), `co.key` gibt der
+Koroutine den ihres `Y`; jede `yield` wirft für die Mengen `Cancelled` (eine Funktion mit
+geschriebenem `throws` deckt es, `SEM0034`). Format 12. Gefunden: `eq.r` verglich über `sameRef`,
+das nur `ScriptObject`, `ScriptString` und `Nil` kennt — zwei Verweise auf eine Koroutine (und
+einen Task) waren nie gleich (Probe vorher `false`); und ein Task war seit S6a in `Any`
+umwandelbar, obwohl die VM ihn ohne Deskriptor hält — Tasks und Koroutinen sind bis S7 keine
+Interfacewerte (Abweichung in Spec 10). Spec 10 Regeln 9–10, 13 Fälle, zwölf rot gegen S6b2 (der
+dreizehnte, kein Interfacewert, ist ein Pin: unter S6b2 war die Koroutine gar nicht `Closeable`).
+Sechs Mutanten in zwei Läufen, alle gefangen; eine Vorhersage vor dem Lauf korrigiert (ohne
+Einschleusen läuft das `yield` erneut und paniert sofort), und `a_yield_after_the_close_panics`
+bleibt unter diesem Mutanten aus dem falschen Grund grün — ein Panikfall vergleicht nur den Code;
+die Unit-Tests fangen ihn. Tests 312 → 319, Fälle 264 → 277.
+
+**S6c, Schnitt (2026-10-29).** Drei Teile. **S6c1** Abbruch: `task.cancel()` markiert, jedes
+Warten im Task (`await`, `yieldNow`, das Ende des Top-Levels) wirft `Cancelled` — das, in dem er
+steht, sofort, jedes spätere vor dem Warten (Lyric 5 10 §3 Regeln 1–3); ein Task, der mit
+`Cancelled` endet, ist `Cancelled` und kein Scheitern; das erste Scheitern im Top-Level bricht die
+Geschwister ab (07 End, §4 Regel 2); `spawnDetached { }`, auf den niemand wartet und der nur
+`Cancelled` werfen darf (§2 Regel 3). **S6c2** `TaskScope`: `TaskScope.new()`, `scope.spawn`,
+`close()` wartet, erstes Scheitern bricht ab, `scope.cancel()`, ein geschlossener Scope nimmt keinen
+Task (§4). **S6c3** `TaskStatus<T>` mit Wert, Fehler und `PanicInfo`, `isDone()` (§2 Regeln 10–11,
+§5). `withTimeout(d) { }` braucht die Uhr und wandert zu **S6d** (Zeit).
+
+**S6c1, Ergebnis (2026-10-29).** `t.cancel()` (Op `task.cancel`) markiert den Task und nimmt ihn aus
+dem Warten, in dem er steht (`waitingOn`: aus der Warteliste des anderen Tasks, zurück in die
+Schlange). `await`, `yieldNow` und `join` prüfen am Anfang, ob ihr Task abgebrochen ist, und werfen
+dann ein `Cancelled`, das die VM baut — das Modul nennt den Prelude-Typ (Format 13) —, über das
+synthetische `throw` aus S6b3 an der Stelle des Wartens; ein `yield` kehrt dafür zum `yield` selbst
+zurück (`yielded`). Ein Task, der mit `Cancelled` endet, ist `Cancelled` und kein Scheitern; das
+erste Scheitern, Fehler oder Panik, bricht die übrigen Tasks des Top-Levels ab (07 End, endlich
+gebaut). `spawnDetached { }` (Op `spawn.d`): nicht im `join`, sein Block bekommt die Klausel
+`throws Cancelled` (`SEM0034` über den vorhandenen Abgleich), seine Panik beendet den Lauf. Für die
+Mengen wirft `yieldNow()` `Cancelled`. Gefunden: der Konformanz-Runner kannte kein Zeitlimit — ein
+Abbruch, der nie wirkt, hätte die Suite angehalten statt rot gemacht (die Gegenprobe gegen S6b3
+hätte gehangen); jetzt 60 s je Aufruf, und ein Fall endet dann rot. Mutanten, die den Abbruch
+ganz abschalten, würden aus demselben Grund hängen und blieben aus; sechs endliche in zwei Läufen,
+alle wie vorher aufgeschrieben. Ein S6a-Test nahm ausgerechnet `cancel()` als Methode, die ein Task
+nicht hat — Vorhersage verfehlt, Test auf `stop()`. Spec 10 Regeln 11–12, neun Fälle, alle rot gegen
+S6b3. Tests 319 → 324, Fälle 277 → 286.
+
+**S6c2, Ergebnis (2026-10-29).** `TaskScope.new()` (Op `scope.new`; der Checker fängt den statischen
+Aufruf ab), `scope.spawn { }` (`spawn.s`, der Task gehört dem Scope statt dem Top-Level), `close()`
+(`scope.close`: wartet wie `join` über die Tasks des Scopes, dann wirft er das erste Scheitern oder
+paniert erneut; ein abgebrochener Task, der hier wartet, bricht die Tasks des Scopes ab und wartet
+weiter, Regel 4), `scope.cancel()`; ein geschlossener Scope nimmt keinen Task (`RT0008`, Lyric 5s
+Code der Panik). Das erste Scheitern eines Scope-Tasks bricht dessen Geschwister ab, nicht die des
+Top-Levels. `TaskScope :: Closeable` in der Prelude, `using let` schließt ihn; kein Interfacewert
+(wie Task und Koroutine). Format 14. Spec 10 Regel 13, acht Fälle, alle rot gegen S6c1; sechs
+Mutanten in drei Läufen, alle wie vorher aufgeschrieben — drei davon (kein Abbruch der Geschwister,
+keiner beim Warten in `close`, `scope.cancel` ohne Wirkung) hängen einen Fall auf und fallen über das
+Zeitlimit des Runners, das S6c1 brachte. Tests 324 → 328, Fälle 286 → 294.
+
+**S6c3, Ergebnis (2026-10-29).** `t.status()` ist `TaskStatus<T>` wie in Lyric 5 — `Running`,
+`Done(value)`, `Failed(error)`, `Cancelled`, `Panicked(info)` mit `PanicInfo { code, message,
+trace }` —, `t.isDone()` dazu. Der Checker baut den Wert aus der Zustandsnummer der VM als Kette
+von `MakeVariant` über drei neue Ops, die einen beendeten Task ohne Warten und ohne
+Abbruchprüfung lesen (`task.val`, `task.err`, `task.pinfo`); Format 15. `TaskStatus<T>` ist kein
+`Equatable` (Lyric 5s auch nicht): die S6a/S6c1-Fälle und -Tests, die einen Status mit `==`
+verglichen, matchen ihn jetzt. Spec 10 Regel 1 neu, vier Fälle dazu, zwei umgeschrieben; fünf
+rot gegen S6c2, der sechste (`match` auf `.Cancelled`) ein Pin. Vier Mutanten in zwei Läufen; einer
+blieb zweimal grün — erst lag der Wert noch vom `await` im Register, dann stand dort die Konstante
+1, mit der die Kette `Done` erkennt, und der Task gab ebenfalls 1 —, der Fall nimmt jetzt 7. Eine
+Probe-Vorhersage verfehlt: `TaskStatus.Running == …` meldet zuerst `SEM0060` (die generische
+Variante braucht den Typ vom Ort), der Fall vergleicht zwei Status. Tests 328 → 330, Fälle 294 →
+298.
+
+**S6d, Schnitt (2026-10-29).** Drei Teile. **S6d1** `Channel<T>` und `Semaphore` in der VM.
+**S6d2** `select`: `Select`/`Selection` als Prelude-Quelltext in Script (wie Lyric 5s `std.task`
+sie in Lyric schreibt; source-first), über drei VM-Intrinsics — ein Kanal ist bereit, ein Task
+beobachtet einen Kanal, ein Task parkt bis zur Regung eines beobachteten. **S6d3** Zeit:
+`Duration`, `sleep`, `Timer.after`, `.timeout(d)` im Select, `withTimeout` (Prelude-Quelltext mit
+eigenem `TaskScope`, damit ein scheiternder Arbeits-Task nicht den Lauf scheitern lässt) und der
+Scheduler, der auf den frühesten Zeitgeber wartet.
+
+**S6d1, Ergebnis (2026-10-29).** `Channel<T>.new(capacity)` (ungepuffert bei 0), `send`, `recv(): ?T`,
+`close()`, `ChannelClosed` in der Prelude; `Semaphore.new(n)` mit `acquire`, `tryAcquire`,
+`release`, `available`. Ein Kanal hält Puffer, wartende Empfänger und wartende Sender samt Wert;
+`recv` antwortet in der Form von `?T` wie ein Pull. Ein schon übergebener Wert oder eine übergebene
+Erlaubnis gehört dem Task, auch wenn ihn danach ein Abbruch weckt — der wirkt am nächsten Warten
+(sonst ginge der Wert verloren). Ein Abbruch nimmt den Task auch aus den Wartelisten von Kanal und
+Semaphor. Dazu ein statischer Aufruf auf einer Typinstanz, `Channel<int>.new(1)`, den es bisher
+nicht gab. Format 16. Spec 10 Regeln 14–15, zehn Fälle, alle rot gegen S6c3; sechs Mutanten in zwei
+Läufen, alle wie vorher aufgeschrieben (ohne Hänger: jede Verklemmung paniert mit `RT0018`). Ein
+Fall kam beim Entwerfen der Mutanten hinzu: die Regel, dass der Wert eines wartenden Senders auf den
+frei gewordenen Pufferplatz rückt, hatte keine Probe. Tests 330 → 336, Fälle 298 → 308.
+
+**S6d2, Ergebnis (2026-10-29).** `Select.on(c) { v => … }.on(…) { … }.run()` ist Prelude-Quelltext in
+Script: eine Kette von Fällen hinter dem Interface `SelectCase` (`ChannelCase<T>`: bereit?, beobachten,
+feuern = `body(channel.recv())`), `Selection.on<T>` als generische Methode, `run()` feuert den ersten
+bereiten Fall, sonst beobachtet es alle Kanäle und parkt. Die VM gibt dafür drei Intrinsics, die nur
+Quelltext der Prelude rufen kann (`__chanReady`, `__chanWatch`, `__parkWatched`; Benutzercode sieht
+die Namen nicht, `SEM0002`): `chan.ready`, `chan.watch`, `park.w`. Ein gepufferter Wert, ein Sender,
+der zu warten beginnt, und ein `close` wecken die Beobachter eines Kanals; ein Abbruch nimmt den Task
+von allen Beobachtungen. Format 17. Spec 10 Regel 16, sieben Fälle (einer kam beim Entwerfen der
+Mutanten hinzu: ein Kanal, der schließt, während der Select wartet), alle rot gegen S6d1; fünf
+Mutanten in zwei Läufen, alle wie vorher aufgeschrieben; „das Weck-Flag wird übergangen“ blieb als
+äquivalent aus (nach dem Wecken ist die Beobachtungsliste leer, `park.w` läuft ohnehin weiter).
+Tests 336 → 340, Fälle 308 → 315.
+
+**S6d3, Ergebnis (2026-10-29).** Der Lauf hält seine Zeitgeber auf einer eigenen monotonen Uhr
+(Lyric 5s `Monotonic`): vor jedem Schritt wecken die fälligen ihre Schläfer hinter den bereiten Tasks
+— in der Reihenfolge ihrer Fristen — oder schließen den Kanal ihres `Timer`; ist kein Task bereit,
+schläft der Lauf (Lyric-5-`sleep`) bis zum frühesten, erst ohne Zeitgeber ist es eine Verklemmung.
+Ops `sleep`, `timer.after`; Format 18. `Duration` (privates Feld, `of…`-Funktionen), `sleep`,
+`Timer.after`, `TimedOut`, `.timeout(d)` im Select und `withTimeout` sind Prelude-Quelltext;
+`withTimeout` startet seinen Block in einem eigenen Scope, damit dessen Scheitern nur aus
+`withTimeout` kommt und nicht den Lauf scheitern lässt (Script-Besonderheit: das Top-Level ist ein
+Scope). Gefunden: `execute` fragte den VM-Task mit `yieldNow()` ab und hätte geschlafen; nach einem
+erfolglosen Nachgeben schläft es jetzt eine Millisekunde. Und das Flag „das Programm startet Tasks“
+setzte jedes `scope.spawn`, über die Prelude also jedes Programm — es endete mit einem `join`; das
+fing der S6a-Test „nur ein Programm, das Tasks startet, endet mit `join`“, das Flag gehört jetzt
+dem einfachen `spawn` allein (der erste Fix griff nicht: der Wächter des Patch-Skripts übersprang eine
+Löschung, deren neuer Text im alten steckte). Spec 10 Regel 17, elf Fälle, alle rot gegen S6d2;
+drei Mutanten in zwei Läufen, alle wie vorher aufgeschrieben; drei naheliegende blieben aus (bei
+einem fälligen Zeitgeber ist die Reihenfolge gleich, ein Lauf ohne Schlafen kreist nur, ein beim
+Abbruch stehengebliebener Zeitgeber ließe einen beendeten Task wieder anlaufen). Tests 340 → 343,
+Fälle 315 → 326.
+
+**S6e, Ergebnis (2026-10-29).** Ein wartendes Native startet einen abgekoppelten Lyric-5-Task und
+parkt den Skript-Task (Op `read.line`, Format 19); der Lyric-5-Task legt ihn zurück in die Schlange
+und meldet sich über einen Lyric-5-Kanal, auf den der Lauf wartet, wenn nichts bereit ist — mit dem
+frühesten Zeitgeber als Timeout. Solange ein Native aussteht, gibt der Lauf bei jedem Schritt an
+Lyric 5 ab, sonst verhungerte der Leser hinter einem Task, der nur `yieldNow()` ruft. Der erste
+Nutzer ist `readLine()` der Prelude (07 V3 I8; aus der S7-Liste vorgezogen, wie die S6e-Zeile ihn
+nennt): die nächste Zeile ohne Zeilenende, `null` am Ende; ein Lesefehler beendet die Eingabe bis
+`std.io` `IoError` bringt (**S7**). Ein Abbruch beendet das Warten, eine danach gelesene Zeile fällt
+weg. `sleep` „auf der Uhr“ kam anders als die Zeile sagt schon mit S6d3 (Zeitgeber-Schlange, im
+Leerlauf Lyric-5-`sleep`); „ein Callback aus einem Native darf nicht warten“ setzt Callbacks voraus,
+die erst die Host-API bringt (**S8**). Der Konformanz-Runner kann `stdin:`. Spec 10 Regel 18, fünf
+Fälle, alle rot gegen S6d3; zwei Mutanten in zwei Läufen, beide gefangen — kein Abgeben an Lyric 5
+über das Zeitlimit; ein Leser, der den Task nicht zurücklegt, dreimal über die Verklemmungspanik
+(er senkt den Zähler offener Natives, der Lauf sieht also zu Recht eine Verklemmung) und nur einmal
+über das Zeitlimit, anders als vorher aufgeschrieben; den Abbruch eines *wartenden* Lesens prüft
+kein Fall — bei leerer Eingabe kommt das Dateiende zuvor, der Fall prüft den Abbruch vor dem Warten.
+Tests 343 → 344, Fälle 326 → 331.
+
+**S6, Abschluss (2026-10-29).** Abgleich der Bereichszeilen 07 End, Wait, N2–N9 und 11 Co gegen den
+Code: gebaut sind N2 (Koroutinen, `next`/`result`/`isDone`/`close`, Generator-Lambdas, `sequence`),
+N3 (Warten parkt den Task, auch im Generator), N4 (`spawn`, `Task<T>`, `await`, `status` mit Werten,
+`Panicked`, `TaskScope`, `spawnDetached`), N5 (`Channel`, `select`, `sleep`, `Timer.after`,
+`Semaphore`), N6 (ein Scheduler je Instanz; *standalone* pumpt die Laufzeit und wartet auf Zeitgeber
+und Natives), N8 (kooperativ, `yieldNow`), N9 (`cancel`, `scope.cancel`, `withTimeout`, `Cancelled`
+fangbar), End (Top-Level als Scope, das erste Scheitern bricht ab, `spawnDetached` nicht abgewartet)
+und 11 Co (VM-Rahmen je Task, Natives über Lyric-5-Tasks). Mit Uhr woanders: `Coroutine :: Iterator`
+und `for` über jedes Iterable, `os.signals` als Kanal mit dem Recht `os` (N5, Lyric 5 §12), `IoError`
+für `readLine` und Tasks/Koroutinen/Kanäle als Interfacewerte (mit Deskriptoren) in **S7**; Wait
+(eingebettet `call`/`start`/`step`), das Anhalten der Instanz samt Tasks über das Budget (N8, 01 S5b)
+und Callbacks aus Natives in **S8**; P17 (Ort der Prelude-Namen) beim Maintainer. Entfallen wie
+entschieden: N1, N7, N10, mit ihnen Lyric 5 §8 (Atomics), §9 (Threads), §10 `Mutex`/`RwLock`/`Once`
+und §11 (Pools) — `Semaphore` schützt Abschnitte über Wartepunkte (02 W). Das Austrittskriterium,
+ein nebenläufiges Beispiel, erfüllt `examples/concurrent/pipeline.lyrs` (Generator, Kanäle, drei
+Arbeiter, Semaphor, `select` mit Timeout) als Schritt der CI auf allen vier Plattformen. Gefunden über
+den Meilenstein: `join` nahm den ersten *gestarteten* scheiternden Task; `spawn(42)` ohne Diagnose;
+zwei Codes außerhalb des Katalogs bzw. gegen Lyric 5s Nummer; `eq.r` hielt zwei Verweise auf eine
+Koroutine nie für gleich; ein Task war in `Any` umwandelbar; die Lambda-Vorausschau kannte `<…>`
+nicht (seit S3); der Runner hatte kein Zeitlimit; `execute` hätte im Leerlauf gekreist; jedes
+`scope.spawn` markierte das Programm als Task-startend. Lehren: Wächter in Patch-Skripten (Löschung
+gegen Einfügung), Testwerte, die keine Konstante der Nachbarschaft sind, Mutanten vor der Vorhersage
+auf Beobachtbarkeit prüfen. 344 Tests, 331 Fälle; Bytecode-Format 19.

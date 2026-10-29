@@ -35,6 +35,8 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
     // the slots of `Error`'s members, one up so that none is 0 (S4a)
     w.word(module.errorMessage + 1);
     w.word(module.errorCause + 1);
+    w.word(module.cancelledType + 1);
+    w.word(module.channelClosedType + 1);
     // the rights its imports ask for (S5e)
     w.word(module.rights.length());
     for (u in module.rights) {
@@ -142,6 +144,8 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
     let globalsR = try r.word();
     let errorMessage = try r.word() - 1;
     let errorCause = try r.word() - 1;
+    let cancelledType = try r.word() - 1;
+    let channelClosedType = try r.word() - 1;
     let rights = List<RightUse>.new();
     var nr = try r.word();
     while (nr > 0) {
@@ -310,6 +314,8 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         globalsR = globalsR,
         errorMessage = errorMessage,
         errorCause = errorCause,
+        cancelledType = cancelledType,
+        channelClosedType = channelClosedType,
         rights = rights.toArray(),
     };
 }

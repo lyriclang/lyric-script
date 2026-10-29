@@ -70,6 +70,7 @@ import lyric_script.compiler.typed {
     TypeParamInfo,
     tupleOf,
     typeOf,
+    stmtLine,
 };
 
 /// What the checker made of a module: the program, and its errors and warnings.
@@ -79,11 +80,13 @@ struct Checked {
     warnings: Diagnostic[],
 }
 
+/// The prelude's declarations written in Lyric-Script (see below); S6a adds `Task<T>`, what
+/// `spawn { … }` gives, and `TaskStatus`.
 /// The prelude's declarations written in Lyric-Script: the literal protocols (03 Lit), each a
 /// static member that builds the conforming type from a literal of its kind; `Error`, the root of
 /// what is thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was
 /// first thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core).
-let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\n";
+let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nenum TaskStatus {\n    Running,\n    Done,\n    Failed,\n    Panicked,\n    Cancelled,\n}\n";
 
 /// A file of a program (S5a): its module's dotted path below the root, what it parsed to, and its
 /// place among the program's files — 0 the entry.
@@ -330,6 +333,8 @@ class Checker {
     var identityIndex: int = -1,
     // where each function writes its `throws` (S4c)
     var throwsAt: Map<int, Span> = Map<int, Span>.new(),
+    // whether a task is spawned anywhere: the top level then ends with a join (S6a)
+    var spawns: bool = false,
     // the modules (S5a): the current one, by its file — 0 the entry, -1 the prelude —; each
     // imported module's dotted path and its view, a name to its key; the modules a qualified
     // import binds, by name
@@ -448,6 +453,7 @@ class Checker {
             fnDebug = this.fnDebug,
             errorMessage = this.errorSlot("message"),
             errorCause = this.errorSlot("cause"),
+            spawns = this.spawns,
         };
     }
 
@@ -3135,15 +3141,24 @@ class Checker {
         let info = this.functions[index];
         // `fn main` of an entry without statements is its entry, after its bindings (07 Top)
         let start = this.entryMain(stmts.toArray());
+        // the top level ends once every task it spawned ended (07 End): its join, the code made
+        // for it where a task is spawned at all
+        let last = if (body.length() > 0) stmtLine(body[body.length() - 1]) else info.line;
         if (start != null) {
             let (call, line) = start;
             if (typeOf(call) == .Int) {
-                // `fn main(): int` gives the exit code (V1 M7)
-                body.push(TStmt.Return(call, line));
+                // `fn main(): int` gives the exit code (V1 M7), once its tasks ended
+                let tmp = this.hidden(Ty.Int, nowhereSpan);
+                body.push(TStmt.SetLocal(tmp, call, line));
+                body.push(TStmt.Join(line));
+                body.push(TStmt.Return(TExpr.Local(tmp, Ty.Int), line));
                 info.returns = Ty.Int;
             } else {
                 body.push(TStmt.Expr(call, line));
+                body.push(TStmt.Join(line));
             }
+        } else {
+            body.push(TStmt.Join(last));
         }
         info.body = body.toArray();
         info.locals = this.ctx.locals.toArray();
@@ -3602,6 +3617,7 @@ class Checker {
 
     mut fn specStmt(s: TStmt, a: Ty[]): TStmt {
         return match (s) {
+            .Join(_) => s,
             .Expr(e, l) => TStmt.Expr(this.specExpr(e, a), l),
             .SetLocal(id, e, l) => TStmt.SetLocal(id, this.specExpr(e, a), l),
             .SetGlobal(g, e, l) => TStmt.SetGlobal(g, this.specExpr(e, a), l),
@@ -3675,6 +3691,10 @@ class Checker {
             .Throw(x) => TExpr.Throw(this.specBox(x, a)),
             .Rethrow(_, _) => e,
             .Panic(x, code) => TExpr.Panic(this.specBox(x, a), code),
+            .Spawn(x, t) => TExpr.Spawn(this.specBox(x, a), this.subst(t, a)),
+            .Await(x, t) => TExpr.Await(this.specBox(x, a), this.subst(t, a)),
+            .TaskStatus(x, t) => TExpr.TaskStatus(this.specBox(x, a), t),
+            .YieldNow => e,
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -8172,6 +8192,56 @@ class Checker {
         return TExpr.Field(boxE(o), index, this.types[owner].fields[index].ty);
     }
 
+    /// `spawn { … }` (07 N4): a task of the block, a closure of no parameter; its type `Task<T>`,
+    /// `T` the block's.
+    mut fn spawnOf(args: Arg[], at: Span): TExpr {
+        if (args.length() != 1) {
+            this.error("LYS-SEM0023", "spawn takes one block: spawn { … }", at);
+            return TExpr.Unknown;
+        }
+        let want = Ty.Fn(FnTy { params = [], result = boxTy(Ty.Unknown) });
+        let closure = this.expr(args[0].value, want);
+        let result = match (typeOf(closure)) {
+            .Fn(ft) => {
+                if (ft.params.length() > 0) {
+                    this.error("LYS-SEM0045", "a task's block takes no parameter", at);
+                }
+                ft.result.value
+            }
+            _ => Ty.Unknown,
+        };
+        let task = this.typeIndex.get("Task");
+        if (task == null || result == .Unknown) {
+            return TExpr.Unknown;
+        }
+        this.spawns = true;
+        return TExpr.Spawn(boxE(closure), Ty.Named(this.typeInstance(task, [result])));
+    }
+
+    /// A method of a `Task<T>` (07 N4): `await()` its value, `status()` where it stands; `null`
+    /// where `i` is no task's type.
+    mut fn taskMethod(receiver: TExpr, i: int, method: string, args: Arg[], at: Span): ?TExpr {
+        let task = this.typeIndex.get("Task") ?? -1;
+        if (task < 0 || (i != task && this.types[i].template != task)) {
+            return null;
+        }
+        if (args.length() > 0) {
+            this.error("LYS-SEM0023", f"'{method}' takes no argument", at);
+        }
+        let value = if (this.types[i].args.length() > 0) this.types[i].args[0] else Ty.Unknown;
+        return match (method) {
+            "await" => TExpr.Await(boxE(receiver), value),
+            "status" => TExpr.TaskStatus(
+                boxE(receiver),
+                Ty.Named(this.typeIndex.get("TaskStatus") ?? -1)
+            ),
+            _ => {
+                this.error("LYS-SEM0012", f"a task has no method '{method}': await, status", at);
+                TExpr.Unknown
+            }
+        };
+    }
+
     /// `T.name` of type `index`: a constant, a unit variant, or a static function as a value
     /// (§8.4 rule 1).
     mut fn typeMember(index: int, typeName: string, name: string, at: Span): TExpr {
@@ -9101,6 +9171,16 @@ class Checker {
                 if (name == "print" || name == "println") {
                     return this.prelude(name, args, at);
                 }
+                // a task (07 N4): `spawn { … }`; the task gives way: `yieldNow()` (N8)
+                if (name == "spawn") {
+                    return this.spawnOf(args, at);
+                }
+                if (name == "yieldNow") {
+                    if (args.length() > 0) {
+                        this.error("LYS-SEM0023", "yieldNow() takes no argument", at);
+                    }
+                    return TExpr.YieldNow;
+                }
                 if (name == "panic"
                     || name == "unreachable"
                     || name == "todo"
@@ -9325,7 +9405,8 @@ class Checker {
         var rt: ?Ty = null;
         if (result != null) {
             rt = this.resolveType(result);
-        } else if (want != null && !hasParam(want.result.value)) {
+        } else if (want != null && !hasParam(want.result.value) && want.result.value != .Unknown) {
+            // a position that does not know the result — `spawn { … }`'s — leaves it to the body
             rt = want.result.value;
         }
         return this.makeLambda("<lambda>", names.toArray(), tys.toArray(), rt, body, at);
@@ -9889,6 +9970,11 @@ class Checker {
                 return TExpr.Unknown;
             }
             .Named(i) => {
+                // a task's methods (07 N4, S6a)
+                let asTask = this.taskMethod(receiver, i, method, args, memberAt);
+                if (asTask != null) {
+                    return asTask;
+                }
                 if (this.types[i].kind == .Interface) {
                     // through the interface value: the conformer's function in the slot
                     let found = this.ifaceMember(i, method);
@@ -11387,7 +11473,7 @@ fn keyIn(path: string, m: int, name: string): string {
 /// The prelude's functions the compiler knows rather than declares.
 fn isPreludeFn(name: string): bool {
     return match (name) {
-        "print" | "println" | "panic" | "unreachable" | "todo" | "assert" => true,
+        "print" | "println" | "panic" | "unreachable" | "todo" | "assert" | "spawn" | "yieldNow" => true,
         _ => false,
     };
 }

@@ -258,6 +258,8 @@ enum Native :: [Equatable, Debug] {
 /// The type of a checked expression.
 fn typeOf(e: TExpr): Ty {
     return match (e) {
+        .Spawn(_, t) | .Await(_, t) | .TaskStatus(_, t) => t,
+        .YieldNow => Ty.Void,
         .Int(_) => Ty.Int,
         .Float(_) => Ty.Float,
         .Bool(_) => Ty.Bool,
@@ -462,6 +464,13 @@ enum TExpr :: [Debug] {
     Rethrow(int, int),
     /// A panic with the message given and the code `LYS-RT<n>`: `try!` on an error (S4d).
     Panic(Box<TExpr>, int),
+    /// `spawn { … }`: a task of the closure, a `Task<T>` (07 N4, S6a).
+    Spawn(Box<TExpr>, Ty),
+    /// `t.await()`: the task's value — its error thrown again —; `t.status()` (S6a).
+    Await(Box<TExpr>, Ty),
+    TaskStatus(Box<TExpr>, Ty),
+    /// `yieldNow()`: the task gives way (07 N8).
+    YieldNow,
     Unknown,
 }
 
@@ -491,6 +500,9 @@ enum TStmt :: [Debug] {
     /// it; the locals an error arrives in and its record, and those of an error the defer throws
     /// while one is in flight (06 §5 rules 2–5).
     Finally(TStmt[], TStmt[], int, int, int, int, int),
+    /// The top level's end (07 End): every task of the run awaited, the first that failed thrown
+    /// again (S6a).
+    Join(int),
 }
 
 /// A clause of a `try`: the test it makes of the error — none where it takes every error —, its
@@ -506,6 +518,8 @@ struct TClause :: [Debug] {
 /// loop's statements are `stmtsIn`'s; a lambda's body is a function of its own.
 fn exprsIn(e: TExpr): TExpr[] {
     return match (e) {
+        .Spawn(x, _) | .Await(x, _) | .TaskStatus(x, _) => [x.value],
+        .YieldNow => [],
         .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
         .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],
         .CapturedCell(_, _) | .CellOf(_, _) | .DescOfType(_, _) | .GenericValue(_, _, _) => [],
@@ -547,6 +561,7 @@ fn stmtsIn(e: TExpr): TStmt[] {
 /// The expressions directly inside statement `s`.
 fn exprsOfStmt(s: TStmt): TExpr[] {
     return match (s) {
+        .Join(_) => [],
         .Expr(e, _) | .SetLocal(_, e, _) | .SetGlobal(_, e, _) | .While(e, _, _) => [e],
         .If(c, _, _, _) => [c],
         .ForRange(_, x, y, _, _, _) => [x, y],
@@ -585,6 +600,7 @@ fn stmtsOfStmt(s: TStmt): TStmt[] {
 /// The line a statement starts on.
 fn stmtLine(s: TStmt): int {
     return match (s) {
+        .Join(l) => l,
         .Expr(_, l) | .SetLocal(_, _, l) | .SetGlobal(_, _, l) | .If(_, _, _, l) => l,
         .While(_, _, l) | .ForRange(_, _, _, _, _, l) | .Break(_, _, l) | .Continue(_, l) => l,
         .DoWhile(_, _, l) => l,
@@ -615,6 +631,8 @@ struct Program {
     // the slots of `Error`'s `message` and `cause`, which report an error no frame takes (S4a)
     errorMessage: int = -1,
     errorCause: int = -1,
+    // whether the program spawns a task: its top level then ends with a join (S6a)
+    spawns: bool = false,
 }
 
 /// How many scalar and reference slots a value of the type holds (11 V2): one of its file for a

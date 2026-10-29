@@ -846,6 +846,21 @@ class FnGen {
     mut fn stmt(s: TStmt): void {
         let m = this.mark();
         match (s) {
+            // the top level's end (07 End): every task awaited, the first that failed thrown
+            // again — where the program spawns at all
+            .Join(line) => {
+                if (this.p.spawns && this.index == this.p.main) {
+                    this.line = line;
+                    let at = this.temp(Ty.Int).s;
+                    let er = this.nextR;
+                    this.nextR += 2;
+                    this.need(this.nextS, this.nextR);
+                    this.emit(Op.Join, at, er, 0);
+                    let ok = this.emit(Op.JumpIfNot, at, 0, 0);
+                    this.emit(Op.Rethrow, er, er + 1, 0);
+                    this.patch(ok, this.here());
+                }
+            }
             .Expr(e, line) => {
                 this.line = line;
                 this.effect(e);
@@ -1520,6 +1535,32 @@ class FnGen {
             .Panic(x, code) => {
                 let at = this.any(x.value);
                 this.emit(Op.PanicC, at.r, code, 0);
+            }
+            // S6a: a task of the closure; its value or its error thrown again; its status
+            .Spawn(x, _) => {
+                let at = this.any(x.value);
+                this.emit(Op.Spawn, dst.r, at.r, 0);
+            }
+            .Await(x, t) => {
+                let task = this.any(x.value);
+                let (ns, nr) = this.slots(t);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 1 + ns;
+                this.nextR += if (nr > 2) nr else 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.Await, bs, br, task.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
+                this.move(dst, Loc { s = bs + 1, r = br }, t);
+            }
+            .TaskStatus(x, _) => {
+                let task = this.any(x.value);
+                this.emit(Op.TaskSt, dst.s, task.r, 0);
+            }
+            .YieldNow => {
+                this.emit(Op.Yield, 0, 0, 0);
             }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)

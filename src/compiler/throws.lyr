@@ -244,6 +244,8 @@ class ThrowSets {
             ),
             // a function value says nothing of what it throws (02 K2)
             .CallValue(_, _, _) | .CallStaticD(_, _, _, _) => out.addAny(this.line),
+            // a task's error comes back where it is awaited (S6a), any error, as a function value's
+            .Await(_, _) => out.addAny(this.line),
             _ => { }
         }
         for (x in exprsIn(e)) {

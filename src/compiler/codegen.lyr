@@ -61,6 +61,10 @@ fn generate(p: Program, name: string): Module {
     if (p.cancelled >= 0 && p.cancelled < layout.moduleType.length()) {
         cancelledType = layout.moduleType[p.cancelled];
     }
+    var channelClosedType = -1;
+    if (p.channelClosed >= 0 && p.channelClosed < layout.moduleType.length()) {
+        channelClosedType = layout.moduleType[p.channelClosed];
+    }
     return Module {
         name = name,
         functions = functions.toArray(),
@@ -70,6 +74,7 @@ fn generate(p: Program, name: string): Module {
         errorMessage = p.errorMessage,
         errorCause = p.errorCause,
         cancelledType = cancelledType,
+        channelClosedType = channelClosedType,
     };
 }
 
@@ -1660,6 +1665,69 @@ class FnGen {
             .PanicText(x, k) => {
                 let task = this.any(x.value);
                 this.emit(Op.TaskPInfo, dst.r, task.r, k);
+            }
+            // S6d1: a channel, the slots of its values in `c`
+            .ChanNew(n, t) => {
+                let cap = this.any(n.value);
+                let args = this.coArgs(t);
+                let (ns, nr) = if (args.length() == 1) this.slots(args[0]) else (0, 0);
+                this.emit(Op.ChanNew, dst.r, cap.s, ns * 256 + nr);
+            }
+            // a send: the value placed after the error's slots; `ChannelClosed` thrown again
+            .ChanSend(x, v) => {
+                let ch = this.any(x.value);
+                let vt = typeOf(v.value);
+                let (ns, nr) = this.slots(vt);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 1 + ns;
+                this.nextR += 2 + nr;
+                this.need(this.nextS, this.nextR);
+                this.to(v.value, Loc { s = bs + 1, r = br + 2 });
+                this.emit(Op.ChanSend, bs, br, ch.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
+            }
+            // a receive: `?T` where the VM leaves it, as a pull's
+            .ChanRecv(x, t) => {
+                let ch = this.any(x.value);
+                let inner = match (t) {
+                    .Optional(i) => i.value,
+                    _ => Ty.Unknown,
+                };
+                let (ns, nr) = this.slots(inner);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 2 + ns;
+                this.nextR += if (nr > 2) nr else 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.ChanRecv, bs, br, ch.r);
+                this.move(dst, Loc { s = bs + 1, r = br }, t);
+            }
+            .ChanClose(x) => {
+                let ch = this.any(x.value);
+                this.emit(Op.ChanClose, ch.r, 0, 0);
+            }
+            .SemNew(n, _) => {
+                let permits = this.any(n.value);
+                this.emit(Op.SemNew, dst.r, permits.s, 0);
+            }
+            .SemAcquire(x) => {
+                let sem = this.any(x.value);
+                this.emit(Op.SemAcquire, sem.r, 0, 0);
+            }
+            .SemTry(x) => {
+                let sem = this.any(x.value);
+                this.emit(Op.SemTry, dst.s, sem.r, 0);
+            }
+            .SemRelease(x) => {
+                let sem = this.any(x.value);
+                this.emit(Op.SemRelease, sem.r, 0, 0);
+            }
+            .SemAvail(x) => {
+                let sem = this.any(x.value);
+                this.emit(Op.SemAvail, dst.s, sem.r, 0);
             }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);

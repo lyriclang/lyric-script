@@ -145,6 +145,14 @@ class TaskState {
     // waiters —, and whether it gave way and stands in the queue
     var waitingOn: ?ScriptTask = null,
     var yielded: bool = false,
+    // S6d1: the channel or the semaphore it waits on; what a channel handed it; the value it waits
+    // to send, and how the send ended — 1 taken, 2 the channel closed —; a permit handed to it
+    var waitingChan: ?ScriptChannel = null,
+    var waitingSem: ?ScriptSemaphore = null,
+    var handoff: ?Item = null,
+    var sendItem: ?Item = null,
+    var sendState: int = 0,
+    var granted: bool = false,
     // what an error that left the task threw, and its record: what `await` throws again
     var thrown: HeapRef = nilRef(),
     var record: HeapRef = nilRef(),
@@ -236,6 +244,38 @@ pub class ScriptTask :: [HeapRef] {
     detached: bool = false,
     // S6c2: the task scope it belongs to; none for the top level's
     scope: ?ScriptScope = null,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A value on its way through a channel: its slots (S6d1).
+class Item {
+    s: uint64[],
+    r: HeapRef[],
+}
+
+/// A channel (Lyric 5 10 §6): its buffer, the tasks waiting to receive and to send — a sender's
+/// value with it —, whether it is closed; `ns` and `nr` the slots of a value (S6d1).
+pub class ScriptChannel :: [HeapRef] {
+    capacity: int,
+    ns: int,
+    nr: int,
+    buffer: List<Item>,
+    receivers: List<TaskState>,
+    senders: List<TaskState>,
+    var closed: bool = false,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A semaphore (Lyric 5 10 §10 rule 7): its permits, and the tasks waiting for one (S6d1).
+pub class ScriptSemaphore :: [HeapRef] {
+    var permits: int,
+    waiters: List<TaskState>,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -427,16 +467,72 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
     let st = h.state;
     let w = st.waitingOn;
     if (w != null) {
-        var k = 0;
-        while (k < w.waiters.length()) {
-            if (same(w.waiters[k], st)) {
-                w.waiters.removeAt(k);
-                break;
-            }
-            k += 1;
-        }
+        removeFrom(w.waiters, st);
         st.waitingOn = null;
         shared.queue.push(st);
+    }
+    // S6d1: a channel's or a semaphore's wait ends as well; a value it waited to send stays its own
+    let ch = st.waitingChan;
+    if (ch != null) {
+        removeFrom(ch.receivers, st);
+        removeFrom(ch.senders, st);
+        st.waitingChan = null;
+        st.sendItem = null;
+        shared.queue.push(st);
+    }
+    let sem = st.waitingSem;
+    if (sem != null) {
+        removeFrom(sem.waiters, st);
+        st.waitingSem = null;
+        shared.queue.push(st);
+    }
+}
+
+/// Takes `st` out of `list`, where it stands in it.
+fn removeFrom(list: List<TaskState>, st: TaskState): void {
+    var k = 0;
+    while (k < list.length()) {
+        if (same(list[k], st)) {
+            list.removeAt(k);
+            return;
+        }
+        k += 1;
+    }
+}
+
+/// Wakes a task that waited on a channel or a semaphore: back into the queue (S6d1).
+fn wake(st: TaskState, shared: RunShared): void {
+    st.waitingChan = null;
+    st.waitingSem = null;
+    shared.queue.push(st);
+}
+
+/// A new `ChannelClosed`, which a send on a closed channel throws (S6d1).
+fn newChannelClosed(module: Module): HeapRef {
+    if (module.channelClosedType < 0) {
+        return nilRef();
+    }
+    let t = module.types[module.channelClosedType];
+    return ScriptObject {
+        typeDesc = t,
+        scalars = [0 as uint64] * t.scalarFields.length(),
+        refs = refArray(t.refFields.length()),
+    };
+}
+
+/// A pull's or a receive's answer with a value: no error, the value, its presence (S6d1).
+fn delivered(s: uint64[], r: HeapRef[], a: int, b: int, item: Item): void {
+    s[a] = 0 as uint64;
+    var k = 0;
+    while (k < item.s.length()) {
+        s[a + 1 + k] = item.s[k];
+        k += 1;
+    }
+    s[a + 1 + item.s.length()] = 1 as uint64;
+    k = 0;
+    while (k < item.r.length()) {
+        r[b + k] = item.r[k];
+        k += 1;
     }
 }
 
@@ -1782,6 +1878,274 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     }
                 }
                 r[br + a] = ScriptString { text = text };
+                pc += 1;
+            }
+            // S6d1: a channel of capacity `s[b]`, `c` the slots of its values
+            .ChanNew => {
+                let capacity = s[bs + b] as int;
+                if (capacity < 0) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0008",
+                        "a channel's capacity is negative"
+                    );
+                }
+                r[br + a] = ScriptChannel {
+                    capacity = capacity,
+                    ns = c / 256,
+                    nr = c % 256,
+                    buffer = List<Item>.new(),
+                    receivers = List<TaskState>.new(),
+                    senders = List<TaskState>.new(),
+                };
+                pc += 1;
+            }
+            // S6d1: a send of the value at `s[a+1]…`/`r[b+2]…` on the channel in `c` (Lyric 5 10 §6
+            // rule 2): to a waiting receiver, or into the buffer while it has room, or the task waits
+            // until a receiver takes it; `s[a]` 1 and `ChannelClosed` at `r[b]`, its record at
+            // `r[b+1]`, where the channel is closed or closes meanwhile
+            .ChanSend => {
+                let ch = r[br + c];
+                if (!(ch is ScriptChannel)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a send on no channel");
+                }
+                // a send that went through is no wait any more: a cancel after it leaves it done
+                if (t.sendState == 1) {
+                    t.sendState = 0;
+                    s[bs + a] = 0 as uint64;
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (t.sendState == 2 || ch.closed) {
+                    t.sendState = 0;
+                    s[bs + a] = 1 as uint64;
+                    r[br + b] = newChannelClosed(module);
+                    r[br + b + 1] = recordOf(frames, fi, pc);
+                    pc += 1;
+                    continue;
+                }
+                let item = Item {
+                    s = firstScalars(s, bs + a + 1, ch.ns),
+                    r = firstRefs(r, br + b + 2, ch.nr),
+                };
+                s[bs + a] = 0 as uint64;
+                if (ch.receivers.length() > 0) {
+                    let w = ch.receivers.removeAt(0);
+                    w.handoff = item;
+                    wake(w, shared);
+                    pc += 1;
+                } else if (ch.buffer.length() < ch.capacity) {
+                    ch.buffer.push(item);
+                    pc += 1;
+                } else {
+                    t.sendItem = item;
+                    t.waitingChan = ch;
+                    ch.senders.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+            }
+            // S6d1: a receive from the channel in `c` (rule 3): the next value — from the buffer, a
+            // waiting sender's taking the freed place, or from a waiting sender — at `s[a+1]…`/
+            // `r[b]…` with its presence after; none once it is closed and nothing is left; or the
+            // task waits for one
+            .ChanRecv => {
+                let ch = r[br + c];
+                if (!(ch is ScriptChannel)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a receive of no channel"
+                    );
+                }
+                // a value handed over already is the receive's, a cancel after it notwithstanding
+                let got = t.handoff;
+                if (got != null) {
+                    t.handoff = null;
+                    delivered(s, r, bs + a, br + b, got);
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (ch.buffer.length() > 0) {
+                    let item = ch.buffer.removeAt(0);
+                    if (ch.senders.length() > 0) {
+                        let w = ch.senders.removeAt(0);
+                        let waited = w.sendItem;
+                        if (waited != null) {
+                            ch.buffer.push(waited);
+                        }
+                        w.sendItem = null;
+                        w.sendState = 1;
+                        wake(w, shared);
+                    }
+                    delivered(s, r, bs + a, br + b, item);
+                    pc += 1;
+                } else if (ch.senders.length() > 0) {
+                    let w = ch.senders.removeAt(0);
+                    let waited = w.sendItem;
+                    w.sendItem = null;
+                    w.sendState = 1;
+                    wake(w, shared);
+                    if (waited != null) {
+                        delivered(s, r, bs + a, br + b, waited);
+                    } else {
+                        ended(s, r, bs + a, br + b, ch.ns, ch.nr);
+                    }
+                    pc += 1;
+                } else if (ch.closed) {
+                    ended(s, r, bs + a, br + b, ch.ns, ch.nr);
+                    pc += 1;
+                } else {
+                    t.waitingChan = ch;
+                    ch.receivers.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+            }
+            // S6d1: the channel in `a` closes (rule 4): its receivers get none, its senders throw
+            .ChanClose => {
+                let ch = r[br + a];
+                if (ch is ScriptChannel && !ch.closed) {
+                    ch.closed = true;
+                    for (w in ch.receivers) {
+                        wake(w, shared);
+                    }
+                    ch.receivers.clear();
+                    for (w in ch.senders) {
+                        w.sendItem = null;
+                        w.sendState = 2;
+                        wake(w, shared);
+                    }
+                    ch.senders.clear();
+                }
+                pc += 1;
+            }
+            // S6d1: a semaphore of `s[b]` permits (Lyric 5 10 §10 rule 7)
+            .SemNew => {
+                let n = s[bs + b] as int;
+                if (n < 0) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0008",
+                        "a semaphore's permits are negative"
+                    );
+                }
+                r[br + a] = ScriptSemaphore { permits = n, waiters = List<TaskState>.new() };
+                pc += 1;
+            }
+            // S6d1: a permit of the semaphore in `a`, the task waiting while none is left
+            .SemAcquire => {
+                let sem = r[br + a];
+                if (!(sem is ScriptSemaphore)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "an acquire of no semaphore"
+                    );
+                }
+                // a permit handed over already is the task's, a cancel after it notwithstanding
+                if (t.granted) {
+                    t.granted = false;
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                if (sem.permits > 0) {
+                    sem.permits -= 1;
+                    pc += 1;
+                } else {
+                    t.waitingSem = sem;
+                    sem.waiters.push(t);
+                    t.s = s;
+                    t.r = r;
+                    t.fi = fi;
+                    t.pc = pc;
+                    t.bs = bs;
+                    t.br = br;
+                    t.report = report;
+                    t.frames = frames;
+                    return Outcome.Switch;
+                }
+            }
+            .SemTry => {
+                let sem = r[br + b];
+                var took = false;
+                if (sem is ScriptSemaphore && sem.permits > 0) {
+                    sem.permits -= 1;
+                    took = true;
+                }
+                s[bs + a] = truth(took);
+                pc += 1;
+            }
+            // a permit back: to the task that has waited longest, or to the count
+            .SemRelease => {
+                let sem = r[br + a];
+                if (sem is ScriptSemaphore) {
+                    if (sem.waiters.length() > 0) {
+                        let w = sem.waiters.removeAt(0);
+                        w.granted = true;
+                        wake(w, shared);
+                    } else {
+                        sem.permits += 1;
+                    }
+                }
+                pc += 1;
+            }
+            .SemAvail => {
+                let sem = r[br + b];
+                s[bs + a] = (if (sem is ScriptSemaphore) sem.permits else 0) as uint64;
                 pc += 1;
             }
             .ScopeCancel => {

@@ -88,6 +88,8 @@ class ThrowSets {
     reached: Map<string, Thrown>,
     // the prelude's `Cancelled`: what a wait throws in a cancelled task (S6c1)
     cancelled: int,
+    // the prelude's `ChannelClosed`, what a send on a closed channel throws (S6d1)
+    channelClosed: int,
     var line: int = 0,
     var current: int = -1,
 
@@ -95,7 +97,8 @@ class ThrowSets {
         types: TypeInfo[],
         functions: FnInfo[],
         errorIndex: int,
-        cancelled: int
+        cancelled: int,
+        channelClosed: int
     ): ThrowSets {
         let sets = List<Thrown>.new();
         for (_ in functions) {
@@ -128,6 +131,7 @@ class ThrowSets {
             functions = functions,
             errorIndex = errorIndex,
             cancelled = cancelled,
+            channelClosed = channelClosed,
             sets = sets,
             members = members,
             impls = impls,
@@ -270,6 +274,20 @@ class ThrowSets {
             // a close throws what the body throws on its way out (S6b3); a scope's close the
             // first failure of its tasks (S6c2)
             .CoClose(_, _) | .ScopeClose(_) => out.addAny(this.line),
+            // a send throws `ChannelClosed`; it, a receive and an acquire wait (Lyric 5 10 §6, §10)
+            .ChanSend(_, _) => {
+                if (this.channelClosed >= 0) {
+                    out.add(Ty.Named(this.channelClosed), this.line);
+                }
+                if (this.cancelled >= 0) {
+                    out.add(Ty.Named(this.cancelled), this.line);
+                }
+            }
+            .ChanRecv(_, _) | .SemAcquire(_) => {
+                if (this.cancelled >= 0) {
+                    out.add(Ty.Named(this.cancelled), this.line);
+                }
+            }
             // a wait throws `Cancelled` in a cancelled task (Lyric 5 10 §2 rule 7)
             .YieldNow => {
                 if (this.cancelled >= 0) {

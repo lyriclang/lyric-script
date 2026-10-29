@@ -267,6 +267,10 @@ fn typeOf(e: TExpr): Ty {
         .ScopeClose(_) | .ScopeCancel(_) => Ty.Void,
         .TaskValue(_, t) | .TaskError(_, t) => t,
         .PanicText(_, _) => Ty.Str,
+        .ChanNew(_, t) | .ChanRecv(_, t) | .SemNew(_, t) => t,
+        .ChanSend(_, _) | .ChanClose(_) | .SemAcquire(_) | .SemRelease(_) => Ty.Void,
+        .SemTry(_) => Ty.Bool,
+        .SemAvail(_) => Ty.Int,
         .Int(_) => Ty.Int,
         .Float(_) => Ty.Float,
         .Bool(_) => Ty.Bool,
@@ -499,6 +503,17 @@ enum TExpr :: [Debug] {
     TaskValue(Box<TExpr>, Ty),
     TaskError(Box<TExpr>, Ty),
     PanicText(Box<TExpr>, int),
+    /// S6d1: `Channel<T>.new(capacity)`; a send; a receive, `?T`; a close (Lyric 5 10 §6).
+    ChanNew(Box<TExpr>, Ty),
+    ChanSend(Box<TExpr>, Box<TExpr>),
+    ChanRecv(Box<TExpr>, Ty),
+    ChanClose(Box<TExpr>),
+    /// S6d1: `Semaphore.new(n)`; `acquire()`, `tryAcquire()`, `release()`, `available()`.
+    SemNew(Box<TExpr>, Ty),
+    SemAcquire(Box<TExpr>),
+    SemTry(Box<TExpr>),
+    SemRelease(Box<TExpr>),
+    SemAvail(Box<TExpr>),
     Unknown,
 }
 
@@ -559,6 +574,9 @@ fn exprsIn(e: TExpr): TExpr[] {
         .ScopeSpawn(sc, x, _) => [sc.value, x.value],
         .ScopeClose(x) | .ScopeCancel(x) => [x.value],
         .TaskValue(x, _) | .TaskError(x, _) | .PanicText(x, _) => [x.value],
+        .ChanNew(x, _) | .ChanRecv(x, _) | .ChanClose(x) | .SemNew(x, _) => [x.value],
+        .SemAcquire(x) | .SemTry(x) | .SemRelease(x) | .SemAvail(x) => [x.value],
+        .ChanSend(x, v) => [x.value, v.value],
         .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
         .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],
         .CapturedCell(_, _) | .CellOf(_, _) | .DescOfType(_, _) | .GenericValue(_, _, _) => [],
@@ -675,6 +693,8 @@ struct Program {
     spawns: bool = false,
     // the prelude's `Cancelled`, which a wait in a cancelled task throws (S6c1)
     cancelled: int = -1,
+    // the prelude's `ChannelClosed`, which a send on a closed channel throws (S6d1)
+    channelClosed: int = -1,
 }
 
 /// How many scalar and reference slots a value of the type holds (11 V2): one of its file for a

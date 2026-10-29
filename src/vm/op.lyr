@@ -135,6 +135,17 @@ pub enum Op :: [Variants, Equatable] {
     TaskVal,
     TaskErr,
     TaskPInfo,
+    // S6d1: a channel (`c`: its values' slots, scalars × 256 + references); a send, a receive, a
+    // close; a semaphore of `s[b]` permits, its acquire, tryAcquire, release, available.
+    ChanNew,
+    ChanSend,
+    ChanRecv,
+    ChanClose,
+    SemNew,
+    SemAcquire,
+    SemTry,
+    SemRelease,
+    SemAvail,
 }
 
 /// What an operand of an operation names.
@@ -288,6 +299,15 @@ pub fn info(op: Op): OpInfo {
         .TaskVal => OpInfo { mnemonic = "task.val", operands = [.Scalar, .Ref, .Ref] },
         .TaskErr => OpInfo { mnemonic = "task.err", operands = [.Ref, .Ref] },
         .TaskPInfo => OpInfo { mnemonic = "task.pinfo", operands = [.Ref, .Ref, .Imm] },
+        .ChanNew => OpInfo { mnemonic = "chan.new", operands = [.Ref, .Scalar, .Imm] },
+        .ChanSend => OpInfo { mnemonic = "chan.send", operands = [.Scalar, .Ref, .Ref] },
+        .ChanRecv => OpInfo { mnemonic = "chan.recv", operands = [.Scalar, .Ref, .Ref] },
+        .ChanClose => OpInfo { mnemonic = "chan.close", operands = [.Ref] },
+        .SemNew => OpInfo { mnemonic = "sem.new", operands = [.Ref, .Scalar] },
+        .SemAcquire => OpInfo { mnemonic = "sem.acquire", operands = [.Ref] },
+        .SemTry => OpInfo { mnemonic = "sem.try", operands = [.Scalar, .Ref] },
+        .SemRelease => OpInfo { mnemonic = "sem.release", operands = [.Ref] },
+        .SemAvail => OpInfo { mnemonic = "sem.avail", operands = [.Scalar, .Ref] },
     };
 }
 

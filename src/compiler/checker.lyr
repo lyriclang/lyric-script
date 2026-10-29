@@ -86,7 +86,7 @@ struct Checked {
 /// static member that builds the conforming type from a literal of its kind; `Error`, the root of
 /// what is thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was
 /// first thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core).
-let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nclass PanicInfo {\n    code: string\n    message: string\n    trace: string\n}\nenum TaskStatus<T> {\n    Running,\n    Done(T),\n    Failed(Error),\n    Cancelled,\n    Panicked(PanicInfo),\n}\nclass Coroutine<Y, R> :: [Identity, Closeable] {\n    fn close() {\n    }\n}\nclass Cancelled :: Error {\n    fn message(): string = \"cancelled\"\n}\nclass TaskScope :: Closeable {\n    fn close() {\n    }\n}\n";
+let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nclass PanicInfo {\n    code: string\n    message: string\n    trace: string\n}\nenum TaskStatus<T> {\n    Running,\n    Done(T),\n    Failed(Error),\n    Cancelled,\n    Panicked(PanicInfo),\n}\nclass Coroutine<Y, R> :: [Identity, Closeable] {\n    fn close() {\n    }\n}\nclass Cancelled :: Error {\n    fn message(): string = \"cancelled\"\n}\nclass TaskScope :: Closeable {\n    fn close() {\n    }\n}\nclass ChannelClosed :: Error {\n    fn message(): string = \"channel closed\"\n}\nclass Channel<T> {\n}\nclass Semaphore {\n}\n";
 
 /// A file of a program (S5a): its module's dotted path below the root, what it parsed to, and its
 /// place among the program's files — 0 the entry.
@@ -477,6 +477,7 @@ class Checker {
             errorCause = this.errorSlot("cause"),
             spawns = this.spawns,
             cancelled = this.typeIndex.get("Cancelled") ?? -1,
+            channelClosed = this.typeIndex.get("ChannelClosed") ?? -1,
         };
     }
 
@@ -1189,7 +1190,8 @@ class Checker {
             this.types.toArray(),
             this.functions.toArray(),
             ei,
-            this.typeIndex.get("Cancelled") ?? -1
+            this.typeIndex.get("Cancelled") ?? -1,
+            this.typeIndex.get("ChannelClosed") ?? -1
         );
         sets.infer();
         // a match over a clause's set covers the set (05 K7)
@@ -3749,6 +3751,15 @@ class Checker {
             .TaskValue(x, t) => TExpr.TaskValue(this.specBox(x, a), this.subst(t, a)),
             .TaskError(x, t) => TExpr.TaskError(this.specBox(x, a), t),
             .PanicText(x, k) => TExpr.PanicText(this.specBox(x, a), k),
+            .ChanNew(x, t) => TExpr.ChanNew(this.specBox(x, a), this.subst(t, a)),
+            .ChanSend(x, v) => TExpr.ChanSend(this.specBox(x, a), this.specBox(v, a)),
+            .ChanRecv(x, t) => TExpr.ChanRecv(this.specBox(x, a), this.subst(t, a)),
+            .ChanClose(x) => TExpr.ChanClose(this.specBox(x, a)),
+            .SemNew(x, t) => TExpr.SemNew(this.specBox(x, a), t),
+            .SemAcquire(x) => TExpr.SemAcquire(this.specBox(x, a)),
+            .SemTry(x) => TExpr.SemTry(this.specBox(x, a)),
+            .SemRelease(x) => TExpr.SemRelease(this.specBox(x, a)),
+            .SemAvail(x) => TExpr.SemAvail(this.specBox(x, a)),
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -8498,10 +8509,14 @@ class Checker {
                 let task = this.typeIndex.get("Task") ?? -1;
                 let co = this.typeIndex.get("Coroutine") ?? -1;
                 let scope = this.typeIndex.get("TaskScope") ?? -1;
-                return (tpl >= 0 && (tpl == task || tpl == co))
+                let channel = this.typeIndex.get("Channel") ?? -1;
+                let semaphore = this.typeIndex.get("Semaphore") ?? -1;
+                return (tpl >= 0 && (tpl == task || tpl == co || tpl == channel))
                     || i == task
                     || i == co
-                    || i == scope;
+                    || i == scope
+                    || i == channel
+                    || i == semaphore;
             }
             _ => { }
         }
@@ -8655,6 +8670,97 @@ class Checker {
             boxE(chain),
             stTy
         );
+    }
+
+    /// `Channel<T>.new(capacity = 0)` and `Semaphore.new(n)` (S6d1); `null` for another call.
+    mut fn syncNew(typeIndex: int, method: string, args: Arg[], at: Span): ?TExpr {
+        if (method != "new") {
+            return null;
+        }
+        let channel = this.typeIndex.get("Channel") ?? -1;
+        let semaphore = this.typeIndex.get("Semaphore") ?? -1;
+        if (typeIndex == channel) {
+            this.error(
+                "LYS-SEM0060",
+                "a channel takes the type of its values where it is made: Channel<T>.new()",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let isChannel = channel >= 0 && this.types[typeIndex].template == channel;
+        if (!isChannel && typeIndex != semaphore) {
+            return null;
+        }
+        if (args.length() > 1 || (!isChannel && args.length() != 1)) {
+            this.error(
+                "LYS-SEM0014",
+                if (isChannel) "Channel<T>.new takes its capacity, or nothing"
+                    else "Semaphore.new takes its permits",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let n = if (args.length() == 1) this.coerce(
+            this.expr(args[0].value, Ty.Int),
+            Ty.Int,
+            spanOf(args[0].value)
+        )
+            else TExpr.Int(0);
+        return if (isChannel) TExpr.ChanNew(boxE(n), Ty.Named(typeIndex))
+            else TExpr.SemNew(boxE(n), Ty.Named(typeIndex));
+    }
+
+    /// A method of a `Channel<T>` — `send(v)`, `recv()`, `close()` — or of a `Semaphore` —
+    /// `acquire()`, `tryAcquire()`, `release()`, `available()` (S6d1); `null` for another type.
+    mut fn syncMethod(receiver: TExpr, i: int, method: string, args: Arg[], at: Span): ?TExpr {
+        let channel = this.typeIndex.get("Channel") ?? -1;
+        let semaphore = this.typeIndex.get("Semaphore") ?? -1;
+        let isChannel = channel >= 0
+            && this.types[i].template == channel
+            && this.types[i].args.length() == 1;
+        if (!isChannel && i != semaphore) {
+            return null;
+        }
+        if (isChannel && method == "send") {
+            if (args.length() != 1) {
+                this.error("LYS-SEM0014", "send takes one value", at);
+                return TExpr.Unknown;
+            }
+            let t = this.types[i].args[0];
+            let v = this.coerce(this.expr(args[0].value, t), t, spanOf(args[0].value));
+            return TExpr.ChanSend(boxE(receiver), boxE(v));
+        }
+        if (args.length() > 0) {
+            this.error("LYS-SEM0014", f"'{method}' takes no argument", at);
+        }
+        if (isChannel) {
+            return match (method) {
+                "recv" => TExpr.ChanRecv(boxE(receiver), Ty.Optional(boxTy(this.types[i].args[0]))),
+                "close" => TExpr.ChanClose(boxE(receiver)),
+                _ => {
+                    this.error(
+                        "LYS-SEM0012",
+                        f"a channel has no method '{method}': send, recv, close",
+                        at
+                    );
+                    TExpr.Unknown
+                }
+            };
+        }
+        return match (method) {
+            "acquire" => TExpr.SemAcquire(boxE(receiver)),
+            "tryAcquire" => TExpr.SemTry(boxE(receiver)),
+            "release" => TExpr.SemRelease(boxE(receiver)),
+            "available" => TExpr.SemAvail(boxE(receiver)),
+            _ => {
+                this.error(
+                    "LYS-SEM0012",
+                    f"a semaphore has no method '{method}': acquire, tryAcquire, release, available",
+                    at
+                );
+                TExpr.Unknown
+            }
+        };
     }
 
     /// A method of a `TaskScope` (Lyric 5 10 §4): `spawn { … }` a task of it, `close()`, which
@@ -9728,6 +9834,28 @@ class Checker {
                             }
                         }
                     }
+                    // `Channel<int>.new(1)`: a static function of a type instance (S6d1)
+                    .Instance(inner, targs, _) => {
+                        match (inner.value) {
+                            .Name(typeName, _) => {
+                                let index = this.typeIndex.get(this.q(typeName));
+                                if (index != null
+                                    && this.types[index].typeParams.length() == targs.length()) {
+                                    let tys = List<Ty>.new();
+                                    for (x in targs) {
+                                        tys.push(this.resolveType(x));
+                                    }
+                                    return this.staticCall(
+                                        this.typeInstance(index, tys.toArray()),
+                                        method,
+                                        args,
+                                        at
+                                    );
+                                }
+                            }
+                            _ => { }
+                        }
+                    }
                     // `util.Counter.start()`: a static function of a module's type
                     .Member(inner, typeName, false, _) => {
                         let index = this.moduleType(inner.value, typeName, at);
@@ -10532,6 +10660,11 @@ class Checker {
                 if (asScope != null) {
                     return asScope;
                 }
+                // a channel's, a semaphore's (S6d1)
+                let asSync = this.syncMethod(receiver, i, method, args, memberAt);
+                if (asSync != null) {
+                    return asSync;
+                }
                 if (this.types[i].kind == .Interface) {
                     // through the interface value: the conformer's function in the slot
                     let found = this.ifaceMember(i, method);
@@ -10773,6 +10906,11 @@ class Checker {
 
     mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
         let info = this.types[typeIndex];
+        // `Channel<T>.new(capacity)`, `Semaphore.new(n)` (Lyric 5 10 §6 rule 1, §10 rule 7): the VM's
+        let made = this.syncNew(typeIndex, method, args, at);
+        if (made != null) {
+            return made;
+        }
         // `TaskScope.new()` (Lyric 5 10 §4 rule 1): the VM's scope
         if (typeIndex == (this.typeIndex.get("TaskScope") ?? -1) && method == "new") {
             if (args.length() > 0) {

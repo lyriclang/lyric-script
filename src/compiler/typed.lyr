@@ -1,7 +1,7 @@
 //! The checked program (S2d): what the checker gives the code generator. Every name is resolved
 //! to a local, a global, a field, a function or a native; every expression carries its type;
 //! every conversion the language makes on its own (`int` to `float`, 03 Mix) is written out.
-import std.collections { List, Map };
+import std.collections { List, Map, Set };
 import lyric_script.compiler.ast { BinaryOp, UnaryOp };
 
 /// A type as the checker knows it.
@@ -141,6 +141,10 @@ struct FieldInfo :: [Debug] {
 class TypeInfo {
     name: string,
     kind: TypeKind,
+    // the module that declares it, by its file; the names of its `private` fields and methods,
+    // which that file alone names (S5a2)
+    var mod: int = 0,
+    var hidden: Set<string> = Set<string>.new(),
     var fields: FieldInfo[] = [],
     var variants: string[] = [],
     // each variant's payload — positions named "0", "1", … — and whether it has named fields

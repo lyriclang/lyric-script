@@ -469,6 +469,107 @@ class Checker {
         );
     }
 
+    /// A declaration of the current module kept to its file (`private`, 02 V).
+    mut fn keepPrivate(name: string, isPub: bool): void {
+        if (!isPub) {
+            this.privateKeys.insert(this.declKey(name));
+        }
+    }
+
+    /// Whether the current module may name the declaration `key` of module `target`, `name`: a
+    /// `private` one in its own file alone (`LYS-RES0009`).
+    mut fn maySee(key: string, name: string, target: int, at: Span): bool {
+        if (this.privateKeys.contains(key) && target != this.mod) {
+            let path = this.modNames.get(target) ?? "";
+            this.error("LYS-RES0009", f"'{name}' is private to the module '{path}'", at);
+            return false;
+        }
+        return true;
+    }
+
+    /// The type an expression names: `util.Point` through its module, else as the module sees
+    /// the name; `null` where none — reported for a name through a module.
+    mut fn typeNamed(name: string, at: Span): ?int {
+        let dot = name.find('.');
+        if (dot == null) {
+            return this.typeIndex.get(this.q(name));
+        }
+        let head = name[0..dot].toString();
+        let rest = name[dot + 1..name.length()].toString();
+        let target = this.moduleNamed(head);
+        if (target == null) {
+            this.error("LYS-SEM0002", f"nothing in scope is named '{head}'", at);
+            return null;
+        }
+        let key = this.exportKey(target, rest);
+        let index = this.typeIndex.get(key);
+        if (index == null) {
+            this.error("LYS-RES0004", f"the module '{head}' declares no type '{rest}'", at);
+            return null;
+        }
+        this.maySee(key, rest, target, at);
+        return index;
+    }
+
+    /// Type `index` written with `args`: an instance of a generic one, an interface fixed in its
+    /// associated types, or the type itself.
+    mut fn namedWith(index: int, shown: string, args: TypeExpr[], at: Span): Ty {
+        let t = this.types[index];
+        if (t.kind == .Interface && args.length() > 0) {
+            return this.fixedInterface(index, args, at);
+        }
+        let n = t.typeParams.length();
+        if (n == 0 && args.length() == 0) {
+            return Ty.Named(index);
+        }
+        if (args.length() != n) {
+            this.error(
+                "LYS-SEM0026",
+                f"'{shown}' takes {n} type arguments, not {args.length()}",
+                at
+            );
+            return Ty.Unknown;
+        }
+        let tys = List<Ty>.new();
+        for (x in args) {
+            tys.push(this.resolveType(x));
+        }
+        return Ty.Named(this.typeInstance(index, tys.toArray()));
+    }
+
+    /// Whether the current module may name member `member` of type `i` (Lyric 5 04 §3 rule 6):
+    /// a `private` field or method in its type's file alone (`LYS-RES0009`).
+    mut fn mayName(i: int, member: string, at: Span): bool {
+        let base = if (this.types[i].template >= 0) this.types[i].template else i;
+        let t = this.types[base];
+        if (t.mod != this.mod && t.hidden.contains(member)) {
+            this.error("LYS-RES0009", f"'{t.name}.{member}' is private to its type's file", at);
+            return false;
+        }
+        return true;
+    }
+
+    /// A type with a field the current module may not name is built in its type's file alone —
+    /// by its initializer, or a copy with `with` (Lyric 5 04 §3 rule 7, `LYS-RES0009`): a
+    /// function of its module builds it.
+    mut fn mayBuild(i: int, at: Span): void {
+        let base = if (this.types[i].template >= 0) this.types[i].template else i;
+        let t = this.types[base];
+        if (t.mod == this.mod) {
+            return;
+        }
+        for (f in t.fields) {
+            if (t.hidden.contains(f.name)) {
+                this.error(
+                    "LYS-RES0009",
+                    f"'{t.name}' has the private field '{f.name}': a function of its module builds it",
+                    at
+                );
+                return;
+            }
+        }
+    }
+
     /// Whether module `m` declares `name` itself.
     mut fn declaresOwn(m: int, name: string): bool {
         let key = keyIn(this.modNames.get(m) ?? "", m, name);
@@ -792,13 +893,22 @@ class Checker {
             match (item) {
                 .Decl(d) => {
                     match (d) {
-                        .Type(t) => this.declareTypeName(
-                            t.name,
-                            if (t.isClass) TypeKind.Class else TypeKind.Struct,
-                            t.span
-                        ),
-                        .Enum(e) => this.declareTypeName(e.name, TypeKind.Enum, e.span),
-                        .Interface(i) => this.declareTypeName(i.name, TypeKind.Interface, i.span),
+                        .Type(t) => {
+                            this.declareTypeName(
+                                t.name,
+                                if (t.isClass) TypeKind.Class else TypeKind.Struct,
+                                t.span
+                            );
+                            this.keepPrivate(t.name, t.isPub);
+                        }
+                        .Enum(e) => {
+                            this.declareTypeName(e.name, TypeKind.Enum, e.span);
+                            this.keepPrivate(e.name, e.isPub);
+                        }
+                        .Interface(i) => {
+                            this.declareTypeName(i.name, TypeKind.Interface, i.span);
+                            this.keepPrivate(i.name, i.isPub);
+                        }
                         .Extend(_) => { }
                         .Alias(a) => {
                             let key = this.declKey(a.name);
@@ -807,13 +917,10 @@ class Checker {
                             } else {
                                 this.aliases.insert(key, a);
                                 this.register(a.name, a.span);
+                                this.keepPrivate(a.name, a.isPub);
                             }
                         }
-                        .Fn(f) => {
-                            if (!f.isPub) {
-                                this.privateKeys.insert(this.declKey(f.name));
-                            }
-                        }
+                        .Fn(f) => this.keepPrivate(f.name, f.isPub),
                         .Import(im) => this.bindImport(im),
                     }
                 }
@@ -1107,7 +1214,9 @@ class Checker {
         }
         this.typeIndex.insert(key, this.types.length());
         this.register(name, at);
-        this.types.push(TypeInfo { name = name, kind = kind, methods = Map<string, int>.new() });
+        this.types.push(
+            TypeInfo { name = name, kind = kind, methods = Map<string, int>.new(), mod = this.mod }
+        );
     }
 
     mut fn declareMembers(t: TypeDecl): void {
@@ -1152,6 +1261,9 @@ class Checker {
                     default = null,
                 }
             );
+            if (!f.isPub) {
+                info.hidden.insert(f.name);
+            }
         }
         info.fields = fields.toArray();
         for (m in t.methods) {
@@ -1161,6 +1273,9 @@ class Checker {
             }
             seen.insert(m.name, true);
             info.methods.insert(m.name, this.declareFn(m, index));
+            if (!m.isPub) {
+                info.hidden.insert(m.name);
+            }
         }
     }
 
@@ -2407,6 +2522,9 @@ class Checker {
             }
             seen.insert(m.name, true);
             info.methods.insert(m.name, this.declareFn(m, index));
+            if (!m.isPub) {
+                info.hidden.insert(m.name);
+            }
         }
     }
 
@@ -2646,17 +2764,14 @@ class Checker {
             if (let target = this.moduleNamed(head)) {
                 let rest = name[dot + 1..name.length()].toString();
                 let key = this.exportKey(target, rest);
+                this.maySee(key, rest, target, at);
                 let index = this.typeIndex.get(key);
-                if (index != null && args.length() == 0) {
-                    return Ty.Named(index);
+                if (index != null) {
+                    return this.namedWith(index, rest, args, at);
                 }
                 let alias = this.aliases.get(key);
                 if (alias != null && args.length() == 0) {
                     return this.resolveAlias(alias);
-                }
-                if (index != null) {
-                    this.notYet("a generic type through a module's name", "S5a2", at);
-                    return Ty.Unknown;
                 }
                 this.error("LYS-RES0004", f"the module '{head}' declares no type '{rest}'", at);
                 return Ty.Unknown;
@@ -6024,9 +6139,9 @@ class Checker {
             subs.push(f.pattern);
         }
         let t = typeOf(src);
+        let named = this.typeIndex.get(this.q(typeName)) ?? -1;
         let i = match (t) {
-            .Named(n) => if (this.types[n].kind != .Enum && this.types[n].name == typeName) n
-                else -1,
+            .Named(n) => if (this.types[n].kind != .Enum && n == named) n else -1,
             _ => -1,
         };
         if (i < 0) {
@@ -6055,6 +6170,7 @@ class Checker {
                 this.bindUnknown([f.pattern], out, seen);
                 continue;
             }
+            this.mayName(i, f.name, f.span);
             let part = TExpr.Field(boxE(src), found, this.types[i].fields[found].ty);
             test = andMaybe(test, this.patternTest(f.pattern, part, out, seen));
         }
@@ -7480,7 +7596,7 @@ class Checker {
     ): TExpr {
         var i = -1;
         if (enumName != null) {
-            let index = this.typeIndex.get(this.q(enumName));
+            let index = this.typeNamed(enumName, at);
             if (index == null || this.types[index].kind != .Enum) {
                 this.error("LYS-SEM0011", f"'{enumName}' names no enum", at);
                 return TExpr.Unknown;
@@ -7754,6 +7870,7 @@ class Checker {
                 var k = 0;
                 for (f in this.types[i].fields) {
                     if (f.name == field) {
+                        this.mayName(i, field, at);
                         return (i, k);
                     }
                     k += 1;
@@ -7881,22 +7998,18 @@ class Checker {
                         }
                     }
                     if (index != null) {
-                        let g = this.types[index].staticLets.get(name);
-                        if (g != null) {
-                            return TExpr.Global(g, this.globals[g].ty);
-                        }
-                        let k = this.variantIndex(index, name);
-                        if (k >= 0) {
-                            return this.unitVariant(index, k, at);
-                        }
-                        // a static function named through its type is a value (§8.4 rule 1)
-                        let m = this.types[index].methods.get(name);
-                        if (m != null && this.functions[m].isStatic) {
-                            return this.thunk(m, at);
-                        }
-                        this.error("LYS-SEM0012", f"'{typeName}' has no member '{name}'", at);
-                        return TExpr.Unknown;
+                        return this.typeMember(index, typeName, name, at);
                     }
+                }
+            }
+            // `util.Shape.Dot`, `util.Point.origin`: a member of a module's type
+            .Member(inner, typeName, false, _) => {
+                let index = this.moduleType(inner.value, typeName, at);
+                if (index >= 0) {
+                    return this.typeMember(index, typeName, name, at);
+                }
+                if (index == -2) {
+                    return TExpr.Unknown;
                 }
             }
             _ => { }
@@ -7923,13 +8036,52 @@ class Checker {
         return TExpr.Field(boxE(o), index, this.types[owner].fields[index].ty);
     }
 
+    /// `T.name` of type `index`: a constant, a unit variant, or a static function as a value
+    /// (§8.4 rule 1).
+    mut fn typeMember(index: int, typeName: string, name: string, at: Span): TExpr {
+        let g = this.types[index].staticLets.get(name);
+        if (g != null) {
+            return TExpr.Global(g, this.globals[g].ty);
+        }
+        let k = this.variantIndex(index, name);
+        if (k >= 0) {
+            return this.unitVariant(index, k, at);
+        }
+        let m = this.types[index].methods.get(name);
+        if (m != null && this.functions[m].isStatic) {
+            this.mayName(index, name, at);
+            return this.thunk(m, at);
+        }
+        this.error("LYS-SEM0012", f"'{typeName}' has no member '{name}'", at);
+        return TExpr.Unknown;
+    }
+
+    /// The type `m.T` names where `e` is the name `m` of a module this one imports: its index;
+    /// -1 where `e` is no module's name, -2 where the module has no such type (reported).
+    mut fn moduleType(e: Expr, typeName: string, at: Span): int {
+        let m = match (e) {
+            .Name(n, _) => n,
+            _ => "",
+        };
+        if (m == ""
+            || this.lookupLocal(m) != null
+            || this.globalIndex.containsKey(this.q(m))
+            || this.moduleNamed(m) == null) {
+            return -1;
+        }
+        return this.typeNamed(m + "." + typeName, at) ?? -2;
+    }
+
     mut fn init(name: string, fields: FieldInit[], expected: ?Ty, at: Span): TExpr {
-        let index = this.typeIndex.get(this.q(name));
+        let index = this.typeNamed(name, at);
         if (index == null) {
-            this.resolveNamed(name, [], at);
+            if (!name.contains(".")) {
+                this.resolveNamed(name, [], at);
+            }
             return TExpr.Unknown;
         }
         let info = this.types[index];
+        this.mayBuild(index, at);
         if (info.kind == .Enum) {
             this.error(
                 "LYS-SEM0031",
@@ -8112,6 +8264,7 @@ class Checker {
             }
             return TExpr.Unknown;
         }
+        this.mayBuild(owner, at);
         let h = this.hidden(t, at);
         let setup = List<TStmt>.new();
         setup.push(TStmt.SetLocal(h, p, at.line));
@@ -8864,6 +9017,16 @@ class Checker {
                             if (index != null) {
                                 return this.staticCall(index, method, args, at);
                             }
+                        }
+                    }
+                    // `util.Counter.start()`: a static function of a module's type
+                    .Member(inner, typeName, false, _) => {
+                        let index = this.moduleType(inner.value, typeName, at);
+                        if (index >= 0) {
+                            return this.staticCall(index, method, args, at);
+                        }
+                        if (index == -2) {
+                            return TExpr.Unknown;
                         }
                     }
                     _ => { }
@@ -9681,6 +9844,7 @@ class Checker {
                     );
                     return TExpr.Unknown;
                 }
+                this.mayName(i, method, memberAt);
                 return this.callAmong(method, [m], receiver, args, at);
             }
             _ => {
@@ -9847,6 +10011,9 @@ class Checker {
         }
         if (!this.functions[m].isStatic) {
             this.error("LYS-SEM0055", f"'{method}' needs a {info.name} to call it on", at);
+            return TExpr.Unknown;
+        }
+        if (!this.mayName(typeIndex, method, at)) {
             return TExpr.Unknown;
         }
         return this.callAmong(method, [m], null, args, at);

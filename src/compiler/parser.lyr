@@ -578,9 +578,10 @@ class Parser {
             );
             return;
         }
-        var isPub = false;
+        // a member is seen where its type is unless `private` (02 V; Lyric 5 04 §3 rule 6)
+        var isPub = true;
         if (this.atWord("pub") || this.atWord("internal") || this.atWord("private")) {
-            isPub = this.atWord("pub");
+            isPub = !this.atWord("private");
             this.advance();
         }
         var isStatic = false;
@@ -1698,13 +1699,27 @@ class Parser {
         this.advance();
         let member = this.text(name);
         if (!optional && this.at(.LBrace) && isTypeName(member)) {
+            // `Shape.Rect { … }`, through a module `util.Shape.Rect { … }`
             let enumName = match (e) {
                 .Name(n, _) => if (isTypeName(n)) n else "",
+                .Member(inner, tn, false, _) => match (inner.value) {
+                    .Name(m, _) => if (!isTypeName(m) && isTypeName(tn)) m + "." + tn else "",
+                    _ => "",
+                },
                 _ => "",
             };
             if (enumName != "") {
                 let fields = try this.parseFieldInits();
                 return Expr.VariantInit(enumName, member, fields, this.since(first));
+            }
+            // `util.Point { … }`: a module's type built (Lyric 5 04 §3 rule 3)
+            let moduleName = match (e) {
+                .Name(n, _) => if (isTypeName(n)) "" else n,
+                _ => "",
+            };
+            if (moduleName != "") {
+                let fields = try this.parseFieldInits();
+                return Expr.StructInit(moduleName + "." + member, fields, this.since(first));
             }
         }
         return Expr.Member(boxed(e), member, optional, this.since(first));

@@ -133,7 +133,7 @@ pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcom
 class TaskState {
     var s: uint64[],
     var r: HeapRef[],
-    frames: List<CallFrame>,
+    var frames: List<CallFrame>,
     var fi: int,
     var pc: int = 0,
     var bs: int = 0,
@@ -144,6 +144,75 @@ class TaskState {
     // what an error that left the task threw, and its record: what `await` throws again
     var thrown: HeapRef = nilRef(),
     var record: HeapRef = nilRef(),
+    // S6b: the contexts that pulled the coroutine running now, the innermost last; the fields
+    // above are the running context's
+    pullers: List<Pull> = List<Pull>.new(),
+}
+
+/// Where code stands: a task's, or a coroutine's while it is parked (S6b).
+class Context {
+    var s: uint64[],
+    var r: HeapRef[],
+    var frames: List<CallFrame>,
+    var fi: int,
+    var pc: int,
+    var bs: int,
+    var br: int,
+    var report: ?Report,
+}
+
+/// A pull in progress: the context that pulled, at the instruction after its `co.next`, the
+/// coroutine, and where the answer goes — the absolute registers of `co.next`'s `a` and `b`.
+class Pull {
+    ctx: Context,
+    co: ScriptCoroutine,
+    a: int,
+    b: int,
+}
+
+/// A coroutine as the script holds it (Lyric 5 10 §1; 07 N2): its closure, its context while it
+/// is parked, the slots of what it yields and of its result, and its result once it has one.
+/// Its state: 0 never pulled, 1 parked at a yield, 2 running, 3 ended.
+pub class ScriptCoroutine :: [HeapRef] {
+    env: HeapRef,
+    ns: int,
+    nr: int,
+    rs: int,
+    rr: int,
+    var state: int = 0,
+    var ctx: ?Context = null,
+    var returned: bool = false,
+    var resS: uint64[] = [],
+    var resR: HeapRef[] = [],
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// The context a coroutine starts in: its closure's function, the closure in `r[0]`; `null`
+/// where the closure names no function.
+fn coroutineStart(module: Module, env: HeapRef): ?Context {
+    var target = -1;
+    if (env is ScriptObject) {
+        target = env.scalars[0] as int;
+    }
+    if (target < 0 || target >= module.functions.length()) {
+        return null;
+    }
+    let callee = module.functions[target];
+    let x = Context {
+        s = [0 as uint64] * grown(0, callee.scalars),
+        r = refArray(grown(0, callee.refs)),
+        frames = List<CallFrame>.new(),
+        fi = target,
+        pc = 0,
+        bs = 0,
+        br = 0,
+        report = null,
+    };
+    x.r[0] = env;
+    return x;
 }
 
 /// A task as the script holds it (07 N4): its state, what it ended with once it has, and the
@@ -253,6 +322,22 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     );
 }
 
+/// A pull's answer that the coroutine has ended: no error, no value — its slots cleared, its
+/// presence 0 (S6b).
+fn ended(s: uint64[], r: HeapRef[], a: int, b: int, ns: int, nr: int): void {
+    s[a] = 0 as uint64;
+    var k = 0;
+    while (k <= ns) {
+        s[a + 1 + k] = 0 as uint64;
+        k += 1;
+    }
+    k = 0;
+    while (k < nr) {
+        r[b + k] = nil;
+        k += 1;
+    }
+}
+
 /// Runs task `t` from where it stands until it ends — its outcome — or waits.
 fn runTask(t: TaskState, shared: RunShared): Outcome {
     let module = shared.module;
@@ -263,7 +348,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
     var f = module.functions[fi];
     var s = t.s;
     var r = t.r;
-    let frames = t.frames;
+    var frames = t.frames;
     // the report of an error no frame took, once one is asked (S4a)
     var report = t.report;
     var code: Instr[] = f.code;
@@ -508,6 +593,36 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 }
                 let back = frames.pop();
                 if (back == null) {
+                    // S6b: a coroutine's body ended — its result kept, its pull answers that no
+                    // value came (Lyric 5 10 §1 rules 3–5)
+                    let p = t.pullers.pop();
+                    if (p != null) {
+                        let co = p.co;
+                        if (ins.op == .RetS) {
+                            co.resS = [s[bs]];
+                        } else if (ins.op == .RetR) {
+                            co.resR = [r[br]];
+                        } else if (ins.op == .RetN) {
+                            co.resS = firstScalars(s, bs, f.retS);
+                            co.resR = firstRefs(r, br, f.retR);
+                        }
+                        co.returned = true;
+                        co.state = 3;
+                        co.ctx = null;
+                        let x = p.ctx;
+                        s = x.s;
+                        r = x.r;
+                        frames = x.frames;
+                        fi = x.fi;
+                        f = module.functions[fi];
+                        code = f.code;
+                        pc = x.pc;
+                        bs = x.bs;
+                        br = x.br;
+                        report = x.report;
+                        ended(s, r, p.a, p.b, co.ns, co.nr);
+                        continue;
+                    }
                     return match (ins.op) {
                         .RetS => Outcome.Scalar(s[bs]),
                         .RetR => Outcome.Ref(r[br]),
@@ -1057,6 +1172,29 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         br = back.baseR;
                     }
                 } else {
+                    // S6b: out of a coroutine's body — it has ended, and the pull that ran into
+                    // the error throws it (Lyric 5 10 §1 rule 6)
+                    let p = t.pullers.pop();
+                    if (p != null) {
+                        let co = p.co;
+                        co.state = 3;
+                        co.ctx = null;
+                        let x = p.ctx;
+                        s = x.s;
+                        r = x.r;
+                        frames = x.frames;
+                        fi = x.fi;
+                        f = module.functions[fi];
+                        code = f.code;
+                        pc = x.pc;
+                        bs = x.bs;
+                        br = x.br;
+                        report = x.report;
+                        s[p.a] = 1 as uint64;
+                        r[p.b] = value;
+                        r[p.b + 1] = record;
+                        continue;
+                    }
                     if (t.handle != null) {
                         // a spawned task fails: `await` and `join` throw its error again (S6a)
                         t.thrown = value;
@@ -1106,6 +1244,196 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         r = growRefs(r, br + f.refs);
                     }
                 }
+            }
+            // S6b: a coroutine of the closure in `b`, run by nothing yet; `c` the slots of what
+            // it yields, scalars × 256 + references; its result's from its function
+            .CoNew => {
+                let env = r[br + b];
+                var target = -1;
+                if (env is ScriptObject) {
+                    target = env.scalars[0] as int;
+                }
+                if (target < 0 || target >= module.functions.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a coroutine of no function"
+                    );
+                }
+                let body = module.functions[target];
+                let (rs, rr) = match (body.returns) {
+                    .Scalar => (1, 0),
+                    .Ref => (0, 1),
+                    .Slots => (body.retS, body.retR),
+                    _ => (0, 0),
+                };
+                r[br + a] = ScriptCoroutine {
+                    env = env,
+                    ns = c / 256,
+                    nr = c % 256,
+                    rs = rs,
+                    rr = rr,
+                };
+                pc += 1;
+            }
+            // S6b: a pull of the coroutine in `c`: it runs to its next yield or its end (Lyric 5
+            // 10 §1 rule 4); the answer at `s[a]` 0 and the value at `s[a+1]…`/`r[b]…`, its
+            // presence after its scalars — or `s[a]` 1, the error at `r[b]`, its record at `r[b+1]`
+            .CoNext => {
+                let o = r[br + c];
+                if (!(o is ScriptCoroutine)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a pull of no coroutine"
+                    );
+                }
+                if (o.state == 2) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a coroutine pulled while it runs"
+                    );
+                }
+                if (o.state == 3) {
+                    ended(s, r, bs + a, br + b, o.ns, o.nr);
+                    pc += 1;
+                } else {
+                    let x = o.ctx ?? coroutineStart(module, o.env);
+                    if (x == null) {
+                        return panicOut(
+                            module,
+                            frames,
+                            fi,
+                            pc,
+                            "LYS-ICE0001",
+                            "a coroutine of no function"
+                        );
+                    }
+                    t.pullers.push(
+                        Pull {
+                            ctx = Context {
+                                s = s,
+                                r = r,
+                                frames = frames,
+                                fi = fi,
+                                pc = pc + 1,
+                                bs = bs,
+                                br = br,
+                                report = report,
+                            },
+                            co = o,
+                            a = bs + a,
+                            b = br + b,
+                        }
+                    );
+                    o.state = 2;
+                    s = x.s;
+                    r = x.r;
+                    frames = x.frames;
+                    fi = x.fi;
+                    f = module.functions[fi];
+                    code = f.code;
+                    pc = x.pc;
+                    bs = x.bs;
+                    br = x.br;
+                    report = x.report;
+                }
+            }
+            // S6b: the running coroutine hands the value at `s[a]…`/`r[b]…` to the context that
+            // pulled it and parks (Lyric 5 10 §1 rule 2); where none pulled, a panic
+            .YieldV => {
+                let p = t.pullers.pop();
+                if (p == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0014",
+                        "a yield where no coroutine runs"
+                    );
+                }
+                let co = p.co;
+                let cs = s;
+                let cr = r;
+                let vs = bs + a;
+                let vr = br + b;
+                co.ctx = Context {
+                    s = s,
+                    r = r,
+                    frames = frames,
+                    fi = fi,
+                    pc = pc + 1,
+                    bs = bs,
+                    br = br,
+                    report = report,
+                };
+                co.state = 1;
+                let x = p.ctx;
+                s = x.s;
+                r = x.r;
+                frames = x.frames;
+                fi = x.fi;
+                f = module.functions[fi];
+                code = f.code;
+                pc = x.pc;
+                bs = x.bs;
+                br = x.br;
+                report = x.report;
+                s[p.a] = 0 as uint64;
+                var k = 0;
+                while (k < co.ns) {
+                    s[p.a + 1 + k] = cs[vs + k];
+                    k += 1;
+                }
+                s[p.a + 1 + co.ns] = 1 as uint64;
+                k = 0;
+                while (k < co.nr) {
+                    r[p.b + k] = cr[vr + k];
+                    k += 1;
+                }
+            }
+            // S6b: the coroutine's result at `s[a]…`/`r[b]…`, its presence after its scalars
+            // (rule 5)
+            .CoRes => {
+                let o = r[br + c];
+                if (!(o is ScriptCoroutine)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a result of no coroutine"
+                    );
+                }
+                var k = 0;
+                while (k < o.rs) {
+                    s[bs + a + k] = if (o.returned) o.resS[k] else 0 as uint64;
+                    k += 1;
+                }
+                s[bs + a + o.rs] = truth(o.returned);
+                k = 0;
+                while (k < o.rr) {
+                    r[br + b + k] = if (o.returned) o.resR[k] else nil;
+                    k += 1;
+                }
+                pc += 1;
+            }
+            .CoDone => {
+                let o = r[br + b];
+                s[bs + a] = truth(o is ScriptCoroutine && o.state == 3);
+                pc += 1;
             }
             // S6a: a task of the closure in `b`, queued; the spawner goes on (07 N8)
             .Spawn => {
@@ -1157,6 +1485,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     t.bs = bs;
                     t.br = br;
                     t.report = report;
+                    t.frames = frames;
                     return Outcome.Switch;
                 }
                 s[bs + a] = 0 as uint64;
@@ -1203,6 +1532,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 t.bs = bs;
                 t.br = br;
                 t.report = report;
+                t.frames = frames;
                 return Outcome.Switch;
             }
             // S6a: the status of the task in `b`, as `TaskStatus` numbers it
@@ -1242,6 +1572,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     t.bs = bs;
                     t.br = br;
                     t.report = report;
+                    t.frames = frames;
                     return Outcome.Switch;
                 }
                 s[bs + a] = 0 as uint64;

@@ -86,7 +86,7 @@ struct Checked {
 /// static member that builds the conforming type from a literal of its kind; `Error`, the root of
 /// what is thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was
 /// first thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core).
-let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nenum TaskStatus {\n    Running,\n    Done,\n    Failed,\n    Panicked,\n    Cancelled,\n}\n";
+let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\nclass Task<T> {\n}\nenum TaskStatus {\n    Running,\n    Done,\n    Failed,\n    Panicked,\n    Cancelled,\n}\nclass Coroutine<Y, R> {\n}\n";
 
 /// A file of a program (S5a): its module's dotted path below the root, what it parsed to, and its
 /// place among the program's files — 0 the entry.
@@ -277,6 +277,8 @@ class FnCtx {
     // in a defer's body: how many loops stood around it, which its jumps may not leave; -1 for
     // none (S4e)
     var deferLoops: int = -1,
+    // a coroutine's body: the type it yields; none elsewhere (S6b)
+    var yields: ?Ty = null,
 
     static fn new(fnIndex: int, returns: Ty, isMain: bool, fixing: bool): FnCtx {
         let scopes = List<Scope>.new();
@@ -335,6 +337,8 @@ class Checker {
     var throwsAt: Map<int, Span> = Map<int, Span>.new(),
     // whether a task is spawned anywhere: the top level then ends with a join (S6a)
     var spawns: bool = false,
+    // the yield type of the coroutine body the next lambda made is (S6b)
+    var pendingYields: ?Ty = null,
     // the modules (S5a): the current one, by its file — 0 the entry, -1 the prelude —; each
     // imported module's dotted path and its view, a name to its key; the modules a qualified
     // import binds, by name
@@ -2878,6 +2882,10 @@ class Checker {
         let generic = this.typeIndex.get(this.q(name));
         if (generic != null && this.types[generic].typeParams.length() > 0) {
             let n = this.types[generic].typeParams.length();
+            // `Coroutine<Y>` is `Coroutine<Y, void>` (Lyric 5 10 §1 rule 1)
+            if (args.length() == 1 && generic == (this.typeIndex.get("Coroutine") ?? -1)) {
+                return Ty.Named(this.typeInstance(generic, [this.resolveType(args[0]), Ty.Void]));
+            }
             if (args.length() != n) {
                 this.error(
                     "LYS-SEM0026",
@@ -3618,6 +3626,7 @@ class Checker {
     mut fn specStmt(s: TStmt, a: Ty[]): TStmt {
         return match (s) {
             .Join(_) => s,
+            .Yield(v, l) => TStmt.Yield(this.specOpt(v, a), l),
             .Expr(e, l) => TStmt.Expr(this.specExpr(e, a), l),
             .SetLocal(id, e, l) => TStmt.SetLocal(id, this.specExpr(e, a), l),
             .SetGlobal(g, e, l) => TStmt.SetGlobal(g, this.specExpr(e, a), l),
@@ -3695,6 +3704,10 @@ class Checker {
             .Await(x, t) => TExpr.Await(this.specBox(x, a), this.subst(t, a)),
             .TaskStatus(x, t) => TExpr.TaskStatus(this.specBox(x, a), t),
             .YieldNow => e,
+            .CoNew(x, t) => TExpr.CoNew(this.specBox(x, a), this.subst(t, a)),
+            .CoNext(x, t) => TExpr.CoNext(this.specBox(x, a), this.subst(t, a)),
+            .CoResult(x, t) => TExpr.CoResult(this.specBox(x, a), this.subst(t, a)),
+            .CoDone(x) => TExpr.CoDone(this.specBox(x, a)),
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -4349,6 +4362,22 @@ class Checker {
         let body = List<TStmt>.new();
         match (decl.body) {
             .Block(b) => {
+                // a coroutine function (Lyric 5 10 §1 rule 1): its body is a coroutine's, which a
+                // call makes without running it — a closure of no parameter that holds the call's
+                // arguments
+                let co = this.coroutineArgs(info.returns);
+                if (co.length() == 2 && (hasOwnYield(b) || !returnsValue(b))) {
+                    this.pendingYields = co[0];
+                    let coBody = this.makeLambda(
+                        "<coroutine>",
+                        [],
+                        [],
+                        co[1],
+                        Expr.Block(b, decl.span),
+                        decl.span
+                    );
+                    return [TStmt.Return(TExpr.CoNew(boxE(coBody), info.returns), decl.span.line)];
+                }
                 for (s in this.stmtList(b.stmts)) {
                     body.push(s);
                 }
@@ -4772,6 +4801,7 @@ class Checker {
                 TStmt.DoWhile(b, c, at.line)
             }
             .Return(value, at) => this.returnStmt(value, at),
+            .Yield(value, at) => this.yieldStmt(value, at),
             .Block(b, at) => TStmt.Block(this.block(b), at.line),
             // one standing alone, as an `else`: a scope of its own, which it ends at once
             .Defer(_, at) | .Using(_, _, _, at) => TStmt.Block(this.stmtList([s]), at.line),
@@ -6808,6 +6838,25 @@ class Checker {
             return TStmt.Return(null, at.line);
         }
         let expected = this.ctx.returns;
+        // a coroutine's body: `return v` gives its result, none where the type has none (rule 3)
+        if (this.ctx.yields != null) {
+            if (value == null && expected != .Void && expected != .Unknown) {
+                this.error(
+                    "LYS-SEM0001",
+                    f"the coroutine returns {this.tyName(expected)}: its 'return' gives one",
+                    at
+                );
+                return TStmt.Return(null, at.line);
+            }
+            if (value != null && expected == .Void) {
+                this.error(
+                    "LYS-SEM0039",
+                    "the coroutine returns nothing — a Coroutine<Y> has no result, a Coroutine<Y, R> has",
+                    at
+                );
+                return TStmt.Return(null, at.line);
+            }
+        }
         if (this.ctx.isLambda && expected == .Unknown) {
             this.error(
                 "LYS-SEM0010",
@@ -6845,6 +6894,28 @@ class Checker {
             return TStmt.Return(null, at.line);
         }
         return TStmt.Return(this.coerce(v, expected, spanOf(value)), at.line);
+    }
+
+    /// `yield v` or `yield` (Lyric 5 10 §1 rule 2): the value to the context that pulled, checked
+    /// against the coroutine's `Y`; a bare `yield` only in a `Coroutine<void>` (`LYS-SEM0038`).
+    mut fn yieldStmt(value: ?Expr, at: Span): TStmt {
+        let y = this.ctx.yields;
+        if (y == null) {
+            this.notYet("a yield outside a coroutine function's body", "S6b2", at);
+            return TStmt.Expr(TExpr.Unknown, at.line);
+        }
+        if (value == null) {
+            if (y != .Void && y != .Unknown) {
+                this.error(
+                    "LYS-SEM0038",
+                    f"a bare 'yield' in a coroutine that yields {this.tyName(y)}: give it a value",
+                    at
+                );
+            }
+            return TStmt.Yield(null, at.line);
+        }
+        let v = this.expr(value, y);
+        return TStmt.Yield(this.coerce(v, y, spanOf(value)), at.line);
     }
 
     // --- expressions -----------------------------------------------------------------------------
@@ -8234,6 +8305,62 @@ class Checker {
         return TExpr.Spawn(boxE(closure), Ty.Named(this.typeInstance(task, [result])));
     }
 
+    /// The yield and the result type of a `Coroutine<Y, R>`, `[Y, R]`; none for another type (S6b).
+    fn coroutineArgs(t: Ty): Ty[] {
+        let co = this.typeIndex.get("Coroutine") ?? -1;
+        match (t) {
+            .Named(i) => {
+                if (co >= 0 && this.types[i].template == co && this.types[i].args.length() == 2) {
+                    return this.types[i].args;
+                }
+            }
+            _ => { }
+        }
+        return [];
+    }
+
+    /// A method of a `Coroutine<Y, R>` (Lyric 5 10 §1 rules 4–5): `next()`, `?Y` — `bool` for
+    /// a `Coroutine<void>` —, `result()`, `?R`, `isDone()`; `null` where `i` is no coroutine's type.
+    mut fn coroutineMethod(receiver: TExpr, i: int, method: string, args: Arg[], at: Span): ?TExpr {
+        let yr = this.coroutineArgs(Ty.Named(i));
+        if (yr.length() != 2) {
+            return null;
+        }
+        if (args.length() > 0) {
+            this.error("LYS-SEM0014", f"'{method}' takes no argument", at);
+        }
+        let y = yr[0];
+        let r = yr[1];
+        return match (method) {
+            "next" => TExpr.CoNext(
+                boxE(receiver),
+                if (y == .Void) Ty.Bool else Ty.Optional(boxTy(y))
+            ),
+            "result" => {
+                if (r == .Void) {
+                    this.error(
+                        "LYS-SEM0012",
+                        "a coroutine that returns nothing has no 'result()': a Coroutine<Y, R> has",
+                        at
+                    );
+                    TExpr.Unknown
+                } else {
+                    TExpr.CoResult(boxE(receiver), Ty.Optional(boxTy(r)))
+                }
+            }
+            "isDone" => TExpr.CoDone(boxE(receiver)),
+            "close" => this.notYet("a coroutine's close()", "S6b2", at),
+            _ => {
+                this.error(
+                    "LYS-SEM0012",
+                    f"a coroutine has no method '{method}': next, result, isDone",
+                    at
+                );
+                TExpr.Unknown
+            }
+        };
+    }
+
     /// A method of a `Task<T>` (07 N4): `await()` its value, `status()` where it stands; `null`
     /// where `i` is no task's type.
     mut fn taskMethod(receiver: TExpr, i: int, method: string, args: Arg[], at: Span): ?TExpr {
@@ -9462,9 +9589,12 @@ class Checker {
         info.env = true;
         let saved = this.ctx;
         let savedFacts = this.postFacts;
+        let yields = this.pendingYields;
+        this.pendingYields = null;
         this.ctx = FnCtx.new(index, result ?? Ty.Unknown, false, saved.fixing);
         this.ctx.isLambda = true;
         this.ctx.outer = saved;
+        this.ctx.yields = yields;
         this.declareLocal(
             selfName,
             Ty.Fn(FnTy { params = tys, result = boxTy(result ?? Ty.Unknown) }),
@@ -9480,7 +9610,21 @@ class Checker {
         let stmts = List<TStmt>.new();
         match (body) {
             .Block(b, _) => {
-                if (rt == Ty.Void) {
+                if (yields != null) {
+                    // a coroutine's body (S6b): statements, its result given by `return` (Lyric 5
+                    // 10 §1 rule 3)
+                    for (st in this.stmtList(b.stmts)) {
+                        stmts.push(st);
+                    }
+                    let want = rt ?? Ty.Void;
+                    if (want != .Void && want != .Unknown && !endsAll(stmts.toArray())) {
+                        this.error(
+                            "LYS-SEM0017",
+                            f"the coroutine can reach its end without returning its {this.tyName(want)}",
+                            at
+                        );
+                    }
+                } else if (rt == Ty.Void) {
                     for (st in this.stmtList(b.stmts)) {
                         stmts.push(st);
                     }
@@ -9990,6 +10134,11 @@ class Checker {
                 let asTask = this.taskMethod(receiver, i, method, args, memberAt);
                 if (asTask != null) {
                     return asTask;
+                }
+                // a coroutine's (S6b)
+                let asCoroutine = this.coroutineMethod(receiver, i, method, args, memberAt);
+                if (asCoroutine != null) {
+                    return asCoroutine;
                 }
                 if (this.types[i].kind == .Interface) {
                     // through the interface value: the conformer's function in the slot
@@ -10684,7 +10833,7 @@ fn stmtSpan(s: Stmt): Span {
         .For(_, _, _, _, at) => at,
         .Break(_, _, at) => at,
         .Continue(_, at) => at,
-        .Return(_, at) => at,
+        .Return(_, at) | .Yield(_, at) => at,
         .Block(_, at) => at,
         .IfLet(_, _, _, _, at) => at,
         .WhileLet(_, _, _, _, at) => at,
@@ -11240,83 +11389,115 @@ fn withoutId(s: Set<int>, id: int): Set<int> {
 
 /// Whether `onStmt` holds of `s` or of a statement in it, or `onExpr` of an expression in it: the
 /// one walk over the children of a statement.
-fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
+fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool, deep: bool = true): bool {
     if (onStmt(s)) {
         return true;
     }
     return match (s) {
-        .Throw(e, _) => exprAny(e, onStmt, onExpr),
-        .Defer(body, _) => blockAny(body, onStmt, onExpr),
-        .DoWhile(body, cond, _, _) => blockAny(body, onStmt, onExpr)
-            || exprAny(cond, onStmt, onExpr),
-        .Using(_, _, value, _) => exprAny(value, onStmt, onExpr),
+        .Throw(e, _) => exprAny(e, onStmt, onExpr, deep),
+        .Defer(body, _) => blockAny(body, onStmt, onExpr, deep),
+        .DoWhile(body, cond, _, _) => blockAny(body, onStmt, onExpr, deep)
+            || exprAny(cond, onStmt, onExpr, deep),
+        .Using(_, _, value, _) => exprAny(value, onStmt, onExpr, deep),
         .Try(body, clauses, _) => {
-            var found = blockAny(body, onStmt, onExpr);
+            var found = blockAny(body, onStmt, onExpr, deep);
             for (c in clauses) {
-                found = found || blockAny(c.body, onStmt, onExpr);
+                found = found || blockAny(c.body, onStmt, onExpr, deep);
             }
             found
         }
-        .Expr(e, _) => exprAny(e, onStmt, onExpr),
-        .Let(_, _, _, v, _) => v != null && exprAny(v, onStmt, onExpr),
+        .Expr(e, _) => exprAny(e, onStmt, onExpr, deep),
+        .Let(_, _, _, v, _) => v != null && exprAny(v, onStmt, onExpr, deep),
         .LocalFn(f) => {
             match (f.body) {
-                .Block(b) => blockAny(b, onStmt, onExpr),
-                .Expr(e) => exprAny(e, onStmt, onExpr),
+                .Block(b) => deep && blockAny(b, onStmt, onExpr, deep),
+                .Expr(e) => deep && exprAny(e, onStmt, onExpr, deep),
                 .None => false,
             }
         }
-        .Destructure(_, _, v, e, _) => exprAny(v, onStmt, onExpr)
-            || (e != null && blockAny(e, onStmt, onExpr)),
-        .If(c, then, o, _) => exprAny(c, onStmt, onExpr)
-            || blockAny(then, onStmt, onExpr)
-            || (o != null && stmtAny(o.value, onStmt, onExpr)),
-        .While(c, b, _, _) => exprAny(c, onStmt, onExpr) || blockAny(b, onStmt, onExpr),
-        .For(_, it, b, _, _) => exprAny(it, onStmt, onExpr) || blockAny(b, onStmt, onExpr),
-        .Break(_, v, _) => v != null && exprAny(v, onStmt, onExpr),
+        .Destructure(_, _, v, e, _) => exprAny(v, onStmt, onExpr, deep)
+            || (e != null && blockAny(e, onStmt, onExpr, deep)),
+        .If(c, then, o, _) => exprAny(c, onStmt, onExpr, deep)
+            || blockAny(then, onStmt, onExpr, deep)
+            || (o != null && stmtAny(o.value, onStmt, onExpr, deep)),
+        .While(c, b, _, _) => exprAny(c, onStmt, onExpr, deep) || blockAny(b, onStmt, onExpr, deep),
+        .For(_, it, b, _, _) => exprAny(it, onStmt, onExpr, deep)
+            || blockAny(b, onStmt, onExpr, deep),
+        .Break(_, v, _) => v != null && exprAny(v, onStmt, onExpr, deep),
         .Continue(_, _) => false,
-        .Return(v, _) => v != null && exprAny(v, onStmt, onExpr),
-        .Block(b, _) => blockAny(b, onStmt, onExpr),
-        .IfLet(_, v, b, o, _) => exprAny(v, onStmt, onExpr)
-            || blockAny(b, onStmt, onExpr)
-            || (o != null && stmtAny(o.value, onStmt, onExpr)),
-        .WhileLet(_, v, b, _, _) => exprAny(v, onStmt, onExpr) || blockAny(b, onStmt, onExpr),
+        .Return(v, _) | .Yield(v, _) => v != null && exprAny(v, onStmt, onExpr, deep),
+        .Block(b, _) => blockAny(b, onStmt, onExpr, deep),
+        .IfLet(_, v, b, o, _) => exprAny(v, onStmt, onExpr, deep)
+            || blockAny(b, onStmt, onExpr, deep)
+            || (o != null && stmtAny(o.value, onStmt, onExpr, deep)),
+        .WhileLet(_, v, b, _, _) => exprAny(v, onStmt, onExpr, deep)
+            || blockAny(b, onStmt, onExpr, deep),
     };
 }
 
-fn blockAny(b: Block, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
+/// Whether the block has a `yield` of its own — one outside every lambda and local function in
+/// it (Lyric 5 10 §1 rule 1).
+fn hasOwnYield(b: Block): bool {
+    return blockAny(
+        b,
+        (s: Stmt) => match (s) {
+            .Yield(_, _) => true,
+            _ => false,
+        },
+        (_: Expr) => false,
+        false
+    );
+}
+
+/// Whether the block returns a value of its own: a `return v` outside its lambdas.
+fn returnsValue(b: Block): bool {
+    return blockAny(
+        b,
+        (s: Stmt) => match (s) {
+            .Return(v, _) => v != null,
+            _ => false,
+        },
+        (_: Expr) => false,
+        false
+    );
+}
+
+fn blockAny(b: Block, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool, deep: bool = true): bool {
     for (s in b.stmts) {
-        if (stmtAny(s, onStmt, onExpr)) {
+        if (stmtAny(s, onStmt, onExpr, deep)) {
             return true;
         }
     }
     return false;
 }
 
-fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
+fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool, deep: bool = true): bool {
     if (onExpr(e)) {
         return true;
     }
     return match (e) {
-        .Assign(target, _, value, _) => exprAny(target.value, onStmt, onExpr)
-            || exprAny(value.value, onStmt, onExpr),
-        .Unary(_, x, _) => exprAny(x.value, onStmt, onExpr),
-        .Binary(l, _, r, _) => exprAny(l.value, onStmt, onExpr) || exprAny(r.value, onStmt, onExpr),
-        .Range(a, b, _, _) => exprAny(a.value, onStmt, onExpr) || exprAny(b.value, onStmt, onExpr),
-        .Cast(x, _, _) => exprAny(x.value, onStmt, onExpr),
+        .Assign(target, _, value, _) => exprAny(target.value, onStmt, onExpr, deep)
+            || exprAny(value.value, onStmt, onExpr, deep),
+        .Unary(_, x, _) => exprAny(x.value, onStmt, onExpr, deep),
+        .Binary(l, _, r, _) => exprAny(l.value, onStmt, onExpr, deep)
+            || exprAny(r.value, onStmt, onExpr, deep),
+        .Range(a, b, _, _) => exprAny(a.value, onStmt, onExpr, deep)
+            || exprAny(b.value, onStmt, onExpr, deep),
+        .Cast(x, _, _) => exprAny(x.value, onStmt, onExpr, deep),
         .Call(c, args, _) => {
-            var found = exprAny(c.value, onStmt, onExpr);
+            var found = exprAny(c.value, onStmt, onExpr, deep);
             for (a in args) {
-                found = found || exprAny(a.value, onStmt, onExpr);
+                found = found || exprAny(a.value, onStmt, onExpr, deep);
             }
             found
         }
-        .Index(x, i, _) => exprAny(x.value, onStmt, onExpr) || exprAny(i.value, onStmt, onExpr),
-        .Member(x, _, _, _) => exprAny(x.value, onStmt, onExpr),
+        .Index(x, i, _) => exprAny(x.value, onStmt, onExpr, deep)
+            || exprAny(i.value, onStmt, onExpr, deep),
+        .Member(x, _, _, _) => exprAny(x.value, onStmt, onExpr, deep),
         .List(items, _) => {
             var found = false;
             for (x in items) {
-                found = found || exprAny(x, onStmt, onExpr);
+                found = found || exprAny(x, onStmt, onExpr, deep);
             }
             found
         }
@@ -11324,22 +11505,22 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
             var found = false;
             for (en in entries) {
                 found = found
-                    || exprAny(en.key, onStmt, onExpr)
-                    || exprAny(en.value, onStmt, onExpr);
+                    || exprAny(en.key, onStmt, onExpr, deep)
+                    || exprAny(en.value, onStmt, onExpr, deep);
             }
             found
         }
         .StructInit(_, fields, _) => {
             var found = false;
             for (f in fields) {
-                found = found || exprAny(f.value, onStmt, onExpr);
+                found = found || exprAny(f.value, onStmt, onExpr, deep);
             }
             found
         }
         .With(target, fields, _) => {
-            var found = exprAny(target.value, onStmt, onExpr);
+            var found = exprAny(target.value, onStmt, onExpr, deep);
             for (f in fields) {
-                found = found || exprAny(f.value, onStmt, onExpr);
+                found = found || exprAny(f.value, onStmt, onExpr, deep);
             }
             found
         }
@@ -11347,51 +11528,51 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
             var found = false;
             for (seg in segments) {
                 match (seg) {
-                    .Hole(x, _) => found = found || exprAny(x, onStmt, onExpr),
+                    .Hole(x, _) => found = found || exprAny(x, onStmt, onExpr, deep),
                     .Text(_) => { }
                 }
             }
             found
         }
-        .If(c, a, b, _) => exprAny(c.value, onStmt, onExpr)
-            || exprAny(a.value, onStmt, onExpr)
-            || exprAny(b.value, onStmt, onExpr),
-        .Block(b, _) => blockAny(b, onStmt, onExpr),
-        .Loop(b, _, _) => blockAny(b, onStmt, onExpr),
-        .Unwrap(x, _) => exprAny(x.value, onStmt, onExpr),
+        .If(c, a, b, _) => exprAny(c.value, onStmt, onExpr, deep)
+            || exprAny(a.value, onStmt, onExpr, deep)
+            || exprAny(b.value, onStmt, onExpr, deep),
+        .Block(b, _) => blockAny(b, onStmt, onExpr, deep),
+        .Loop(b, _, _) => blockAny(b, onStmt, onExpr, deep),
+        .Unwrap(x, _) => exprAny(x.value, onStmt, onExpr, deep),
         .Tuple(items, _) => {
             var found = false;
             for (x in items) {
-                found = found || exprAny(x, onStmt, onExpr);
+                found = found || exprAny(x, onStmt, onExpr, deep);
             }
             found
         }
-        .Lambda(_, _, body, _, _) => exprAny(body.value, onStmt, onExpr),
-        .Throw(x, _) => exprAny(x.value, onStmt, onExpr),
-        .TryMark(x, _) | .TryOpt(x, _) | .TryBang(x, _) => exprAny(x.value, onStmt, onExpr),
+        .Lambda(_, _, body, _, _) => deep && exprAny(body.value, onStmt, onExpr, deep),
+        .Throw(x, _) => exprAny(x.value, onStmt, onExpr, deep),
+        .TryMark(x, _) | .TryOpt(x, _) | .TryBang(x, _) => exprAny(x.value, onStmt, onExpr, deep),
         .TryCatch(x, clauses, _) => {
-            var found = exprAny(x.value, onStmt, onExpr);
+            var found = exprAny(x.value, onStmt, onExpr, deep);
             for (c in clauses) {
-                found = found || blockAny(c.body, onStmt, onExpr);
+                found = found || blockAny(c.body, onStmt, onExpr, deep);
             }
             found
         }
-        .Is(x, _, _) => exprAny(x.value, onStmt, onExpr),
-        .Instance(x, _, _) => exprAny(x.value, onStmt, onExpr),
+        .Is(x, _, _) => exprAny(x.value, onStmt, onExpr, deep),
+        .Instance(x, _, _) => exprAny(x.value, onStmt, onExpr, deep),
         .VariantInit(_, _, fields, _) => {
             var found = false;
             for (f in fields) {
-                found = found || exprAny(f.value, onStmt, onExpr);
+                found = found || exprAny(f.value, onStmt, onExpr, deep);
             }
             found
         }
         .Match(x, arms, _) => {
-            var found = exprAny(x.value, onStmt, onExpr);
+            var found = exprAny(x.value, onStmt, onExpr, deep);
             for (arm in arms) {
                 let g = arm.guard;
                 found = found
-                    || (g != null && exprAny(g, onStmt, onExpr))
-                    || exprAny(arm.body, onStmt, onExpr);
+                    || (g != null && exprAny(g, onStmt, onExpr, deep))
+                    || exprAny(arm.body, onStmt, onExpr, deep);
             }
             found
         }

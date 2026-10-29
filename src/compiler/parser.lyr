@@ -1144,6 +1144,15 @@ class Parser {
             }
             return Stmt.Return(value, this.since(first));
         }
+        // `yield v` or `yield` (Lyric 5 10 §1 rule 2)
+        if (this.atWord("yield")) {
+            this.advance();
+            var value: ?Expr = null;
+            if (!this.atStatementEnd()) {
+                value = try this.parseExpr();
+            }
+            return Stmt.Yield(value, this.since(first));
+        }
         // `throw e` (06 §1 rule 3)
         if (this.atWord("throw")) {
             this.advance();

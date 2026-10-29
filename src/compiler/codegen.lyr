@@ -725,6 +725,14 @@ class FnGen {
         return slotsOf(t, this.p.types);
     }
 
+    /// The type arguments of a `Coroutine<Y, R>`, `[Y, R]` (S6b).
+    fn coArgs(t: Ty): Ty[] {
+        return match (t) {
+            .Named(i) => this.p.types[i].args,
+            _ => [],
+        };
+    }
+
     /// Room for a value of type `t` above the live registers.
     mut fn temp(t: Ty): Loc {
         let (ns, nr) = this.slots(t);
@@ -848,6 +856,24 @@ class FnGen {
         match (s) {
             // the top level's end (07 End): every task awaited, the first that failed thrown
             // again — where the program spawns at all
+            // S6b: the value to the context that pulled; the coroutine parks (Lyric 5 10 §1 rule 2)
+            .Yield(v, line) => {
+                this.line = line;
+                var sAt = 0;
+                var rAt = 0;
+                if (v != null) {
+                    let (ns, nr) = this.slots(typeOf(v));
+                    let at = this.any(v);
+                    if (ns > 0) {
+                        sAt = at.s;
+                    }
+                    if (nr > 0) {
+                        rAt = at.r;
+                    }
+                }
+                this.need(1, 1);
+                this.emit(Op.YieldV, sAt, rAt, 0);
+            }
             .Join(line) => {
                 if (this.p.spawns && this.index == this.p.main) {
                     this.line = line;
@@ -1561,6 +1587,46 @@ class FnGen {
             }
             .YieldNow => {
                 this.emit(Op.Yield, 0, 0, 0);
+            }
+            // S6b: a coroutine of the closure, the slots of what it yields in `c`
+            .CoNew(x, t) => {
+                let at = this.any(x.value);
+                let args = this.coArgs(t);
+                let (ns, nr) = if (args.length() == 2) this.slots(args[0]) else (0, 0);
+                this.emit(Op.CoNew, dst.r, at.r, ns * 256 + nr);
+            }
+            // a pull: its error thrown again; `?Y` where the VM leaves it — the value, its
+            // presence after its scalars
+            .CoNext(x, t) => {
+                let co = this.any(x.value);
+                let args = this.coArgs(typeOf(x.value));
+                let (ns, nr) = if (args.length() == 2) this.slots(args[0]) else (0, 0);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += 2 + ns;
+                this.nextR += if (nr > 2) nr else 2;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.CoNext, bs, br, co.r);
+                let ok = this.emit(Op.JumpIfNot, bs, 0, 0);
+                this.emit(Op.Rethrow, br, br + 1, 0);
+                this.patch(ok, this.here());
+                this.move(dst, Loc { s = bs + 1, r = br }, t);
+            }
+            .CoResult(x, t) => {
+                let co = this.any(x.value);
+                let args = this.coArgs(typeOf(x.value));
+                let (rs, rr) = if (args.length() == 2) this.slots(args[1]) else (0, 0);
+                let bs = this.nextS;
+                let br = this.nextR;
+                this.nextS += rs + 1;
+                this.nextR += rr;
+                this.need(this.nextS, this.nextR);
+                this.emit(Op.CoRes, bs, br, co.r);
+                this.move(dst, Loc { s = bs, r = br }, t);
+            }
+            .CoDone(x) => {
+                let co = this.any(x.value);
+                this.emit(Op.CoDone, dst.s, co.r, 0);
             }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)

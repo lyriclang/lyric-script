@@ -246,6 +246,8 @@ class ThrowSets {
             .CallValue(_, _, _) | .CallStaticD(_, _, _, _) => out.addAny(this.line),
             // a task's error comes back where it is awaited (S6a), any error, as a function value's
             .Await(_, _) => out.addAny(this.line),
+            // a pull throws what the body throws: any error, the type says none (S6b; 03)
+            .CoNext(_, _) => out.addAny(this.line),
             _ => { }
         }
         for (x in exprsIn(e)) {

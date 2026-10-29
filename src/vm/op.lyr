@@ -110,6 +110,13 @@ pub enum Op :: [Variants, Equatable] {
     Yield,
     TaskSt,
     Join,
+    // S6b: a coroutine of a closure (`c`: its yields' slots, scalars × 256 + references); a pull
+    // of it; a yield to the context that pulled; its result; whether it has ended.
+    CoNew,
+    CoNext,
+    YieldV,
+    CoRes,
+    CoDone,
 }
 
 /// What an operand of an operation names.
@@ -246,6 +253,11 @@ pub fn info(op: Op): OpInfo {
         .Yield => OpInfo { mnemonic = "yield", operands = [] },
         .TaskSt => OpInfo { mnemonic = "task.st", operands = [.Scalar, .Ref] },
         .Join => OpInfo { mnemonic = "join", operands = [.Scalar, .Ref] },
+        .CoNew => OpInfo { mnemonic = "co.new", operands = [.Ref, .Ref, .Imm] },
+        .CoNext => OpInfo { mnemonic = "co.next", operands = [.Scalar, .Ref, .Ref] },
+        .YieldV => OpInfo { mnemonic = "yield.v", operands = [.Scalar, .Ref] },
+        .CoRes => OpInfo { mnemonic = "co.res", operands = [.Scalar, .Ref, .Ref] },
+        .CoDone => OpInfo { mnemonic = "co.done", operands = [.Scalar, .Ref] },
     };
 }
 

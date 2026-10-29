@@ -240,6 +240,8 @@ enum Stmt :: [Debug] {
     DoWhile(Block, Expr, ?string, Span),
     /// `using let f: T = e`: bound like a `let`, and closed when the scope is left (06 §7).
     Using(string, ?TypeExpr, Expr, Span),
+    /// `yield v` or `yield`: the value to the coroutine's puller (Lyric 5 10 §1 rule 2).
+    Yield(?Expr, Span),
 }
 
 /// A clause of a `try`: its binding (`_` for none), the types it takes — none for every error,

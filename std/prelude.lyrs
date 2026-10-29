@@ -208,3 +208,154 @@ fn withTimeout<T>(d: Duration, body: fn() -> T): T {
         throw e
     }
 }
+extend<T> T[] {
+    /// Whether the list has no element.
+    fn isEmpty(): bool = this.length() == 0
+    /// The element at `i`, `null` outside the list.
+    fn get(i: int): ?T {
+        if (i < 0 || i >= this.length()) {
+            return null
+        }
+        return this[i]
+    }
+    /// The first element, `null` where the list is empty.
+    fn first(): ?T = this.get(0)
+    /// The last element, `null` where the list is empty.
+    fn last(): ?T = this.get(this.length() - 1)
+    /// Appends every element of `xs`, in order; `xs` may be the list itself.
+    fn pushAll(xs: T[]) {
+        let n = xs.length()
+        var k = 0
+        while (k < n) {
+            this.push(xs[k])
+            k += 1
+        }
+    }
+    /// `v` at `i`, the elements from `i` on one place further; a panic where `i` is outside
+    /// `0..=length()`.
+    fn insert(i: int, v: T) {
+        let n = this.length()
+        if (i < 0 || i > n) {
+            __boundsPanic(f"index {i} out of bounds for length {n}")
+        }
+        this.push(v)
+        var k = n
+        while (k > i) {
+            this[k] = this[k - 1]
+            k -= 1
+        }
+        this[i] = v
+    }
+    /// Takes the element at `i` out and gives it, the elements after it one place nearer.
+    fn removeAt(i: int): T {
+        let v = this[i]
+        let n = this.length()
+        var k = i
+        while (k < n - 1) {
+            this[k] = this[k + 1]
+            k += 1
+        }
+        __listTruncate(this, n - 1)
+        return v
+    }
+    /// Takes out the elements `p` holds for, the others kept in order; how many went. Where `p`
+    /// throws, the elements decided so far are gone or kept and the rest stay, in order.
+    fn removeWhere(p: fn(T) -> bool): int {
+        let n = this.length()
+        var kept = 0
+        var k = 0
+        defer {
+            var j = k
+            while (j < n) {
+                this[kept + j - k] = this[j]
+                j += 1
+            }
+            __listTruncate(this, kept + n - k)
+        }
+        while (k < n) {
+            let v = this[k]
+            if (!p(v)) {
+                this[kept] = v
+                kept += 1
+            }
+            k += 1
+        }
+        return n - kept
+    }
+    /// Takes every element out.
+    fn clear() {
+        __listTruncate(this, 0)
+    }
+    /// Keeps the first `n` elements: an `n` at or past the length keeps all, a negative one panics.
+    fn truncate(n: int) {
+        if (n < 0) {
+            panic(f"a negative length: {n}")
+        }
+        __listTruncate(this, n)
+    }
+    /// Exchanges the elements at `i` and `j`.
+    fn swap(i: int, j: int) {
+        let v = this[i]
+        this[i] = this[j]
+        this[j] = v
+    }
+    /// The elements in the opposite order, in place.
+    fn reverse() {
+        var i = 0
+        var j = this.length() - 1
+        while (i < j) {
+            this.swap(i, j)
+            i += 1
+            j -= 1
+        }
+    }
+    /// A new list of the elements in the opposite order.
+    fn reversed(): T[] {
+        let out: T[] = []
+        var k = this.length() - 1
+        while (k >= 0) {
+            out.push(this[k])
+            k -= 1
+        }
+        return out
+    }
+    /// Every element `v`.
+    fn fill(v: T) {
+        var k = 0
+        while (k < this.length()) {
+            this[k] = v
+            k += 1
+        }
+    }
+}
+fn __listConcat<T>(a: T[], b: T[]): T[] {
+    let out: T[] = []
+    out.pushAll(a)
+    out.pushAll(b)
+    return out
+}
+fn __listRepeat<T>(a: T[], n: int): T[] {
+    if (n < 0) {
+        panic("negative repeat count")
+    }
+    let out: T[] = []
+    var k = 0
+    while (k < n) {
+        out.pushAll(a)
+        k += 1
+    }
+    return out
+}
+fn __listSlice<T>(xs: T[], from: int, to: int): T[] {
+    let n = xs.length()
+    if (from < 0 || from > to || to > n) {
+        __boundsPanic(f"range {from}..{to} out of bounds for length {n}")
+    }
+    let out: T[] = []
+    var k = from
+    while (k < to) {
+        out.push(xs[k])
+        k += 1
+    }
+    return out
+}

@@ -365,6 +365,12 @@ enum ListOp :: [Equatable, Debug] {
     Len,
     /// `xs.pop()`: the list; its last element taken off, `null` where it is empty.
     Pop,
+    /// `__listTruncate(xs, n)` (S7b2a): the first `n` elements kept.
+    Trunc,
+    /// `__listChanges(xs)`: the count of the list's changes of length.
+    Changes,
+    /// A walk's check that the count is still the one it began with (`LYS-RT0016`).
+    Check,
 }
 
 enum TExpr :: [Debug] {

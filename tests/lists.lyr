@@ -103,3 +103,47 @@ fn popTellsAnEmptyListByItsPresence(): void {
         """;
     assertEq(scalar(runText(text)), 910);
 }
+
+@Test
+fn aWalkNoticesAChangeOfTheLength(): void {
+    // a push counts one change, a truncate another; a check against the first count panics
+    let text = """
+        fn main() -> s regs 4 1
+            list.new r0, 256
+            load.i s0, 5
+            list.push s0, r0, r0
+            list.changes s1, r0
+            list.check r0, s1
+            load.i s2, 0
+            list.trunc r0, s2
+            list.changes s3, r0
+            list.check r0, s1
+            ret.s s3
+        end
+        """;
+    let p = panicOf(runText(text));
+    assertEq(p.code, "LYS-RT0016");
+    assertEq(p.message, "List: changed while it was walked");
+}
+
+@Test
+fn aTruncatePastTheLengthChangesNothing(): void {
+    // the count stays 1 where nothing is cut: 1 × 10 + the length 1
+    let text = """
+        fn main() -> s regs 4 1
+            list.new r0, 256
+            load.i s0, 5
+            list.push s0, r0, r0
+            load.i s2, 9
+            list.trunc r0, s2
+            list.changes s1, r0
+            list.check r0, s1
+            load.i s2, 10
+            mul.i s1, s1, s2
+            list.len s3, r0
+            add.i s1, s1, s3
+            ret.s s1
+        end
+        """;
+    assertEq(scalar(runText(text)), 11);
+}

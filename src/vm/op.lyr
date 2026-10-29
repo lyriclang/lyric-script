@@ -170,6 +170,11 @@ pub enum Op :: [Variants, Equatable] {
     ListSetN,
     ListLen,
     ListPop,
+    // S7b2a: the first `s[b]` elements kept; the count of a list's changes of length; a walk's
+    // check that the count is still `s[b]` (`LYS-RT0016` where it is not).
+    ListTrunc,
+    ListChanges,
+    ListCheck,
 }
 
 /// What an operand of an operation names.
@@ -347,6 +352,9 @@ pub fn info(op: Op): OpInfo {
         .ListSetN => OpInfo { mnemonic = "list.set.n", operands = [.ScalarBase, .RefBase] },
         .ListLen => OpInfo { mnemonic = "list.len", operands = [.Scalar, .Ref] },
         .ListPop => OpInfo { mnemonic = "list.pop", operands = [.ScalarBase, .RefBase, .Imm] },
+        .ListTrunc => OpInfo { mnemonic = "list.trunc", operands = [.Ref, .Scalar] },
+        .ListChanges => OpInfo { mnemonic = "list.changes", operands = [.Scalar, .Ref] },
+        .ListCheck => OpInfo { mnemonic = "list.check", operands = [.Ref, .Scalar] },
         .ReadLine => OpInfo { mnemonic = "read.line", operands = [.Ref] },
     };
 }

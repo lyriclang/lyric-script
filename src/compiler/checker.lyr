@@ -1986,6 +1986,7 @@ class Checker {
     mut fn declareExtend(x: ExtendDecl): void {
         let name = match (x.target) {
             .Named(n, _, _) => n,
+            .List(_, _) => "List",
             _ => "",
         };
         let index = this.typeNamed(name);
@@ -2020,6 +2021,7 @@ class Checker {
         let info = this.types[index];
         let targs: TypeExpr[] = match (x.target) {
             .Named(_, args, _) => args,
+            .List(inner, _) => [inner.value],
             _ => [],
         };
         var plain = info.typeParams.length() == x.typeParams.length()
@@ -2088,6 +2090,7 @@ class Checker {
         }
         return match (name) {
             "int" | "float" | "bool" | "char" | "string" => this.builtinOf(builtinTy(name)),
+            "List" => this.builtinOf(Ty.List(boxTy(Ty.Unknown))),
             _ => -1,
         };
     }
@@ -2100,6 +2103,7 @@ class Checker {
             .Bool => "bool",
             .Char => "char",
             .Str => "string",
+            .List(_) => "List",
             _ => "",
         };
         if (name == "") {
@@ -2113,6 +2117,10 @@ class Checker {
         this.types.push(
             TypeInfo { name = name, kind = TypeKind.Builtin, methods = Map<string, int>.new() }
         );
+        if (name == "List") {
+            // one entry for every list: its methods generic over the element (S7b2a)
+            this.types[index].typeParams = [TypeParamInfo { name = "T", constraints = [] }];
+        }
         this.builtinIndex.insert(name, index);
         return index;
     }
@@ -2120,6 +2128,10 @@ class Checker {
     /// What `this` is in a method of type `owner`: the value of a built-in type, else the type.
     mut fn selfTy(owner: int): Ty {
         let info = this.types[owner];
+        if (info.kind == .Builtin && info.name == "List") {
+            // `this` in an extend block of `T[]` (S7b2a): a list of the block's parameter
+            return Ty.List(boxTy(Ty.Param(0)));
+        }
         return if (info.kind == .Builtin) builtinTy(info.name) else Ty.Named(owner);
     }
 
@@ -3016,7 +3028,11 @@ class Checker {
             .Never => "never",
             .Unknown => "?",
             .Named(i) => this.types[i].name,
-            .List(e) => f"{this.tyName(e.value)}[]",
+            // `(?int)[]` and `(fn() -> int)[]`: `?int[]` is an optional list (S7b2a)
+            .List(e) => match (e.value) {
+                .Optional(_) | .Fn(_) => f"({this.tyName(e.value)})[]",
+                _ => f"{this.tyName(e.value)}[]",
+            },
             .Map(k, v) => f"Map<{this.tyName(k.value)}, {this.tyName(v.value)}>",
             .Optional(e) => f"?{this.tyName(e.value)}",
             .NullLit => "null",
@@ -3536,6 +3552,7 @@ class Checker {
         let g = this.functions[fi];
         return g.owner >= 0
             && !g.isStatic
+            && this.types[g.owner].kind != .Builtin
             && (this.types[g.owner].typeParams.length() > 0 || this.types[g.owner].selfParam);
     }
 
@@ -6808,13 +6825,14 @@ class Checker {
             this.popScope();
             return TStmt.Block([TStmt.SetLocal(id, it, at.line), loop], at.line);
         }
-        // a list (S7b1): its elements by index, the length read before each — `for (x in xs)` is
-        // `var i = 0; while (i < xs.length()) { let x = xs[i]; i += 1; … }` over the list, held once
+        // a list (S7b1): its elements by index over the list held once; a step after a change of its
+        // length panics (S7b2a; Lyric 5's `LYR-RT0016`)
         match (t) {
             .List(e) => {
                 let elem = e.value;
                 let lid = this.hidden(t, at);
                 let iid = this.hidden(Ty.Int, at);
+                let cid = this.hidden(Ty.Int, at);
                 let list = TExpr.Local(lid, t);
                 let idx = TExpr.Local(iid, Ty.Int);
                 let before = this.ctx.unassigned;
@@ -6828,6 +6846,26 @@ class Checker {
                 this.ctx.unassigned = before;
                 this.popScope();
                 let each = List<TStmt>.new();
+                // each step first checks that the list's length did not change (S7b2a)
+                each.push(
+                    TStmt.Expr(
+                        TExpr.ListOp(ListOp.Check, [list, TExpr.Local(cid, Ty.Int)], Ty.Void),
+                        at.line
+                    )
+                );
+                each.push(
+                    TStmt.If(
+                        TExpr.Binary(
+                            boxE(idx),
+                            BinaryOp.Ge,
+                            boxE(TExpr.ListOp(ListOp.Len, [list], Ty.Int)),
+                            Ty.Bool
+                        ),
+                        [TStmt.Break(null, 0, at.line)],
+                        [],
+                        at.line
+                    )
+                );
                 each.push(
                     TStmt.SetLocal(xid, TExpr.ListOp(ListOp.Get, [list, idx], elem), at.line)
                 );
@@ -6841,17 +6879,12 @@ class Checker {
                 for (st in stmts) {
                     each.push(st);
                 }
-                let more = TExpr.Binary(
-                    boxE(idx),
-                    BinaryOp.Lt,
-                    boxE(TExpr.ListOp(ListOp.Len, [list], Ty.Int)),
-                    Ty.Bool
-                );
                 return TStmt.Block(
                     [
                         TStmt.SetLocal(lid, it, at.line),
+                        TStmt.SetLocal(cid, TExpr.ListOp(ListOp.Changes, [list], Ty.Int), at.line),
                         TStmt.SetLocal(iid, TExpr.Int(0), at.line),
-                        TStmt.While(more, each.toArray(), at.line),
+                        TStmt.While(TExpr.Bool(true), each.toArray(), at.line),
                     ],
                     at.line
                 );
@@ -7406,7 +7439,47 @@ class Checker {
                 return this.coalesce(l, r, at);
             }
             .In | .NotIn => {
-                return this.notYet(f"'{binaryText(op)}'", "S7 (the core collections)", at);
+                // `x in xs` (S7b2a): whether an element equals `x`; over other types with them
+                let hay = this.expr(r, null);
+                match (typeOf(hay)) {
+                    .List(e) => {
+                        let needle = this.coerce(this.expr(l, e.value), e.value, spanOf(l));
+                        let missing = this.notEquatable(e.value, List<int>.new());
+                        if (missing != null) {
+                            this.error(
+                                "LYS-SEM0059",
+                                f"'{binaryText(op)}' does not compare {this.tyName(e.value)}: {missing}",
+                                at
+                            );
+                            return TExpr.Unknown;
+                        }
+                        if (hasParam(e.value)) {
+                            return this.notYet(
+                                f"'{binaryText(op)}' over a {this.tyName(typeOf(hay))}",
+                                "S7d (Equatable as an interface)",
+                                at
+                            );
+                        }
+                        let found = this.listIndexOf(hay, needle, e.value, at);
+                        let has = TExpr.Binary(
+                            boxE(found),
+                            BinaryOp.Ge,
+                            boxE(TExpr.Int(0)),
+                            Ty.Bool
+                        );
+                        return if (op == .In) has else TExpr.Unary(UnaryOp.Not, boxE(has), Ty.Bool);
+                    }
+                    .Unknown => {
+                        return TExpr.Unknown;
+                    }
+                    _ => {
+                        return this.notYet(
+                            f"'{binaryText(op)}' over a {this.tyName(typeOf(hay))}",
+                            "S7 (the core collections)",
+                            at
+                        );
+                    }
+                }
             }
             _ => { }
         }
@@ -7479,6 +7552,18 @@ class Checker {
                         boxE(this.coerce(b, wide, at)),
                         wide
                     );
+                }
+                // `xs + ys`, `xs * n` (S7b2a; 12 Container): new lists, through the prelude
+                match (ta) {
+                    .List(e) => {
+                        if (op == .Add && ta == tb) {
+                            return this.listCall("__listConcat", e.value, [a, b], ta);
+                        }
+                        if (op == .Mul && tb == .Int) {
+                            return this.listCall("__listRepeat", e.value, [a, b], ta);
+                        }
+                    }
+                    _ => { }
                 }
                 if (op == .Add && ta == .Str && tb == .Str) {
                     return TExpr.Native(Native.Concat, [a, b], Ty.Str);
@@ -7577,7 +7662,28 @@ class Checker {
             _ => false,
         };
         if (ta == tb && isList) {
-            return this.notYet(f"'{binaryText(op)}' on lists", "S7b2 (the list's methods)", at);
+            let elem = match (ta) {
+                .List(e) => e.value,
+                _ => Ty.Unknown,
+            };
+            let missing = this.notEquatable(elem, List<int>.new());
+            if (missing != null) {
+                this.error(
+                    "LYS-SEM0059",
+                    f"'{binaryText(op)}' does not compare {this.tyName(ta)}: {missing}",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            if (hasParam(elem)) {
+                return this.notYet(
+                    f"'{binaryText(op)}' on a {this.tyName(ta)}",
+                    "S7d (Equatable as an interface)",
+                    at
+                );
+            }
+            let eq = TExpr.Call(this.listEqFnOf(ta, at), [a, b], Ty.Bool);
+            return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
         }
         if (ta == tb) {
             // a struct, an enum, a tuple compares its parts; a class only as an `Identity` (03 Eq)
@@ -7607,6 +7713,7 @@ class Checker {
         return match (t) {
             .Int | .Float | .Bool | .Char | .Str | .Unknown | .NullLit => null,
             .Optional(inner) => this.notEquatable(inner.value, seen),
+            .List(e) => this.notEquatable(e.value, seen),
             .Tuple(tt) => {
                 for (e in tt.elements) {
                     let m = this.notEquatable(e, seen);
@@ -8822,6 +8929,26 @@ class Checker {
         let t = typeOf(lv);
         match (t) {
             .List(e) => {
+                match (i) {
+                    .Range(from, to, inclusive, _) => {
+                        // a slice is a new list (03 S)
+                        let a = this.coerce(
+                            this.expr(from.value, Ty.Int),
+                            Ty.Int,
+                            spanOf(from.value)
+                        );
+                        let b = this.coerce(this.expr(to.value, Ty.Int), Ty.Int, spanOf(to.value));
+                        let end = if (inclusive) TExpr.Binary(
+                            boxE(b),
+                            BinaryOp.Add,
+                            boxE(TExpr.Int(1)),
+                            Ty.Int
+                        )
+                            else b;
+                        return this.listCall("__listSlice", e.value, [lv, a, end], t);
+                    }
+                    _ => { }
+                }
                 let iv = this.coerce(this.expr(i, Ty.Int), Ty.Int, spanOf(i));
                 return TExpr.ListOp(ListOp.Get, [lv, iv], e.value);
             }
@@ -8838,8 +8965,8 @@ class Checker {
     /// others come with S7b2.
     mut fn listMethod(receiver: TExpr, elem: Ty, method: string, args: Arg[], at: Span): ?TExpr {
         let arity = match (method) {
-            "length" | "pop" => 0,
-            "push" => 1,
+            "length" | "pop" | "dedup" => 0,
+            "push" | "contains" | "indexOf" | "remove" => 1,
             _ => -1,
         };
         if (arity < 0) {
@@ -8852,6 +8979,80 @@ class Checker {
                 at
             );
             return TExpr.Unknown;
+        }
+        let compares = method == "contains"
+            || method == "indexOf"
+            || method == "remove"
+            || method == "dedup";
+        if (compares) {
+            let t = Ty.List(boxTy(elem));
+            let missing = this.notEquatable(elem, List<int>.new());
+            if (missing != null) {
+                this.error(
+                    "LYS-SEM0134",
+                    f"'{this.tyName(t)}' has no method '{method}': its elements are not compared ({missing})",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            if (hasParam(elem)) {
+                return this.notYet(
+                    f"'{method}' on a {this.tyName(t)}",
+                    "S7d (Equatable as an interface)",
+                    at
+                );
+            }
+            if (method == "dedup") {
+                return TExpr.Call(this.listDedupFnOf(t, at), [receiver], Ty.Void);
+            }
+            let x = this.coerce(this.expr(args[0].value, elem), elem, spanOf(args[0].value));
+            // the list held once: `remove` reads it twice
+            let h = this.hidden(t, at);
+            let list = TExpr.Local(h, t);
+            let k = this.hidden(Ty.Int, at);
+            let found = TExpr.Local(k, Ty.Int);
+            let some = TExpr.Binary(boxE(found), BinaryOp.Ge, boxE(TExpr.Int(0)), Ty.Bool);
+            let head = [
+                TStmt.SetLocal(h, receiver, at.line),
+                TStmt.SetLocal(k, this.listIndexOf(list, x, elem, at), at.line),
+            ];
+            return match (method) {
+                "contains" => TExpr.Block(head, boxE(some), Ty.Bool),
+                "indexOf" => TExpr.Block(
+                    head,
+                    boxE(
+                        TExpr.If(
+                            boxE(some),
+                            boxE(TExpr.Wrap(boxE(found), Ty.Optional(boxTy(Ty.Int)))),
+                            boxE(TExpr.Null(Ty.Optional(boxTy(Ty.Int)))),
+                            Ty.Optional(boxTy(Ty.Int))
+                        )
+                    ),
+                    Ty.Optional(boxTy(Ty.Int))
+                ),
+                _ => {
+                    let removeAt = this.listMethodFn("removeAt");
+                    TExpr.Block(
+                        [
+                            head[0],
+                            head[1],
+                            TStmt.If(
+                                some,
+                                [
+                                    TStmt.Expr(
+                                        TExpr.CallGeneric(removeAt, [elem], [list, found], elem),
+                                        at.line
+                                    ),
+                                ],
+                                [],
+                                at.line
+                            ),
+                        ],
+                        boxE(some),
+                        Ty.Bool
+                    )
+                }
+            };
         }
         return match (method) {
             "length" => TExpr.ListOp(ListOp.Len, [receiver], Ty.Int),
@@ -8924,6 +9125,226 @@ class Checker {
         return index;
     }
 
+    /// A call of the prelude's generic helper `name` of lists (S7b2a), its element type bound.
+    mut fn listCall(name: string, elem: Ty, args: TExpr[], returns: Ty): TExpr {
+        var fi = -1;
+        if (let fs = this.fnByName.get(name)) {
+            if (fs.length() > 0) {
+                fi = fs[0];
+            }
+        }
+        return TExpr.CallGeneric(fi, [elem], args, returns);
+    }
+
+    /// The method `name` of the prelude's extend block of `T[]` (S7b2a).
+    mut fn listMethodFn(name: string): int {
+        let i = this.builtinOf(Ty.List(boxTy(Ty.Unknown)));
+        return this.types[i].methods.get(name) ?? -1;
+    }
+
+    /// The index of the first element of `list` equal to `x`, -1 for none: the function of its
+    /// list type the checker writes (S7b2a).
+    mut fn listIndexOf(list: TExpr, x: TExpr, elem: Ty, at: Span): TExpr {
+        return TExpr.Call(this.listIndexFnOf(Ty.List(boxTy(elem)), at), [list, x], Ty.Int);
+    }
+
+    /// A function the checker writes (S7b2a): its entry, its parameters its first locals; the
+    /// body comes with `endSynth`.
+    mut fn beginSynth(name: string, params: ParamInfo[], returns: Ty, at: Span): (int, FnCtx) {
+        let index = this.functions.length();
+        this.functions.push(FnInfo { name = name, owner = -1, isStatic = true, line = at.line });
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let info = this.functions[index];
+        info.params = params;
+        info.returns = returns;
+        let saved = this.ctx;
+        this.ctx = FnCtx.new(index, returns, false, false);
+        for (p in params) {
+            this.declareLocal(p.name, p.ty, false, at);
+        }
+        return (index, saved);
+    }
+
+    mut fn endSynth(index: int, body: TStmt[], saved: FnCtx): void {
+        let info = this.functions[index];
+        info.body = body;
+        info.locals = this.ctx.locals.toArray();
+        info.boxed = this.ctx.boxed.toArray();
+        this.ctx = saved;
+    }
+
+    /// `a == b` of two lists of `t` (S7b2a): the lengths, then the elements in order.
+    mut fn listEqFnOf(t: Ty, at: Span): int {
+        let key = "eq " + t.debug();
+        let known = this.listDebugFns.get(key);
+        if (known != null) {
+            return known;
+        }
+        let elem = match (t) {
+            .List(e) => e.value,
+            _ => Ty.Unknown,
+        };
+        let (index, saved) = this.beginSynth(
+            "#eq",
+            [
+                ParamInfo { name = "a", ty = t, default = null },
+                ParamInfo { name = "b", ty = t, default = null },
+            ],
+            Ty.Bool,
+            at
+        );
+        this.listDebugFns.insert(key, index);
+        let a = TExpr.Local(0, t);
+        let b = TExpr.Local(1, t);
+        let i = this.hidden(Ty.Int, at);
+        let k = TExpr.Local(i, Ty.Int);
+        let ne = this.equality(
+            TExpr.ListOp(ListOp.Get, [a, k], elem),
+            BinaryOp.Ne,
+            TExpr.ListOp(ListOp.Get, [b, k], elem),
+            at
+        );
+        let body = [
+            TStmt.If(
+                TExpr.Binary(
+                    boxE(TExpr.ListOp(ListOp.Len, [a], Ty.Int)),
+                    BinaryOp.Ne,
+                    boxE(TExpr.ListOp(ListOp.Len, [b], Ty.Int)),
+                    Ty.Bool
+                ),
+                [TStmt.Return(TExpr.Bool(false), at.line)],
+                [],
+                at.line
+            ),
+            TStmt.ForRange(
+                i,
+                TExpr.Int(0),
+                TExpr.ListOp(ListOp.Len, [a], Ty.Int),
+                false,
+                [TStmt.If(ne, [TStmt.Return(TExpr.Bool(false), at.line)], [], at.line)],
+                at.line
+            ),
+            TStmt.Return(TExpr.Bool(true), at.line),
+        ];
+        this.endSynth(index, body, saved);
+        return index;
+    }
+
+    /// The index of the first element equal to `x` in a list of `t`, -1 for none (S7b2a).
+    mut fn listIndexFnOf(t: Ty, at: Span): int {
+        let key = "index " + t.debug();
+        let known = this.listDebugFns.get(key);
+        if (known != null) {
+            return known;
+        }
+        let elem = match (t) {
+            .List(e) => e.value,
+            _ => Ty.Unknown,
+        };
+        let (index, saved) = this.beginSynth(
+            "#indexOf",
+            [
+                ParamInfo { name = "xs", ty = t, default = null },
+                ParamInfo { name = "x", ty = elem, default = null },
+            ],
+            Ty.Int,
+            at
+        );
+        this.listDebugFns.insert(key, index);
+        let xs = TExpr.Local(0, t);
+        let x = TExpr.Local(1, elem);
+        let i = this.hidden(Ty.Int, at);
+        let k = TExpr.Local(i, Ty.Int);
+        let eq = this.equality(TExpr.ListOp(ListOp.Get, [xs, k], elem), BinaryOp.Eq, x, at);
+        let body = [
+            TStmt.ForRange(
+                i,
+                TExpr.Int(0),
+                TExpr.ListOp(ListOp.Len, [xs], Ty.Int),
+                false,
+                [TStmt.If(eq, [TStmt.Return(k, at.line)], [], at.line)],
+                at.line
+            ),
+            TStmt.Return(TExpr.Int(-1), at.line),
+        ];
+        this.endSynth(index, body, saved);
+        return index;
+    }
+
+    /// `xs.dedup()` of a list of `t` (S7b2a): of each run of equal elements the first kept.
+    mut fn listDedupFnOf(t: Ty, at: Span): int {
+        let key = "dedup " + t.debug();
+        let known = this.listDebugFns.get(key);
+        if (known != null) {
+            return known;
+        }
+        let elem = match (t) {
+            .List(e) => e.value,
+            _ => Ty.Unknown,
+        };
+        let (index, saved) = this.beginSynth(
+            "#dedup",
+            [ParamInfo { name = "xs", ty = t, default = null }],
+            Ty.Void,
+            at
+        );
+        this.listDebugFns.insert(key, index);
+        let xs = TExpr.Local(0, t);
+        let i = this.hidden(Ty.Int, at);
+        let j = this.hidden(Ty.Int, at);
+        let k = TExpr.Local(i, Ty.Int);
+        let kept = TExpr.Local(j, Ty.Int);
+        let last = TExpr.Binary(boxE(kept), BinaryOp.Sub, boxE(TExpr.Int(1)), Ty.Int);
+        let ne = this.equality(
+            TExpr.ListOp(ListOp.Get, [xs, k], elem),
+            BinaryOp.Ne,
+            TExpr.ListOp(ListOp.Get, [xs, last], elem),
+            at
+        );
+        let keep = [
+            TStmt.Expr(
+                TExpr.Assign(
+                    Place.Item(boxE(xs), boxE(kept)),
+                    null,
+                    boxE(TExpr.ListOp(ListOp.Get, [xs, k], elem)),
+                    elem
+                ),
+                at.line
+            ),
+            TStmt.SetLocal(
+                j,
+                TExpr.Binary(boxE(kept), BinaryOp.Add, boxE(TExpr.Int(1)), Ty.Int),
+                at.line
+            ),
+        ];
+        let body = [
+            TStmt.If(
+                TExpr.Binary(
+                    boxE(TExpr.ListOp(ListOp.Len, [xs], Ty.Int)),
+                    BinaryOp.Lt,
+                    boxE(TExpr.Int(2)),
+                    Ty.Bool
+                ),
+                [TStmt.Return(null, at.line)],
+                [],
+                at.line
+            ),
+            TStmt.SetLocal(j, TExpr.Int(1), at.line),
+            TStmt.ForRange(
+                i,
+                TExpr.Int(1),
+                TExpr.ListOp(ListOp.Len, [xs], Ty.Int),
+                false,
+                [TStmt.If(ne, keep, [], at.line)],
+                at.line
+            ),
+            TStmt.Expr(TExpr.ListOp(ListOp.Trunc, [xs, kept], Ty.Void), at.line),
+        ];
+        this.endSynth(index, body, saved);
+        return index;
+    }
+
     mut fn intrinsic(name: string, args: Arg[], expected: ?Ty, at: Span): TExpr {
         // a native of the standard library (S7a): `__os_env(name)` calls the VM's `os.env`; it
         // stands where its type is known — a function's body, whose signature is the native's
@@ -8946,6 +9367,19 @@ class Checker {
             "__parkWatched" => TExpr.ParkWatched,
             "__sleep" => TExpr.Sleep(boxE(one)),
             "__readLine" => TExpr.ReadLine,
+            "__listChanges" => TExpr.ListOp(ListOp.Changes, [one], Ty.Int),
+            "__boundsPanic" => TExpr.Panic(boxE(one), 3),
+            "__listTruncate" | "__listCheck" => {
+                let two = args.length() == 2;
+                let xs = if (two) this.expr(args[0].value, null) else TExpr.Unknown;
+                let n = if (two) this.coerce(this.expr(args[1].value, Ty.Int), Ty.Int, at)
+                    else TExpr.Unknown;
+                TExpr.ListOp(
+                    if (name == "__listTruncate") ListOp.Trunc else ListOp.Check,
+                    [xs, n],
+                    Ty.Void
+                )
+            }
             "__timerAfter" => TExpr.TimerAfter(
                 boxE(one),
                 Ty.Named(this.typeInstance(this.typeIndex.get("Channel") ?? -1, [Ty.Void]))
@@ -9794,7 +10228,9 @@ class Checker {
         while (i < n) {
             let info = this.types[i];
             let instance = info.template >= 0 && info.template != i;
-            if (info.kind != .Interface && !instance) {
+            // the lists' entry: no interface value holds a list before S7b2b
+            let lists = info.kind == .Builtin && info.name == "List";
+            if (info.kind != .Interface && !instance && !lists) {
                 let f = if (info.kind == .Builtin
                     || (info.kind == .Enum && !info.payload)) this.debugBoxOf(i)
                     else this.debugFnOf(i, nowhereSpan);
@@ -10035,9 +10471,14 @@ class Checker {
             .Name(name, nameAt) => {
                 // the VM's intrinsics (S6d2): `__…` names the prelude's source calls, and the
                 // standard library's modules (S7a), alone
-                if ((nameAt.file == -1 || this.pkgOf(nameAt.file) == stdPackage)
-                    && name.startsWith("__")) {
-                    return this.intrinsic(name, args, expected, at);
+                if (name.startsWith("__")) {
+                    if (nameAt.file != -1 && this.pkgOf(nameAt.file) != stdPackage) {
+                        this.error("LYS-SEM0002", f"nothing in scope is named '{name}'", nameAt);
+                        return TExpr.Unknown;
+                    }
+                    if (isIntrinsic(name)) {
+                        return this.intrinsic(name, args, expected, at);
+                    }
                 }
                 // a generator lambda's body (S6b2): no name of the program
                 if (name == "<generator>" && args.length() == 1) {
@@ -11087,6 +11528,23 @@ class Checker {
                 if (i >= 0) {
                     let m = this.types[i].methods.get(method);
                     if (m != null) {
+                        match (t) {
+                            .List(e) => {
+                                if (!this.meetsBlock([e.value], this.functions[m].blockParams)) {
+                                    this.error(
+                                        "LYS-SEM0134",
+                                        f"'{this.tyName(t)}' has no method '{method}': its block asks more of the element type",
+                                        memberAt
+                                    );
+                                    return TExpr.Unknown;
+                                }
+                                this.presetBinds = [e.value];
+                                let call = this.callAmong(method, [m], receiver, args, at);
+                                this.presetBinds = [];
+                                return call;
+                            }
+                            _ => { }
+                        }
                         return this.callAmong(method, [m], receiver, args, at);
                     }
                     for (ii in this.types[i].ifaces) {
@@ -11996,6 +12454,19 @@ fn builtinTy(name: string): Ty {
         "char" => Ty.Char,
         "string" => Ty.Str,
         _ => Ty.Unknown,
+    };
+}
+
+/// Whether `__name` is one of the VM's intrinsics — a native of the standard library's table, or
+/// an op the prelude calls —, not a function of the prelude.
+fn isIntrinsic(name: string): bool {
+    if (nativeNamed(name[2..name.length()].toString().replace("_", ".")) != null) {
+        return true;
+    }
+    return match (name) {
+        "__chanReady" | "__chanWatch" | "__parkWatched" | "__sleep" | "__readLine" => true,
+        "__timerAfter" | "__listTruncate" | "__listChanges" | "__listCheck" | "__boundsPanic" => true,
+        _ => false,
     };
 }
 

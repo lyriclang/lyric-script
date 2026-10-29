@@ -2126,6 +2126,22 @@ class FnGen {
                 this.emit(Op.ListPop, base.s, base.r, if (isPlainRef(elem, this.p.types)) 1 else 0);
                 this.move(dst, base, t);
             }
+            .Trunc => {
+                let l = this.any(args[0]).r;
+                let n = this.any(args[1]).s;
+                this.emit(Op.ListTrunc, l, n, 0);
+            }
+            .Changes => {
+                let l = this.any(args[0]).r;
+                if (dst.s >= 0) {
+                    this.emit(Op.ListChanges, dst.s, l, 0);
+                }
+            }
+            .Check => {
+                let l = this.any(args[0]).r;
+                let c = this.any(args[1]).s;
+                this.emit(Op.ListCheck, l, c, 0);
+            }
         }
         this.release(m);
     }

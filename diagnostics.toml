@@ -1209,6 +1209,12 @@ severity = "panic"
 area = "10-concurrency"
 summary = "A coroutine is used against its rules: pulled or closed while it runs, a `yield` where no coroutine runs or after the coroutine was closed, or a yield of another type than the running coroutine's. The code and its meaning are Lyric 5's LYR-RT0014."
 
+[LYS-RT0016]
+title = "a collection changed while it was walked"
+severity = "panic"
+area = "12-stdlib"
+summary = "A list's length changed — a push, a pop, an insert, a removal — while a `for` loop walked it. The next step of the walk panics; collect the changes and apply them after the loop. The code and its meaning are Lyric 5's LYR-RT0016."
+
 [LYS-RT0018]
 title = "a deadlock"
 severity = "panic"

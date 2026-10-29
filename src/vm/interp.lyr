@@ -2782,6 +2782,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     k += 1;
                 }
                 o.n += 1;
+                o.changes += 1;
                 pc += 1;
             }
             .ListGetS | .ListGetR | .ListSetS | .ListSetR => {
@@ -2890,6 +2891,53 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     }
                     o.s.truncate(o.n * o.ns);
                     o.r.truncate(o.n * o.nr);
+                    o.changes += 1;
+                }
+                pc += 1;
+            }
+            .ListTrunc => {
+                let o = r[br + a];
+                let n = s[bs + b] as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a truncate of no list");
+                }
+                if (n >= 0 && n < o.n) {
+                    o.n = n;
+                    o.s.truncate(n * o.ns);
+                    o.r.truncate(n * o.nr);
+                    o.changes += 1;
+                }
+                pc += 1;
+            }
+            .ListChanges => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "the changes of no list"
+                    );
+                }
+                s[bs + a] = o.changes as uint64;
+                pc += 1;
+            }
+            .ListCheck => {
+                let o = r[br + a];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a walk over no list");
+                }
+                if (o.changes != s[bs + b] as int) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0016",
+                        "List: changed while it was walked"
+                    );
                 }
                 pc += 1;
             }

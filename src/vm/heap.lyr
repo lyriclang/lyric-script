@@ -75,13 +75,15 @@ pub class ScriptString :: [HeapRef] {
 
 /// A list of the script (S7b1; design/v1, 03 S): the scalar and the reference slots of its
 /// elements apart, `ns` and `nr` of each, element `k` at `k * ns` and at `k * nr` — a list of
-/// `int` holds its ints unboxed (11 Gen).
+/// `int` holds its ints unboxed (11 Gen). It counts the changes of its length, so that a walk
+/// over it notices one (S7b2a; Lyric 5's `List.changes`, `LYS-RT0016`).
 pub class ScriptArray :: [HeapRef] {
     pub ns: int,
     pub nr: int,
     pub s: List<uint64>,
     pub r: List<HeapRef>,
     pub var n: int = 0,
+    pub var changes: int = 0,
 
     pub fn desc(): ?TypeDesc {
         return null;

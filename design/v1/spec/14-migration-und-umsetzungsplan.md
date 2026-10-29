@@ -669,3 +669,21 @@ und einen eigenen Cache; `option:` reicht Optionen durch. Spec 15 Regeln 6–7, 
 gegen S5b. Ein Fall war vor den Mutanten zu weich (der Pfad zeigte ins Leere, PKG0004 auch ohne
 die Regel) und wurde geschärft; danach trafen alle vier Mutanten wie vorhergesagt. Tests 267 →
 269, Fälle 202 → 210.
+
+**S5c2, Ergebnis (2026-10-29).** `lyric-script.lock` (`src/lock.lyr`): je gelesener Git-Revision
+Name, Version, Repository, Revision wie verlangt, Commit und Inhalts-Hash (`h1:` + Base64 von
+SHA-256 über die sortierten Zeilen `sha256  pfad` von Manifest, `src/**`, `README*`, `LICENSE*`;
+Base64 selbst geschrieben, weil `std.encoding` berechnete Modulbindungen hat). Ein gelockter
+Eintrag wird am gelockten Commit gelesen und sein Inhalt geprüft (`PKG0008`), ein kaputter Lock
+abgelehnt (`PKG0001`), der Lock nur bei Änderung geschrieben, ohne Git gelöscht; `--locked`
+verweigert jede Abweichung, ein fehlender Eintrag vor jedem Fetch (`PKG0011`); `update
+[paket…]` liest neu (`CLI0006` für einen Namen ohne Git-Paket). Gefunden: `run` nahm den
+Bytecode aus dem Cache, bevor die Fehler des Laders gemeldet waren (seit S5a) — ein Programm mit
+Ladefehler lief; ebenso nahm die Abkürzung für Skripte ohne `import` auch in einem Paket mit
+kaputtem Manifest den Cache. Beide geschlossen. Der Hash stimmte beim ersten Lauf mit einem
+Python-Orakel; die Commits der Runner-Repositories sind durch festen Autor und feste Zeit
+bestimmt — der Runner schaltet `core.fileMode` ab, sonst hängen sie am Dateisystem des Checkouts
+(lokal `/mnt/c`: jede Datei ausführbar). Spec 15 Regeln 8–9, sieben Fälle (Runner: `update`).
+Mutanten: im ersten Lauf überlebte die `--locked`-Frühprüfung — der Fall ohne Lock wird auch
+von der Schlussprüfung gefangen; ein geschärfter Fall (Lock hält `geo`, das Manifest liest auch
+`units`) misst sie jetzt, der Mutant fiel. Tests 269 → 271, Fälle 210 → 217.

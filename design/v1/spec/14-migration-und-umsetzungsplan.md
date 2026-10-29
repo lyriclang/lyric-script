@@ -905,3 +905,17 @@ Top-Levels. `TaskScope :: Closeable` in der Prelude, `using let` schließt ihn; 
 Mutanten in drei Läufen, alle wie vorher aufgeschrieben — drei davon (kein Abbruch der Geschwister,
 keiner beim Warten in `close`, `scope.cancel` ohne Wirkung) hängen einen Fall auf und fallen über das
 Zeitlimit des Runners, das S6c1 brachte. Tests 324 → 328, Fälle 286 → 294.
+
+**S6c3, Ergebnis (2026-10-29).** `t.status()` ist `TaskStatus<T>` wie in Lyric 5 — `Running`,
+`Done(value)`, `Failed(error)`, `Cancelled`, `Panicked(info)` mit `PanicInfo { code, message,
+trace }` —, `t.isDone()` dazu. Der Checker baut den Wert aus der Zustandsnummer der VM als Kette
+von `MakeVariant` über drei neue Ops, die einen beendeten Task ohne Warten und ohne
+Abbruchprüfung lesen (`task.val`, `task.err`, `task.pinfo`); Format 15. `TaskStatus<T>` ist kein
+`Equatable` (Lyric 5s auch nicht): die S6a/S6c1-Fälle und -Tests, die einen Status mit `==`
+verglichen, matchen ihn jetzt. Spec 10 Regel 1 neu, vier Fälle dazu, zwei umgeschrieben; fünf
+rot gegen S6c2, der sechste (`match` auf `.Cancelled`) ein Pin. Vier Mutanten in zwei Läufen; einer
+blieb zweimal grün — erst lag der Wert noch vom `await` im Register, dann stand dort die Konstante
+1, mit der die Kette `Done` erkennt, und der Task gab ebenfalls 1 —, der Fall nimmt jetzt 7. Eine
+Probe-Vorhersage verfehlt: `TaskStatus.Running == …` meldet zuerst `SEM0060` (die generische
+Variante braucht den Typ vom Ort), der Fall vergleicht zwei Status. Tests 328 → 330, Fälle 294 →
+298.

@@ -179,7 +179,9 @@ Exit criterion: a concurrent example.
   has a timeout of 60 s a call.
 - **S6c2 done** — `TaskScope`: `new`, `spawn`, `close()` waits and throws the first failure,
   `cancel()`; bytecode format 14.
-- Next: **S6c3** — `TaskStatus<T>` with its values, `PanicInfo`, `isDone()`.
+- **S6c3 done** — `TaskStatus<T>` with the value, the error or the `PanicInfo`; `isDone()`;
+  bytecode format 15. S6c (cancellation and scopes) complete.
+- Next: **S6d** — channels, `select`, time, `Semaphore`, `withTimeout`.
 
 ## Working mode
 

@@ -434,3 +434,15 @@ Interface und ein Enum mit Nutzlast eigene, das Enum mit seinen Varianten verkn�
 Tupel- und Optionaltypen nach Bedarf); sieben Ops, Bytecode-Format 3. Eine Kopie, deren Lambda
 `T` braucht, kennt den Deskriptor noch nicht (die Closure müsste ihn halten) — mit i4. 164
 Tests, 93 Konformanzfälle.
+
+**S3i, Ergebnis.** i1 Deskriptoren, i1b Druckform über einen festen Slot (`instantiate` bis
+zum Fixpunkt), i2 `Self` und statische Member samt `static let` (eifrig vor den Anweisungen des
+Skripts, Lyric 5 04 §1 Regel 2), i3 assoziierte Typen (Antworten, Defaults, Schranken, Pfade,
+Fixierungen, Wertform; ein von ihnen eingeschränkter Parameter bekommt je Typ eine eigene Kopie,
+da die Slots einer Antwort je Typ verschieden sind), i4 generische Funktion als Wert und Lambdas
+geteilter Kopien mit deren Deskriptoren, i5 Literal-Protokolle als Prelude in Lyric-Script
+(Member nach Art benannt), i6 generische Extend-Blöcke mit bedingter Konformanz und Kohärenz.
+Drei Fehler seit S3g behoben (geteilte Kopie baute `Pair<Any>`; weitergereichtes eingeschränktes
+`T` gab SEM0028; Lambda einer geteilten Kopie löschte `T`). Mit S7: Konstanten generischer
+Typen, Blöcke auf einer Instanz, auf eingebauten Konstruktoren und Blanket-Blöcke. 189 Tests,
+113 Konformanzfälle.

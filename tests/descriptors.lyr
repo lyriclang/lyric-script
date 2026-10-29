@@ -2,6 +2,7 @@
 // with the exact type its arguments make, reads a generic type's arguments from its receiver,
 // and tests `x is T`; the links survive the bytecode cache.
 import std.test { assertEq };
+import std.collections { List };
 import lyric_script.compiler.checker { checkModule };
 import lyric_script.compiler.codegen { generate };
 import lyric_script.compiler.parser { parse };
@@ -30,6 +31,18 @@ fn valueOf(module: Module, entry: string): int {
         .Scalar(bits) => bits as int,
         _ => -999,
     };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
 }
 
 fn value(source: string, entry: string): int {
@@ -103,4 +116,28 @@ fn aTypeMadeAtRunTimeHasItsTable(): void {
     let alone = "interface Named {\n    fn name(): string\n}\nstruct Box<T> :: Named {\n    v: T\n\n    fn name(): string = \"box\"\n}\nclass Baz {\n    var n: int = 3\n}\nfn named<T>(x: T): Named = Box { v = x }\n";
     let d = "fn d(): int {\n    let b = named(Baz { })\n    let all = f\"{b.name()}|{b}\"\n    return if (all == \"box|Box { v = Baz { n = 3 } }\") 1 else 0\n}";
     assertEq(value(alone + d, "d"), 1);
+}
+
+let values = "fn id<T>(x: T): T = x\nfn later<T>(x: T): fn() -> Any = () => Pair { a = x }\nfn tester<T>(): fn(Any) -> bool = (v: Any) => v is T\n";
+
+@Test
+fn aGenericFunctionIsAValue(): void {
+    // at written arguments, at those the position's function type binds, and a shared copy's
+    // thunk holding its descriptor
+    let e = "fn e(): int {\n    var n = 0\n    let f = id<int>\n    if (f(3) == 3) {\n        n += 1\n    }\n    let g: fn(string) -> string = id\n    if (g(\"a\") == \"a\") {\n        n += 2\n    }\n    let w = inner<Foo>\n    let p = hide(w(Foo { }))\n    if (p is Pair<Foo>) {\n        n += 4\n    }\n    return n\n}";
+    assertEq(value(types + values + e, "e"), 7);
+}
+
+@Test
+fn aLambdaHoldsItsDescriptors(): void {
+    // a lambda in a shared copy builds and tests with the copy's arguments
+    let e = "fn e(): int {\n    var n = 0\n    let mk = later(Foo { })\n    if (mk() is Pair<Foo>) {\n        n += 1\n    }\n    let isFoo = tester<Foo>()\n    if (isFoo(Foo { })) {\n        n += 2\n    }\n    if (isFoo(3)) {\n        n += 4\n    }\n    return n\n}";
+    assertEq(value(types + values + e, "e"), 3);
+}
+
+@Test
+fn whatAGenericValueNeeds(): void {
+    // its type arguments, written or bound by the position
+    assertEq(errs(types + values + "let h = id"), ["LYS-SEM0060"]);
+    assertEq(errs(types + values + "let k = id<int, int>"), ["LYS-SEM0026"]);
 }

@@ -253,6 +253,8 @@ class Checker {
     fixedForms: Map<string, int>,
     // the types' constants: the first globals, set where the script begins (05 §7 rule 2)
     staticInits: List<StaticInit>,
+    // a generic function's copy as a value: its thunk holding the descriptors, by copy
+    descThunks: Map<string, int>,
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -290,6 +292,7 @@ class Checker {
             assocBounds = Map<string, int[]>.new(),
             fixedForms = Map<string, int>.new(),
             staticInits = List<StaticInit>.new(),
+            descThunks = Map<string, int>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -2365,8 +2368,11 @@ class Checker {
         let shaped = List<Ty>.new();
         let keys = List<string>.new();
         var ak = 0;
+        let lambda = this.functions[fi].templateOf >= 0;
         for (a in args) {
-            let shares = this.sharedShape(a) && !this.copyExact && !this.assocConstrained(fi, ak);
+            // a lambda's copy: shared where the copy around it is, which gives it `Any`
+            let shares = if (lambda) a == Ty.Named(this.anyIndex)
+                else this.sharedShape(a) && !this.copyExact && !this.assocConstrained(fi, ak);
             ak += 1;
             if (shares) {
                 shaped.push(Ty.Named(this.anyIndex));
@@ -2431,10 +2437,15 @@ class Checker {
         let fromThis = this.descsFromThis(fi);
         var k = 0;
         for (x in args) {
-            if (generic.templateOf >= 0
-                || !this.sharedShape(x)
-                || this.copyExact
-                || this.assocConstrained(fi, k)) {
+            if (generic.templateOf >= 0) {
+                // a lambda's copy: the descriptor among its captures, after its own
+                if (x == anyTy) {
+                    sources.push(TExpr.Captured(caps.length(), anyTy));
+                    caps.push(CaptureInfo { ty = anyTy, isCell = false });
+                } else {
+                    sources.push(null);
+                }
+            } else if (!this.sharedShape(x) || this.copyExact || this.assocConstrained(fi, k)) {
                 sources.push(null);
             } else if (fromThis) {
                 let own = TExpr.DescOfValue(boxE(TExpr.Local(0, anyTy)), anyTy);
@@ -2460,6 +2471,7 @@ class Checker {
             }
             info.descParams = ids.toArray();
         }
+        info.captures = caps.toArray();
         let savedDescs = this.specDescs;
         this.specDescs = sources.toArray();
         info.body = this.specStmts(generic.template, a);
@@ -2736,9 +2748,26 @@ class Checker {
             ),
             .Unreachable(t) => TExpr.Unreachable(this.subst(t, a)),
             .Closure(fi, xs, t) => {
-                // a lambda of a generic's body: its copy for these arguments
-                let f = if (this.functions[fi].templateOf >= 0) this.instanceOf(fi, a) else fi;
-                TExpr.Closure(f, this.specAll(xs, a), this.subst(t, a))
+                // a lambda of a generic's body: its copy for these arguments, holding after its
+                // captures the descriptors the shared copy around it has (S3i)
+                let isLambda = this.functions[fi].templateOf >= 0;
+                let f = if (isLambda) this.instanceOf(fi, a) else fi;
+                let caps = List<TExpr>.new();
+                for (x in this.specAll(xs, a)) {
+                    caps.push(x);
+                }
+                if (isLambda) {
+                    let anyTy = Ty.Named(this.anyIndex);
+                    var k = 0;
+                    for (x in a) {
+                        if (x == anyTy) {
+                            let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
+                            caps.push(src ?? TExpr.DescOfType(anyTy, anyTy));
+                        }
+                        k += 1;
+                    }
+                }
+                TExpr.Closure(f, caps.toArray(), this.subst(t, a))
             }
             .Captured(k, t) => TExpr.Captured(k, this.subst(t, a)),
             .CapturedCell(k, t) => TExpr.CapturedCell(k, this.subst(t, a)),
@@ -2832,6 +2861,24 @@ class Checker {
                     all.push(this.descExpr(targs[k], a));
                 }
                 TExpr.Call(inst, all.toArray(), this.subst(t, a))
+            }
+            .GenericValue(fi, targs, t) => {
+                let bound = List<Ty>.new();
+                for (x in targs) {
+                    bound.push(this.subst(x, a));
+                }
+                let b = bound.toArray();
+                let inst = this.instanceOf(fi, b);
+                let hidden = this.hiddenOf(fi, b);
+                let ft = this.subst(t, a);
+                if (hidden.length() == 0) {
+                    return this.thunk(inst, nowhereSpan);
+                }
+                let caps = List<TExpr>.new();
+                for (k in hidden) {
+                    caps.push(this.descExpr(targs[k], a));
+                }
+                TExpr.Closure(this.descThunk(inst, hidden.length(), ft), caps.toArray(), ft)
             }
             .CallBound(bt, ii, member, slot, xs, t) => {
                 let concrete = this.subst(bt, a);
@@ -5222,11 +5269,7 @@ class Checker {
                 at
             ),
             .Match(x, arms, at) => this.matchOf(x.value, arms, expected, false, at),
-            .Instance(_, _, at) => this.notYet(
-                "a generic function as a value",
-                "S3i (descriptors)",
-                at
-            ),
+            .Instance(callee, written, at) => this.genericValue(callee.value, written, at),
             .Is(x, written, at) => {
                 let v = this.expr(x.value, null);
                 let t = typeOf(v);
@@ -7638,6 +7681,33 @@ class Checker {
             return TExpr.Unknown;
         }
         if (this.functions[pick].typeParams.length() > 0) {
+            // the position's function type binds the type arguments (S3i)
+            let want = expectedFn(expected);
+            let f = this.functions[pick];
+            if (want != null && want.params.length() == f.params.length()) {
+                let binds = List<?Ty>.new();
+                for (_ in f.typeParams) {
+                    binds.push(null);
+                }
+                var k = 0;
+                for (p in f.params) {
+                    this.bind(p.ty, want.params[k], binds);
+                    k += 1;
+                }
+                this.bind(f.returns, want.result.value, binds);
+                let targs = List<Ty>.new();
+                var whole = true;
+                for (b in binds) {
+                    if (b == null) {
+                        whole = false;
+                    } else {
+                        targs.push(b);
+                    }
+                }
+                if (whole) {
+                    return this.genericValueOf(pick, targs.toArray(), at);
+                }
+            }
             this.error(
                 "LYS-SEM0060",
                 f"'{name}' is generic: as a value it needs its type arguments, which nothing here gives",
@@ -7646,6 +7716,125 @@ class Checker {
             return TExpr.Unknown;
         }
         return this.thunk(pick, at);
+    }
+
+    /// `id<int>` without a call: the generic function as a value at the written arguments.
+    mut fn genericValue(callee: Expr, written: TypeExpr[], at: Span): TExpr {
+        let name = match (callee) {
+            .Name(n, _) => n,
+            _ => "",
+        };
+        let candidates = this.fnByName.get(name);
+        if (candidates == null) {
+            this.error(
+                "LYS-SEM0013",
+                "type arguments are written after a generic function's name",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        var pick = -1;
+        for (c in candidates) {
+            if (this.functions[c].typeParams.length() == written.length()) {
+                pick = c;
+            }
+        }
+        if (pick < 0) {
+            this.error("LYS-SEM0026", f"no '{name}' takes {written.length()} type arguments", at);
+            return TExpr.Unknown;
+        }
+        let targs = List<Ty>.new();
+        for (w in written) {
+            targs.push(this.resolveType(w));
+        }
+        return this.genericValueOf(pick, targs.toArray(), at);
+    }
+
+    /// Generic function `fi` as a value at `targs`, each argument checked against its
+    /// constraints; its type the signature at them.
+    mut fn genericValueOf(fi: int, targs: Ty[], at: Span): TExpr {
+        let f = this.functions[fi];
+        var j = 0;
+        for (tp in f.typeParams) {
+            let b = targs[j];
+            for (ii in tp.constraints) {
+                if (b != .Unknown && !this.conformsTo(b, ii)) {
+                    this.error(
+                        "LYS-SEM0028",
+                        f"{this.tyName(b)} is no {this.types[ii].name}, which '{tp.name}' of '{f.name}' asks",
+                        at
+                    );
+                }
+            }
+            j += 1;
+        }
+        let rt = this.returnsOf(fi, at);
+        let tys = List<Ty>.new();
+        for (p in f.params) {
+            tys.push(this.subst(p.ty, targs));
+        }
+        let fnTy = Ty.Fn(FnTy { params = tys.toArray(), result = boxTy(this.subst(rt, targs)) });
+        return TExpr.GenericValue(fi, targs, fnTy);
+    }
+
+    /// A thunk of copy `inst` holding the `n` descriptors it takes hidden, as captures after
+    /// its parameters (S3i).
+    mut fn descThunk(inst: int, n: int, fnTy: Ty): int {
+        let key = f"{inst}/{n}";
+        let known = this.descThunks.get(key);
+        if (known != null) {
+            return known;
+        }
+        let anyTy = Ty.Named(this.anyIndex);
+        let index = this.functions.length();
+        let target = this.functions[inst];
+        this.functions.push(
+            FnInfo {
+                name = target.name + "#value",
+                owner = -1,
+                isStatic = true,
+                line = target.line,
+            }
+        );
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        let info = this.functions[index];
+        let params = List<ParamInfo>.new();
+        let locals = List<Ty>.new();
+        let args = List<TExpr>.new();
+        locals.push(fnTy);
+        var k = 0;
+        for (p in target.params) {
+            params.push(ParamInfo { name = p.name, ty = p.ty, default = null });
+            locals.push(p.ty);
+            args.push(TExpr.Local(k + 1, p.ty));
+            k += 1;
+        }
+        let caps = List<CaptureInfo>.new();
+        var j = 0;
+        while (j < n) {
+            caps.push(CaptureInfo { ty = anyTy, isCell = false });
+            args.push(TExpr.Captured(j, anyTy));
+            j += 1;
+        }
+        info.params = params.toArray();
+        info.env = true;
+        info.captures = caps.toArray();
+        info.returns = target.returns;
+        info.locals = locals.toArray();
+        let flags = List<bool>.new();
+        for (_ in locals) {
+            flags.push(false);
+        }
+        info.boxed = flags.toArray();
+        let call = TExpr.Call(inst, args.toArray(), target.returns);
+        info.body = if (target.returns == .Void) [
+            TStmt.Expr(call, target.line),
+            TStmt.Return(null, target.line),
+        ]
+            else [TStmt.Return(call, target.line)];
+        this.descThunks.insert(key, index);
+        return index;
     }
 
     /// `obj.method` without a call: a function value holding `obj`, whose function calls the

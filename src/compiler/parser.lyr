@@ -1684,8 +1684,9 @@ class Parser {
         );
     }
 
-    /// Whether the `<` here opens type arguments: its matching `>` is followed by `(` (C#'s rule
-    /// for the same doubt), and nothing between belongs to no type.
+    /// Whether the `<` here opens type arguments: its matching `>` is followed by what no
+    /// comparison goes on with — `(`, a closer, `,`, a line end, `.`, `==` (C#'s rule for the
+    /// same doubt) —, and nothing between belongs to no type.
     mut fn typeArgsAhead(): bool {
         var k = 0;
         var depth = 0;
@@ -1718,7 +1719,7 @@ class Parser {
                 return false;
             }
         }
-        return depth == 0 && this.peek(k).kind == .LParen;
+        return depth == 0 && endsTypeArgs(this.peek(k).kind);
     }
 
     /// A lambda's body: a value block, or an expression.
@@ -2432,4 +2433,20 @@ fn frontmatterText(text: string): string {
         k += 1;
     }
     return inner.toArray().join("\n");
+}
+
+/// Whether a token after a `>` closes type arguments, not a comparison: a call's `(`, or what
+/// ends or continues a value without an operand (`id<int>` as a value, S3i).
+fn endsTypeArgs(k: TokenKind): bool {
+    return k == .LParen
+        || k == .RParen
+        || k == .RBracket
+        || k == .RBrace
+        || k == .Comma
+        || k == .Semi
+        || k == .Newline
+        || k == .Eof
+        || k == .Dot
+        || k == .EqEq
+        || k == .NotEq;
 }

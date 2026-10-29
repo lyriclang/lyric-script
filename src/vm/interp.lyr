@@ -17,8 +17,8 @@
 //! the record's frames its trace.
 import std.collections { List };
 import std.core { arrayOf };
-import std.io { print, println };
-import std.task { sleep, spawn, yieldNow };
+import std.io { print, println, stdin };
+import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
 import std.time { Duration, Monotonic };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
@@ -164,6 +164,11 @@ class TaskState {
     // S6d3: the timer it sleeps on, and whether it slept
     var sleeping: ?TimerEntry = null,
     var slept: bool = false,
+    // S6e: a native it waits for — the ticket of the one it waits for now, and what came
+    var nativePending: bool = false,
+    var nativeTicket: int = 0,
+    var nativeDone: bool = false,
+    var nativeText: ?string = null,
     // what an error that left the task threw, and its record: what `await` throws again
     var thrown: HeapRef = nilRef(),
     var record: HeapRef = nilRef(),
@@ -325,6 +330,10 @@ class RunShared {
     timers: List<TimerEntry> = List<TimerEntry>.new(),
     var timerSeq: int = 0,
     clock: Monotonic = Monotonic.now(),
+    // S6e: the script's tasks waiting for a native, and the Lyric 5 channel a native's task
+    // signals its end on
+    var pendingNatives: int = 0,
+    wakeups: Channel<int> = Channel<int>.new(64),
 }
 
 /// A timer of the run (S6d3): its deadline, in nanoseconds of the run's clock — its sequence
@@ -437,7 +446,25 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
         // S6d3: the timers whose time came wake behind the ready tasks; with none ready, the run
         // waits for the earliest — without timers that is a deadlock
         fireDueTimers(shared);
+        // S6e: a native's Lyric 5 task gets its turn at every step while one is waited for
+        if (shared.pendingNatives > 0) {
+            try? yieldNow();
+        }
         if (shared.head >= shared.queue.length()) {
+            // a native's end, or the earliest timer, ends the run's wait
+            if (shared.pendingNatives > 0) {
+                if (shared.timers.length() > 0) {
+                    let wait = earliestDeadline(shared) - nowNs(shared);
+                    if (wait > 0) {
+                        try? Select.on(shared.wakeups) { _ => { } }.timeout(
+                            Duration.ofNanos(wait)
+                        ) { }.run();
+                    }
+                } else {
+                    try? shared.wakeups.recv();
+                }
+                continue;
+            }
             if (shared.timers.length() == 0) {
                 break;
             }
@@ -585,6 +612,12 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
     // S6d2: a select's wait ends as well
     if (st.watching.length() > 0) {
         unwatchAll(st);
+        shared.queue.push(st);
+    }
+    // S6e: and a native's
+    if (st.nativePending) {
+        st.nativePending = false;
+        shared.pendingNatives -= 1;
         shared.queue.push(st);
     }
     // S6d3: and a sleep
@@ -2235,6 +2268,64 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     shared.timers.push(e);
                     t.sleeping = e;
                 }
+                t.s = s;
+                t.r = r;
+                t.fi = fi;
+                t.pc = pc;
+                t.bs = bs;
+                t.br = br;
+                t.report = report;
+                t.frames = frames;
+                return Outcome.Switch;
+            }
+            // S6e: a line of standard input at `r[a]`, none at its end — the first native that
+            // waits: a Lyric 5 task reads it while the script's task waits, and the others run
+            // (07 N6, 11 Co)
+            .ReadLine => {
+                if (t.nativeDone) {
+                    t.nativeDone = false;
+                    let line = t.nativeText;
+                    t.nativeText = null;
+                    if (line != null) {
+                        r[br + a] = ScriptString { text = line };
+                    } else {
+                        r[br + a] = nil;
+                    }
+                    pc += 1;
+                    continue;
+                }
+                let own = t.handle;
+                if (own != null && own.cancelled) {
+                    if (br + f.refs + 1 > r.length()) {
+                        r = growRefs(r, br + f.refs + 1);
+                    }
+                    r[br + f.refs] = newCancelled(module);
+                    inject = true;
+                    continue;
+                }
+                t.nativePending = true;
+                t.nativeTicket += 1;
+                let ticket = t.nativeTicket;
+                let st = t;
+                shared.pendingNatives += 1;
+                spawnDetached(
+                    () => {
+                        var text: ?string = null;
+                        let got = try? stdin().readLine();
+                        if (let g = got) {
+                            text = g;
+                        }
+                        // a task cancelled meanwhile waits no more: the line is dropped
+                        if (st.nativePending && st.nativeTicket == ticket) {
+                            st.nativePending = false;
+                            st.nativeDone = true;
+                            st.nativeText = text;
+                            shared.pendingNatives -= 1;
+                            shared.queue.push(st);
+                            try? shared.wakeups.send(1);
+                        }
+                    }
+                );
                 t.s = s;
                 t.r = r;
                 t.fi = fi;

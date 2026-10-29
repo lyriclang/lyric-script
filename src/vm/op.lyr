@@ -154,6 +154,8 @@ pub enum Op :: [Variants, Equatable] {
     // S6d3: the task sleeps `s[a]` nanoseconds; a channel that closes once `s[b]` nanoseconds passed.
     Sleep,
     TimerAfter,
+    // S6e: a line of standard input, read by a Lyric 5 task while the script's task waits.
+    ReadLine,
 }
 
 /// What an operand of an operation names.
@@ -321,6 +323,7 @@ pub fn info(op: Op): OpInfo {
         .ParkW => OpInfo { mnemonic = "park.w", operands = [] },
         .Sleep => OpInfo { mnemonic = "sleep", operands = [.Scalar] },
         .TimerAfter => OpInfo { mnemonic = "timer.after", operands = [.Ref, .Scalar] },
+        .ReadLine => OpInfo { mnemonic = "read.line", operands = [.Ref] },
     };
 }
 

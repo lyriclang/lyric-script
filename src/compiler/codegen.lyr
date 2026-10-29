@@ -1750,6 +1750,10 @@ class FnGen {
                 let d = this.any(x.value);
                 this.emit(Op.TimerAfter, dst.r, d.s, 0);
             }
+            // S6e: a line of standard input
+            .ReadLine => {
+                this.emit(Op.ReadLine, dst.r, 0, 0);
+            }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);
                 this.emit(Op.TaskSt, dst.s, task.r, 0);

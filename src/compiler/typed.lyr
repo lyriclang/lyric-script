@@ -274,6 +274,7 @@ fn typeOf(e: TExpr): Ty {
         .ChanReady(_) => Ty.Bool,
         .ChanWatch(_) | .ParkWatched | .Sleep(_) => Ty.Void,
         .TimerAfter(_, t) => t,
+        .ReadLine => Ty.Optional(Box<Ty> { value = Ty.Str }),
         .Int(_) => Ty.Int,
         .Float(_) => Ty.Float,
         .Bool(_) => Ty.Bool,
@@ -524,6 +525,8 @@ enum TExpr :: [Debug] {
     /// S6d3: the prelude's sleep, of so many nanoseconds; a timer's channel.
     Sleep(Box<TExpr>),
     TimerAfter(Box<TExpr>, Ty),
+    /// S6e: the prelude's `readLine()`, a line of standard input or none at its end.
+    ReadLine,
     Unknown,
 }
 
@@ -588,6 +591,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         .SemAcquire(x) | .SemTry(x) | .SemRelease(x) | .SemAvail(x) => [x.value],
         .ChanSend(x, v) => [x.value, v.value],
         .ChanReady(x) | .ChanWatch(x) | .Sleep(x) | .TimerAfter(x, _) => [x.value],
+        .ReadLine => [],
         .ParkWatched => [],
         .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Local(_, _) | .Global(_, _) => [],
         .Variant(_, _) | .Unit | .Null(_) | .Unreachable(_) | .Captured(_, _) => [],

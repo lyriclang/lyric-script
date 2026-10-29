@@ -283,7 +283,7 @@ class ThrowSets {
                     out.add(Ty.Named(this.cancelled), this.line);
                 }
             }
-            .ChanRecv(_, _) | .SemAcquire(_) | .ParkWatched | .Sleep(_) => {
+            .ChanRecv(_, _) | .SemAcquire(_) | .ParkWatched | .Sleep(_) | .ReadLine => {
                 if (this.cancelled >= 0) {
                     out.add(Ty.Named(this.cancelled), this.line);
                 }

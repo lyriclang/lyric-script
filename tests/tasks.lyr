@@ -589,3 +589,10 @@ fn timeIsChecked(): void {
         ["LYS-SEM0034"]
     );
 }
+
+// A native that waits (S6e): `readLine()`.
+@Test
+fn readLineIsAWait(): void {
+    assertEq(errs("fn f(): string {\n    return readLine() ?? \"\"\n}"), []);
+    assertEq(errs("fn f() throws Exception {\n    let l = readLine()\n}"), ["LYS-SEM0034"]);
+}

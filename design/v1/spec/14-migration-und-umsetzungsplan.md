@@ -448,3 +448,25 @@ Typen, Blöcke auf einer Instanz, auf eingebauten Konstruktoren und Blanket-Blö
 Interface getrennt implementiert (05 §3 Regel 4). Beim Abgleich der Bereichsdokumente gegen den Code
 fehlte 05 D2/D3 eine Uhr: zwei Defaults eines Namens nahmen still den ersten — jetzt
 `LYS-SEM0043`, dazu der qualifizierte Aufruf `I.m(x)`. 191 Tests, 115 Konformanzfälle.
+
+## S4 — Slices (Plan, Entwurf 2026-10-29)
+
+Ziel aus der Meilensteintabelle: Fehler und Kontrolle — VM-Ausnahmen, erschlossene Fehlermengen,
+geprüftes `throws`, `try?`/`try!`/`try … catch`, `catch (e in […])`, `defer`/`using`,
+`loop`/`break value`, `never` (05). Grundlage Lyric 5 06 (gepinnt 38ea610e) mit Scripts
+Abweichungen 05 Th, K, K7 (erschlossene statt deklarierte Mengen, `try` wirkungslos). Der Parser
+kennt `throw`/`try`/`defer`/`catch` noch nicht; S4 ist ganz neu. Spec-first in den Kapiteln 06
+und 07 des Deltas.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S4a Werfen und Fehlerpfad** | `throw e` (Anweisung und Ausdruck vom Typ `never`); in der VM verlässt ein Fehler jeden Rahmen wie eine Rückkehr ohne Wert (06 §5 R1), Handler-Tabelle je Funktion; der `try`-Block mit Klauseln als Typtests über den Deskriptor (`is.t`/`is.i`/`is.d`, 06 §4 R7); ungefangen aus `main`: `error:` mit `caused by:`/`suppressed:`, Exit 1 (§5 R3); Paniken bleiben 101 und unfangbar | Fehlerbeispiele; Exit 1/101 |
+| **S4b `Error` und `Exception`** | `interface Error { message(), cause() }` und `Exception(message, cause:)` im Prelude (Lyric-Script-Quelle wie die Literal-Protokolle); werfbar ist, was zu `Error` konformiert (§1, `LYS-SEM0030`) | Konformanzfälle |
+| **S4c Fehlermengen** | je Funktion erschlossen (Fixpunkt über den Aufrufgraphen); geschriebenes `throws [A, B]` als geprüfter Vertrag; Teilmengenregel nur bei deklariertem Interface-Member; Funktionswerte, Host und native Module werfen `Error` (05 K); Lint `unmarked-throw` | Fehler am Vertrag |
+| **S4d Ausdrucksformen und Klauselregeln** | `try?` (nicht abgeflacht), `try!` (Panik `RT0010`), `try e catch (x: A) v` (06 §6); `catch (e in [A, B])`, Regeln E9 (kein Typ doppelt, unerreichbare Klausel, Catch-all zuletzt), `catch (e)` trägt die Menge (K7), präzises Weiterwerfen | Konformanzfälle |
+| **S4e `defer` und `using`** | `defer` statisch auf jeden Ausgang gelegt, auf dem Fehlerpfad als Catch-all-Bereich, LIFO; wirft er unterwegs, gewinnt der erste Fehler, der zweite hängt als unterdrückt an (§5 R4–R5); `using let` für `Closeable` (§7) | Reihenfolge-Fälle |
+| **S4f Kontrolle und `never`** | `loop`/`break value` und Labels prüfen (Codes 0101/0102), `do-while`; `never` passt überall und endet nur seinen Pfad, nur als Rückgabetyp schreibbar (§9, `LYS-SEM0145`); `panic`, `assert { }`, `unreachable`, `todo` im Prelude | Konformanzfälle |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s4-complete` | Fehlerbeispiele in der CI |
+
+Reihenfolge: a vor b (das Werfen braucht noch keine Hierarchie, die Klauseln testen Typen), b vor
+c–d, e nach a, f unabhängig.

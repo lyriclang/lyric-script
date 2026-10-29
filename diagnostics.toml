@@ -721,6 +721,12 @@ severity = "error"
 area = "03-types"
 summary = "An argument, written or inferred, conforms to every interface its type parameter's constraints name. Lyric 5's LYR-SEM0028."
 
+[LYS-PAR0033]
+title = "a malformed pattern"
+severity = "error"
+area = "09-patterns"
+summary = "A list pattern holds two `..`: with two, the elements between them could not be placed. The code and its meaning are Lyric 5's LYR-PAR0033."
+
 [LYS-SEM0029]
 title = "a pattern that cannot match the value's type"
 severity = "error"

@@ -1283,6 +1283,7 @@ class Parser {
         // `let (a, b) = t`, `let .Num(n) = s else { … }`: the value taken apart by a pattern
         let head = this.current();
         let pattern = this.at(.LParen)
+            || this.at(.LBracket)
             || this.at(.Dot)
             || (head.kind == .Ident
                 && isTypeName(this.text(head))
@@ -1735,6 +1736,40 @@ class Parser {
         this.advance();
         let fields = try this.parseWithFields();
         return Expr.With(boxed(e), fields, this.since(first));
+    }
+
+    /// `[a, b, ..rest]` (S7b3; Lyric 5 §9): one `..` at most — with two, the elements between them
+    /// could not be placed (`LYS-PAR0033`).
+    mut fn listPattern(first: Token): Pattern throws SyntaxError {
+        this.advance();
+        let items = List<Pattern>.new();
+        var rest = -1;
+        var restName: ?string = null;
+        while (!this.at(.RBracket)) {
+            if (this.at(.DotDot)) {
+                let dots = this.advance();
+                // reported, and read on: the pattern ends where it ends (Lyric 5 does the same)
+                if (rest >= 0) {
+                    this.report(
+                        "LYS-PAR0033",
+                        "a list pattern takes one '..' at most: with two, the elements between could not be placed",
+                        dots
+                    );
+                }
+                rest = items.length();
+                if (this.at(.Ident)) {
+                    restName = this.text(this.advance());
+                }
+            } else {
+                items.push(try this.parseOrPattern());
+            }
+            if (!this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        try this.expect(.RBracket, "LYS-PAR0004", "']' to close the pattern");
+        return Pattern.List(items.toArray(), rest, restName, this.since(first));
     }
 
     /// `x.name`, `x?.name`, and `Shape.Rect { w = 1 }`, a struct variant built.
@@ -2471,6 +2506,9 @@ class Parser {
     /// `Type { … }`, a tuple, or one in parentheses.
     mut fn parsePattern(): Pattern throws SyntaxError {
         let first = this.current();
+        if (this.at(.LBracket)) {
+            return try this.listPattern(first);
+        }
         if (this.at(.LParen)) {
             this.advance();
             let items = List<Pattern>.new();

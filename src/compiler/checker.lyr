@@ -5511,7 +5511,7 @@ class Checker {
                 }
             }
             .Ignore(_) => { }
-            .Literal(_, at) | .Range(_, _, _, at) | .Variant(_, _, _, at) | .VariantFields(_, _, _, at) | .Fields(_, _, at) | .Or(_, at) | .Typed(_, _, at) => {
+            .Literal(_, at) | .Range(_, _, _, at) | .Variant(_, _, _, at) | .VariantFields(_, _, _, at) | .Fields(_, _, at) | .Or(_, at) | .Typed(_, _, at) | .List(_, _, _, at) => {
                 this.error(
                     "LYS-SEM0098",
                     "a pattern that can fail needs a way out: 'let P = e else { … }', or a 'match'",
@@ -5749,6 +5749,21 @@ class Checker {
             .Name(_, _) | .Ignore(_) => {
                 return Space.Any;
             }
+            .List(items, rest, _, _) => {
+                let elem = match (t) {
+                    .List(e) => e.value,
+                    .Optional(o) => match (o.value) {
+                        .List(e) => e.value,
+                        _ => Ty.Unknown,
+                    },
+                    _ => Ty.Unknown,
+                };
+                let parts = List<Space>.new();
+                for (x in items) {
+                    parts.push(this.spaceOf(x, elem));
+                }
+                return Space.Seq(parts.toArray(), rest);
+            }
             .Or(alternatives, _) => {
                 let out = List<Space>.new();
                 for (a in alternatives) {
@@ -5920,6 +5935,23 @@ class Checker {
         let flat = expandOr(rows);
         let t = tys[0];
         let rest = sliceOf(tys, 1, tys.length());
+        match (t) {
+            .List(e) => {
+                var seq = false;
+                for (row in flat) {
+                    match (row[0]) {
+                        .Seq(_, _) => {
+                            seq = true;
+                        }
+                        _ => { }
+                    }
+                }
+                if (seq) {
+                    return this.uncoveredList(flat, e.value, rest);
+                }
+            }
+            _ => { }
+        }
         let count = this.ctorCount(t);
         let used = Set<int>.new();
         for (row in flat) {
@@ -5981,10 +6013,113 @@ class Checker {
         return out.toArray();
     }
 
+    /// The first value a list column leaves out (S7b3; Rust's way): each length up to `top` a
+    /// constructor of that many elements, `top` standing for every longer list too — past every
+    /// fixed pattern's length, at least every `..` pattern's elements.
+    mut fn uncoveredList(flat: Space[][], elem: Ty, rest: Ty[]): ?Space[] {
+        var maxFixed = -1;
+        var maxVar = -1;
+        for (row in flat) {
+            match (row[0]) {
+                .Seq(parts, at) => {
+                    if (at < 0 && parts.length() > maxFixed) {
+                        maxFixed = parts.length();
+                    }
+                    if (at >= 0 && parts.length() > maxVar) {
+                        maxVar = parts.length();
+                    }
+                }
+                _ => { }
+            }
+        }
+        let top = if (maxFixed + 1 > maxVar) maxFixed + 1 else maxVar;
+        var n = 0;
+        while (n <= top) {
+            let rows = List<Space[]>.new();
+            for (row in flat) {
+                let r = List<Space>.new();
+                var keep = true;
+                match (row[0]) {
+                    .Seq(parts, at) => {
+                        keep = if (at < 0) parts.length() == n else parts.length() <= n;
+                        if (keep) {
+                            var k = 0;
+                            while (k < parts.length()) {
+                                if (k == at) {
+                                    var gap = n - parts.length();
+                                    while (gap > 0) {
+                                        r.push(Space.Any);
+                                        gap -= 1;
+                                    }
+                                }
+                                r.push(parts[k]);
+                                k += 1;
+                            }
+                            if (at == parts.length()) {
+                                var gap = n - parts.length();
+                                while (gap > 0) {
+                                    r.push(Space.Any);
+                                    gap -= 1;
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        var k = 0;
+                        while (k < n) {
+                            r.push(Space.Any);
+                            k += 1;
+                        }
+                    }
+                }
+                if (keep) {
+                    for (x in row[1..]) {
+                        r.push(x);
+                    }
+                    rows.push(r.toArray());
+                }
+            }
+            let sub = List<Ty>.new();
+            var k = 0;
+            while (k < n) {
+                sub.push(elem);
+                k += 1;
+            }
+            for (x in rest) {
+                sub.push(x);
+            }
+            let w = this.uncovered(rows.toArray(), sub.toArray());
+            if (w != null) {
+                let out = List<Space>.new();
+                out.push(Space.Seq(sliceOf(w, 0, n), if (n == top && n > maxFixed) n else -1));
+                for (x in w[n..]) {
+                    out.push(x);
+                }
+                return out.toArray();
+            }
+            n += 1;
+        }
+        return null;
+    }
+
     /// A value as a pattern writes it: `.Rect { … }`, `.Num(_)`, `false`, `null`, `(1, _)`.
     mut fn showSpace(space: Space, t: Ty): string {
         return match (space) {
             .Any | .Lit(_) | .Or(_) => "_",
+            .Seq(parts, at) => {
+                let elem = match (t) {
+                    .List(e) => e.value,
+                    _ => Ty.Unknown,
+                };
+                let shown = List<string>.new();
+                for (x in parts) {
+                    shown.push(this.showSpace(x, elem));
+                }
+                if (at >= 0) {
+                    shown.push("..");
+                }
+                "[" + shown.toArray().join(", ") + "]"
+            }
             .Ctor(c, parts) => {
                 match (t) {
                     .Bool => {
@@ -6082,6 +6217,7 @@ class Checker {
             .Fields(typeName, fields, at) => this.fieldsTest(typeName, fields, src, out, seen, at),
             .Or(alternatives, at) => this.orTest(alternatives, src, out, seen, at),
             .Typed(name, written, at) => this.typedTest(name, written, src, out, seen, at),
+            .List(items, rest, name, at) => this.listTest(items, rest, name, src, out, seen, at),
         };
     }
 
@@ -6194,6 +6330,84 @@ class Checker {
             .Optional(inner) => TExpr.Narrow(boxE(src), inner.value),
             _ => null,
         };
+    }
+
+    /// A list pattern (S7b3): the length first — exactly the elements', or at least them where a
+    /// `..` stands —, then each element by its position, one after the `..` counted from the end;
+    /// the `..`'s name binds the elements between as a new list.
+    mut fn listTest(
+        items: Pattern[],
+        rest: int,
+        restName: ?string,
+        src: TExpr,
+        out: List<Bound>,
+        seen: Map<string, bool>,
+        at: Span
+    ): ?TExpr {
+        let inner = this.presentOf(src);
+        if (inner != null) {
+            return presentAnd(src, this.listTest(items, rest, restName, inner, out, seen, at));
+        }
+        let t = typeOf(src);
+        match (t) {
+            .List(e) => {
+                let elem = e.value;
+                let n = items.length();
+                let len = TExpr.ListOp(ListOp.Len, [src], Ty.Int);
+                var test: ?TExpr = TExpr.Binary(
+                    boxE(len),
+                    if (rest < 0) BinaryOp.Eq else BinaryOp.Ge,
+                    boxE(TExpr.Int(n)),
+                    Ty.Bool
+                );
+                var k = 0;
+                for (item in items) {
+                    let place = if (rest < 0 || k < rest) TExpr.Int(k)
+                        else TExpr.Binary(boxE(len), BinaryOp.Sub, boxE(TExpr.Int(n - k)), Ty.Int);
+                    let element = TExpr.ListOp(ListOp.Get, [src, place], elem);
+                    test = andMaybe(test, this.patternTest(item, element, out, seen));
+                    k += 1;
+                }
+                if (let name = restName) {
+                    if (seen.containsKey(name)) {
+                        this.error("LYS-SEM0097", f"'{name}' is bound twice in this pattern", at);
+                    } else {
+                        seen.insert(name, true);
+                        let end = TExpr.Binary(
+                            boxE(len),
+                            BinaryOp.Sub,
+                            boxE(TExpr.Int(n - rest)),
+                            Ty.Int
+                        );
+                        out.push(
+                            Bound {
+                                name = name,
+                                value = this.listCall(
+                                    "__listSlice",
+                                    elem,
+                                    [src, TExpr.Int(rest), end],
+                                    t
+                                ),
+                                at = at,
+                            }
+                        );
+                    }
+                }
+                return test;
+            }
+            .Unknown => { }
+            _ => {
+                this.error("LYS-SEM0029", f"a list pattern against {this.tyName(t)}", at);
+            }
+        }
+        this.bindUnknown(items, out, seen);
+        if (let name = restName) {
+            if (!seen.containsKey(name)) {
+                seen.insert(name, true);
+                out.push(Bound { name = name, value = TExpr.Unknown, at = at });
+            }
+        }
+        return null;
     }
 
     mut fn tupleTest(
@@ -12377,6 +12591,8 @@ enum Space {
     Ctor(int, Space[]),
     Lit(string),
     Or(Space[]),
+    /// A list's elements, and the place of its `..`, -1 for none (S7b3).
+    Seq(Space[], int),
 }
 
 /// Elements `from` to `to` of `xs`, as an array of their own.
@@ -12465,6 +12681,8 @@ fn defaultRows(rows: Space[][]): Space[][] {
 fn irrefutable(p: Pattern): bool {
     return match (p) {
         .Name(_, _) | .Ignore(_) => true,
+        // `[..]` and `[..rest]`: every list
+        .List(items, rest, _, _) => rest >= 0 && items.length() == 0,
         .Tuple(items, _) => {
             var all = true;
             for (x in items) {

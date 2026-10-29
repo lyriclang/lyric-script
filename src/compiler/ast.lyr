@@ -207,6 +207,10 @@ enum Pattern :: [Debug] {
     Or(Pattern[], Span),
     /// `c: Circle`, `_: Circle`: an interface value that holds a `Circle`, bound as one.
     Typed(?string, TypeExpr, Span),
+    /// `[a, b]`, `[first, ..rest]`, `[a, .., z]` (S7b3; Lyric 5 §9): a list's elements by position;
+    /// the place of the one `..` among them, -1 where there is none, and the name it binds the
+    /// elements between to, as a new list (03 S).
+    List(Pattern[], int, ?string, Span),
 }
 
 /// A statement, each form a variant.

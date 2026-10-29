@@ -196,6 +196,21 @@ fn showPattern(p: Pattern): string {
             + "}",
         .Fields(name, fields, _) => name + " {" + showFieldPatterns(fields) + "}",
         .Typed(name, t, _) => (name ?? "_") + ": " + showType(t),
+        .List(items, rest, name, _) => {
+            let parts = List<string>.new();
+            var k = 0;
+            for (x in items) {
+                if (k == rest) {
+                    parts.push(".." + (name ?? ""));
+                }
+                parts.push(showPattern(x));
+                k += 1;
+            }
+            if (rest == items.length()) {
+                parts.push(".." + (name ?? ""));
+            }
+            "[" + parts.toArray().join(", ") + "]"
+        }
         .Or(items, _) => {
             let parts = List<string>.new();
             for (x in items) {

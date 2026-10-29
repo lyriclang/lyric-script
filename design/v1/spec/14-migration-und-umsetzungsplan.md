@@ -550,3 +550,17 @@ fehlerhafter Bytecode bei `fn f(): int = todo()`). `panic`, `assert { }`, `unrea
 als Built-ins auf `TExpr.Panic` (RT0008/0011/0012/0013); `assert` steht an der Stelle, zitiert
 die Bedingung aus dem Quelltext (den der Parser jetzt im Modul hält) und baut die Meldung nur
 beim Fehlschlag. Der Fall aus Lyric 5s Beispiel (`ok || fail("why")` ist ein `bool`) fand eine Lücke: `never` als Operand — rechts von `&&`/`||` bestimmt die linke Seite den Typ, unter jedem anderen Operator ergibt das Ganze `never`; `println` eines `never` ebenso. 245 Tests, 165 Konformanzfälle.
+
+**S4, Abschluss (2026-10-29).** Abgleich der Bereichszeilen 05 E3–E12, K, K7, Th, Pn gegen den
+Code: gebaut, oder mit Uhr — Task-Ergebnisse tragen den Fehler mit S6 (E10); `e.suppressed()`
+(ein `Error[]`), `Result<T, E>` als Bibliothekstyp, Iteratoren ohne Fehlertyp und das Schließen
+eines `Closeable`-Iterators durch `for` (E7) mit S7; `.Error` an der Host-Grenze mit S8 (E6,
+01 S11); der Lint `unmarked-throw` und die `let`-Hälfte von `LYS-SEM0144` mit den Lints (S11).
+Abweichungen gegenüber Lyric 5, im Delta-Kapitel 06 geführt: erschlossene Mengen samt
+Interface-Member ohne `throws` (P14), die Bindung einer typlosen Klausel bleibt `Error` (M5-6),
+der Sprung aus einem `defer` ist abgelehnt (P15), Rahmen immer im Bericht. Je Slice
+Mutantenkontrollen mit vorher geschriebener Vorhersage. Verfehlt nur in S4a: die Vorsuche
+`caught` und die Abwicklung rechnen beide `back.pc - 1`, ein Mutant auf der einen traf den Test
+der anderen nicht (2 statt 3, dann 3 statt 2). Vor den Läufen geschärft, weil sie den Mutanten
+sonst nicht gesehen hätten: je ein Test in S4b (Aufrufer-Rahmen), S4c (Fixpunkt) und S4e
+(Wertblock).

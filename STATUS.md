@@ -27,7 +27,13 @@ Lyric 4.x status up to the 4.6 cut is archived at
   without a list, `with`, `Self` and static members, associated types, the literal protocols,
   generic extend blocks; 191 tests, 115 conformance cases. Three bugs since S3g found and fixed
   on the way, and one silent choice (05 §3 rule 2).
-- **Open milestone: S4** — errors and control.
+- **S4 done (2026-10-29)**: errors and control — throwing and the error path through the VM's
+  frames, an error's record and `e.backtrace()`, inferred thrown sets with a written `throws` as a
+  contract, `try?`/`try!`/`try … catch`, the rules among clauses and a match over a clause's set,
+  `defer` and `using` with suppressed errors, labels, `do … while`, `never` and the prelude's
+  panics; 245 tests, 165 conformance cases. Found on the way: a copy at a scalar handed it to an
+  interface parameter as a reference (since S3g).
+- **Open milestone: S5** — modules and packages.
 
 ## Milestones
 
@@ -37,7 +43,7 @@ Lyric 4.x status up to the 4.6 cut is archived at
 | S1 | VM core | L | **done** 2026-10-28 |
 | S2 | Front-end core | XL | **done** 2026-10-28 |
 | S3 | Type system complete | L | **done** 2026-10-29 |
-| S4 | Errors and control | M | **open** |
+| S4 | Errors and control | M | **done** 2026-10-29 |
 | S5 | Modules and packages | M | — |
 | S6 | Coroutines and tasks | L | — |
 | S7 | std core | XL | — |
@@ -99,7 +105,7 @@ Exit criterion: `lyric-script run hello.lyrs` in CI on every Tier 1 target; meas
 
 Exit criterion: generic code and interfaces in scripts, in CI; the delta's chapter 03 with its cases.
 
-### S4 — open
+### S4 — done
 
 Errors and control (plan 14, S4): VM exceptions, inferred error sets, a written `throws` checked,
 `try?`/`try!`/`try … catch`, `catch (e in […])`, `defer`/`using`, `loop`/`break value`, `never`

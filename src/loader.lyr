@@ -30,6 +30,7 @@ import lyric_script.cache { cacheRoot };
 import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
 import lyric_script.package {
     Dep,
+    Manifest,
     manifestName,
     readManifest,
     tagVersion,
@@ -86,6 +87,8 @@ class Loaded {
     var lockNew: List<LockEntry> = List<LockEntry>.new(),
     // `update`: the root manifest's tags raised to the newest of their lines, line by line
     var raised: List<Raise> = List<Raise>.new(),
+    // a single script whose frontmatter names dependencies: the root package is the script (S5d)
+    var script: bool = false,
 
     /// The text the cache keys the program by: the entry's alone where it is the one file, else
     /// every file's module name and text.
@@ -125,6 +128,8 @@ struct LoadOptions {
     locked: bool = false,
     update: bool = false,
     only: string[] = [],
+    // `lyric-script lock`: a script's lock written beside it (S5d)
+    lockFile: bool = false,
 }
 
 /// Reads the program whose entry is `path`, its text `text`.
@@ -151,9 +156,10 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
     let inPackage = packageRoot(path);
     if (inPackage != null) {
         let (root, rel) = inPackage;
-        readLockOf(root, l);
-        loadPackages(root, l);
-        settleLock(root, l);
+        let lockPath = below(root, lockName);
+        readLockOf(lockPath, l);
+        loadPackages(root, l, null);
+        settleLock(lockPath, below(root, manifestName), l);
         if (l.pkgs.length() == 0) {
             // the root manifest does not read: its errors are all there is to say
             l.parses.push(parse(text, 0));
@@ -166,6 +172,7 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
         l.names.push(stem(path));
         // the entry is the root: the modules beside it are no submodules of it
         l.subs.push([]);
+        scriptPackages(path, text, l);
     }
     // each module's imports: the module, and the import's place for a cycle through it
     let edges = List<List<int>>.new();
@@ -196,7 +203,10 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
             };
             var j = indexOf(l.names, name);
             if (j < 0) {
-                let t = if (l.pkgs.length() == 0) plainTarget(folder, im.path)
+                // a script's own modules keep the path rule; its dependencies, by their names
+                let byPath = l.pkgs.length() == 0
+                    || (l.script && l.pkgOf[i] == 0 && indexOf(l.pkgs[0].declared, im.path[0]) < 0);
+                let t = if (byPath) plainTarget(folder, im.path)
                     else packageTarget(l, l.pkgOf[i], im.path);
                 if (t.code == "quiet") {
                     continue;
@@ -248,6 +258,92 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
     }
     visit(0, edges, edgeAt, state, List<int>.new(), l);
     return l;
+}
+
+/// A single script's frontmatter (07 Dep, 09 Hd): where it names dependencies, the script is
+/// the root of a graph of packages — read once, kept in a lock: `<script>.lock` beside it where
+/// there is one or `lyric-script lock` writes it, else one in the user's cache under the hash of
+/// the frontmatter, so that a later run reads what the first read.
+fn scriptPackages(path: string, text: string, l: Loaded): void {
+    let place = frontmatterOf(text);
+    if (place == null) {
+        return;
+    }
+    let (toml, lineOffset, byteOffset) = place;
+    let read = readManifest(toml, true);
+    // the frontmatter is the script's: its diagnostics at the script's lines
+    let d = l.docPaths.length();
+    l.docPaths.push(path);
+    l.docTexts.push(text);
+    for (e in read.errors) {
+        l.errors.push(
+            e with {
+                file = -2 - d,
+                line = e.line + lineOffset,
+                start = e.start + byteOffset,
+                end = e.end + byteOffset,
+            }
+        );
+    }
+    let m = read.manifest;
+    if (m == null || (m.deps.length() == 0 && m.overrides.length() == 0)) {
+        return;
+    }
+    let shifted = m with {
+        deps = shiftLines(m.deps, lineOffset),
+        overrides = shiftLines(m.overrides, lineOffset),
+    };
+    l.script = true;
+    let beside = path + ".lock";
+    let cached = join(
+        cacheRoot() ?? parent(path),
+        "scripts",
+        hexOf(sha256(toml.toBytes()[..]))[0..32].toString() + ".lock"
+    );
+    // the lock beside the script, where there is one or `lock` asks for it; else the cache's
+    let lockPath = if (exists(beside) || l.how.lockFile) beside else cached;
+    readLockOf(if (exists(beside)) beside else cached, l);
+    loadPackages(parent(path), l, (shifted, d));
+    settleLock(lockPath, "", l);
+}
+
+/// A script's frontmatter: its TOML, the number of the script's lines before its first, and the
+/// byte offset of that line — between two `---` lines, after a `#!` line where there is one;
+/// `null` for none, or one the lexer refuses as unclosed (09 Hd).
+fn frontmatterOf(text: string): ?(string, int, int) {
+    let lines = List<string>.new();
+    for (line in text.split('\n')) {
+        lines.push(line.toString());
+    }
+    var k = 0;
+    var offset = 0;
+    if (lines.length() > 0 && lines[0].startsWith("#!")) {
+        offset += lines[0].length() + 1;
+        k = 1;
+    }
+    if (k >= lines.length() || lines[k].trim().toString() != "---") {
+        return null;
+    }
+    offset += lines[k].length() + 1;
+    let first = k + 1;
+    let body = List<string>.new();
+    var j = first;
+    while (j < lines.length() && lines[j].trim().toString() != "---") {
+        body.push(lines[j]);
+        j += 1;
+    }
+    if (j >= lines.length()) {
+        return null;
+    }
+    return (body.toArray().join("\n"), first, offset);
+}
+
+fn shiftLines(deps: Dep[], by: int): Dep[] {
+    let out = List<Dep>.new();
+    for (d in deps) {
+        out.push(d with { line = d.line + by });
+    }
+    return out.toArray();
 }
 
 /// Without a manifest: `a.b` is `a/b.lyrs` below the entry's folder (07 Path).
@@ -399,7 +495,7 @@ struct Wanted {
 /// (`LYS-PKG0004`); two folders for one name (`LYS-PKG0005`); a revision or a package a
 /// repository does not have (`LYS-PKG0006`); a repository that cannot be reached, and a
 /// toolchain the package asks more of, faults of the environment (`LYS-PKG0007`, `LYS-PKG0009`).
-fn loadPackages(root: string, l: Loaded): void {
+fn loadPackages(root: string, l: Loaded, first: ?(Manifest, int)): void {
     let queue = List<Wanted>.new();
     queue.push(Wanted { root = root, dep = Dep { name = "", line = 0 }, doc = -1, from = -1 });
     // every dependency as asked: the package asking, the name, the source it reached, where
@@ -451,6 +547,38 @@ fn loadPackages(root: string, l: Loaded): void {
             asks.push(
                 Ask { from = w.from, name = dep.name, to = known, doc = w.doc, line = dep.line }
             );
+            continue;
+        }
+        // a script's frontmatter, read already, is its root's manifest
+        if (w.from < 0 && first != null) {
+            let (fm, fd) = first;
+            let index = l.pkgs.length();
+            l.pkgs.push(Pkg { name = fm.name, root = w.root, deps = Map<string, int>.new() });
+            for (o in fm.overrides) {
+                overrides.insert(o.name, o);
+            }
+            for (next in fm.deps) {
+                l.pkgs[index].declared.push(next.name);
+                queue.push(
+                    Wanted {
+                        root = if (next.git != "") "" else normalize(below(w.root, next.path)),
+                        dep = next,
+                        doc = fd,
+                        from = index,
+                    }
+                );
+            }
+            let tool = fm.toolchain;
+            if (tool != null && !toolchainAllows(tool, version)) {
+                docError(
+                    l,
+                    fd,
+                    lineOfKey(l.docTexts[fd], "toolchain"),
+                    "LYS-PKG0009",
+                    f"the script asks for the toolchain {tool}; this one is {version}"
+                );
+                l.exit = 2;
+            }
             continue;
         }
         let mpath = below(w.root, manifestName);
@@ -1027,8 +1155,7 @@ fn charsMatch(p: char[], i: int, s: char[], j: int): bool {
 
 /// The root package's lock, where there is one: read before the packages (Lyric 5 15 §3); one that
 /// does not read is refused (`LYS-PKG0001`).
-fn readLockOf(root: string, l: Loaded): void {
-    let path = below(root, lockName);
+fn readLockOf(path: string, l: Loaded): void {
     let text = try? readText(path);
     if (text == null) {
         return;
@@ -1050,7 +1177,7 @@ fn readLockOf(root: string, l: Loaded): void {
 /// nothing from git, nothing it holds that the graph no longer reads (`LYS-PKG0011`) —; else, where
 /// all read, the lock is written where what was read changed, and goes where nothing is read from
 /// git (§3 rules 1, 4).
-fn settleLock(root: string, l: Loaded): void {
+fn settleLock(path: string, manifestPath: string, l: Loaded): void {
     let now = l.lockNew.toArray();
     if (l.how.locked) {
         if (l.lockDoc < 0 && now.length() > 0) {
@@ -1085,7 +1212,6 @@ fn settleLock(root: string, l: Loaded): void {
     if (l.errors.length() > 0) {
         return;
     }
-    let path = below(root, lockName);
     if (now.length() == 0) {
         if (l.lockDoc >= 0) {
             try? remove(path);
@@ -1093,12 +1219,13 @@ fn settleLock(root: string, l: Loaded): void {
         return;
     }
     let text = writeLock(now);
-    if (l.lockDoc < 0 || writeLock(l.lockOld) != text) {
+    if (l.lockDoc < 0 || writeLock(l.lockOld) != text || l.how.lockFile) {
+        try? createDirAll(parent(path));
         try? writeText(path, text);
     }
     // `update` writes a raised tag on its line of the root manifest, the rest as it was
-    if (l.raised.length() > 0) {
-        let mpath = below(root, manifestName);
+    if (l.raised.length() > 0 && manifestPath != "") {
+        let mpath = manifestPath;
         let old = try? readText(mpath);
         if (old != null) {
             let lines = List<string>.new();

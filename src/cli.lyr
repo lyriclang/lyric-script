@@ -32,6 +32,7 @@ fn usage(): void {
     println("  --offline  fetch nothing: a git dependency is read from the cache alone");
     println("  --locked   take lyric-script.lock as it is, and write nothing");
     println("  update [PACKAGE…]  read the git dependencies anew and write the lock");
+    println("  lock FILE  write a script's lock beside it, FILE.lock");
     println("  version    print the version (also --version)");
     println("  help       print this text (also --help)");
     println("  asm FILE   run a .lyrsasm file's 'main' (bytecode in its text form)");
@@ -54,6 +55,14 @@ fn main(): int {
     }
     if (command == "update") {
         return update(given);
+    }
+    if (command == "lock") {
+        if (given.length() != 3) {
+            eprintln("error[LYS-CLI0002]: 'lock' takes one file");
+            eprintln("  = help: lyric-script lock tool.lyrs");
+            return 2;
+        }
+        return lockScript(given[2]);
     }
     if (command == "clean" && given.length() == 2) {
         let dir = clean();
@@ -148,6 +157,20 @@ fn update(given: string[]): int {
     }
     let r = compile(loaded, false);
     if (r.module == null) {
+        return if (loaded.exit != 0) loaded.exit else 1;
+    }
+    return 0;
+}
+
+/// `lyric-script lock tool.lyrs` (07 Dep): resolves a script's frontmatter as a run would and
+/// writes its lock beside it, `tool.lyrs.lock`, which later runs read; runs nothing.
+fn lockScript(path: string): int {
+    let text = readScript(path);
+    if (text == null) {
+        return 2;
+    }
+    let loaded = loadProgram(path, text, LoadOptions { lockFile = true });
+    if (compile(loaded, false).module == null) {
         return if (loaded.exit != 0) loaded.exit else 1;
     }
     return 0;

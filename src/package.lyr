@@ -45,7 +45,7 @@ struct ManifestRead {
 }
 
 /// Reads a manifest's text (Lyric 5 15 §1 rules 1–4, 6; §2 rule 1).
-fn readManifest(text: string): ManifestRead {
+fn readManifest(text: string, frontmatter: bool = false): ManifestRead {
     let r = ManifestReader { source = text };
     let doc = try parseToml(text) catch (e: TomlError) {
         r.at("LYS-PKG0001", f"the manifest is no TOML: {e.detail}", e.line, e.column);
@@ -61,6 +61,9 @@ fn readManifest(text: string): ManifestRead {
     r.noFloats(doc, "");
     if (r.errors.length() > 0) {
         return ManifestRead { manifest = null, errors = r.errors.toArray() };
+    }
+    if (frontmatter) {
+        return r.frontmatterOf(root);
     }
     var manifest: ?Manifest = null;
     for (key in root.keys()) {
@@ -542,6 +545,92 @@ class ManifestReader {
             return null;
         }
         return d;
+    }
+
+    /// A script's frontmatter (07 Dep, 09 Hd): the manifest's subset a single script takes —
+    /// `[dependencies]`, `[override]`, and `toolchain` in `[package]`; it names no package.
+    mut fn frontmatterOf(root: TomlTable): ManifestRead {
+        let deps = List<Dep>.new();
+        let overrides = List<Dep>.new();
+        var toolchain: ?string = null;
+        for (key in root.keys()) {
+            match (key) {
+                "dependencies" | "override" => {
+                    match (root.get(key)) {
+                        .Table(t) => {
+                            for (name in t.keys()) {
+                                let d = this.dependency(t, name, key);
+                                if (d == null) {
+                                    continue;
+                                }
+                                if (key == "dependencies") {
+                                    deps.push(d);
+                                } else if (d.git != "") {
+                                    this.key(
+                                        "LYS-PKG0003",
+                                        "override",
+                                        name,
+                                        f"an override reads a folder: {{ path = \"…\" }}, not git"
+                                    );
+                                } else {
+                                    overrides.push(d);
+                                }
+                            }
+                        }
+                        _ => this.key("LYS-PKG0002", key, "", f"[{key}] is a table"),
+                    }
+                }
+                "package" => {
+                    match (root.get(key)) {
+                        .Table(t) => {
+                            for (k in t.keys()) {
+                                if (k == "toolchain") {
+                                    toolchain = this.textOf(t, "package", k, false);
+                                } else {
+                                    this.key(
+                                        "LYS-PKG0003",
+                                        "package",
+                                        k,
+                                        f"a script's frontmatter takes no '{k}': it names no package; [package] holds its toolchain alone"
+                                    );
+                                }
+                            }
+                        }
+                        _ => this.key("LYS-PKG0002", key, "", "[package] is a table"),
+                    }
+                }
+                "lints" => this.notYet(key, "", "S11 (the lints)"),
+                _ => this.key(
+                    "LYS-PKG0003",
+                    key,
+                    "",
+                    f"a script's frontmatter takes [dependencies], [override] and [package] toolchain, not [{key}]"
+                ),
+            }
+        }
+        let tool = toolchain;
+        if (tool != null && versionOf(toolchainVersion(tool)) == null) {
+            this.key(
+                "LYS-PKG0002",
+                "package",
+                "toolchain",
+                f"'{tool}' names no toolchain: \"1.1\" or \">=1.1\""
+            );
+        }
+        if (this.errors.length() > 0) {
+            return ManifestRead { manifest = null, errors = this.errors.toArray() };
+        }
+        return ManifestRead {
+            manifest = Manifest {
+                name = "",
+                version = "",
+                edition = "1",
+                toolchain = toolchain,
+                deps = deps.toArray(),
+                overrides = overrides.toArray(),
+            },
+            errors = [],
+        };
     }
 
     /// `include` or `exclude`: an array of patterns relative to the package's root, `/` between

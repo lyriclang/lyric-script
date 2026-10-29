@@ -162,6 +162,12 @@ generators, `spawn`/`await`/`TaskScope` (the top level), channels, `select`, `sl
 
 Exit criterion: a concurrent example.
 
+- **S6a done** — tasks in the VM: `spawn { }` → `Task<T>`, `await()`, `status()`, `yieldNow()`;
+  a cooperative FIFO scheduler per run; the top level a scope (every task awaited, the first to
+  fail by end order ends the run: exit 1, a panic 101); a deadlock panics (`RT0900`). Bytecode
+  format 10. Cancelling the siblings on the first failure: S6c.
+- Next: **S6b** coroutines.
+
 ## Working mode
 
 Decided 2026-10-28 (14): **autonomous, as on the Lyric 5 line** — Claude plans each slice and

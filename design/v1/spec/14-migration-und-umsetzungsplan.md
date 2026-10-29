@@ -486,3 +486,14 @@ Zuweisungsanalyse: eine Klausel kennt nur, was vor dem `try` zugewiesen war. Der
 Lyric 5s `stderr:`. Nebenbei behoben: eine Kopie an einem Skalar gab ihn einem
 Interface-Parameter als Referenz weiter (seit S3g, `f<T :: [Show]>(x: T) = describe(x)` mit
 `int`: fehlerhafter Bytecode) — jetzt eine Box wie bei `fit`. 208 Tests, 123 Konformanzfälle.
+
+**S4b, Ergebnis (2026-10-29).** Ein Fehler trägt seinen Datensatz: die Rahmen seines ersten
+Wurfs als Funktionen und Instruktionen (`ErrorRecord`, ein Wert der VM), gemacht bei jedem
+`throw`, als Text erst auf Nachfrage (Native `error.trace`). Ein Bereich bekommt ein zweites
+Register für ihn; die neue Op `rethrow` wirft mit dem Datensatz weiter — `throw e` der eigenen
+Bindung in ihrer Klausel und der Weiterwurf, wenn keine Klausel nimmt; jeder andere Wurf
+beginnt einen neuen. `e.backtrace()` an der Bindung gibt ein `?Backtrace` des Prelude (`show()`
+die Rahmen in der Spurform `    at <function> (line <n>)`), nur an der Bindung selbst
+(`LYS-SEM0012` sonst), ein eigenes Member des Typs geht vor. Der Bericht zeigt die Rahmen des
+Datensatzes, also den ersten Wurfort. Bytecode-Format 5. `e.suppressed()` kommt mit den Arrays
+(S7), das Anhängen mit S4e. 214 Tests, 126 Konformanzfälle.

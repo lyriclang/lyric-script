@@ -108,6 +108,7 @@ Errors and control (plan 14, S4): VM exceptions, inferred error sets, a written 
 | Slice | State |
 |---|---|
 | S4a throwing and the error path | done — `throw` (a statement, and an expression of type `never`, which now fits every type), the `try` block with typed clauses and the clause without a type; the VM's `throw` and a region table per function (format 4); an error leaves frame after frame to the first region that covers it; one no frame takes is reported through its `message()` and `cause()` in the same run, `error:`/`caused by:` and its frames, exit 1. `Error` and `Exception` in the prelude (from S4b), `LYS-SEM0030`, `LYS-SEM0036`. Found on the way: a copy at a scalar handed it to an interface parameter as a reference (since S3g) |
+| S4b the error's record | done — an error keeps where it was first thrown (the frames as functions and instructions, text only when asked); a region's second register receives it, `rethrow` carries it on — `throw e` of a clause's own binding, and an error no clause takes; `e.backtrace()` at the binding (`?Backtrace` of the prelude), only there (`LYS-SEM0012`), the type's own member first; the report shows the first throw's frames. Format 5. `e.suppressed()` with the arrays (S7) |
 
 Exit criterion: the error examples run; exit codes 1 and 101.
 

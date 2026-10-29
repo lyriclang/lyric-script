@@ -406,6 +406,12 @@ severity = "error"
 area = "06-errors"
 summary = "`try?` and `try!` take every error themselves; a `catch` belongs to a plain `try`. Lyric 5's LYR-PAR0051."
 
+[LYS-PAR0052]
+title = "a 'using' that is not one 'let' with a value"
+severity = "error"
+area = "06-errors"
+summary = "`using var` is written, or a `using` binding takes a pattern or has no value: a `using` is one `let` with a name and a value. Lyric 5's LYR-PAR0052."
+
 [LYS-PAR0053]
 title = "a visibility word where none belongs"
 severity = "error"
@@ -841,6 +847,18 @@ severity = "error"
 area = "06-errors"
 summary = "A clause's type is covered by a type a clause above it catches — `catch (e: IoError)` above `catch (e: Disk)` where `Disk` conforms to `IoError`, or `Error` above anything —, so no error reaches it. Lyric 5's LYR-SEM0142."
 
+[LYS-SEM0143]
+title = "'using' on a value that is not Closeable"
+severity = "error"
+area = "06-errors"
+summary = "`using let` binds a value whose type does not conform to `Closeable`, the prelude's `interface Closeable { fn close() }`. Lyric 5's LYR-SEM0143."
+
+[LYS-SEM0144]
+title = "a Closeable value nothing closes"
+severity = "warning"
+area = "06-errors"
+summary = "An expression statement makes a value of a `Closeable` type and drops it: nothing closes it. Bind it with `using let`. Lyric 5's LYR-SEM0144; its half for a plain `let` comes with the lints (S11)."
+
 [LYS-SEM0147]
 title = "'break' or 'continue' outside a loop"
 severity = "error"
@@ -926,6 +944,12 @@ area = "07-statements"
 summary = "A `let` or `var` of the script's outermost code takes its value where it is declared: a function may read it before any statement assigns it (spec 7)."
 
 # What the plan builds later, and the toolchain's own faults.
+
+[LYS-SEM0904]
+title = "a jump out of a defer's body"
+severity = "error"
+area = "06-errors"
+summary = "A `return`, or a `break` or `continue` to a loop outside it, stands in a defer's body. A defer runs where its scope is left — on an error too — and goes on from there; a jump out of it would drop that way. Script's own; Lyric 5 does not say."
 
 [LYS-NYI0001]
 title = "a form a later milestone builds"

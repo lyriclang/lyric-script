@@ -231,6 +231,11 @@ enum Stmt :: [Debug] {
     Throw(Expr, Span),
     /// `try { … } catch (e: T) { … } catch (e) { … }`: the body and its clauses (06 §4).
     Try(Block, CatchClause[], Span),
+    /// `defer { … }` or `defer e`: run when the scope is left, on every way out but a panic, the
+    /// last registered first (06 §5 rules 2–5).
+    Defer(Block, Span),
+    /// `using let f: T = e`: bound like a `let`, and closed when the scope is left (06 §7).
+    Using(string, ?TypeExpr, Expr, Span),
 }
 
 /// A clause of a `try`: its binding (`_` for none), the types it takes — none for every error,

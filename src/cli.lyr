@@ -241,6 +241,9 @@ fn finish(outcome: Outcome): int {
             for (cause in e.causes) {
                 eprintln(f"  caused by: {cause}");
             }
+            for (s in e.suppressed) {
+                eprintln(f"  suppressed: {s}");
+            }
             for (frame in e.trace) {
                 eprintln(f"    {frame}");
             }

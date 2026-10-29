@@ -475,6 +475,10 @@ enum TStmt :: [Debug] {
     /// `try { … } catch …`: the body, the locals an error of it arrives in and its record, the
     /// clauses in order (06 §4, S4a, S4b).
     Try(TStmt[], int, int, TClause[], int),
+    /// A `defer`'s region (S4e): the rest of its scope, the defer's body, run on every way out of
+    /// it; the locals an error arrives in and its record, and those of an error the defer throws
+    /// while one is in flight (06 §5 rules 2–5).
+    Finally(TStmt[], TStmt[], int, int, int, int, int),
 }
 
 /// A clause of a `try`: the test it makes of the error — none where it takes every error —, its
@@ -536,6 +540,7 @@ fn exprsOfStmt(s: TStmt): TExpr[] {
         .ForRange(_, x, y, _, _, _) => [x, y],
         .Break(v, _) | .Return(v, _) => if (v != null) [v] else [],
         .Continue(_) | .Block(_, _) | .DeclareLocal(_, _) | .Try(_, _, _, _, _) => [],
+        .Finally(_, _, _, _, _, _, _) => [],
     };
 }
 
@@ -554,6 +559,10 @@ fn stmtsOfStmt(s: TStmt): TStmt[] {
                 out.pushAll(c.body);
             }
         }
+        .Finally(b, d, _, _, _, _, _) => {
+            out.pushAll(b);
+            out.pushAll(d);
+        }
         _ => { }
     }
     return out.toArray();
@@ -565,6 +574,7 @@ fn stmtLine(s: TStmt): int {
         .Expr(_, l) | .SetLocal(_, _, l) | .SetGlobal(_, _, l) | .If(_, _, _, l) => l,
         .While(_, _, l) | .ForRange(_, _, _, _, _, l) | .Break(_, l) | .Continue(l) => l,
         .Return(_, l) | .Block(_, l) | .DeclareLocal(_, l) | .Try(_, _, _, _, l) => l,
+        .Finally(_, _, _, _, _, _, l) => l,
     };
 }
 

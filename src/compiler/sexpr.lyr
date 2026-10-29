@@ -228,6 +228,11 @@ fn showStmt(s: Stmt): string {
     return match (s) {
         .Throw(e, _) => "(throw " + showExpr(e) + ")",
         .Try(body, clauses, _) => "(try " + showBlock(body) + showClauses(clauses) + ")",
+        .Defer(body, _) => "(defer " + showBlock(body) + ")",
+        .Using(name, ty, value, _) => {
+            let typed = if (ty != null) ": " + showType(ty) else "";
+            "(using " + name + typed + " " + showExpr(value) + ")"
+        }
         .Expr(e, _) => showExpr(e),
         .Let(isVar, name, ty, value, _) => {
             let word = if (isVar) "var" else "let";

@@ -101,6 +101,8 @@ pub enum Op :: [Variants, Equatable] {
     Rethrow,
     // S4d: a panic with a code of its own, `LYS-RT<b>`.
     PanicC,
+    // S4e: an error a defer threw while another was in flight, kept with the first's record.
+    Suppress,
 }
 
 /// What an operand of an operation names.
@@ -231,6 +233,7 @@ pub fn info(op: Op): OpInfo {
         .Throw => OpInfo { mnemonic = "throw", operands = [.Ref] },
         .Rethrow => OpInfo { mnemonic = "rethrow", operands = [.Ref, .Ref] },
         .PanicC => OpInfo { mnemonic = "panic.c", operands = [.Ref, .Imm] },
+        .Suppress => OpInfo { mnemonic = "suppress", operands = [.Ref, .Ref] },
     };
 }
 

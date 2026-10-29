@@ -1033,6 +1033,44 @@ class Parser {
             let value = try this.parseExpr();
             return Stmt.Throw(value, this.since(first));
         }
+        // `defer { … }`, `defer e` (06 §5 rule 2)
+        if (this.atWord("defer")) {
+            this.advance();
+            if (this.at(.LBrace)) {
+                let b = try this.parseBlock();
+                return Stmt.Defer(b, this.since(first));
+            }
+            let vt = this.current();
+            let e = try this.parseExpr();
+            let at = this.since(vt);
+            return Stmt.Defer(Block { stmts = [Stmt.Expr(e, at)], span = at }, this.since(first));
+        }
+        // `using let f = e` (06 §7 rule 1); `using` is a word only before `let` or `var`
+        if (this.atWord("using")
+            && (this.isWord(this.peek(1), "let") || this.isWord(this.peek(1), "var"))) {
+            this.advance();
+            let bound = try this.parseLet();
+            return match (bound) {
+                .Let(isVar, name, written, value, at) => {
+                    if (isVar || value == null) {
+                        this.report(
+                            "LYS-PAR0052",
+                            "a 'using' is one 'let' with a name and a value: 'using let f = open(…)'",
+                            first
+                        );
+                    }
+                    Stmt.Using(name, written, value ?? Expr.Null(at), this.since(first))
+                }
+                _ => {
+                    this.report(
+                        "LYS-PAR0052",
+                        "a 'using' is one 'let' with a name and a value: 'using let f = open(…)'",
+                        first
+                    );
+                    bound
+                }
+            };
+        }
         // `try { … } catch (e: T) { … }` (06 §4)
         if (this.atWord("try") && this.peek(1).kind == .LBrace) {
             return try this.parseTry();

@@ -67,19 +67,25 @@ pub struct ScriptError {
     pub message: string,
     pub causes: string[],
     pub trace: string[],
+    /// The messages of the errors defers threw while it was in flight (S4e).
+    pub suppressed: string[] = [],
 }
 
 /// The most causes a report follows: a cycle among them ends there (Lyric 5's bound).
 pub let maxCauses: int = 64;
 
-/// The report of an error that left every frame, while the VM asks it: `at` is the error asked,
-/// for its cause where `asksCause`, else for its message.
+/// The report of an error that left every frame, while the VM asks it: `at` is the error asked —
+/// for its message where `asking` is 0, its cause where 1 —, then the suppressed errors for
+/// theirs (2).
 class Report {
     typeName: string,
     trace: string[],
     messages: List<string>,
     var at: HeapRef,
-    var asksCause: bool = false,
+    var asking: int = 0,
+    suppressed: HeapRef[],
+    suppressedTexts: List<string>,
+    var nextSuppressed: int = 0,
 }
 
 /// The deepest recursion the VM runs before it reports a stack overflow.
@@ -419,21 +425,30 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                     }
                     var next: HeapRef = nil;
                     var slot = -1;
-                    if (!rep.asksCause) {
+                    if (rep.asking == 0) {
                         rep.messages.push(textOf(r[br]));
                         if (rep.messages.length() <= maxCauses) {
                             next = rep.at;
                             slot = module.errorCause;
-                            rep.asksCause = true;
+                            rep.asking = 1;
                         }
-                    } else {
+                    } else if (rep.asking == 1) {
                         let cause = r[br];
                         if (cause is ScriptObject) {
                             rep.at = cause;
                             next = cause;
                             slot = module.errorMessage;
-                            rep.asksCause = false;
+                            rep.asking = 0;
                         }
+                    } else {
+                        rep.suppressedTexts.push(textOf(r[br]));
+                    }
+                    // the chain told: the suppressed errors' messages (Lyric 5 06 §5 rule 3)
+                    if (slot < 0 && rep.nextSuppressed < rep.suppressed.length()) {
+                        next = rep.suppressed[rep.nextSuppressed];
+                        rep.nextSuppressed += 1;
+                        slot = module.errorMessage;
+                        rep.asking = 2;
                     }
                     let target = methodIn(module, next, slot);
                     if (target < 0) {
@@ -948,6 +963,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                         trace = recordLines(module, record),
                         messages = List<string>.new(),
                         at = value,
+                        suppressed = record.suppressed.toArray(),
+                        suppressedTexts = List<string>.new(),
                     };
                     report = started;
                     let target = methodIn(module, value, module.errorMessage);
@@ -973,6 +990,14 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                         r = growRefs(r, br + f.refs);
                     }
                 }
+            }
+            // S4e: an error a defer threw while the one of record `a` was in flight goes with it
+            .Suppress => {
+                let rec = r[br + a];
+                if (rec is ErrorRecord) {
+                    rec.suppressed.push(r[br + b]);
+                }
+                pc += 1;
             }
             .CallN => {
                 let x = bs + b;
@@ -1022,7 +1047,11 @@ fn recordOf(frames: List<CallFrame>, fi: int, pc: int): ErrorRecord {
         }
         i -= 1;
     }
-    return ErrorRecord { functions = functions.toArray(), pcs = pcs.toArray() };
+    return ErrorRecord {
+        functions = functions.toArray(),
+        pcs = pcs.toArray(),
+        suppressed = List<HeapRef>.new(),
+    };
 }
 
 /// The frames of a record as a trace's lines; none for what holds no record.
@@ -1093,6 +1122,7 @@ fn errorOf(rep: Report): ScriptError {
         message = if (rep.messages.length() > 0) rep.messages[0] else rep.typeName,
         causes = causes.toArray(),
         trace = rep.trace,
+        suppressed = rep.suppressedTexts.toArray(),
     };
 }
 

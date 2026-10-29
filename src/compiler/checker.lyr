@@ -80,9 +80,9 @@ struct Checked {
 
 /// The prelude's declarations written in Lyric-Script: the literal protocols (03 Lit), each a
 /// static member that builds the conforming type from a literal of its kind; `Error`, the root of
-/// what is thrown, `Exception`, the ready-made one with a message, and `Backtrace`, where an error
-/// was first thrown (05 E3, E6; Lyric 5's std.core).
-let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\n";
+/// what is thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was
+/// first thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core).
+let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface Closeable {\n    fn close()\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\n";
 
 /// Checks a parsed module.
 fn checkModule(parsed: Module): Checked {
@@ -193,6 +193,9 @@ class FnCtx {
     var clauseErrors: Map<int, int> = Map<int, int>.new(),
     var clauseRecords: Map<int, int> = Map<int, int>.new(),
     var clauseKeys: Map<int, string> = Map<int, string>.new(),
+    // in a defer's body: how many loops stood around it, which its jumps may not leave; -1 for
+    // none (S4e)
+    var deferLoops: int = -1,
 
     static fn new(fnIndex: int, returns: Ty, isMain: bool, fixing: bool): FnCtx {
         let scopes = List<Scope>.new();
@@ -2988,6 +2991,15 @@ class Checker {
             .Return(v, l) => TStmt.Return(this.specOpt(v, a), l),
             .Block(b, l) => TStmt.Block(this.specStmts(b, a), l),
             .DeclareLocal(id, l) => TStmt.DeclareLocal(id, l),
+            .Finally(b, d, c1, r1, c2, r2, l) => TStmt.Finally(
+                this.specStmts(b, a),
+                this.specStmts(d, a),
+                c1,
+                r1,
+                c2,
+                r2,
+                l
+            ),
             .Try(b, caught, record, clauses, l) => {
                 let out = List<TClause>.new();
                 for (c in clauses) {
@@ -3871,6 +3883,21 @@ class Checker {
         let out = List<TStmt>.new();
         var k = 0;
         while (k < stmts.length()) {
+            // a `defer` or a `using`: the rest of the scope is its region (06 §5 rule 2, §7)
+            match (stmts[k]) {
+                .Defer(body, at) => {
+                    let d = this.deferBody(body);
+                    out.push(this.deferred(d, stmts, k + 1, at));
+                    return out.toArray();
+                }
+                .Using(name, written, value, at) => {
+                    let (bind, close) = this.usingLet(name, written, value, at);
+                    out.push(bind);
+                    out.push(this.deferred(close, stmts, k + 1, at));
+                    return out.toArray();
+                }
+                _ => { }
+            }
             this.postFacts = List<Fact>.new();
             out.push(this.stmt(stmts[k]));
             if (this.postFacts.length() > 0) {
@@ -3881,6 +3908,64 @@ class Checker {
             k += 1;
         }
         return out.toArray();
+    }
+
+    /// A defer's body, checked where it stands; its jumps may not leave it (`LYS-SEM0904`).
+    mut fn deferBody(body: Block): TStmt[] {
+        let saved = this.ctx.deferLoops;
+        this.ctx.deferLoops = this.ctx.loops.length();
+        let out = this.block(body);
+        this.ctx.deferLoops = saved;
+        return out;
+    }
+
+    /// The rest of a scope, from `from` on, as the region of a defer: the defer runs on every way
+    /// out of it, the last registered first — the rest's own defers are inside it (06 §5).
+    mut fn deferred(d: TStmt[], stmts: Stmt[], from: int, at: Span): TStmt {
+        let rest = List<Stmt>.new();
+        var k = from;
+        while (k < stmts.length()) {
+            rest.push(stmts[k]);
+            k += 1;
+        }
+        let body = this.stmtList(rest.toArray());
+        let err = this.errorTy();
+        let anyTy = Ty.Named(this.anyIndex);
+        return TStmt.Finally(
+            body,
+            d,
+            this.hidden(err, at),
+            this.hidden(anyTy, at),
+            this.hidden(err, at),
+            this.hidden(anyTy, at),
+            at.line
+        );
+    }
+
+    /// `using let f = e`: `f` bound like a `let`, a `Closeable` (`LYS-SEM0143`), and its
+    /// `close()` deferred (06 §7 rules 1–3).
+    mut fn usingLet(name: string, written: ?TypeExpr, value: Expr, at: Span): (TStmt, TStmt[]) {
+        let bind = this.letStmt(false, name, written, value, at);
+        let read = match (bind) {
+            .SetLocal(id, _, _) => TExpr.Local(id, this.ctx.locals[id]),
+            .SetGlobal(g, _, _) => TExpr.Global(g, this.globals[g].ty),
+            _ => TExpr.Unknown,
+        };
+        let t = typeOf(read);
+        let ci = this.typeIndex.get("Closeable");
+        if (t == .Unknown || ci == null) {
+            return (bind, []);
+        }
+        if (!this.conformsTo(t, ci)) {
+            this.error(
+                "LYS-SEM0143",
+                f"'using' closes what it binds: {this.tyName(t)} is not Closeable",
+                at
+            );
+            return (bind, []);
+        }
+        let close = this.methodCall(read, "close", [], at, at);
+        return (bind, [TStmt.Expr(close, at.line)]);
     }
 
     mut fn lookupLocal(name: string): ?int {
@@ -4000,11 +4085,15 @@ class Checker {
             .Continue(_, at) => {
                 if (this.ctx.loops.length() == 0) {
                     this.error("LYS-SEM0147", "'continue' outside a loop", at);
+                } else {
+                    this.outOfDefer("continue", true, at);
                 }
                 TStmt.Continue(at.line)
             }
             .Return(value, at) => this.returnStmt(value, at),
             .Block(b, at) => TStmt.Block(this.block(b), at.line),
+            // one standing alone, as an `else`: a scope of its own, which it ends at once
+            .Defer(_, at) | .Using(_, _, _, at) => TStmt.Block(this.stmtList([s]), at.line),
         };
     }
 
@@ -4482,6 +4571,18 @@ class Checker {
             .TryOpt(_, _) | .TryBang(_, _) | .TryCatch(_, _, _) => true,
             _ => false,
         };
+        // a Closeable an expression statement drops is never closed (06 §7 rule 4)
+        let ci = this.typeIndex.get("Closeable");
+        if (ci != null && effect) {
+            let rt = typeOf(checked);
+            if (rt != .Void && rt != .Unknown && rt != .Never && this.conformsTo(rt, ci)) {
+                this.warn(
+                    "LYS-SEM0144",
+                    f"this {this.tyName(rt)} is Closeable and nothing closes it: bind it with 'using let'",
+                    at
+                );
+            }
+        }
         if (!effect && typeOf(checked) != .Unknown) {
             this.error(
                 "LYS-SEM0022",
@@ -5892,6 +5993,7 @@ class Checker {
             this.error("LYS-SEM0147", "'break' outside a loop", at);
             return TStmt.Break(null, at.line);
         }
+        this.outOfDefer("break", true, at);
         let loop = this.ctx.loops[this.ctx.loops.length() - 1];
         loop.breaks += 1;
         if (value == null) {
@@ -5928,7 +6030,22 @@ class Checker {
         return TStmt.Break(this.coerce(v, given, spanOf(value)), at.line);
     }
 
+    /// A jump that would leave a defer's body: refused, since the body runs where the scope is
+    /// left — on an error too, which the jump would drop (`LYS-SEM0904`).
+    mut fn outOfDefer(word: string, loopJump: bool, at: Span): void {
+        let d = this.ctx.deferLoops;
+        if (d < 0 || (loopJump && this.ctx.loops.length() > d)) {
+            return;
+        }
+        this.error(
+            "LYS-SEM0904",
+            f"'{word}' would leave a defer's body: a defer runs where its scope is left and goes on from there",
+            at
+        );
+    }
+
     mut fn returnStmt(value: ?Expr, at: Span): TStmt {
+        this.outOfDefer("return", false, at);
         if (this.ctx.isMain) {
             this.error(
                 "LYS-SEM0902",
@@ -7641,6 +7758,20 @@ class Checker {
     /// A block where a value stands: its last statement gives the value when it is an
     /// expression, or an `if` with an `else` (09 NL rule 6).
     mut fn valueBlock(b: Block, expected: ?Ty): TExpr {
+        // a value block is a scope: a defer in it makes the rest, the value too, its region
+        // (Lyric 5 07 §2 rule 4)
+        var split = -1;
+        var j = 0;
+        while (j < b.stmts.length() && split < 0) {
+            match (b.stmts[j]) {
+                .Defer(_, _) | .Using(_, _, _, _) => split = j,
+                _ => { }
+            }
+            j += 1;
+        }
+        if (split >= 0) {
+            return this.valueBlockDeferred(b, split, expected);
+        }
         this.pushScope();
         let out = List<TStmt>.new();
         var value = TExpr.Unit;
@@ -7667,6 +7798,64 @@ class Checker {
         }
         this.popScope();
         return TExpr.Block(out.toArray(), boxE(value), typeOf(value));
+    }
+
+    /// A value block whose statement `split` is a defer or a using: what stands before it, then
+    /// the rest and the value in its region.
+    mut fn valueBlockDeferred(b: Block, split: int, expected: ?Ty): TExpr {
+        this.pushScope();
+        let out = List<TStmt>.new();
+        let before = List<Stmt>.new();
+        let after = List<Stmt>.new();
+        var k = 0;
+        for (s in b.stmts) {
+            if (k < split) {
+                before.push(s);
+            } else if (k > split) {
+                after.push(s);
+            }
+            k += 1;
+        }
+        out.pushAll(this.stmtList(before.toArray()));
+        var d: TStmt[] = [];
+        var at = b.span;
+        match (b.stmts[split]) {
+            .Defer(body, dat) => {
+                d = this.deferBody(body);
+                at = dat;
+            }
+            .Using(name, written, value, uat) => {
+                let (bind, close) = this.usingLet(name, written, value, uat);
+                out.push(bind);
+                d = close;
+                at = uat;
+            }
+            _ => { }
+        }
+        let v = this.valueBlock(Block { stmts = after.toArray(), span = b.span }, expected);
+        let rt = typeOf(v);
+        let valued = rt != .Void && rt != .Never && rt != .Unknown;
+        let tmp = if (valued) this.hidden(rt, at) else -1;
+        let body = if (valued) TStmt.SetLocal(tmp, v, at.line) else TStmt.Expr(v, at.line);
+        let err = this.errorTy();
+        let anyTy = Ty.Named(this.anyIndex);
+        out.push(
+            TStmt.Finally(
+                [body],
+                d,
+                this.hidden(err, at),
+                this.hidden(anyTy, at),
+                this.hidden(err, at),
+                this.hidden(anyTy, at),
+                at.line
+            )
+        );
+        this.popScope();
+        return TExpr.Block(
+            out.toArray(),
+            boxE(if (valued) TExpr.Local(tmp, rt) else TExpr.Unit),
+            rt
+        );
     }
 
     mut fn ifStmtValue(cond: Expr, then: Block, otherwise: Stmt, expected: ?Ty, at: Span): TExpr {
@@ -9389,6 +9578,8 @@ fn leaves(s: TStmt): bool {
         .Break(_, _) | .Continue(_) => true,
         .If(_, then, otherwise, _) => leavesAll(then) && leavesAll(otherwise),
         .Block(stmts, _) => leavesAll(stmts),
+        // the defer runs on the way and goes on as the body does
+        .Finally(body, _, _, _, _, _, _) => leavesAll(body),
         // an error no clause takes leaves it too
         .Try(body, _, _, clauses, _) => {
             var all = leavesAll(body);
@@ -9407,6 +9598,7 @@ fn ends(s: TStmt): bool {
         .If(_, then, otherwise, _) => endsAll(then) && endsAll(otherwise),
         .Block(stmts, _) => endsAll(stmts),
         .Expr(e, _) => typeOf(e) == .Never,
+        .Finally(body, _, _, _, _, _, _) => endsAll(body),
         .Try(body, _, _, clauses, _) => {
             var all = endsAll(body);
             for (c in clauses) {
@@ -9451,6 +9643,7 @@ fn stmtSpan(s: Stmt): Span {
     return match (s) {
         .Throw(_, at) => at,
         .Try(_, _, at) => at,
+        .Defer(_, at) | .Using(_, _, _, at) => at,
         .Expr(_, at) => at,
         .Let(_, _, _, _, at) => at,
         .LocalFn(f) => f.span,
@@ -10022,6 +10215,8 @@ fn stmtAny(s: Stmt, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool): bool {
     }
     return match (s) {
         .Throw(e, _) => exprAny(e, onStmt, onExpr),
+        .Defer(body, _) => blockAny(body, onStmt, onExpr),
+        .Using(_, _, value, _) => exprAny(value, onStmt, onExpr),
         .Try(body, clauses, _) => {
             var found = blockAny(body, onStmt, onExpr);
             for (c in clauses) {

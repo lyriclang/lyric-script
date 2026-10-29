@@ -971,3 +971,45 @@ drei Mutanten in zwei Läufen, alle wie vorher aufgeschrieben; drei naheliegende
 einem fälligen Zeitgeber ist die Reihenfolge gleich, ein Lauf ohne Schlafen kreist nur, ein beim
 Abbruch stehengebliebener Zeitgeber ließe einen beendeten Task wieder anlaufen). Tests 340 → 343,
 Fälle 315 → 326.
+
+**S6e, Ergebnis (2026-10-29).** Ein wartendes Native startet einen abgekoppelten Lyric-5-Task und
+parkt den Skript-Task (Op `read.line`, Format 19); der Lyric-5-Task legt ihn zurück in die Schlange
+und meldet sich über einen Lyric-5-Kanal, auf den der Lauf wartet, wenn nichts bereit ist — mit dem
+frühesten Zeitgeber als Timeout. Solange ein Native aussteht, gibt der Lauf bei jedem Schritt an
+Lyric 5 ab, sonst verhungerte der Leser hinter einem Task, der nur `yieldNow()` ruft. Der erste
+Nutzer ist `readLine()` der Prelude (07 V3 I8; aus der S7-Liste vorgezogen, wie die S6e-Zeile ihn
+nennt): die nächste Zeile ohne Zeilenende, `null` am Ende; ein Lesefehler beendet die Eingabe bis
+`std.io` `IoError` bringt (**S7**). Ein Abbruch beendet das Warten, eine danach gelesene Zeile fällt
+weg. `sleep` „auf der Uhr“ kam anders als die Zeile sagt schon mit S6d3 (Zeitgeber-Schlange, im
+Leerlauf Lyric-5-`sleep`); „ein Callback aus einem Native darf nicht warten“ setzt Callbacks voraus,
+die erst die Host-API bringt (**S8**). Der Konformanz-Runner kann `stdin:`. Spec 10 Regel 18, fünf
+Fälle, alle rot gegen S6d3; zwei Mutanten in zwei Läufen, beide gefangen — kein Abgeben an Lyric 5
+über das Zeitlimit; ein Leser, der den Task nicht zurücklegt, dreimal über die Verklemmungspanik
+(er senkt den Zähler offener Natives, der Lauf sieht also zu Recht eine Verklemmung) und nur einmal
+über das Zeitlimit, anders als vorher aufgeschrieben; den Abbruch eines *wartenden* Lesens prüft
+kein Fall — bei leerer Eingabe kommt das Dateiende zuvor, der Fall prüft den Abbruch vor dem Warten.
+Tests 343 → 344, Fälle 326 → 331.
+
+**S6, Abschluss (2026-10-29).** Abgleich der Bereichszeilen 07 End, Wait, N2–N9 und 11 Co gegen den
+Code: gebaut sind N2 (Koroutinen, `next`/`result`/`isDone`/`close`, Generator-Lambdas, `sequence`),
+N3 (Warten parkt den Task, auch im Generator), N4 (`spawn`, `Task<T>`, `await`, `status` mit Werten,
+`Panicked`, `TaskScope`, `spawnDetached`), N5 (`Channel`, `select`, `sleep`, `Timer.after`,
+`Semaphore`), N6 (ein Scheduler je Instanz; *standalone* pumpt die Laufzeit und wartet auf Zeitgeber
+und Natives), N8 (kooperativ, `yieldNow`), N9 (`cancel`, `scope.cancel`, `withTimeout`, `Cancelled`
+fangbar), End (Top-Level als Scope, das erste Scheitern bricht ab, `spawnDetached` nicht abgewartet)
+und 11 Co (VM-Rahmen je Task, Natives über Lyric-5-Tasks). Mit Uhr woanders: `Coroutine :: Iterator`
+und `for` über jedes Iterable, `os.signals` als Kanal mit dem Recht `os` (N5, Lyric 5 §12), `IoError`
+für `readLine` und Tasks/Koroutinen/Kanäle als Interfacewerte (mit Deskriptoren) in **S7**; Wait
+(eingebettet `call`/`start`/`step`), das Anhalten der Instanz samt Tasks über das Budget (N8, 01 S5b)
+und Callbacks aus Natives in **S8**; P17 (Ort der Prelude-Namen) beim Maintainer. Entfallen wie
+entschieden: N1, N7, N10, mit ihnen Lyric 5 §8 (Atomics), §9 (Threads), §10 `Mutex`/`RwLock`/`Once`
+und §11 (Pools) — `Semaphore` schützt Abschnitte über Wartepunkte (02 W). Das Austrittskriterium,
+ein nebenläufiges Beispiel, erfüllt `examples/concurrent/pipeline.lyrs` (Generator, Kanäle, drei
+Arbeiter, Semaphor, `select` mit Timeout) als Schritt der CI auf allen vier Plattformen. Gefunden über
+den Meilenstein: `join` nahm den ersten *gestarteten* scheiternden Task; `spawn(42)` ohne Diagnose;
+zwei Codes außerhalb des Katalogs bzw. gegen Lyric 5s Nummer; `eq.r` hielt zwei Verweise auf eine
+Koroutine nie für gleich; ein Task war in `Any` umwandelbar; die Lambda-Vorausschau kannte `<…>`
+nicht (seit S3); der Runner hatte kein Zeitlimit; `execute` hätte im Leerlauf gekreist; jedes
+`scope.spawn` markierte das Programm als Task-startend. Lehren: Wächter in Patch-Skripten (Löschung
+gegen Einfügung), Testwerte, die keine Konstante der Nachbarschaft sind, Mutanten vor der Vorhersage
+auf Beobachtbarkeit prüfen. 344 Tests, 331 Fälle; Bytecode-Format 19.

@@ -41,7 +41,15 @@ Lyric 4.x status up to the 4.6 cut is archived at
   `--allow`, `-A` and the question at a terminal; 278 tests, 230 conformance cases, bytecode
   format 9. Found on the way: loops over `Map.keys()` ordered per run, a lambda of no value that
   never ran (since S3e), `run` taking a cached module before the loader's errors (since S5a).
-- **Open milestone: S6** — coroutines and tasks.
+- **S6 done (2026-10-29)**: coroutines and tasks — tasks on VM frames with a cooperative scheduler
+  per run, the top level a task scope; coroutine functions, generator lambdas, `sequence`, `for`
+  over a coroutine, `close()` and `using`; `cancel`, `spawnDetached`, `TaskScope`, a task's status
+  with its values; channels, semaphores, `select`; time — `Duration`, `sleep`, `Timer.after`,
+  `withTimeout`; `readLine()` on a Lyric 5 task. 344 tests, 331 conformance cases, bytecode format
+  19; `examples/concurrent/pipeline.lyrs` runs in CI. Found on the way: `join` took the first task
+  spawned, not the first to fail; coroutines never equal to themselves; the lambda lookahead blind
+  to `<…>` (since S3); the conformance runner without a timeout.
+- **Open milestone: S7** — std core.
 
 ## Milestones
 
@@ -53,7 +61,7 @@ Lyric 4.x status up to the 4.6 cut is archived at
 | S3 | Type system complete | L | **done** 2026-10-29 |
 | S4 | Errors and control | M | **done** 2026-10-29 |
 | S5 | Modules and packages | M | **done** 2026-10-29 |
-| S6 | Coroutines and tasks | L | — |
+| S6 | Coroutines and tasks | L | **done** 2026-10-29 |
 | S7 | std core | XL | — |
 | S8 | Security and embedding | L | — |
 | S9 | Hot reload | L | — |
@@ -154,13 +162,16 @@ platforms (the runner builds the git repositories), and by `examples/project` an
 `readLine`, `args`, `exit` and the fixed rights table (S7); scopes on rights and host rights (S8);
 `[lints]`, `test`, the note of a local hiding a module (S11).
 
-### S6 — open
+### S6 — done
 
 Coroutines and tasks (plan 14, "S6 — Slices"): tasks on VM frames, a scheduler per instance,
 generators, `spawn`/`await`/`TaskScope` (the top level), channels, `select`, `sleep`, `Timer`,
 `Semaphore`, cancellation, `withTimeout`, I/O through Lyric 5 tasks (07, 11).
 
-Exit criterion: a concurrent example.
+Exit criterion: a concurrent example — `examples/concurrent/pipeline.lyrs`, a step of CI on all
+four platforms. Clocks elsewhere: `Coroutine :: Iterator`, `os.signals`, `IoError` for `readLine`,
+tasks and coroutines as interface values (S7); embedded waits, the budget's halt with tasks,
+callbacks from natives (S8). Open: P17.
 
 - **S6a done** — tasks in the VM: `spawn { }` → `Task<T>`, `await()`, `status()`, `yieldNow()`;
   a cooperative FIFO scheduler per run; the top level a scope (every task awaited, the first to
@@ -187,7 +198,16 @@ Exit criterion: a concurrent example.
   bytecode format 17.
 - **S6d3 done** — time: `Duration`, `sleep`, `Timer.after`, a select's timeout, `withTimeout`;
   the run waits for its earliest timer; bytecode format 18. S6d complete.
-- Next: **S6e** — a native that waits runs on a Lyric 5 task; `readLine()` the first.
+- **S6e done** — a native that waits runs on a Lyric 5 task while the script's task waits;
+  `readLine()` the first; bytecode format 19. The conformance runner gives `stdin:`.
+
+### S7 — open
+
+std core (plan 14): the native core types (`T[]`, `Map`/`Set` in insertion order, `string`,
+`BigInt`, `Bytes`); `core`, `iter`, `collections`, `string`, `fmt`, `math`, `io`, `fs` + `glob`,
+`path`, `process`, `os`, `time`, `random`, `test`, `cli`, `log`, `csv`; the rights table; the cost
+rules (12). Exit criterion: the target programs, a terminal tool and an automation, run;
+measurement point 3, the bench suite at ≥ 5× 4.6. Slices to be cut first, in plan 14.
 
 ## Working mode
 

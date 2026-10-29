@@ -140,6 +140,10 @@ jobs:
           grep -qx 'squares of 1 to 4: 30' project.txt
           "$bin" run examples/scripts/square.lyrs | tee square.txt
           grep -qx '144' square.txt
+          # S6: a concurrent example - a generator, channels, three workers, a semaphore and a select
+          # with a timeout
+          "$bin" run examples/concurrent/pipeline.lyrs | tee pipeline.txt
+          grep -qx '10 squares, sum 385' pipeline.txt
 
       # The specification's suite at the commit spec.pin names (the `script` branch of
       # lyric-spec): every case whose `since:` the toolchain has reached.

@@ -136,7 +136,8 @@ dependencies, rights classes from imports (07).
 | S5c1 git dependencies | done — a tag, a branch, a commit or HEAD's branch of a repository, its URL in its normal form, through the user's cache (a bare clone per repository, a checkout per commit, `git` as a process); `--offline`; `LYS-PKG0006`, `LYS-PKG0007` (exit 2) |
 | S5c2 the lock | done — `lyric-script.lock` with commit and content hash (`h1:`), a locked revision read at its commit and checked (`LYS-PKG0008`), `--locked` (`LYS-PKG0011`), `lyric-script update [package…]` (`LYS-CLI0006`). Found: `run` took a cached module before the loader's errors were reported (since S5a) |
 | S5c3 versions, overrides, content | done — version lines and minimal version selection over the versions read on the way, `[override]` with a folder, package cycles (`LYS-PKG0010`), `include`/`exclude` for a git package's content (a module outside it is not there), `update` raising a root tag within its line |
-| S5d, S5e | open |
+| S5d a script's frontmatter | done — `[dependencies]`, `[override]` and `toolchain` in a script's `---` frontmatter, its own modules by the path rule and its dependencies by their names; resolved at the first run and kept in a lock in the cache under the frontmatter's hash; `lyric-script lock tool.lyrs` writes `tool.lyrs.lock` beside it |
+| S5e | open |
 
 Exit criterion: a script project of several files with a Git dependency; a single script with
 frontmatter.

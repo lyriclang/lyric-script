@@ -700,3 +700,15 @@ gibt es nicht (`RES0003`). `update` hebt einen Versions-Tag des Wurzelmanifests 
 seiner Linie und schreibt ihn in seine Zeile. Spec 15 Regeln 10–12, sechs Fälle; sechs Mutanten in
 einem Lauf, alle wie vorhergesagt. Eine Testerwartung war falsch (eine Override-Zeile um eins
 verzählt). Tests 271 → 275, Fälle 217 → 223.
+
+**S5d, Ergebnis (2026-10-29).** Der `---`-Kopf eines Einzelskripts ist die Teilmenge des
+Manifests, die ein Skript nimmt — `[dependencies]`, `[override]`, `toolchain` in `[package]`, kein
+Paketname (`PKG0003`) —, gelesen mit `readManifest(text, frontmatter = true)`; seine Fehler stehen
+an den Zeilen des Skripts. Das Skript wird zur Wurzel eines Paketgraphen ohne eigenen Namen: seine
+eigenen Module bleiben bei der Pfadregel, ein Import mit dem Namen einer Abhängigkeit vorn geht in
+deren Paket. Aufgelöst beim ersten Lauf, gemerkt als Lock im Nutzer-Cache unter dem Hash des Kopfs
+(`<cache>/scripts/<hash>.lock`), so dass ein bewegter Branch den nächsten Lauf nicht ändert;
+`lyric-script lock tool.lyrs` schreibt `tool.lyrs.lock` daneben, das zuerst gelesen wird. Der
+Runner baut auch einen Programmordner mit `repos/` aus einer Kopie. Spec 15 Regel 13, drei Fälle,
+alle rot gegen S5c3; Mutanten wie vorhergesagt, nachdem ein eigener Mutant falsch gebaut war (die
+Vorrangregel machte jeden Import pfadbasiert — kein Befund über die Tests). Fälle 223 → 226.

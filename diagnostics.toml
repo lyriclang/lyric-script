@@ -451,6 +451,30 @@ summary = "`[\"a\": 1, \"b\": 2]`: every entry is `key: value` (spec 2 D5)."
 # The checker (S2d). A code means what Lyric 5's LYR-SEM code of the same number means;
 # Lyric-Script's own codes start at 0900.
 
+[LYS-RES0003]
+title = "an import of a module that does not exist"
+severity = "error"
+area = "04-modules"
+summary = "An `import a.b` names a module no file provides: without a manifest, no `a/b.lyrs` below the entry script's folder. Lyric 5's LYR-RES0003."
+
+[LYS-RES0004]
+title = "an imported name the module does not declare"
+severity = "error"
+area = "04-modules"
+summary = "A selective import `import m { x };` asks for a name the module `m` neither declares nor passes on with `pub import`. Lyric 5's LYR-RES0004."
+
+[LYS-RES0005]
+title = "modules that import each other"
+severity = "error"
+area = "04-modules"
+summary = "The imports of the program's modules form a cycle: a module imports, directly or through others, a module that imports it. The message names the cycle. Lyric 5's LYR-RES0005."
+
+[LYS-RES0009]
+title = "a name the place may not see"
+severity = "error"
+area = "04-modules"
+summary = "An import or a use reaches a declaration of another module that is `private` to its file. Lyric 5's LYR-RES0009."
+
 [LYS-SEM0001]
 title = "a value of another type than the place takes"
 severity = "error"
@@ -690,6 +714,12 @@ title = "a field written twice in one initializer or 'with'"
 severity = "error"
 area = "03-types"
 summary = "An initializer or a `with` gives a field twice. Lyric 5's LYR-SEM0070."
+
+[LYS-SEM0072]
+title = "an import that is never used"
+severity = "warning"
+area = "04-modules"
+summary = "A name an import binds — a declaration, or the module itself — is never referred to in the file. Lyric 5's LYR-SEM0072."
 
 [LYS-SEM0074]
 title = "a static member called on a value"
@@ -980,6 +1010,12 @@ title = "a jump out of a defer's body"
 severity = "error"
 area = "06-errors"
 summary = "A `return`, or a `break` or `continue` to a loop outside it, stands in a defer's body. A defer runs where its scope is left — on an error too — and goes on from there; a jump out of it would drop that way. Script's own; Lyric 5 does not say."
+
+[LYS-SEM0905]
+title = "a statement of an imported module"
+severity = "warning"
+area = "04-modules"
+summary = "An imported module's statement other than a `let` or a `var` does not run: only the entry module runs its statements; an imported one gives its declarations and its bindings, filled before the entry's code. Script's own; a Lyric 5 module has no statements."
 
 [LYS-NYI0001]
 title = "a form a later milestone builds"

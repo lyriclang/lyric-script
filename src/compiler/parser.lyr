@@ -74,13 +74,9 @@ struct Parsed {
 /// leaves room (Lyric 5's floor of 128 is a thread's).
 let maxNesting: int = 64;
 
-/// Reads `source` into its syntax tree.
-fn parse(source: string): Parsed {
-    return parseFile(source, 0);
-}
-
-/// Parses the program's file `file`: its spans and its diagnostics name it (S5a).
-fn parseFile(source: string, file: int): Parsed {
+/// Reads `source`, the program's file `file`, into its syntax tree: its spans and its diagnostics
+/// name the file (S5a) — 0 the entry, -1 the prelude.
+fn parse(source: string, file: int = 0): Parsed {
     let lexed = lex(source);
     let p = Parser.new(source, lexed.tokens);
     p.file = file;

@@ -128,6 +128,12 @@ Modules and packages (plan 14, "S5 — Slices"): a file is a module, imports, gl
 rule, the prelude, `lyric-script.toml`, the lock, Git and path dependencies, frontmatter
 dependencies, rights classes from imports (07).
 
+| Slice | State |
+|---|---|
+| S5a modules of one root | done — a program is its entry and the modules its imports reach below the entry's folder (`LYS-RES0003`), read once and ordered depth first (`LYS-RES0005` names the cycle); each module's declarations under their own key, every name looked up through the module's view; the three forms of import and `pub import`; `private` on a function (`LYS-RES0009`), a name bound once (`LYS-RES0001`), `LYS-RES0004`, an unused import (`LYS-SEM0072`); only the entry runs its statements, an imported module's `let`/`var` are globals filled first, its other statements warned (`LYS-SEM0905`); diagnostics name their file; the cache keys a program by all its files. Found: three loops over `Map.keys()` (`LYS-SEM0042` from S4c among them) ordered differently per run once a map holds more than about eight entries |
+| S5a2 types through modules, namespaces, the entry | next — split from S5a: `util.Point { … }`, `util.Box<int>`, `private` on types and members, `LYS-RES0011`, `LYS-RES0012`, `LYS-SEM0153`, `fn main` as an entry (Top), exact file names on Windows, the trace form with the file |
+| S5b–S5e | open |
+
 Exit criterion: a script project of several files with a Git dependency; a single script with
 frontmatter.
 

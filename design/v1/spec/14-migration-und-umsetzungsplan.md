@@ -575,11 +575,36 @@ Namensauflösung über Dateien, Projekt und Abhängigkeiten.
 
 | Slice | Inhalt | Prüfung |
 |---|---|---|
-| **S5a Module einer Wurzel** | Datei = Modul, Name aus dem Pfad unter dem Ordner des Einstiegs ohne Präfix (Path); Importe selektiv/qualifiziert/Alias, `pub import`, kein Glob (V3); `private` = Datei, `pub`/`internal` angenommen (02 V); Modul-`let`/`var` beim ersten Import in Abhängigkeitsreihenfolge, Zyklus Fehler (V5); nur der Einstieg führt Anweisungen aus (Top); Namensräume (`RES0003/0005/0011/0012`), ungenutzter Import (`SEM0072`), Verdecken des Prelude (`SEM0153`); ein Bytecode-Modul fürs ganze Programm, Cache-Schlüssel über alle Quellen | Mehrdatei-Fälle (Runner: Verzeichnisfälle) |
+| **S5a Module einer Wurzel** | Datei = Modul, Name aus dem Pfad unter dem Ordner des Einstiegs ohne Präfix (Path); Importe selektiv/qualifiziert/Alias, `pub import`, kein Glob (V3); `private` an Funktionen, `pub`/`internal` angenommen (02 V); Modul-`let`/`var` vor dem Code des Einstiegs in Abhängigkeitsreihenfolge, Zyklus Fehler (V5); nur der Einstieg führt Anweisungen aus, die anderen ein Lint (Top); `RES0001/0003/0004/0005/0009`, ungenutzter Import (`SEM0072`); ein Bytecode-Modul fürs ganze Programm, Cache-Schlüssel über alle Quellen | Mehrdatei-Fälle (Runner: Verzeichnisfälle) |
+| **S5a2 Typen über Module, Namensräume, Einstieg** | aus S5a geteilt (2026-10-29): ein Typ über sein Modul im Initialisierer (`util.Point { … }`) und generisch (`util.Box<int>`); `private` an Typen und Mitgliedern (Lyric 5 §3 R6–R7); `RES0011`, `RES0012`, Verdecken des Prelude (`SEM0153`); `fn main` als Einstieg eines Moduls ohne Anweisungen, beides „zwei Einstiege“ (Top); der Pfad nennt seine Datei genau, Groß-/Kleinschreibung auch auf Windows (Lyric 5 §2 R4); die Spurform mit der Datei (06 R3) | Mehrdatei-Fälle |
 | **S5b Manifest** | `lyric-script.toml` (`[package]` `name`, `version`, `edition`, `toolchain`; `[dependencies]` mit `path`); mit Manifest Lyric 5s Pfadregel (Paketname vorn, `src/`, `src/lib.lyr` Wurzelmodul, `src/main.lyr` Einstieg); nur Deklariertes importierbar (`RES0014`); `PKG`-Codes | Paketfälle mit Pfad-Abhängigkeit |
 | **S5c Git und Lock** | Git-Abhängigkeiten (`tag`/`branch`/`rev`), normalisierte URL, Nutzer-Cache, MVS über Versionslinien, `[override]`, Zyklus `PKG0010`; `lyric-script.lock` mit Commit und Inhalts-Hash, `--locked`, `--offline`, `lyric-script update` | Fälle mit lokalen Repositories (`repos/<name>/<version>`), nie Netz |
 | **S5d Frontmatter-Abhängigkeiten** | der `---`-Kopf eines Einzelskripts mit der Abhängigkeits-Teilmenge des Manifests, beim ersten Lauf aufgelöst, nach dem Hash des Kopfs gecacht; `lyric-script lock tool.lyrs` → `tool.lyrs.lock` | Einzelskript mit Kopf |
 | **S5e Rechteklassen aus Importen** | Rechte je Modul aus den Importen abgeleitet, im Bytecode vermerkt, beim Laden geprüft (`CAP0001`, alle auf einmal mit Zeile); `--allow`/`-A`, einmalige Abfrage vor dem Start am Terminal (01 S1, S4); `std` kommt mit S7 — die Mechanik jetzt, eine Testtabelle steht für `std` | Rechte-Fälle |
 | **Abschluss** | STATUS, PR, CI, Merge, Tag `s5-complete`; Bereichszeilen gegen den Code | Beispielprojekt in der CI |
 
-Reihenfolge: a vor b vor c; d nach c (teilt den Auflöser); e nach a.
+Reihenfolge: a vor a2 vor b vor c; d nach c (teilt den Auflöser); e nach a2.
+
+**S5a, Ergebnis (2026-10-29).** Spans und Diagnosen tragen ihre Datei (0 der Einstieg, −1 das
+Prelude). Der Prüfer registriert die Deklarationen eines importierten Moduls unter
+`<pfad>::<name>` und schlägt jeden Namen über die Sicht des aktuellen Moduls nach, so dass ein
+importiertes Modul die Namen des Einstiegs nicht sieht (`SEM0002`). Die drei Importformen und
+`pub import`; `private` an Funktionen, beim Import und beim Aufruf über das Modul (`RES0009`);
+ein Name zweimal gebunden (`RES0001`, die Deklaration behält ihn); ein Name, den das Modul nicht
+hat (`RES0004`); der ungenutzte Import (`SEM0072`) in Schreibreihenfolge, ein schon abgelehnter
+nicht noch einmal. Nur der Einstieg führt Anweisungen aus: die `let`/`var` importierter Module
+sind Globale, vor dem Code des Einstiegs in Abhängigkeitsreihenfolge gefüllt, andere Anweisungen
+warnen (`SEM0905`, Tops Lint). Die CLI liest den Einstieg und alle erreichbaren Module (`a.b` →
+`a/b.lyrs` unter dem Ordner des Einstiegs, `RES0003`), ordnet sie in Tiefensuche (`RES0005` mit
+dem Kreis), meldet je Datei und schlüsselt den Cache über Namen und Texte aller Dateien; ein
+Skript ohne `import` behält den Schlüssel seines Textes und wird vor dem Cache nicht geparst.
+`checkModule(entry, imported = [])` und `parse(source, file = 0)` sind der eine Eingang für
+Tests und CLI. Gefunden: drei Schleifen über `Map.keys()` — `SEM0042` aus S4c, die Self-Kopien
+und die Zeugen der Instanzen —; Lyric 5s Map liefert bis etwa acht Einträge die
+Einfügereihenfolge, darüber eine je Prozess neue, also waren Meldungen und Bytecode bei großen
+Typen je Lauf anders geordnet; jetzt nach Slot. Spec 04 Regeln 1–9 mit 14 Ordnerfällen (der
+Runner nimmt einen Ordner mit `main.lyrs` als einen Fall), alle rot gegen S4 und grün gegen
+S5a; Tests 245 → 256, Fälle 165 → 179. Mutanten mit vorher geschriebener Vorhersage: im ersten
+Lauf trafen 3 von 4 — die Reihenfolge der ungenutzten Importe sah ein Test mit vier Einträgen
+nicht; auf ein Dutzend geschärft, dann trafen beide Reihenfolge-Mutanten, der alte
+`keys()`-Weg von `SEM0042` eingeschlossen; die übrigen fünf wie vorhergesagt.

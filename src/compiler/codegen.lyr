@@ -964,7 +964,7 @@ class FnGen {
             }
             .Block(list, _) => this.stmts(list),
             // the body's region sends its errors to the clauses' tests, in order; what none
-            // takes is thrown on (06 §4, §5)
+            // takes is thrown on (06 §4, §5); a block without a clause is refused before
             .Try(body, caught, clauses, line) => {
                 this.line = line;
                 if (clauses.length() == 0) {

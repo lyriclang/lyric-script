@@ -3827,6 +3827,13 @@ class Checker {
     /// against its type, `catch (e)` against none; what none takes goes on (06 §4). A clause may
     /// run after any part of the body: it knows assigned only what was before the `try`.
     mut fn tryStmt(body: Block, clauses: CatchClause[], at: Span): TStmt {
+        if (clauses.length() == 0) {
+            this.error(
+                "LYS-SEM0036",
+                "a try block takes its body's errors in a clause: write one, or leave out the 'try'",
+                at
+            );
+        }
         let before = this.ctx.unassigned;
         let b = this.block(body);
         var after = this.ctx.unassigned;

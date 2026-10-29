@@ -583,6 +583,12 @@ severity = "error"
 area = "09-patterns"
 summary = "Every alternative of `P | Q` binds the same names at the same types. Lyric 5's LYR-SEM0032."
 
+[LYS-SEM0036]
+title = "a try block without a catch"
+severity = "error"
+area = "06-errors"
+summary = "A `try { … }` block has no `catch` clause: it takes none of its body's errors. Lyric 5's LYR-SEM0036."
+
 [LYS-SEM0042]
 title = "an implementation whose signature differs from the member's"
 severity = "error"

@@ -387,6 +387,8 @@ fn aClauseKnowsAssignedOnlyWhatWasBefore(): void {
 @Test
 fn onlyAnErrorIsThrownOrCaught(): void {
     assertEq(errs("throw 5"), ["LYS-SEM0030"]);
+    // a block without a clause takes nothing
+    assertEq(errs("try {\n    println(\"x\")\n}"), ["LYS-SEM0036"]);
     assertEq(errs("throw \"text\""), ["LYS-SEM0030"]);
     assertEq(errs("let x: ?Exception = null\nthrow x"), ["LYS-SEM0030"]);
     assertEq(

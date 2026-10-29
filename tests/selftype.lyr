@@ -1,0 +1,104 @@
+// `Self` and static members (S3i, Lyric 5 05 §7): an interface that names `Self` beyond the
+// receiver or holds a static member is a constraint only; its members are reached through a
+// type parameter, in each copy the argument's own; run in the VM.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let types = "interface Equal {\n    fn same(o: Self): bool\n    fn differs(o: Self): bool = !this.same(o)\n}\ninterface Make {\n    static fn make(n: int): Self\n    static fn twice(n: int): Self = Self.make(n * 2)\n}\nstruct P :: [Equal, Make] {\n    x: int\n\n    fn same(o: P): bool = this.x == o.x\n    static fn make(n: int): P = P { x = n }\n}\nclass C :: [Equal, Make] {\n    var n: int = 0\n\n    fn same(o: C): bool = this.n == o.n\n    static fn make(n: int): C {\n        let c = C { }\n        c.n = n\n        return c\n    }\n}\nextend int :: [Equal, Make] {\n    fn same(o: int): bool = this == o\n    static fn make(n: int): int = n\n}\nfn allSame<T :: [Equal]>(a: T, b: T): bool = a.same(b) && !a.differs(b)\nfn build<T :: [Make]>(n: int): T = T.make(n)\nfn buildTwice<T :: [Make]>(n: int): T = T.twice(n)\n";
+
+@Test
+fn selfIsTheConformer(): void {
+    // in a signature and a default, through a constraint in a shared copy and in one for `int`
+    let e = "fn e(): int {\n    var n = 0\n    if (allSame(P { x = 1 }, P { x = 1 })) {\n        n += 1\n    }\n    if (allSame(P { x = 1 }, P { x = 2 })) {\n        n += 2\n    }\n    if (allSame(3, 3)) {\n        n += 4\n    }\n    if (P { x = 1 }.differs(P { x = 2 })) {\n        n += 8\n    }\n    return n\n}";
+    assertEq(value(types + e, "e"), 13);
+}
+
+@Test
+fn aStaticIsReachedThroughTheType(): void {
+    // the argument's own static, a default copied for it
+    let e = "fn e(): int = build<P>(4).x * 10000 + build<C>(5).n * 1000 + build<int>(6) * 100 + buildTwice<P>(4).x + buildTwice<C>(5).n + buildTwice<int>(6)";
+    assertEq(value(types + e, "e"), 45630);
+}
+
+@Test
+fn whatSelfAndStaticsRefuse(): void {
+    // a constraint only is no type for a value
+    assertEq(errs(types + "let e: Equal = P { x = 1 }"), ["LYS-SEM0126"]);
+    // the conformer writes itself where the interface writes `Self`
+    assertEq(
+        errs(types + "struct Q :: [Equal] {\n    x: int\n\n    fn same(o: P): bool = true\n}"),
+        ["LYS-SEM0042"]
+    );
+    // a static is not reached on a value, a method not through the type
+    assertEq(errs(types + "fn f<T :: [Make]>(x: T): T = x.make(1)"), ["LYS-SEM0055"]);
+    assertEq(errs(types + "fn g<T :: [Equal]>(x: T): bool = T.same(x)"), ["LYS-SEM0055"]);
+    // a static member is implemented by a static
+    assertEq(
+        errs(types + "struct R :: [Make] {\n    x: int\n\n    fn make(n: int): R = R { x = n }\n}"),
+        ["LYS-SEM0042"]
+    );
+    // `Self` outside an interface and a type
+    assertEq(errs("let s: Self = 1"), ["LYS-SEM0011"]);
+}
+
+@Test
+fn aConstrainedParameterIsHandedOn(): void {
+    // `T :: [Show]` is a `Show` where it is handed to another generic, and so is a child's —
+    // said `LYS-SEM0028` since S3g
+    let e = "interface Show {\n    fn show(): int\n}\ninterface More :: [Show] {\n}\nstruct S :: [More] {\n    x: int\n\n    fn show(): int = this.x\n}\nfn inner<T :: [Show]>(x: T): int = x.show()\nfn outer<T :: [Show]>(x: T): int = inner(x)\nfn child<T :: [More]>(x: T): int = inner(x)\nfn e(): int = outer(S { x = 2 }) * 10 + child(S { x = 3 })";
+    assertEq(value(e, "e"), 23);
+}
+
+// A type's constants are set where the script begins (Lyric 5 04 §1 rule 2), which an entry run
+// alone does not: they are read in the conformance suite, 05-interfaces, which runs the script.
+let zeros = "interface Zero {\n    static let zero: Self\n}\nstruct Z :: [Zero] {\n    x: int\n    static let zero: Z = Z { x = 0 }\n}\nextend int :: [Zero] {\n    static let zero: int = 0\n}\nclass K :: [Zero, Identity] {\n    var n: int = 7\n    static let zero: K = K { }\n}\nfn zeroOf<T :: [Zero]>(): T = T.zero\n";
+
+@Test
+fn whatConstantsRefuse(): void {
+    // an interface's constant has no value
+    assertEq(errs("interface Bad {\n    static let zero: int = 1\n}"), ["LYS-SEM0127"]);
+    // a type's needs its type and its value
+    assertEq(errs("struct Q {\n    x: int\n    static let zero = Q { x = 0 }\n}"), ["LYS-SEM0010"]);
+    // an interface with a constant is a constraint only
+    assertEq(errs(zeros + "let z: Zero = Z.zero"), ["LYS-SEM0126"]);
+}

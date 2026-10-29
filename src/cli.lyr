@@ -233,7 +233,7 @@ class Reporter {
 /// The exit code of a run: 0 at its end, 101 for a panic (reported with its frames).
 fn finish(outcome: Outcome): int {
     return match (outcome) {
-        .Void | .Scalar(_) | .Ref(_) => 0,
+        .Void | .Scalar(_) | .Ref(_) | .Slots(_, _) => 0,
         .Panic(p) => {
             eprintln(f"panic [{p.code}]: {p.message}");
             for (frame in p.trace) {

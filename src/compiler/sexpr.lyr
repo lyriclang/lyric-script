@@ -3,12 +3,15 @@
 import std.collections { List };
 import lyric_script.compiler.ast {
     Block,
+    Conformance,
     Decl,
     Expr,
     FnDecl,
     Item,
     Module,
     Param,
+    FieldPattern,
+    Pattern,
     Stmt,
     TypeExpr,
     binaryText,
@@ -40,7 +43,7 @@ fn showDecl(d: Decl): string {
         .Type(t) => {
             let parts = List<string>.new();
             parts.push(if (t.isClass) "class" else "struct");
-            parts.push(t.name);
+            parts.push(t.name + showConforms(t.conforms));
             for (f in t.fields) {
                 let dflt = f.default;
                 let kept = if (dflt != null) " = " + showExpr(dflt) else "";
@@ -57,7 +60,21 @@ fn showDecl(d: Decl): string {
             parts.push("enum");
             parts.push(e.name);
             for (v in e.variants) {
-                parts.push(v.name);
+                if (v.named) {
+                    let fs = List<string>.new();
+                    for (f in v.fields) {
+                        fs.push(f.name + ": " + showType(f.type));
+                    }
+                    parts.push(v.name + "{" + fs.toArray().join(", ") + "}");
+                } else if (v.positional.length() > 0) {
+                    let ts = List<string>.new();
+                    for (x in v.positional) {
+                        ts.push(showType(x));
+                    }
+                    parts.push(v.name + "(" + ts.toArray().join(", ") + ")");
+                } else {
+                    parts.push(v.name);
+                }
             }
             for (m in e.methods) {
                 parts.push(showFn(m));
@@ -65,6 +82,24 @@ fn showDecl(d: Decl): string {
             "(" + parts.toArray().join(" ") + ")"
         }
         .Alias(a) => "(type " + a.name + " " + showType(a.type) + ")",
+        .Interface(i) => {
+            let parts = List<string>.new();
+            parts.push(if (i.sealed) "sealed-interface" else "interface");
+            parts.push(i.name + showConforms(i.parents));
+            for (m in i.members) {
+                parts.push(showFn(m));
+            }
+            "(" + parts.toArray().join(" ") + ")"
+        }
+        .Extend(x) => {
+            let parts = List<string>.new();
+            parts.push("extend");
+            parts.push(showType(x.target) + showConforms(x.conforms));
+            for (m in x.methods) {
+                parts.push(showFn(m));
+            }
+            "(" + parts.toArray().join(" ") + ")"
+        }
     };
 }
 
@@ -78,6 +113,7 @@ fn showFn(f: FnDecl): string {
     let body = match (f.body) {
         .Block(b) => showBlock(b),
         .Expr(e) => "= " + showExpr(e),
+        .None => "abstract",
     };
     let words = if (f.isStatic) "static fn" else "fn";
     return "("
@@ -106,6 +142,63 @@ fn showBlock(b: Block): string {
     return "{" + parts.toArray().join("; ") + "}";
 }
 
+fn showConforms(conforms: Conformance[]): string {
+    if (conforms.length() == 0) {
+        return "";
+    }
+    let parts = List<string>.new();
+    for (c in conforms) {
+        let by = c.by;
+        parts.push(if (by != null) c.name + " by " + by else c.name);
+    }
+    return " :: [" + parts.toArray().join(", ") + "]";
+}
+
+fn showPattern(p: Pattern): string {
+    return match (p) {
+        .Name(name, _) => name,
+        .Ignore(_) => "_",
+        .Tuple(items, _) => "(" + showPatterns(items) + ")",
+        .Literal(e, _) => showExpr(e),
+        .Range(a, b, inclusive, _) => showExpr(a) + (if (inclusive) "..=" else "..") + showExpr(b),
+        .Variant(enumName, name, payload, _) => {
+            let head = (enumName ?? "") + "." + name;
+            if (payload != null) head + "(" + showPatterns(payload) + ")" else head
+        }
+        .VariantFields(enumName, name, fields, _) => (enumName ?? "")
+            + "."
+            + name
+            + " {"
+            + showFieldPatterns(fields)
+            + "}",
+        .Fields(name, fields, _) => name + " {" + showFieldPatterns(fields) + "}",
+        .Typed(name, t, _) => (name ?? "_") + ": " + showType(t),
+        .Or(items, _) => {
+            let parts = List<string>.new();
+            for (x in items) {
+                parts.push(showPattern(x));
+            }
+            "(or " + parts.toArray().join(" ") + ")"
+        }
+    };
+}
+
+fn showPatterns(items: Pattern[]): string {
+    let parts = List<string>.new();
+    for (x in items) {
+        parts.push(showPattern(x));
+    }
+    return parts.toArray().join(" ");
+}
+
+fn showFieldPatterns(fields: FieldPattern[]): string {
+    let parts = List<string>.new();
+    for (f in fields) {
+        parts.push(f.name + " " + showPattern(f.pattern));
+    }
+    return parts.toArray().join(" ");
+}
+
 fn showStmt(s: Stmt): string {
     return match (s) {
         .Expr(e, _) => showExpr(e),
@@ -115,6 +208,14 @@ fn showStmt(s: Stmt): string {
             let given = if (value != null) " " + showExpr(value) else "";
             "(" + word + " " + name + typed + given + ")"
         }
+        .LocalFn(f) => showFn(f),
+        .Destructure(isVar, pattern, value, otherwise, _) => "("
+            + (if (isVar) "var " else "let ")
+            + showPattern(pattern)
+            + " "
+            + showExpr(value)
+            + (if (otherwise != null) " else " + showBlock(otherwise) else "")
+            + ")",
         .If(cond, then, otherwise, _) => {
             let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";
             "(if " + showExpr(cond) + " " + showBlock(then) + rest + ")"
@@ -131,6 +232,24 @@ fn showStmt(s: Stmt): string {
         .Continue(_, _) => "(continue)",
         .Return(value, _) => if (value != null) "(return " + showExpr(value) + ")" else "(return)",
         .Block(b, _) => showBlock(b),
+        .IfLet(pattern, value, then, otherwise, _) => {
+            let rest = if (otherwise != null) " else " + showStmt(otherwise.value) else "";
+            "(if-let "
+                + showPattern(pattern)
+                + " "
+                + showExpr(value)
+                + " "
+                + showBlock(then)
+                + rest
+                + ")"
+        }
+        .WhileLet(pattern, value, body, _, _) => "(while-let "
+            + showPattern(pattern)
+            + " "
+            + showExpr(value)
+            + " "
+            + showBlock(body)
+            + ")",
     };
 }
 
@@ -217,6 +336,14 @@ fn showExpr(e: Expr): string {
             }
             "(init " + parts.toArray().join(" ") + ")"
         }
+        .With(target, fields, _) => {
+            let parts = List<string>.new();
+            parts.push(showExpr(target.value));
+            for (field in fields) {
+                parts.push(field.path.join(".") + "=" + showExpr(field.value));
+            }
+            "(with " + parts.toArray().join(" ") + ")"
+        }
         .If(cond, then, otherwise, _) => "(if "
             + showExpr(cond.value)
             + " "
@@ -226,6 +353,52 @@ fn showExpr(e: Expr): string {
             + ")",
         .Block(b, _) => showBlock(b),
         .Loop(body, _, _) => "(loop " + showBlock(body) + ")",
+        .Unwrap(x, _) => "(unwrap " + showExpr(x.value) + ")",
+        .Tuple(items, _) => {
+            let parts = List<string>.new();
+            for (x in items) {
+                parts.push(showExpr(x));
+            }
+            "(tuple " + parts.toArray().join(" ") + ")"
+        }
+        .Implicit(name, _) => "." + name,
+        .Is(x, t, _) => "(is " + showExpr(x.value) + " " + showType(t) + ")",
+        .Instance(x, args, _) => {
+            let parts = List<string>.new();
+            for (a in args) {
+                parts.push(showType(a));
+            }
+            showExpr(x.value) + "<" + parts.toArray().join(", ") + ">"
+        }
+        .Lambda(params, result, body, implicit, _) => {
+            let parts = List<string>.new();
+            for (p in params) {
+                let t = p.type;
+                parts.push(if (t != null) p.name + ": " + showType(t) else p.name);
+            }
+            let r = if (result != null) ": " + showType(result) else "";
+            let head = if (implicit) "(lambda-it"
+                else "(lambda (" + parts.toArray().join(" ") + ")" + r;
+            head + " " + showExpr(body.value) + ")"
+        }
+        .VariantInit(enumName, name, fields, _) => {
+            let parts = List<string>.new();
+            for (f in fields) {
+                parts.push(f.name + " " + showExpr(f.value));
+            }
+            "(init " + (enumName ?? "") + "." + name + " " + parts.toArray().join(" ") + ")"
+        }
+        .Match(x, arms, _) => {
+            let parts = List<string>.new();
+            for (arm in arms) {
+                let g = arm.guard;
+                let guarded = if (g != null) " if " + showExpr(g) else "";
+                parts.push(
+                    "(" + showPattern(arm.pattern) + guarded + " => " + showExpr(arm.body) + ")"
+                );
+            }
+            "(match " + showExpr(x.value) + " " + parts.toArray().join(" ") + ")"
+        }
     };
 }
 
@@ -240,10 +413,12 @@ fn showType(t: TypeExpr): string {
         }
         .Optional(inner, _) => "?" + showType(inner.value),
         .List(inner, _) => showType(inner.value) + "[]",
-        .Tuple(elements, _) => {
+        .Tuple(elements, labels, _) => {
             let parts = List<string>.new();
+            var k = 0;
             for (x in elements) {
-                parts.push(showType(x));
+                parts.push(if (labels[k] == "") showType(x) else labels[k] + ": " + showType(x));
+                k += 1;
             }
             "(" + parts.toArray().join(", ") + ")"
         }

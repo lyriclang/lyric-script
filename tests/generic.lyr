@@ -1,0 +1,138 @@
+// Generic functions (S3g, Lyric 5 03 §9 and 11 Gen): type parameters checked once, inference at
+// the call — a lambda's after the other arguments —, constraints, and the copies: one shared by
+// the types whose values are objects, one each for the others.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let named = "interface Named {\n    fn name(): string\n}\nstruct P :: [Named] {\n    n: string\n    fn name(): string = this.n\n}\nstruct Q :: [Named] {\n    fn name(): string = \"q\"\n}\nextend int :: [Named] {\n    fn name(): string = \"int\"\n}\n";
+
+@Test
+fn genericFunctionsInferAndRun(): void {
+    let fns = "fn ident<T>(x: T): T = x\nfn twice<T>(x: T, f: fn(T) -> T): T = f(f(x))\nfn pick<T>(c: bool, a: T, b: T): T = if (c) a else b\nfn label<T :: [Named]>(x: T): string = x.name() + \"!\"\nfn mapOpt<T, U>(x: ?T, f: fn(T) -> U): ?U = if (x != null) f(x) else null\n";
+    let g = "fn g(): int {\n    let a = ident(41) + 1\n    let s = ident(\"x\")\n    let b = twice(3) { it * 2 }\n    let c = pick(false, P { n = \"p\" }, P { n = \"q\" }).n\n    let d = label(P { n = \"z\" })\n    let e = label(7)\n    let f = mapOpt(5) { it + 1 } ?? 0\n    return a + b + (if (s == \"x\") 100 else 0) + (if (c == \"q\") 1000 else 0) + (if (d == \"z!\") 10000 else 0) + (if (e == \"int!\") 100000 else 0) + f * 1000000\n}";
+    assertEq(value(named + fns + g, "g"), 6111154);
+}
+
+@Test
+fn objectTypesShareOneCopy(): void {
+    let src = named
+        + "fn label<T :: [Named]>(x: T): string = x.name()\nfn h(): int = if (label(P { n = \"q\" }) == label(Q { })) 1 else 0\nfn k(): string = label(3)\n";
+    assertEq(value(src, "h"), 1);
+    var shared = 0;
+    var own = 0;
+    for (f in checkModule(parse(src).module).program.functions) {
+        if (f.name == "label<ref>") {
+            shared += 1;
+        }
+        if (f.name == "label<int>") {
+            own += 1;
+        }
+    }
+    assertEq(shared, 1);
+    assertEq(own, 1);
+}
+
+@Test
+fn whatGenericsRefuse(): void {
+    assertEq(
+        errs(named + "fn label<T :: [Named]>(x: T): string = x.name()\nlet s = label(3.5)"),
+        ["LYS-SEM0028"]
+    );
+    assertEq(errs("fn none<T>(): ?T = null\nlet z = none()"), ["LYS-SEM0060"]);
+    // a type parameter has its constraints' members and no others
+    assertEq(errs("fn f<T>(x: T): string = x.name()"), ["LYS-SEM0012"]);
+}
+
+let types = "struct Pair<A, B> {\n    first: A\n    second: B\n    fn swap(): Pair<B, A> = Pair { first = this.second, second = this.first }\n}\nclass Box<T> {\n    var v: T\n    fn get(): T = this.v\n    fn put(x: T): void {\n        this.v = x\n    }\n}\nenum Opt<T> {\n    Some(T), None\n    fn or(d: T): T = match (this) {\n        .Some(x) => x,\n        .None => d,\n    }\n}\n";
+
+@Test
+fn genericTypesTakeTheirArgumentsFromValuesOrThePosition(): void {
+    let g = "fn g(): int {\n    let p = Pair { first = 1, second = \"a\" }\n    let q = p.swap()\n    let b = Box { v = 5 }\n    b.put(b.get() + 1)\n    let o: Opt<int> = .None\n    let s = Opt.Some(40)\n    return q.second + b.get() + o.or(1000) + s.or(0)\n}";
+    assertEq(value(types + g, "g"), 1047);
+    // an instance written in a type, its methods copied for its arguments
+    let w = "fn w(): int {\n    let x: Pair<string, int> = Pair { first = \"k\", second = 7 }\n    let y: Box<string> = Box { v = \"s\" }\n    return x.second + (if (y.get() == \"s\") 100 else 0)\n}";
+    assertEq(value(types + w, "w"), 107);
+}
+
+@Test
+fn typeArgumentsWrittenAtTheCall(): void {
+    assertEq(value("fn none<T>(): ?T = null\nfn w(): int = none<int>() ?? 7", "w"), 7);
+    assertEq(errs("fn ident<T>(x: T): T = x\nlet s = ident<int>(\"x\")"), ["LYS-SEM0001"]);
+    assertEq(errs("fn ident<T>(x: T): T = x\nlet s = ident<int, int>(1)"), ["LYS-SEM0026"]);
+    // a comparison stays one: no `>` and `(` close it as type arguments
+    assertEq(
+        value("fn c(a: int, b: int): int = if (a < b) 1 else 0\nfn cc(): int = c(1, 2)", "cc"),
+        1
+    );
+}
+
+@Test
+fn whatGenericTypesRefuse(): void {
+    assertEq(errs(types + "let p: Pair<int> = Pair { first = 1, second = 2 }"), ["LYS-SEM0026"]);
+    assertEq(errs(types + "let o = Opt.None"), ["LYS-SEM0060"]);
+}
+
+let blocks = "interface Show {\n    fn show(): string\n}\nstruct Box<T> {\n    v: T\n}\nextend<T :: [Show]> Box<T> :: [Show] {\n    fn show(): string = \"box \" + this.v.show()\n}\nextend<T> Box<T> {\n    fn get(): T = this.v\n}\nstruct S :: [Show] {\n    fn show(): string = \"s\"\n}\nfn showIt<X :: [Show]>(x: X): string = x.show()\n";
+
+@Test
+fn aBlockGivesItsInstancesMembers(): void {
+    // `Box<S>` is a `Show` since `S` is, `Box<Box<S>>` since `Box<S>` is; `get` is on every one
+    let e = "fn e(): int {\n    var n = 0\n    if (showIt(Box { v = S { } }) == \"box s\") {\n        n += 1\n    }\n    if (Box { v = 3 }.get() == 3) {\n        n += 2\n    }\n    if (showIt(Box { v = Box { v = S { } } }) == \"box box s\") {\n        n += 4\n    }\n    return n\n}";
+    assertEq(value(blocks + e, "e"), 7);
+}
+
+@Test
+fn whatBlocksRefuse(): void {
+    // an instance whose argument misses the block's constraints has neither the member nor the
+    // conformance
+    assertEq(errs(blocks + "let s = Box { v = 3 }.show()"), ["LYS-SEM0134"]);
+    assertEq(errs(blocks + "let s = showIt(Box { v = 3 })"), ["LYS-SEM0028"]);
+    // one conformance per type and interface
+    assertEq(
+        errs(
+            blocks
+                + "struct D :: [Show] {\n    fn show(): string = \"d\"\n}\nextend D :: [Show] {\n}"
+        ),
+        ["LYS-SEM0133"]
+    );
+}

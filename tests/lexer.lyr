@@ -90,7 +90,7 @@ fn aSignAtTheStartOfALineStartsAStatementWithAWarning(): void {
     let l = lex("a\n-b");
     assertEq(render("a\n-b"), "a NL - b");
     assertEq(l.warnings.length(), 1);
-    assertEq(l.warnings[0].code, "LYS-LEX0101");
+    assertEq(l.warnings[0].code, "LYS-LEX0901");
     assertEq(l.warnings[0].line, 2);
     // the operator at the end of the line goes on, without a warning
     assertEq(render("a -\nb"), "a - b");
@@ -228,7 +228,7 @@ fn faultsAreNamedAndTheLexerGoesOn(): void {
     assertEq(errorCodes("0x 0x_1 1e+"), ["LYS-LEX0004", "LYS-LEX0005", "LYS-LEX0006"]);
     assertEq(errorCodes("f\"a {b\""), ["LYS-LEX0011"]);
     // Lyric-Script's own codes start at 0100
-    assertEq(errorCodes("---\nx = 1\n"), ["LYS-LEX0100"]);
+    assertEq(errorCodes("---\nx = 1\n"), ["LYS-LEX0900"]);
     let e = lex("a\n  $").errors[0];
     assertEq(e.line, 2);
     assertEq(e.column, 3);

@@ -1,0 +1,154 @@
+// Function values (S3e, Lyric 5 03 §8): lambdas, functions as values, calls through values,
+// captures — a `let` copied, a `var` in a box both sides share, fresh per loop pass — and local
+// functions that call themselves; run in the VM through `call.v`.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    for (e in parsed.errors) {
+        assertEq(e.message, "", "the source parses");
+    }
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+let apply = "fn apply(f: fn(int) -> int, v: int): int = f(v)\n";
+
+@Test
+fn lambdasAndFunctionsAreValues(): void {
+    assertEq(
+        value(
+            "fn a(): int {\n    let add = (x: int, y: int): int => x + y\n    return add(2, 3)\n}",
+            "a"
+        ),
+        5
+    );
+    // a bare lambda takes its parameter's type from the position
+    assertEq(value(apply + "fn b(): int = apply(x => x * 3, 4)", "b"), 12);
+    // a function named without a call
+    assertEq(
+        value(apply + "fn twice(n: int): int = n * 2\nfn c(): int = apply(twice, 5)", "c"),
+        10
+    );
+}
+
+@Test
+fn aLetIsCopiedAVarIsShared(): void {
+    assertEq(
+        value(
+            "fn d(): int {\n    let k = 10\n    let f = (x: int): int => x + k\n    return f(1)\n}",
+            "d"
+        ),
+        11
+    );
+    assertEq(
+        value(
+            "fn e(): int {\n    var n = 0\n    let inc = () => {\n        n += 1\n    }\n    inc()\n    inc()\n    return n\n}",
+            "e"
+        ),
+        2
+    );
+    assertEq(
+        value(
+            "fn g(): int {\n    var m = 1\n    let get = () => m\n    m = 5\n    return get()\n}",
+            "g"
+        ),
+        5
+    );
+    // a binding of a loop's body is fresh in each pass
+    let h = "fn h(): int {\n    var a = () => -1\n    var b = () => -1\n    for (i in 0..2) {\n        var v = i * 10\n        if (i == 0) {\n            a = () => v\n        } else {\n            b = () => v\n        }\n    }\n    return a() + b()\n}";
+    assertEq(value(h, "h"), 10);
+}
+
+@Test
+fn localFunctionsNestedLambdasAndThis(): void {
+    assertEq(
+        value(
+            "fn r(): int {\n    fn fact(n: int): int {\n        return if (n <= 1) 1 else n * fact(n - 1)\n    }\n    return fact(5)\n}",
+            "r"
+        ),
+        120
+    );
+    let nested = "fn nst(): int {\n    let base = 100\n    let mk = (d: int): fn(int) -> int => (x: int): int => x + d + base\n    let f = mk(10)\n    return f(1)\n}";
+    assertEq(value(nested, "nst"), 111);
+    let counter = "class Counter {\n    var n: int = 0\n    fn adder(): fn(int) -> void = (k: int): void => {\n        this.n += k\n    }\n}\nfn ct(): int {\n    let c = Counter { }\n    let add = c.adder()\n    add(3)\n    add(4)\n    return c.n\n}";
+    assertEq(value(counter, "ct"), 7);
+}
+
+@Test
+fn whatFunctionValuesRefuse(): void {
+    assertEq(errs("let f = x => x"), ["LYS-SEM0045"]);
+    assertEq(errs("let n = 3\nprintln(n(1))"), ["LYS-SEM0013"]);
+    assertEq(errs("let f = (x: int): int => x\nlet g = f\nprintln(f == g)"), ["LYS-SEM0059"]);
+    assertEq(errs("let f = (x: int): int => x\nprintln(f(1, 2))"), ["LYS-SEM0014"]);
+    assertEq(errs("let f = (x: int) => {\n    return x\n}"), ["LYS-SEM0010"]);
+}
+
+@Test
+fn trailingBlocksBoundMethodsAndFields(): void {
+    let each = "fn each(n: int, f: fn(int) -> void): void {\n    var i = 0\n    while (i < n) {\n        f(i)\n        i += 1\n    }\n}\n";
+    // `it`, and a block of statements
+    assertEq(
+        value(
+            each
+                + "fn s(): int {\n    var sum = 0\n    each(4) {\n        sum += it\n    }\n    return sum\n}",
+            "s"
+        ),
+        6
+    );
+    // parameters named before `=>`
+    let fold = "fn fold(n: int, start: int, f: fn(int, int) -> int): int {\n    var acc = start\n    var i = 1\n    while (i <= n) {\n        acc = f(acc, i)\n        i += 1\n    }\n    return acc\n}\n";
+    assertEq(value(fold + "fn fs(): int = fold(4, 0) { acc, x => acc + x }", "fs"), 10);
+    // a trailing block right after the name is the call's one argument
+    assertEq(value("fn run(f: fn() -> int): int = f() * 2\nfn rr(): int = run { 21 }", "rr"), 42);
+    // a method without a call is bound to its object; a static is named through its type
+    let acc = "class Acc {\n    var total: int = 0\n    fn add(n: int): void {\n        this.total += n\n    }\n    static fn make(): Acc = Acc { }\n}\n";
+    assertEq(
+        value(
+            acc
+                + "fn b(): int {\n    let a = Acc { }\n    let f = a.add\n    f(5)\n    f(6)\n    let mk = Acc.make\n    let other = mk()\n    other.add(1)\n    return a.total + other.total\n}",
+            "b"
+        ),
+        12
+    );
+    // a field that holds a function is called by its name
+    assertEq(
+        value(
+            "struct H {\n    f: fn(int) -> int\n}\nfn hf(): int {\n    let h = H { f = x => x + 1 }\n    return h.f(41)\n}",
+            "hf"
+        ),
+        42
+    );
+}

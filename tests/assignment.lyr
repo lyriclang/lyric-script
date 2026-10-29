@@ -1,0 +1,143 @@
+// Definite assignment (S3b, Lyric 5 §7.1 rule 5) and the type of `var x = null` (03 Leer): a
+// `var` declared without a value is read only where it is assigned on every way; a `var x = null`
+// takes the type of the first use in its function that fixes one.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.vm.interp { run };
+import lyric_script.vm.module { Module, check };
+import std.collections { List };
+
+fn compiled(source: string): Module {
+    let parsed = parse(source);
+    assertEq(parsed.errors.length(), 0, "the source parses");
+    let checked = checkModule(parsed.module);
+    for (e in checked.errors) {
+        assertEq(e.message, "", "the source checks");
+    }
+    let module = generate(checked.program, "test");
+    for (fault in check(module)) {
+        assertEq(fault.message, "", "the module is sound");
+    }
+    return module;
+}
+
+fn value(source: string, entry: string): int {
+    return match (run(compiled(source), entry, [], -1)) {
+        .Scalar(bits) => bits as int,
+        _ => -999,
+    };
+}
+
+fn errs(source: string): string[] {
+    let parsed = parse(source);
+    let out = List<string>.new();
+    for (e in parsed.errors) {
+        out.push(e.code);
+    }
+    for (e in checkModule(parsed.module).errors) {
+        out.push(e.code);
+    }
+    return out.toArray();
+}
+
+@Test
+fn aVarIsAssignedOnEveryWayBeforeItIsRead(): void {
+    let both = "fn f(c: bool): int {\n    var n: int\n    if (c) {\n        n = 1\n    } else {\n        n = 2\n    }\n    return n\n}\n";
+    assertEq(value(both + "fn t(): int = f(true)", "t"), 1);
+    assertEq(value(both + "fn e(): int = f(false)", "e"), 2);
+    // a branch that returns adds nothing to what follows
+    let ret = "fn g(c: bool): int {\n    var n: int\n    if (c) {\n        n = 5\n    } else {\n        return -1\n    }\n    return n\n}\n";
+    assertEq(value(ret + "fn t(): int = g(true)", "t"), 5);
+    // a `loop` is left by its breaks: assigned at each of them, assigned after it
+    assertEq(
+        value(
+            "fn l(): int {\n    var y: int\n    loop {\n        y = 3\n        break\n    }\n    return y\n}",
+            "l"
+        ),
+        3
+    );
+}
+
+@Test
+fn aReadOnAWayWithoutAnAssignmentIsRefused(): void {
+    // an `if` without `else`
+    assertEq(
+        errs(
+            "fn f(c: bool): int {\n    var n: int\n    if (c) {\n        n = 1\n    }\n    return n\n}"
+        ),
+        ["LYS-SEM0018"]
+    );
+    // a `while` that may not run
+    assertEq(
+        errs(
+            "fn w(c: bool): int {\n    var n: int\n    while (c) {\n        n = 1\n    }\n    return n\n}"
+        ),
+        ["LYS-SEM0018"]
+    );
+    // `+=` reads first
+    assertEq(errs("fn p(): int {\n    var n: int\n    n += 1\n    return n\n}"), ["LYS-SEM0018"]);
+    // a `let` without a value is never written; a binding needs a type or a value
+    assertEq(errs("fn h(): int {\n    let x: int\n    x = 1\n    return x\n}"), ["LYS-SEM0019"]);
+    assertEq(errs("fn v(): void {\n    var x\n}"), ["LYS-SEM0010"]);
+    // a global of the script takes its value where it is declared
+    assertEq(errs("var g: int\ng = 1\nprintln(g)"), ["LYS-SEM0903"]);
+}
+
+@Test
+fn aLoopIsLeftByEachOfItsBreaks(): void {
+    // one break leaves before the assignment: after the loop `y` may be unassigned
+    assertEq(
+        errs(
+            "fn l(c: bool): int {\n    var y: int\n    loop {\n        if (c) {\n            break\n        }\n        y = 1\n        break\n    }\n    return y\n}"
+        ),
+        ["LYS-SEM0018"]
+    );
+}
+
+@Test
+fn theRightOfAShortCircuitAssignsNothing(): void {
+    // the right side of `&&` may not run: its assignment does not count, even where it ran
+    assertEq(
+        errs(
+            "fn a(c: bool): int {\n    var n: int\n    if (c && {\n        n = 1\n        true\n    }) {\n        return n\n    }\n    return 0\n}"
+        ),
+        ["LYS-SEM0018"]
+    );
+}
+
+@Test
+fn theFirstUseThatFixesATypeGivesIt(): void {
+    // `best == null` and `> best` fix nothing (the right of `||` sees it narrowed); the
+    // assignment fixes `?int`
+    let best = "fn best(): int {\n    var best = null\n    var i = 0\n    while (i < 5) {\n        i += 1\n        if (best == null || i * 3 % 5 > best) {\n            best = i * 3 % 5\n        }\n    }\n    return best!\n}";
+    assertEq(value(best, "best"), 4);
+    // a value where a type is taken: an argument
+    assertEq(
+        value(
+            "fn take(x: ?string): int = if (x == null) 1 else 2\nfn a(): int {\n    var s = null\n    return take(s)\n}",
+            "a"
+        ),
+        1
+    );
+    // `??=`
+    assertEq(value("fn c(): int {\n    var c = null\n    c ??= 5\n    return c!\n}", "c"), 5);
+    // the script's own code
+    assertEq(
+        errs("var last = null\nfor (i in 1..4) {\n    last = i\n}\nprintln(last! + 1)").length(),
+        0
+    );
+}
+
+@Test
+fn whatFixesNoTypeIsRefusedAtTheDeclaration(): void {
+    assertEq(errs("fn u(): void {\n    var x = null\n    println(x == null)\n}"), ["LYS-SEM0010"]);
+    // the first use decides; a later one of another type is refused
+    assertEq(
+        errs("fn s(): void {\n    var x = null\n    x = 3\n    x = \"a\"\n}"),
+        ["LYS-SEM0001"]
+    );
+    // a `let` gets no second value: nothing could fix it
+    assertEq(errs("fn l(): void {\n    let x = null\n}"), ["LYS-SEM0010"]);
+}

@@ -51,7 +51,7 @@ fn intValue(text: string, negative: bool, t: Token, errors: List<Diagnostic>): i
             continue;
         }
         if (c.toDigit(radix) == null) {
-            report(errors, "LYS-PAR0100", f"'{c}' is no digit of base {radix}", t);
+            report(errors, "LYS-PAR0900", f"'{c}' is no digit of base {radix}", t);
             return 0;
         }
         digits.appendChar(c);

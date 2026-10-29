@@ -79,8 +79,25 @@ fn aCapitalNameBeforeABraceIsAnInitializer(): void {
     assertEq(show("Point { x = 1, y = 2 }"), "(init Point x=1 y=2)");
     assertEq(show("Point {\n    x = 1\n    y\n}"), "(init Point x=1 y=y)");
     assertEq(show("Point { }"), "(init Point)");
-    // after any other name the brace is a block's, and trailing blocks come with lambdas (S3)
-    assertEq(errs("run { 7 }"), ["LYS-PAR0001"]);
+    // after any other name the brace opens a trailing block, the call's last argument (S3e)
+    assertEq(show("run { 7 }"), "(call run (lambda-it {7}))");
+    assertEq(
+        show("xs.fold(0) { acc, x => acc + x }"),
+        "(call (. xs fold) 0 (lambda (acc x) {(+ acc x)}))"
+    );
+}
+
+@Test
+fn withIsAPostfix(): void {
+    assertEq(show("p with { x = 1, pos.y = 2 }"), "(with p x=1 pos.y=2)");
+    assertEq(show("p with {\n    x = 1\n    y = 2\n}"), "(with p x=1 y=2)");
+    assertEq(show("p with { x = 1 }.x"), "(. (with p x=1) x)");
+    assertEq(show("q + p with { x = 1 }"), "(+ q (with p x=1))");
+    // `with` is a word only before its brace
+    assertEq(show("with + 1"), "(+ with 1)");
+    assertEq(errs("p with { x }"), ["LYS-PAR0037"]);
+    assertEq(errs("p with { x 1 }"), ["LYS-PAR0037"]);
+    assertEq(errs("p with { x = 1 y = 2 }"), ["LYS-PAR0029"]);
 }
 
 @Test

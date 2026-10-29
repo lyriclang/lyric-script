@@ -6,11 +6,14 @@ import std.collections { List };
 import lyric_script.vm.native { nativeCount, nativeInfo, nativeOf };
 import lyric_script.vm.op { Instr, Op, Operand, info };
 
-/// What a function returns, and in which register file the caller receives it.
+/// What a function returns, and in which register file the caller receives it: one scalar,
+/// one reference, or `Slots` — `retS` scalars and `retR` references, as a value of several
+/// slots (`?int`) is held (11 V2).
 pub enum ReturnKind :: [Equatable] {
     Void,
     Scalar,
     Ref,
+    Slots,
 }
 
 /// An object type: its name and its fields, the scalar ones and the reference ones apart
@@ -19,7 +22,33 @@ pub class TypeDesc :: [Identity] {
     name: string,
     scalarFields: string[],
     refFields: string[],
+    /// The function of each interface method by its slot, -1 where the type has none (S3f).
+    var methods: int[] = [],
+    /// The type of the program this descriptor is one of, for `is`; -1 for none.
+    var family: int = -1,
+    /// The interfaces the type conforms to, parents included, for `is` against an interface.
+    var ifaces: int[] = [],
+    /// S3i, the descriptor as a value (11 Gen): the template it is an instance of — a type of
+    /// the program, or a structural kind (`fnKind`, `tupleKind`, `optionalKind`) —, -1 for none;
+    /// its type arguments, or its parts; the name before them.
+    var template: int = -1,
+    var args: TypeDesc[] = [],
+    var base: string = "",
+    /// A variant's enum; a payload enum's variants; an interface's descriptor.
+    var parent: ?TypeDesc = null,
+    var variants: TypeDesc[] = [],
+    var isInterface: bool = false,
+    /// Its number among the descriptors of a run, the key of their interning.
+    var id: int = -1,
 }
+
+/// The structural kinds of a descriptor's template: a function type (its parameters, then its
+/// result), a tuple (its elements), an optional (its value).
+pub let fnKind: int = -2;
+
+pub let tupleKind: int = -3;
+
+pub let optionalKind: int = -4;
 
 /// A compiled function. Its first `paramsS` scalar registers and first `paramsR` reference
 /// registers hold the arguments.
@@ -37,6 +66,9 @@ pub class Function :: [Identity] {
     strings: string[],
     /// The source line of each instruction; 0 where there is none.
     lines: int[],
+    /// For `Slots`: how many scalar and reference slots the result has.
+    retS: int = 0,
+    retR: int = 0,
 }
 
 /// A compiled module: its functions, the object types they create, and how many scalar and
@@ -104,6 +136,16 @@ fn checkFunction(module: Module, f: Function, errors: List<CheckError>): void {
         if (ret != null) {
             errors.push(CheckError { function = f.name, pc = pc, message = ret });
         }
+        if (ins.op == .RetN
+            && ((ins.a as int) + f.retS > f.scalars || (ins.b as int) + f.retR > f.refs)) {
+            errors.push(
+                CheckError {
+                    function = f.name,
+                    pc = pc,
+                    message = "'ret.n' reads past the registers",
+                }
+            );
+        }
         pc += 1;
     }
 }
@@ -155,6 +197,12 @@ fn checkCall(module: Module, f: Function, ins: Instr): ?string {
         }
         return null;
     }
+    // `inst.t` reads one descriptor per argument of its shape (S3i)
+    if (ins.op == .InstT && (ins.b as int) < module.types.length()) {
+        let n = module.types[ins.b as int].args.length();
+        return if ((ins.c as int) + n > f.refs) "'inst.t' reads past the reference registers"
+            else null;
+    }
     if (ins.op != .Call || (ins.a as int) >= module.functions.length()) {
         return null;
     }
@@ -167,11 +215,17 @@ fn checkCall(module: Module, f: Function, ins: Instr): ?string {
     if (baseR + callee.paramsR > f.refs || (callee.returns == .Ref && baseR >= f.refs)) {
         return f"call of '{callee.name}' reaches past the reference registers";
     }
+    if (callee.returns == .Slots
+        && (baseS + callee.retS > f.scalars || baseR + callee.retR > f.refs)) {
+        return f"the result of '{callee.name}' reaches past the registers";
+    }
     return null;
 }
 
 fn checkReturn(f: Function, op: Op): ?string {
     return match (op) {
+        .RetN => if (f.returns == .Slots) null
+            else "'ret.n' in a function that does not return slots",
         .Ret => if (f.returns == .Void) null else "'ret' in a function that returns a value",
         .RetS => if (f.returns == .Scalar) null
             else "'ret.s' in a function that does not return a scalar",

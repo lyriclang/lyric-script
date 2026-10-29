@@ -1,0 +1,105 @@
+// Coverage of a `match` (S3d, Lyric 5 §9 §3 and §4): the arms cover every value or the match is
+// refused, its diagnostic naming a value no arm takes the way a pattern writes it; a guarded arm
+// covers nothing; an arm no value reaches is warned about.
+import std.test { assertEq };
+import lyric_script.compiler.checker { checkModule };
+import lyric_script.compiler.parser { parse };
+import std.collections { List };
+
+/// The value the coverage error names, `""` where the match is refused for nothing.
+fn witness(source: string): string {
+    let parsed = parse(source);
+    assertEq(parsed.errors.length(), 0, "the source parses");
+    for (e in checkModule(parsed.module).errors) {
+        if (e.code == "LYS-SEM0050") {
+            var last = "";
+            for (part in e.message.split("no arm takes ")) {
+                last = part.toString();
+            }
+            return last;
+        }
+        assertEq(e.message, "", "no other error");
+    }
+    return "";
+}
+
+fn warnings(source: string): string[] {
+    let out = List<string>.new();
+    for (w in checkModule(parse(source).module).warnings) {
+        out.push(w.code);
+    }
+    return out.toArray();
+}
+
+let color = "enum Color {\n    Red, Green\n}\n";
+
+let shape = "enum Shape {\n    Circle(int)\n    Rect { w: int, h: int }\n    Empty\n}\n";
+
+let tree = "enum Tree {\n    Leaf(int)\n    Node(Tree, Tree)\n}\n";
+
+@Test
+fn theWitnessIsAValueNoArmTakes(): void {
+    assertEq(witness(color + "fn f(c: Color): int = match (c) {\n    .Red => 1,\n}"), ".Green");
+    assertEq(witness("fn f(b: bool): int = match (b) {\n    true => 1,\n}"), "false");
+    assertEq(
+        witness(color + "fn f(c: ?Color): int = match (c) {\n    .Red => 1,\n    .Green => 2,\n}"),
+        "null"
+    );
+    assertEq(
+        witness(
+            "fn f(p: (bool, bool)): int = match (p) {\n    (true, _) => 1,\n    (_, true) => 2,\n}"
+        ),
+        "(false, false)"
+    );
+    assertEq(
+        witness(
+            shape + "fn f(s: Shape): int = match (s) {\n    .Circle(_) => 1,\n    .Empty => 0,\n}"
+        ),
+        ".Rect { … }"
+    );
+    // an open type needs an arm that takes every value
+    assertEq(witness("fn f(n: int): int = match (n) {\n    0 => 1,\n}"), "_");
+    assertEq(
+        witness(
+            tree
+                + "fn f(t: Tree): int = match (t) {\n    .Leaf(_) => 0,\n    .Node(.Leaf(_), _) => 1,\n}"
+        ),
+        ".Node(.Node(_, _), _)"
+    );
+}
+
+@Test
+fn guardsAndAlternatives(): void {
+    // a guarded arm covers nothing
+    assertEq(
+        witness(
+            "fn f(b: bool, c: bool): int = match (b) {\n    true if c => 1,\n    false => 0,\n}"
+        ),
+        "true"
+    );
+    assertEq(witness("fn f(n: int): int = match (n) {\n    m if m > 0 => 1,\n    _ => 0,\n}"), "");
+    assertEq(witness(color + "fn f(c: Color): int = match (c) {\n    .Red | .Green => 1,\n}"), "");
+}
+
+@Test
+fn anArmNoValueReachesIsWarnedAbout(): void {
+    assertEq(
+        warnings("fn f(n: int): int = match (n) {\n    _ => 0,\n    1 => 1,\n}"),
+        ["LYS-SEM0112"]
+    );
+    assertEq(
+        warnings(
+            color
+                + "fn f(c: Color): int = match (c) {\n    .Red => 1,\n    .Red => 2,\n    _ => 3,\n}"
+        ),
+        ["LYS-SEM0112"]
+    );
+    // a payload pattern keeps its case open
+    assertEq(
+        warnings(
+            shape
+                + "fn f(s: Shape): int = match (s) {\n    .Circle(1) => 1,\n    .Circle(_) => 2,\n    _ => 3,\n}"
+        ).length(),
+        0
+    );
+}

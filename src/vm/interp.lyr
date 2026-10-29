@@ -13,8 +13,18 @@ import std.core { arrayOf };
 import std.io { print, println };
 import std.task { spawn, yieldNow };
 import lyric_script.vm.op { Instr };
-import lyric_script.vm.module { Function, Module };
-import lyric_script.vm.heap { HeapRef, ScriptObject, ScriptString, nil, nilRef, sameRef };
+import lyric_script.vm.module { Function, Module, TypeDesc };
+import lyric_script.vm.heap {
+    HeapRef,
+    Nil,
+    ScriptObject,
+    ScriptString,
+    TypeValue,
+    nil,
+    nilRef,
+    sameRef,
+};
+import lyric_script.vm.descriptor { Interning, conforms };
 import lyric_script.vm.native { nativeOf };
 
 /// How a run ended.
@@ -25,6 +35,8 @@ pub enum Outcome {
     Scalar(uint64),
     /// The entry function returned a reference.
     Ref(HeapRef),
+    /// The entry function returned a value of several slots.
+    Slots(uint64[], HeapRef[]),
     /// The script panicked.
     Panic(ScriptPanic),
     /// The fuel ran out (design/v1, 01 S5); the run stopped at a backward jump or a call.
@@ -102,6 +114,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     // the script's top-level bindings (07 Top), alive for this run
     var gs: uint64[] = [0 as uint64] * module.globalsS;
     var gr: HeapRef[] = refArray(module.globalsR);
+    // the descriptors of this run: the compiler's, and those shared copies make (S3i)
+    let interning = Interning.of(module);
     let frames = List<CallFrame>.new();
     var code: Instr[] = f.code;
     var pc = 0;
@@ -325,17 +339,34 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 code = f.code;
                 pc = 0;
             }
-            .Ret | .RetS | .RetR => {
+            .Ret | .RetS | .RetR | .RetN => {
                 if (ins.op == .RetS) {
                     s[bs] = s[bs + a];
                 } else if (ins.op == .RetR) {
                     r[br] = r[br + a];
+                } else if (ins.op == .RetN) {
+                    // the result's slots to the bases: from higher registers to lower ones, in
+                    // order, so an overlap reads before it writes
+                    var k = 0;
+                    while (k < f.retS) {
+                        s[bs + k] = s[bs + a + k];
+                        k += 1;
+                    }
+                    k = 0;
+                    while (k < f.retR) {
+                        r[br + k] = r[br + b + k];
+                        k += 1;
+                    }
                 }
                 let back = frames.pop();
                 if (back == null) {
                     return match (ins.op) {
                         .RetS => Outcome.Scalar(s[bs]),
                         .RetR => Outcome.Ref(r[br]),
+                        .RetN => Outcome.Slots(
+                            firstScalars(s, bs, f.retS),
+                            firstRefs(r, br, f.retR)
+                        ),
                         _ => Outcome.Void,
                     };
                 }
@@ -490,6 +521,295 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 gr[a] = r[br + b];
                 pc += 1;
             }
+            .CheckS => {
+                if (s[bs + a] == 0) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0004", "a null value unwrapped");
+                }
+                pc += 1;
+            }
+            .CheckR => {
+                if (r[br + a] is Nil) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0004", "a null value unwrapped");
+                }
+                pc += 1;
+            }
+            // a call through a function value: the value is the callee's first reference argument,
+            // and its first scalar field names the function
+            .CallV => {
+                budget = spend(budget);
+                if (budget == -2) {
+                    return Outcome.Suspended;
+                }
+                if (frames.length() >= maxDepth) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
+                }
+                let env = r[br + b];
+                var target = -1;
+                if (env is ScriptObject) {
+                    target = env.scalars[0] as int;
+                }
+                if (target < 0 || target >= module.functions.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a call through no function"
+                    );
+                }
+                let callee = module.functions[target];
+                frames.push(CallFrame { function = fi, pc = pc + 1, baseS = bs, baseR = br });
+                bs += a;
+                br += b;
+                if (bs + callee.scalars > s.length()) {
+                    s = growScalars(s, bs + callee.scalars);
+                }
+                if (br + callee.refs > r.length()) {
+                    r = growRefs(r, br + callee.refs);
+                }
+                fi = target;
+                f = callee;
+                code = f.code;
+                pc = 0;
+            }
+            // a call through an interface value: the receiver is the callee's first reference
+            // argument, and its type's table names the function of slot `a`
+            .CallI => {
+                budget = spend(budget);
+                if (budget == -2) {
+                    return Outcome.Suspended;
+                }
+                if (frames.length() >= maxDepth) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
+                }
+                let recv = r[br + c];
+                var target = -1;
+                if (recv is ScriptObject) {
+                    let row = recv.typeDesc.methods;
+                    if (a < row.length()) {
+                        target = row[a];
+                    }
+                }
+                if (target < 0 || target >= module.functions.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a call through no interface method"
+                    );
+                }
+                let callee = module.functions[target];
+                frames.push(CallFrame { function = fi, pc = pc + 1, baseS = bs, baseR = br });
+                bs += b;
+                br += c;
+                if (bs + callee.scalars > s.length()) {
+                    s = growScalars(s, bs + callee.scalars);
+                }
+                if (br + callee.refs > r.length()) {
+                    r = growRefs(r, br + callee.refs);
+                }
+                fi = target;
+                f = callee;
+                code = f.code;
+                pc = 0;
+            }
+            // S3i: a static member through a type's descriptor: the function in slot `a` of the
+            // descriptor in reference register `c`, its arguments after it
+            .CallS => {
+                budget = spend(budget);
+                if (budget == -2) {
+                    return Outcome.Suspended;
+                }
+                if (frames.length() >= maxDepth) {
+                    return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
+                }
+                let d = descIn(r[br + c]);
+                var target = -1;
+                if (d != null && a < d.methods.length()) {
+                    target = d.methods[a];
+                }
+                if (target < 0 || target >= module.functions.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "a call through no static member"
+                    );
+                }
+                let callee = module.functions[target];
+                frames.push(CallFrame { function = fi, pc = pc + 1, baseS = bs, baseR = br });
+                bs += b;
+                br += c + 1;
+                if (bs + callee.scalars > s.length()) {
+                    s = growScalars(s, bs + callee.scalars);
+                }
+                if (br + callee.refs > r.length()) {
+                    r = growRefs(r, br + callee.refs);
+                }
+                fi = target;
+                f = callee;
+                code = f.code;
+                pc = 0;
+            }
+            .IsNil => {
+                s[bs + a] = truth(r[br + b] is Nil);
+                pc += 1;
+            }
+            // whether an interface value holds a value of the program's type `c`
+            .IsT => {
+                let o = r[br + b];
+                s[bs + a] = truth(o is ScriptObject && o.typeDesc.family == c);
+                pc += 1;
+            }
+            // S3i: a type's descriptor as a value (11 Gen)
+            .LoadT => {
+                r[br + a] = TypeValue { d = module.types[b] };
+                pc += 1;
+            }
+            // the descriptor of template `b`'s shape at the descriptors from register `c` on
+            .InstT => {
+                let shape = module.types[b];
+                let args = List<TypeDesc>.new();
+                var k = 0;
+                while (k < shape.args.length()) {
+                    let d = descIn(r[br + c + k]);
+                    if (d == null) {
+                        return panicOut(
+                            module,
+                            frames,
+                            fi,
+                            pc,
+                            "LYS-ICE0001",
+                            "'inst.t' given no descriptor"
+                        );
+                    }
+                    args.push(d);
+                    k += 1;
+                }
+                r[br + a] = TypeValue { d = interning.instance(shape, args.toArray()) };
+                pc += 1;
+            }
+            // the descriptor of the object's type: a variant's is its enum's
+            .DescOf => {
+                let o = r[br + b];
+                if (o is ScriptObject) {
+                    r[br + a] = TypeValue { d = o.typeDesc.parent ?? o.typeDesc };
+                } else {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.of' of no object"
+                    );
+                }
+                pc += 1;
+            }
+            .DescArg => {
+                let d = descIn(r[br + b]);
+                if (d == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.arg' of no descriptor"
+                    );
+                }
+                if (c >= d.args.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.arg' past the arguments"
+                    );
+                }
+                r[br + a] = TypeValue { d = d.args[c] };
+                pc += 1;
+            }
+            .DescVar => {
+                let d = descIn(r[br + b]);
+                if (d == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.var' of no descriptor"
+                    );
+                }
+                if (c >= d.variants.length()) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'desc.var' past the variants"
+                    );
+                }
+                r[br + a] = TypeValue { d = d.variants[c] };
+                pc += 1;
+            }
+            // an object of the type the descriptor in register `b` names
+            .NewD => {
+                let t = descIn(r[br + b]);
+                if (t == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'new.d' of no descriptor"
+                    );
+                }
+                r[br + a] = ScriptObject {
+                    typeDesc = t,
+                    scalars = [0 as uint64] * t.scalarFields.length(),
+                    refs = refArray(t.refFields.length()),
+                };
+                pc += 1;
+            }
+            // whether the value is one of the type the descriptor in register `c` names
+            .IsD => {
+                let o = r[br + b];
+                let d = descIn(r[br + c]);
+                if (d == null) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "'is.d' of no descriptor"
+                    );
+                }
+                s[bs + a] = truth(o is ScriptObject && conforms(o.typeDesc, d));
+                pc += 1;
+            }
+            // whether it holds a value of a type that conforms to interface `c`
+            .IsI => {
+                let o = r[br + b];
+                var found = false;
+                if (o is ScriptObject) {
+                    for (x in o.typeDesc.ifaces) {
+                        found = found || x == c;
+                    }
+                }
+                s[bs + a] = truth(found);
+                pc += 1;
+            }
             .CallN => {
                 let x = bs + b;
                 let y = br + c;
@@ -520,8 +840,30 @@ fn textOf(v: HeapRef): string {
     return if (v is ScriptString) v.text else "";
 }
 
+fn firstScalars(s: uint64[], from: int, n: int): uint64[] {
+    var out: uint64[] = [0 as uint64] * n;
+    var k = 0;
+    while (k < n) {
+        out[k] = s[from + k];
+        k += 1;
+    }
+    return out;
+}
+
+fn firstRefs(r: HeapRef[], from: int, n: int): HeapRef[] {
+    return arrayOf(n, (k: int) => r[from + k]);
+}
+
 fn signed16(v: int): int {
     return if (v >= 32768) v - 65536 else v;
+}
+
+/// The descriptor a register holds, `null` where it holds none.
+fn descIn(v: HeapRef): ?TypeDesc {
+    if (v is TypeValue) {
+        return v.d;
+    }
+    return null;
 }
 
 fn truth(b: bool): uint64 {

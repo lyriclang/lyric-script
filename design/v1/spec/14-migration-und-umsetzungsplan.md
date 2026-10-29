@@ -191,10 +191,260 @@ Offen für S3 und später: Generics, Interfaces, Optionals, Patterns, Fehler, Mo
 
 *Nachtrag S2b (2026-10-28):* `check` wächst mit dem Compiler — erst der Lexer, dann Parser und
 Typen —, damit die Konformanzsuite ab S2b läuft; die lexikalischen Codes spiegeln Lyric 5
-(unter `LYS-LEX0100` dieselbe Bedeutung wie die gleiche Nummer von `LYR-LEX`, ab 0100 Script-eigen).
+(dieselbe Bedeutung wie die gleiche Nummer von `LYR-LEX`; Script-eigen zuerst ab 0100, seit S3b
+ab 0900 — Lyric 5 belegt `SEM` bis 0232, und seine `SEM0101`/`SEM0102` braucht Script mit den
+Labels selbst).
 
 **Ergebnis S2 (2026-10-28):** `lyric-script run hello.lyrs` läuft in der CI auf allen
 Tier-1-Zielen, dazu `fib` und `tally`; 97 Tests, 33 Konformanzfälle (Kapitel 01, 02 Kern, 03, 07,
 08, 12, 14, 16 der Spec). Messpunkt 2: warm 1,36 ms, kalt 1,66 ms — beide Ratchets halten.
 `run` kam schon mit S2e (der Ende-zu-Ende-Test brauchte es), S2g brachte den Cache. Entscheidungen,
 die das Design präzisieren, stehen als offene Punkte in STATUS (P2–P5).
+
+## S3 — Slices (Plan, Entwurf 2026-10-28)
+
+Ziel aus der Meilensteintabelle: das Typsystem vollständig — generischer Code und Interfaces in
+Skripten, mit Konformanzfällen. Spec-first wie S2: jedes Delta-Kapitel (03, 05, 09) bekommt seine
+Regeln mit dem Slice, der sie baut. Was S2 als `LYS-NYI0001` meldet und zu S3 gehört, verschwindet
+hier (Optionals, Tupel, Funktionswerte, Synthese, Definite Assignment).
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S3a Optionals** | `?T`, `null`, `??`, `!`, `?.` (flacht ab), `??=`, Eingrenzung über `!= null` und `if (let x = …)`, `?T`-Felder Default `null`; in der VM nach 11 V2: `?T` über einem Referenztyp ist die Referenz mit `nil`, sonst die Slots von `T` und ein Präsenz-Slot (`?int` zwei Skalar-Slots, `??int` drei) — dafür bekommt jeder Wert eine **Slot-Form** (Skalare, Referenzen) in Registern, Feldern, Globalen, Argumenten und Rückgaben (Rückgaben mit mehreren Slots in der VM) | Konformanzfälle rot/grün je Form; Panik `LYS-RT0004` bei `!` auf `null` |
+| **S3b Definite Assignment, leere Literale** | `var x: int` ohne Wert mit Definite Assignment (03 T8); „Leer": die erste festlegende Verwendung bestimmt den Typ (03 Leer) | Fehler mit Vorschlag an der Deklaration |
+| **S3c Tupel** | Tupeltypen, benannte Tupel (Etiketten), `t.0`, Destrukturierung in `let` und `for` | Konformanzfälle |
+| **S3d Enums mit Werten, `match`, Patterns** | Varianten mit Nutzlast, `match` als Anweisung und Ausdruck, Patterns (Y6: Namen binden, `.Red`, Typ-Patterns, `=` als Feldtest, Bereiche, Oder), Erschöpfung, `is` mit Eingrenzung | Erschöpfungsfehler mit fehlenden Fällen |
+| **S3e Funktionswerte** | Lambdas in drei Formen, nachlaufende Blöcke, `it`, Captures (Schleifenbindung je Durchlauf frisch, 02 C1), Funktionstypen, Methoden als Werte, lokale `fn` (Y11); VM: Closures (`Closure :: HeapRef`), indirekter Aufruf | Closure-Programme; Capture-Fälle |
+| **S3f Interfaces** | Deklaration, Konformanzlisten, Default-Rümpfe, `by`, `sealed`, Objektsicherheit, `Any`; Interface-Werte und Aufrufe über Witness-Tabellen (11 Gen) | Konformanzfälle; Fehler der Objektsicherheit |
+| **S3g Generics** | generische Funktionen, Structs, Klassen, Enums; Constraints; hybride Instanziierung (eine geteilte Kopie für Referenztypen, je eine für `int`/`float`/`bool`/`char`, 11 Gen) mit Typ-Deskriptoren | generische Programme; Bytecode-Goldtests der Kopien |
+| **S3h Synthese, `with`, Literal-Protokolle** | `Equatable`/`Hashable`/`Debug` für Structs, Enums, Tupel (03 Eq), `{x}` über `Debug`, `Display`; `with` (W1–W8); `From…Literal` an Stellen mit Zieltyp (03 Lit) | `==` auf Structs; Druckform; `with`-Fälle |
+| **S3i Laufzeit-Deskriptoren** | Typ-Deskriptoren zur Laufzeit für `is` und die Reflexion (09 Rf: `typeOf`), Typargumente bleiben erhalten | `typeOf([1, 2])` sagt `int[]` (sobald S7 die Listen bringt: der Deskriptor ist da) |
+| **Abschluss** | STATUS, PR, CI, Merge, Tag `s3-complete` | generischer Code und Interfaces in Skripten in der CI |
+
+Reihenfolge: a–e vor f–g (Interfaces und Generics bauen auf Optionals, Tupeln und Funktionswerten
+auf), h nach f (Synthese braucht die Interfaces), i zuletzt.
+
+**S3a, Ergebnis.** Optionals wie Lyric 5 §3.1–3.3 mit dessen Codes; Slot-Formen nach 11 V2,
+Rückgaben mit mehreren Slots. Eingrenzung endet an einer Zuweisung, eine Schleife, die die Bindung
+schreibt, grenzt in keinem Durchlauf ein; ein zweiter Test grenzt erneut ein. Nachgezogen in S3b
+(Abgleich mit §3.2): Eingrenzung auch hinter einem Zweig, der mit `break` oder `continue` endet,
+im mehrzeiligen Wert-`if`, und `==` auf `?T` (Regel 7: beide leer oder beide gleich; ein `T` auf
+einer Seite wird zu `?T`).
+
+**S3b, präzisiert.**
+
+- *Definite Assignment* wie Lyric 5 §7.1 Regel 5 (`LYS-SEM0018`), im Checker in Quellreihenfolge
+  mitgeführt: die Menge der Bindungen ohne Wert, die noch nicht auf jedem Weg zugewiesen sind.
+  Zweige vereinigen ihre Mengen, ein Zweig, der nicht herauskommt (`return`, `break`, `continue`,
+  `never`), trägt nichts bei; `while` und `for` hinterlassen den Stand vor dem Rumpf, `loop` den
+  seiner `break`s; die rechte Seite von `&&`, `||`, `??`, `??=` und die Argumente hinter `?.`
+  zählen nicht. Später zuweisen lässt sich nur ein `var`; ein `let` ohne Wert ist wie in Lyric 5
+  nie schreibbar (`LYS-SEM0019`).
+- Eine *globale* Bindung des Skripts braucht ihren Wert an der Deklaration (`LYS-SEM0903`):
+  Funktionen lesen sie zu jeder Zeit, auch bevor der Skriptcode sie zuweist (offener Punkt P8).
+- *Leer* für `var x = null` (in einer Funktion und im Skriptcode): die Funktion wird in zwei
+  Läufen geprüft. Der erste schweigt und sucht die erste festlegende Verwendung in
+  Quellreihenfolge — eine Zuweisung, `??=`, der Wert an einer Stelle mit Zieltyp (Argument,
+  Rückgabe, getypte Bindung, Feld); der zweite prüft mit dem gefundenen Typ `?T`. Findet sich
+  keine, meldet der zweite `LYS-SEM0010` an der Deklaration mit dem Vorschlag `var x: ?T = null`.
+  Funktionen, deren Ergebnistyp erst ihr Rumpf festlegt, prüft der stille Lauf nicht mit. Ein
+  `let x = null` bleibt `LYS-SEM0010` (ein `let` bekommt nie einen zweiten Wert).
+- Leere Sammlungsliterale `[]` und `[:]` gehen mit den Literalen in S7 denselben Weg.
+
+**S3b, Ergebnis.** Wie präzisiert; die Definite-Assignment-Menge wird nie an Ort verändert
+(jeder gespeicherte Stand bleibt gültig), ein Lauf über die Kinder einer Anweisung (`stmtAny`)
+ersetzt den Schreib-Lauf von S3a. 115 Tests, 55 Konformanzfälle.
+
+**S3c, Ergebnis.** Tupel nach Lyric 5 §6 Regeln 1–5. In der VM ist ein Tupel die Slots seiner
+Elemente hintereinander, inline wie ein Optional (11 V2) — kein Objekt, `t.k` liest an seinem
+Platz. Etiketten fahren im Typ mit, zählen aber nicht zu seiner Gleichheit (Lyric 5 §6 Regel 3).
+Gleichheit, Hash und Druckform (Regel 6) kommen mit der Synthese in S3h, `for ((a, b) in …)` mit
+den Sammlungen in S7. 119 Tests, 61 Konformanzfälle.
+
+**S3d, Ergebnis.** Enums mit Nutzlast, `match` und die Muster nach Lyric 5 §4 und §9, in vier
+Teilen (d1 Deklaration und Bau, d2 `match` und Muster, d3 Abdeckung, d4 Muster in `if let`,
+`while let`, `let … else`). Darstellung: ein Enum ohne Nutzlast ist ein `int`; eines mit Nutzlast
+eine Referenz auf ein unveränderliches Objekt, ein VM-Typ je Variante mit dem Tag als erstem
+Skalar — wie ein Struct, also rekursiv ohne `Box` (Abweichung von Lyric 5 §4.1 Regeln 3–4, Folge
+aus 03). Ein `match` senkt zu verschachtelten `if`s über einen einmal gehaltenen Wert; ein
+Wächter bindet in seiner Bedingung und im Arm, ein Oder-Muster bindet je Name den Wert der
+passenden Alternative. Abdeckung nach Maranget über einen vereinfachten Musterraum, der Zeuge
+als Muster geschrieben; unerreichbare Arme nach Lyric 5s enger Regel. Typ-Muster kommen mit S3f
+(Interface-Werte), Array-Muster mit S7. 129 Tests, 71 Konformanzfälle.
+
+**S3e, präzisiert (Entwurf).** Funktionswerte nach Lyric 5 03 §8 ohne `inline fn` und vorerst ohne
+`throws` (S4).
+
+- *Darstellung.* Ein Funktionswert ist ein Objekt eines VM-Typs je Lambda: Skalarfeld 0 ist der
+  Funktionsindex, danach die Captures. Eine Lambda-Funktion nimmt das Objekt als ersten
+  Referenzparameter (Lokale 0); `call.v` (neu, Basen wie `call`) liest den Index aus dem
+  Objekt an der Ref-Basis. Freie und statische Funktionen und gebundene Methoden als Werte
+  bekommen je eine Thunk-Funktion mit diesem ersten Parameter (gecacht je Ziel).
+- *Captures* (§8.3): ein `let` (und ein Parameter, `this`) als Kopie beim Bau; ein `var` in einer
+  Zelle (VM-Typ je Slot-Form), die Funktion und Lambda teilen. Der Checker markiert die
+  eingefangene Lokale als `boxed`; der Codegen legt die Zelle bei der Deklaration an
+  (`SetLocal`, neu `DeclareLocal` für `var x: T` ohne Wert) — eine Bindung im Schleifenrumpf
+  bekommt so je Durchlauf eine frische Zelle (02 C1). Verschachtelte Lambdas fangen über die
+  Captures der äußeren.
+- *Lambdas* (§8.2): `(n: int): int => n + 1`, `x => x * 3`, nachlaufender Block mit `it` oder
+  benannten Parametern; Parametertypen geschrieben oder aus dem erwarteten Funktionstyp, sonst
+  `LYS-SEM0045`; Ergebnis geschrieben, erwartet oder aus dem Wert des Rumpfs (ein `return` in
+  einem Lambda ohne bekanntes Ergebnis verlangt den Typ). Lokale `fn` (§8.6): ihr Name ist in
+  ihrem Rumpf das Objekt selbst (Lokale 0) — so ruft sie sich.
+- *Aufruf* über einen Wert: `f(a)` auf einer Bindung, einem Feld, jedem Ausdruck vom
+  Funktionstyp. Funktionswerte werden nicht verglichen (`LYS-SEM0059`).
+
+**S3e, Ergebnis.** Wie präzisiert, in zwei Teilen (Lambdas, Captures, lokale `fn`, Aufruf über
+Werte; dann nachlaufende Blöcke, gebundene Methoden, statische Funktionen und Felder als
+Funktionswerte). Der erste stille Lauf von 03 Leer macht keine Funktion bleibend: was er an
+Lambdas und Thunks anlegt, nimmt er zurück. Ein S2-Pin, der `run { 7 }` als Fehler festhielt,
+fiel mit seiner Regel. 134 Tests, 75 Konformanzfälle.
+
+**S3f, präzisiert (Entwurf).** Interfaces nach Lyric 5 05 §1–§6, §9–§11, soweit sie keine
+Generics brauchen (`Self`, statische Member, assoziierte Typen, generische Member und `extend`,
+Objektsicherheit mit S3g; Operator-Interfaces und Synthese mit S3h).
+
+- *Darstellung.* Ein Interface-Wert ist eine Referenz auf ein Objekt: Structs, Klassen und Enums
+  mit Nutzlast sind es schon (geteilt, nicht kopiert — Abweichung 05 aus 03); ein Skalar, ein
+  `string`, ein Enum ohne Nutzlast wird beim Übergang in ein Box-Objekt eines VM-Typs je
+  eingebautem Typ gelegt. Ein Kind-Wert ist so ohne Umbau ein Wert seiner Eltern (§11).
+- *Dispatch.* Jede Interface-Methode des Programms bekommt eine Slot-Nummer; jede `TypeDesc`
+  trägt eine Tabelle Slot → Funktion (−1: nicht konform) und die Programmtyp-Nummer für `is`.
+  `call.i` (neu: Slot, Basen) liest den Empfänger an der Ref-Basis und ruft die Funktion seiner
+  Tabelle. Ein Default wird einmal übersetzt, mit `this` als Interface-Wert (§2 Regel 3: ein
+  Aufruf auf `this` dispatcht erneut); für eine Box ruft ein Thunk die Methode mit dem
+  ausgepackten Wert. Das Bytecode-Format bekommt die Tabellen (Formatversion steigt).
+- *Konformanz* in der Liste von Struct, Klasse, Enum und in `extend T :: [I] { … }`; `extend T`
+  auch auf eingebauten Typen (Methoden auf `int`, `string`). Jedes abstrakte Member der Kette
+  mit exakter Signatur (`LYS-SEM0020`, `LYS-SEM0042`); Eltern, Defaults, ein eigenes Member
+  gewinnt; zwei Defaults eines Namens entscheidet der Typ (`LYS-SEM0043`).
+- *`Any`, `is`, Typ-Muster, `sealed`* (§9–§10): `x is T` vergleicht die Programmtyp-Nummer bzw.
+  sucht in der Tabelle, mit Eingrenzung (Auspacken bei Boxen); Typ-Muster `c: Circle` im
+  `match`; ein `sealed interface` macht die Abdeckung über seine Konformer geschlossen.
+- *Delegation* `by` (§5): Weiterleitungsfunktionen je nicht selbst geschriebenem Member.
+
+**S3f, Ergebnis.** Wie präzisiert, in vier Stufen (Interfaces und `call.i`; Boxen und `extend`
+auf eingebauten Typen; `Any`, `is`, Typ-Muster, `sealed`; `by`). Eine Kontrolle der Boxen blieb
+zuerst grün, weil der richtige Wert zufällig im Skalarregister an der Basis lag; der Test ruft
+jetzt gespeicherte Interface-Werte nach anderer Arbeit. 142 Tests, 82 Konformanzfälle.
+
+**S3g, präzisiert (Entwurf).** Generics nach Lyric 5 03 §9 und 11 Gen.
+
+- *Prüfung einmal* (§9.1 Regel 1): ein generischer Rumpf wird an der Deklaration geprüft, `T`
+  undurchsichtig (`Ty.Param`), seine Member nur aus den Constraints; der getypte Baum trägt
+  `Ty.Param` und Constraint-Aufrufe als eigene Knoten.
+- *Instanzen* (11 Gen): je Funktion bzw. Typ eine Kopie je **Form** der Typargumente — eine
+  geteilte für alle Referenztypen (Strings eingeschlossen), je eine für `int`, `float`, `bool`,
+  `char` (und je Enum ohne Nutzlast, Tupel- und Optional-Form, deren Slots sich unterscheiden).
+  Eine Kopie entsteht durch Ersetzen im getypten Baum (ein Lauf über alle Knoten).
+- *Deskriptor* (11 Gen): die geteilte Kopie nimmt je Typparameter einen versteckten
+  Referenzparameter, den Deskriptor des Typarguments (eine `TypeDesc`-Referenz: Familie,
+  Tabelle). `load.t` lädt ihn, `call.d` (neu: Slot, Basen) ruft über seine Tabelle — so auch auf
+  einem `string`, der selbst keine Tabelle trägt. In einer skalaren Kopie ist der Typ bekannt,
+  der Constraint-Aufruf ein direkter `call`.
+- *Inferenz am Aufruf* (§9.2): Argumente binden, dann der erwartete Typ; geschriebene
+  Typargumente zuerst; was offen bleibt, `LYS-SEM0060`; Anzahl `LYS-SEM0026`, Constraint
+  `LYS-SEM0028`; Kette unendlicher Instanzen `LYS-SEM0197`.
+- *Generische Typen*: `struct Pair<A, B>`, `class Box<T>`, `enum Opt<T>` mit Layout je Form;
+  `Self` und statische Member in Interfaces, Objektsicherheit (§7) mit ihnen.
+- Teile: g1 generische Funktionen (Inferenz, Constraints, Kopien, Deskriptoren); g2 generische
+  Typen; g3 `Self`, Statics, Objektsicherheit; Bytecode-Goldtests der Kopien.
+
+*S3g, g1 Ergebnis:* generische Funktionen wie präzisiert, noch ohne Deskriptor (die geteilte
+Kopie ruft Constraint-Member über die Tabelle des Werts — alle geteilten Typen sind
+VM-Objekte); ein `string` bekommt eine eigene Kopie wie die Skalare (sein Wert trägt keine
+Tabelle; Abweichung von 11 Gen, bis der Deskriptor kommt). Eine generische Funktion als Wert
+und geschriebene Typargumente am Aufruf kommen mit g2/g3.
+
+*g2, Entwurf:* ein generischer Typ ist eine Schablone, deren Eintrag zugleich die Instanz mit
+den eigenen Parametern ist; `Pair<int, string>` legt einen Eintrag je Argumentliste an (Felder,
+Varianten ersetzt; Instanz und Schablone merken sich Schablone und Argumente). Methoden sind
+Schablonen mit den Parametern des Typs; ein Aufruf auf einer Instanz ist ein `CallGeneric`,
+die Tabelle einer Instanz entsteht in der Kopierphase. Der Ersatz kennt Instanzen: in
+`Named(Instanz mit Parametern)` werden die Argumente ersetzt. Ein Initialisierer ohne
+Typargumente bindet sie aus den Feldwerten, `.None` aus dem erwarteten Typ.
+
+**S3g, Ergebnis.** g1 generische Funktionen, g2 generische Typen, g3 geschriebene Typargumente am
+Aufruf (`f<int>(x)`, C#s Regel gegen die Mehrdeutigkeit mit `<`). *Neu zugeschnitten:* `Self`,
+statische Member über einen Typparameter (`T.make()`), assoziierte Typen, Objektsicherheit und
+eine generische Funktion als Wert brauchen den Deskriptor — in der geteilten Kopie steht kein
+Empfänger, der die Tabelle trägt — und gehen mit ihm in **S3i**. 148 Tests, 85 Konformanzfälle.
+
+**S3h, präzisiert (Entwurf).** Die Literal-Protokolle (`From…Literal`) brauchen statische
+Member und gehen mit dem Deskriptor nach **S3i**; S3h nimmt:
+
+- *h1 Gleichheit* (03 Eq, Lyric 5 05 §14 Regeln 2–3): `==`/`!=` auf Structs, Enums (Variante,
+  dann Nutzlast), Tupeln und Optionals, wenn jeder Teil vergleichbar ist — ohne Liste; je Typ
+  eine synthetische Funktion (rekursive Typen rufen sie wieder). Klassen nur mit `:: Identity`
+  (Referenzgleichheit, `same`); sonst `LYS-SEM0059` mit dem Teil, der nicht vergleichbar ist.
+  `Identity` ist wie `Any` ein Name des Prelude. `Hashable` mit den Sammlungen (S7).
+- *h2 Druckform* (Lyric 5 05 §14 Regel 2): `Debug` ungefragt — `P { x = 1, y = "a" }`,
+  `E.B(3)`, `E.R { w = 4 }`, `E.A`, `(1, "a")`, ein Optional als sein Wert oder `null`, ein
+  String in Anführungszeichen, ein `char` in einfachen —; `{x}` und `println(x)` nehmen sie für
+  alles außer den Skalaren und Strings (Display mit den Prelude-Interfaces, S7).
+- *h3 `with`* (Lyric 5 03 §2.5): Kopie eines Structs mit ersetzten Feldern, alte Werte rechts,
+  Pfade `with { to.x = 9 }`; auf Klassen und Tupeln `LYS-SEM0116`.
+
+**S3h, Ergebnis.** h1–h3 wie präzisiert. Ein Struct ist in Script geteilt und unveränderlich,
+`with` baut deshalb jeden Struct neu, den ein Pfad berührt (ein Objekt je Struct, nicht je
+Feld); ein Pfad nach dem Ersetzen seines ganzen Feldes ändert den neuen Wert, wie Lyric 5s
+Speicherungen in die Kopie. Ziel zuerst, dann die Werte in Schreibreihenfolge. Die Druckform
+eines Interface-Werts (`<I>`) und eines Funktionswerts (`<fn>`) ist ein Platzhalter bis zum
+Deskriptor (**S3i**). Der Bytecode-Cache verdeckte eine Kontrolle (gleiche Version, anderer
+Compiler) — offener Punkt P11. 158 Tests, 92 Konformanzfälle.
+
+**S3i, präzisiert (Entwurf).** Erst der Deskriptor nach 11 Gen (der .NET-Weg), dann was auf ihn
+gewartet hat:
+
+- *i1 Deskriptoren als Werte.* Ein `TypeDesc` trägt seine Typargumente als Deskriptoren
+  (`args`); ein Deskriptor ist ein Wert der VM. `load.t` legt den eines Programmtyps in ein
+  Referenzregister. Eine geteilte Kopie einer generischen Funktion bekommt je Typparameter einen
+  versteckten Referenzparameter, den der Aufrufer statisch füllt oder aus seinem eigenen
+  weiterreicht. Eine Methode eines generischen Typs liest die Argumente vom Deskriptor ihres
+  Empfängers (`desc.of`), denn über `call.i` kennt der Aufrufer sie nicht — wie .NET, das sie
+  über die MethodTable des `this` findet. Ein Objekt, das eine geteilte Kopie baut
+  (`Pair<T> { … }`), bekommt seinen genauen Typ: `inst.t` interniert `Pair<Foo>` zur Laufzeit
+  (Schablone und Argumente, Layout und Tabelle der geteilten Form), `new` nimmt den Deskriptor
+  dann aus einem Register. Funktions-, Tupel- und Optionaltypen haben Deskriptoren nach Art und
+  Bestandteilen (Arrays mit S7). `x is T` in einer Kopie prüft gegen den Deskriptor. Die
+  Druckform eines Interface-Werts und eines Werts vom Typ `T` ist die seines Werts: die
+  Druckfunktion steht in jeder Tabelle an einem festen Slot.
+- *i2 `Self` und statische Member* (Lyric 5 05 §7): `Self` in Interfaces und Typen; statische
+  Member eines Interfaces, `static fn parse(s: string): Self`, `static let zero: Self`, erreicht
+  über einen Typparameter, `T.parse(s)`. Eine eigene Kopie ruft direkt, eine geteilte über die
+  statische Tabelle des Deskriptors. Statische Defaults. Ein Interface mit `Self` über den
+  Empfänger hinaus, mit statischem oder generischem Member, ist nur Constraint (`LYS-SEM0126`).
+- *i3 assoziierte Typen* (§8 Regeln 1–7): `type Item;`, `Self.Item`, die Antwort im Typ oder im
+  Block, der Pfad `T.Item`, die Fixierung `Iterator<Item = int>`, die Wertform.
+- *i4 eine generische Funktion als Wert*: eine eigene Kopie direkt, eine geteilte als Closure,
+  die die Deskriptoren hält.
+- *i5 Literal-Protokolle* (03 Lit): `FromIntLiteral`, `FromFloatLiteral`, `FromStringLiteral`,
+  `FromBoolLiteral`, `FromNullLiteral` als Prelude-Interfaces mit
+  `static fn from…Literal(v): Self`; ein Literal an einer Stelle, deren Typ konformiert, ruft sie,
+  eine Variable nie. `FromArrayLiteral` und `FromMapLiteral` mit S7.
+- *i6 generische Extend-Blöcke* (§13 Regeln 1–5): bedingte Konformanz, Kohärenz. Die Blöcke auf
+  eingebauten Konstruktoren und die Blanket-Blöcke (Regeln 6–9) mit S7, wo die std sie braucht.
+
+Je Teil Konformanzfälle in 03 und 05; `typeOf` selbst kommt mit `reflect` (S10), sein Prüfstein
+`typeOf([1, 2])` mit S7 — S3i liefert die Deskriptoren, die beide lesen.
+
+**S3i i1, Ergebnis.** Die Probe vorher: `mk(Foo { }) is Pair<Foo>` war `false` — die geteilte
+Kopie baute `Pair<Any>`, ein Fehler seit S3g. Jetzt hat jeder Typ einen Deskriptor (ein
+Interface und ein Enum mit Nutzlast eigene, das Enum mit seinen Varianten verknüpft; Funktions-,
+Tupel- und Optionaltypen nach Bedarf); sieben Ops, Bytecode-Format 3. Eine Kopie, deren Lambda
+`T` braucht, kennt den Deskriptor noch nicht (die Closure müsste ihn halten) — mit i4. 164
+Tests, 93 Konformanzfälle.
+
+**S3i, Ergebnis.** i1 Deskriptoren, i1b Druckform über einen festen Slot (`instantiate` bis
+zum Fixpunkt), i2 `Self` und statische Member samt `static let` (eifrig vor den Anweisungen des
+Skripts, Lyric 5 04 §1 Regel 2), i3 assoziierte Typen (Antworten, Defaults, Schranken, Pfade,
+Fixierungen, Wertform; ein von ihnen eingeschränkter Parameter bekommt je Typ eine eigene Kopie,
+da die Slots einer Antwort je Typ verschieden sind), i4 generische Funktion als Wert und Lambdas
+geteilter Kopien mit deren Deskriptoren, i5 Literal-Protokolle als Prelude in Lyric-Script
+(Member nach Art benannt), i6 generische Extend-Blöcke mit bedingter Konformanz und Kohärenz.
+Drei Fehler seit S3g behoben (geteilte Kopie baute `Pair<Any>`; weitergereichtes eingeschränktes
+`T` gab SEM0028; Lambda einer geteilten Kopie löschte `T`). Mit S7: Konstanten generischer
+Typen, Blöcke auf einer Instanz, auf eingebauten Konstruktoren und Blanket-Blöcke, ein Name je
+Interface getrennt implementiert (05 §3 Regel 4). Beim Abgleich der Bereichsdokumente gegen den Code
+fehlte 05 D2/D3 eine Uhr: zwei Defaults eines Namens nahmen still den ersten — jetzt
+`LYS-SEM0043`, dazu der qualifizierte Aufruf `I.m(x)`. 191 Tests, 115 Konformanzfälle.

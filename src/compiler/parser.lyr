@@ -4,32 +4,45 @@
 //! reads `;`. A fault is reported where it stands and gives up the statement at hand
 //! (`SyntaxError`); the parse goes on with the next statement.
 //!
-//! The codes below `LYS-PAR0100` mean what Lyric 5's `LYR-PAR` code of the same number means;
-//! from 0100 on they are Lyric-Script's own.
+//! A code means what Lyric 5's `LYR-PAR` code of the same number means; Lyric-Script's own start
+//! at 0900.
 import std.collections { List };
 import lyric_script.compiler.ast {
     AliasDecl,
     Arg,
+    AssocDecl,
+    FixedAnswer,
     BinaryOp,
     Block,
+    Conformance,
     Decl,
     EnumDecl,
     Expr,
+    ExtendDecl,
     FieldDecl,
     FieldInit,
+    FieldPattern,
     FnBody,
     FnDecl,
+    InterfaceDecl,
     Item,
     MapEntry,
+    LambdaParam,
+    MatchArm,
     Module,
     Param,
+    Pattern,
     Segment,
     Span,
+    StaticLet,
     Stmt,
+    TypeAnswer,
     TypeDecl,
+    TypeParam,
     TypeExpr,
     UnaryOp,
     Variant,
+    WithField,
 };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.lexer { lex, lexRange };
@@ -96,6 +109,10 @@ class Parser {
     var depth: int = 0,
     // a `>>` of which one `>` closed type arguments, the other still to read
     var halfShr: bool = false,
+    // in a match arm's guard, which a `=>` ends: no lambda begins there (Lyric 5 does likewise)
+    var inGuard: bool = false,
+    // in an interface's body, where a member without a body is abstract
+    var inInterface: bool = false,
 
     static fn new(source: string, tokens: Token[]): Parser {
         return Parser {
@@ -306,6 +323,14 @@ class Parser {
         if (this.atWord("type") && this.peek(1).kind == .Ident) {
             return Item.Decl(Decl.Alias(try this.parseAlias(isPub, first)));
         }
+        // `sealed` is a word only before `interface`
+        if (this.atWord("interface")
+            || (this.atWord("sealed") && this.isWord(this.peek(1), "interface"))) {
+            return Item.Decl(Decl.Interface(try this.parseInterface(isPub, first)));
+        }
+        if (this.atWord("extend") && (this.peek(1).kind == .Ident || this.peek(1).kind == .Lt)) {
+            return Item.Decl(Decl.Extend(try this.parseExtend(first)));
+        }
         if (this.pos > 0 && this.tokens[this.pos - 1].start == first.start) {
             throw this.failure(
                 "LYS-PAR0053",
@@ -320,6 +345,10 @@ class Parser {
     mut fn parseFn(isPub: bool, isStatic: bool, first: Token): FnDecl throws SyntaxError {
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "a function's name");
+        var typeParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            typeParams = try this.parseTypeParams();
+        }
         let params = try this.parseParams();
         var returns: ?TypeExpr = null;
         if (this.at(.Colon)) {
@@ -329,12 +358,15 @@ class Parser {
         let body = if (this.at(.Assign)) {
             this.advance();
             FnBody.Expr(try this.parseExpr())
+        } else if (this.inInterface && !this.at(.LBrace)) {
+            FnBody.None
         } else {
             this.skipNewlines();
             FnBody.Block(try this.parseBlock())
         };
         return FnDecl {
             name = this.text(name),
+            typeParams = typeParams,
             params = params,
             returns = returns,
             body = body,
@@ -373,10 +405,17 @@ class Parser {
         let isClass = this.atWord("class");
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "the type's name");
+        var typeParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            typeParams = try this.parseTypeParams();
+        }
+        let conforms = try this.parseConformances(true);
         this.skipNewlines();
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the type's body");
         let fields = List<FieldDecl>.new();
         let methods = List<FnDecl>.new();
+        let answers = List<TypeAnswer>.new();
+        let statics = List<StaticLet>.new();
         loop {
             while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
                 this.advance();
@@ -385,14 +424,18 @@ class Parser {
                 break;
             }
             try {
-                this.parseMember(fields, methods);
+                this.parseMember(fields, methods, answers, statics);
             } catch (_: SyntaxError) {
                 this.synchronize();
             }
         }
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the type's body");
         return TypeDecl {
+            answers = answers.toArray(),
+            statics = statics.toArray(),
             name = this.text(name),
+            typeParams = typeParams,
+            conforms = conforms,
             isClass = isClass,
             fields = fields.toArray(),
             methods = methods.toArray(),
@@ -401,8 +444,24 @@ class Parser {
         };
     }
 
-    mut fn parseMember(fields: List<FieldDecl>, methods: List<FnDecl>): void throws SyntaxError {
+    mut fn parseMember(
+        fields: List<FieldDecl>,
+        methods: List<FnDecl>,
+        answers: List<TypeAnswer>,
+        statics: List<StaticLet>
+    ): void throws SyntaxError {
         let first = this.current();
+        // `type Item = int`: the answer to an associated type (Lyric 5 05 §8 rule 3)
+        if (this.atWord("type") && this.peek(1).kind == .Ident) {
+            this.advance();
+            let name = this.advance();
+            try this.expect(.Assign, "LYS-PAR0037", "'=' and the type that answers it");
+            let ty = try this.parseType();
+            answers.push(
+                TypeAnswer { name = this.text(name), type = ty, span = this.since(first) }
+            );
+            return;
+        }
         var isPub = false;
         if (this.atWord("pub") || this.atWord("internal") || this.atWord("private")) {
             isPub = this.atWord("pub");
@@ -415,6 +474,11 @@ class Parser {
         }
         if (this.atWord("fn")) {
             methods.push(try this.parseFn(isPub, isStatic, first));
+            return;
+        }
+        // `static let zero: int = 0`: a constant of the type (05 §7 rule 2)
+        if (isStatic && this.atWord("let")) {
+            statics.push(try this.parseStaticLet(first));
             return;
         }
         var isVar = false;
@@ -455,11 +519,18 @@ class Parser {
     mut fn parseEnum(isPub: bool, first: Token): EnumDecl throws SyntaxError {
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "the enum's name");
+        var typeParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            typeParams = try this.parseTypeParams();
+        }
+        let conforms = try this.parseConformances(false);
         this.skipNewlines();
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the enum's body");
         let variants = List<Variant>.new();
         let fields = List<FieldDecl>.new();
         let methods = List<FnDecl>.new();
+        let answers = List<TypeAnswer>.new();
+        let statics = List<StaticLet>.new();
         loop {
             while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
                 this.advance();
@@ -470,7 +541,24 @@ class Parser {
             try {
                 if (this.at(.Ident) && !this.atWord("static")) {
                     let v = this.advance();
-                    variants.push(Variant { name = this.text(v), span = this.spanOf(v) });
+                    var positional: TypeExpr[] = [];
+                    var payloadFields: FieldDecl[] = [];
+                    var named = false;
+                    if (this.at(.LParen)) {
+                        positional = this.parsePayloadTypes();
+                    } else if (this.at(.LBrace)) {
+                        payloadFields = this.parsePayloadFields();
+                        named = true;
+                    }
+                    variants.push(
+                        Variant {
+                            name = this.text(v),
+                            positional = positional,
+                            fields = payloadFields,
+                            named = named,
+                            span = this.since(v),
+                        }
+                    );
                     if (!(this.at(.Comma)
                         || this.at(.Newline)
                         || this.at(.Semi)
@@ -483,7 +571,7 @@ class Parser {
                         );
                     }
                 } else {
-                    this.parseMember(fields, methods);
+                    this.parseMember(fields, methods, answers, statics);
                 }
             } catch (_: SyntaxError) {
                 this.synchronize();
@@ -492,13 +580,17 @@ class Parser {
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the enum's body");
         for (f in fields) {
             this.report(
-                "LYS-PAR0101",
+                "LYS-PAR0901",
                 f"an enum holds variants and methods, no field: '{f.name}'",
                 this.current()
             );
         }
         return EnumDecl {
+            answers = answers.toArray(),
+            statics = statics.toArray(),
             name = this.text(name),
+            typeParams = typeParams,
+            conforms = conforms,
             variants = variants.toArray(),
             methods = methods.toArray(),
             isPub = isPub,
@@ -507,6 +599,320 @@ class Parser {
     }
 
     /// `type Name = T`.
+    /// `<T, U :: [Show]>`: a declaration's type parameters and their constraints.
+    mut fn parseTypeParams(): TypeParam[] throws SyntaxError {
+        this.advance();
+        let out = List<TypeParam>.new();
+        while (!this.at(.Gt)) {
+            let first = this.current();
+            let name = try this.expect(.Ident, "LYS-PAR0026", "a type parameter's name");
+            let constraints = try this.parseConformances(false);
+            out.push(
+                TypeParam {
+                    name = this.text(name),
+                    constraints = constraints,
+                    span = this.since(first),
+                }
+            );
+            if (!this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        try this.expect(.Gt, "LYS-PAR0004", "'>' after the type parameters");
+        return out.toArray();
+    }
+
+    /// `:: I`, `:: [I, J by field]`: the interfaces a type conforms to — one may stand bare,
+    /// several stand in brackets; `by` only where `delegates` (a struct or a class).
+    mut fn parseConformances(delegates: bool): Conformance[] throws SyntaxError {
+        let out = List<Conformance>.new();
+        if (!this.at(.ColonColon)) {
+            return [];
+        }
+        this.advance();
+        let bracketed = this.at(.LBracket);
+        if (bracketed) {
+            this.advance();
+        }
+        loop {
+            let first = this.current();
+            let name = try this.expect(.Ident, "LYS-PAR0026", "an interface's name");
+            var by: ?string = null;
+            if (this.atWord("by")) {
+                let word = this.advance();
+                if (!delegates) {
+                    throw this.failure(
+                        "LYS-PAR0047",
+                        "an enum delegates nothing: 'by' stands in a struct's or a class's list",
+                        word
+                    );
+                }
+                by = this.text(try this.expect(.Ident, "LYS-PAR0026", "the field it delegates to"));
+            }
+            // `Iterator<Item = int>`: associated types fixed (05 §8 rule 5)
+            let fixed = List<FixedAnswer>.new();
+            if (this.at(.Lt)) {
+                this.advance();
+                loop {
+                    let fname = try this.expect(
+                        .Ident,
+                        "LYS-PAR0026",
+                        "the associated type it fixes"
+                    );
+                    try this.expect(.Assign, "LYS-PAR0037", "'=' and the type it is");
+                    let fty = try this.parseType();
+                    fixed.push(
+                        FixedAnswer {
+                            name = this.text(fname),
+                            type = fty,
+                            span = this.since(fname),
+                        }
+                    );
+                    if (!this.at(.Comma)) {
+                        break;
+                    }
+                    this.advance();
+                }
+                try this.closeAngle();
+            }
+            out.push(
+                Conformance {
+                    name = this.text(name),
+                    by = by,
+                    span = this.since(first),
+                    fixed = fixed.toArray(),
+                }
+            );
+            if (!bracketed || !this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        if (bracketed) {
+            try this.expect(.RBracket, "LYS-PAR0004", "']' after the interfaces");
+        }
+        return out.toArray();
+    }
+
+    /// `static let name: T = value`, after `static`; in an interface without its value.
+    mut fn parseStaticLet(first: Token): StaticLet throws SyntaxError {
+        this.advance();
+        let name = try this.expect(.Ident, "LYS-PAR0026", "the constant's name");
+        var ty: ?TypeExpr = null;
+        if (this.at(.Colon)) {
+            this.advance();
+            ty = try this.parseType();
+        }
+        var value: ?Expr = null;
+        if (this.at(.Assign)) {
+            this.advance();
+            value = try this.parseExpr();
+        }
+        return StaticLet {
+            name = this.text(name),
+            type = ty,
+            value = value,
+            span = this.since(first),
+        };
+    }
+
+    /// `interface I :: [P] { … }`, `sealed` before it: members with a body are defaults, the
+    /// others abstract.
+    mut fn parseInterface(isPub: bool, first: Token): InterfaceDecl throws SyntaxError {
+        let sealed = this.atWord("sealed");
+        if (sealed) {
+            this.advance();
+        }
+        this.advance();
+        let name = try this.expect(.Ident, "LYS-PAR0026", "the interface's name");
+        let parents = try this.parseConformances(false);
+        this.skipNewlines();
+        try this.expect(.LBrace, "LYS-PAR0017", "'{' before the interface's body");
+        let members = List<FnDecl>.new();
+        let assoc = List<AssocDecl>.new();
+        let ifaceStatics = List<StaticLet>.new();
+        this.inInterface = true;
+        defer {
+            this.inInterface = false;
+        }
+        loop {
+            while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
+                this.advance();
+            }
+            if (this.at(.RBrace) || this.at(.Eof)) {
+                break;
+            }
+            try {
+                let at = this.current();
+                // `type Item`, `type Item = T`, `type Item :: [B]`: an associated type (05 §8)
+                if (this.atWord("type") && this.peek(1).kind == .Ident) {
+                    this.advance();
+                    let name = this.advance();
+                    let bounds = this.parseConformances(false);
+                    var dflt: ?TypeExpr = null;
+                    if (this.at(.Assign)) {
+                        this.advance();
+                        dflt = this.parseType();
+                    }
+                    assoc.push(
+                        AssocDecl {
+                            name = this.text(name),
+                            default = dflt,
+                            bounds = bounds,
+                            span = this.since(at),
+                        }
+                    );
+                    continue;
+                }
+                // a static member (Lyric 5 05 §7 rule 2)
+                var isStatic = false;
+                if (this.atWord("static")) {
+                    isStatic = true;
+                    this.advance();
+                }
+                if (isStatic && this.atWord("let")) {
+                    ifaceStatics.push(this.parseStaticLet(at));
+                    continue;
+                }
+                if (!this.atWord("fn")) {
+                    throw this.failure(
+                        "LYS-PAR0001",
+                        f"an interface holds methods: found {this.shown(at)}",
+                        at
+                    );
+                }
+                members.push(this.parseFn(false, isStatic, at));
+            } catch (_: SyntaxError) {
+                this.synchronize();
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the interface's body");
+        return InterfaceDecl {
+            assoc = assoc.toArray(),
+            statics = ifaceStatics.toArray(),
+            name = this.text(name),
+            parents = parents,
+            members = members.toArray(),
+            sealed = sealed,
+            isPub = isPub,
+            span = this.since(first),
+        };
+    }
+
+    /// `extend T { … }`, `extend T :: [I] { … }`: methods, and conformances, for a type.
+    mut fn parseExtend(first: Token): ExtendDecl throws SyntaxError {
+        this.advance();
+        // `extend<T :: [Show]> Box<T>`: a block of type parameters (05 §13 rule 1)
+        var typeParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            typeParams = try this.parseTypeParams();
+        }
+        let target = try this.parseType();
+        let conforms = try this.parseConformances(false);
+        this.skipNewlines();
+        try this.expect(.LBrace, "LYS-PAR0017", "'{' before the block's body");
+        let fields = List<FieldDecl>.new();
+        let methods = List<FnDecl>.new();
+        let answers = List<TypeAnswer>.new();
+        let statics = List<StaticLet>.new();
+        loop {
+            while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
+                this.advance();
+            }
+            if (this.at(.RBrace) || this.at(.Eof)) {
+                break;
+            }
+            try {
+                this.parseMember(fields, methods, answers, statics);
+            } catch (_: SyntaxError) {
+                this.synchronize();
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the block");
+        for (f in fields) {
+            this.report(
+                "LYS-PAR0901",
+                f"an extend block adds methods, no field: '{f.name}'",
+                this.current()
+            );
+        }
+        return ExtendDecl {
+            typeParams = typeParams,
+            answers = answers.toArray(),
+            statics = statics.toArray(),
+            target = target,
+            conforms = conforms,
+            methods = methods.toArray(),
+            span = this.since(first),
+        };
+    }
+
+    /// `(int, Point)`: a tuple variant's payload.
+    mut fn parsePayloadTypes(): TypeExpr[] throws SyntaxError {
+        let open = this.advance();
+        let types = List<TypeExpr>.new();
+        while (!this.at(.RParen)) {
+            types.push(try this.parseType());
+            if (!this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        try this.expect(.RParen, "LYS-PAR0008", "')' after the payload's types");
+        if (types.length() == 0) {
+            throw this.failure(
+                "LYS-PAR0001",
+                "a variant without a payload has no parentheses",
+                open
+            );
+        }
+        return types.toArray();
+    }
+
+    /// `{ w: int, h: int = 0 }`: a struct variant's fields.
+    mut fn parsePayloadFields(): FieldDecl[] throws SyntaxError {
+        this.advance();
+        let fields = List<FieldDecl>.new();
+        loop {
+            while (this.at(.Newline) || this.at(.Comma)) {
+                this.advance();
+            }
+            if (this.at(.RBrace) || this.at(.Eof)) {
+                break;
+            }
+            let first = this.current();
+            let name = try this.expect(.Ident, "LYS-PAR0026", "a field's name");
+            try this.expect(.Colon, "LYS-PAR0031", "':' before the field's type");
+            let ty = try this.parseType();
+            var dflt: ?Expr = null;
+            if (this.at(.Assign)) {
+                this.advance();
+                dflt = try this.parseExpr();
+            }
+            fields.push(
+                FieldDecl {
+                    name = this.text(name),
+                    type = ty,
+                    default = dflt,
+                    isVar = false,
+                    isPub = false,
+                    span = this.since(first),
+                }
+            );
+            if (!(this.at(.Comma) || this.at(.Newline) || this.at(.RBrace))) {
+                let t = this.current();
+                throw this.failure(
+                    "LYS-PAR0029",
+                    f"fields without ',' or a line end between them: found {this.shown(t)}",
+                    t
+                );
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' after the variant's fields");
+        return fields.toArray();
+    }
+
     mut fn parseAlias(isPub: bool, first: Token): AliasDecl throws SyntaxError {
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "the alias's name");
@@ -535,11 +941,21 @@ class Parser {
         if (this.atWord("let") || this.atWord("var")) {
             return try this.parseLet();
         }
+        // a local function, a named closure
+        if (this.atWord("fn") && this.peek(1).kind == .Ident) {
+            return Stmt.LocalFn(try this.parseFn(false, false, first));
+        }
         if (this.atWord("if")) {
             return try this.parseIf();
         }
         if (this.atWord("while")) {
             this.advance();
+            if (this.peek(1).kind == .Keyword && this.isWord(this.peek(1), "let")) {
+                let (pattern, value) = try this.parseLetCondition("while");
+                this.skipNewlines();
+                let body = try this.parseBlock();
+                return Stmt.WhileLet(pattern, value, body, null, this.since(first));
+            }
             let cond = try this.parseCondition("while");
             this.skipNewlines();
             let body = try this.parseBlock();
@@ -580,6 +996,25 @@ class Parser {
     mut fn parseLet(): Stmt throws SyntaxError {
         let first = this.advance();
         let isVar = this.isWord(first, "var");
+        // `let (a, b) = t`, `let .Num(n) = s else { … }`: the value taken apart by a pattern
+        let head = this.current();
+        let pattern = this.at(.LParen)
+            || this.at(.Dot)
+            || (head.kind == .Ident
+                && isTypeName(this.text(head))
+                && (this.peek(1).kind == .Dot || this.peek(1).kind == .LBrace));
+        if (pattern) {
+            let p = try this.parsePattern();
+            try this.expect(.Assign, "LYS-PAR0020", "'=' and the value to take apart");
+            let value = try this.parseExpr();
+            var otherwise: ?Block = null;
+            if (this.atWord("else")) {
+                this.advance();
+                this.skipNewlines();
+                otherwise = try this.parseBlock();
+            }
+            return Stmt.Destructure(isVar, p, value, otherwise, this.since(first));
+        }
         let name = this.current();
         if (name.kind != .Ident) {
             throw this.failure(
@@ -611,9 +1046,29 @@ class Parser {
     }
 
     /// `if` as a statement: its bodies are blocks, its `else` a block or another `if`.
+    /// `(let name = value)` after `if` or `while`.
+    /// `(let P = e)`: a pattern, or a name that takes an optional's value.
+    mut fn parseLetCondition(word: string): (Pattern, Expr) throws SyntaxError {
+        try this.expect(.LParen, "LYS-PAR0019", f"'(' after '{word}'");
+        this.advance();
+        let pattern = try this.parseOrPattern();
+        try this.expect(.Assign, "LYS-PAR0020", "'=' and the value the pattern takes");
+        let value = try this.parseExpr();
+        try this.expect(.RParen, "LYS-PAR0008", "')' after the condition");
+        return (pattern, value);
+    }
+
     mut fn parseIf(): Stmt throws SyntaxError {
         let first = this.advance();
-        let cond = try this.parseCondition("if");
+        var letPattern: ?Pattern = null;
+        var cond = Expr.Bool(true, this.spanOf(first));
+        if (this.peek(1).kind == .Keyword && this.isWord(this.peek(1), "let")) {
+            let (pattern, value) = try this.parseLetCondition("if");
+            letPattern = pattern;
+            cond = value;
+        } else {
+            cond = try this.parseCondition("if");
+        }
         this.skipNewlines();
         let then = try this.parseBlock();
         var otherwise: ?Box<Stmt> = null;
@@ -626,6 +1081,9 @@ class Parser {
                 let b = try this.parseBlock();
                 otherwise = boxedStmt(Stmt.Block(b, b.span));
             }
+        }
+        if (letPattern != null) {
+            return Stmt.IfLet(letPattern, cond, then, otherwise, this.since(first));
         }
         return Stmt.If(cond, then, otherwise, this.since(first));
     }
@@ -657,6 +1115,11 @@ class Parser {
 
     mut fn parseBlock(): Block throws SyntaxError {
         let open = try this.expect(.LBrace, "LYS-PAR0017", "'{'");
+        return try this.parseBlockAfter(open);
+    }
+
+    /// A block's statements after its `{`, to its `}`.
+    mut fn parseBlockAfter(open: Token): Block throws SyntaxError {
         try this.enter(open);
         defer {
             this.depth -= 1;
@@ -713,11 +1176,14 @@ class Parser {
             .CaretAssign | .ShlAssign | .ShrAssign | .AndAndAssign | .OrOrAssign => (1, 0),
             .QuestionQuestionAssign => (1, 0),
             .Keyword => if (this.isWord(t, "as")) (27, 28)
-                else if (this.isWord(t, "in")) (11, 12) else (-1, -1),
+                else if (this.isWord(t, "in") || this.isWord(t, "is")) (11, 12) else (-1, -1),
             _ => (-1, -1),
         };
     }
 
+    /// Operators by their binding powers. Each nesting level of an expression holds this frame,
+    /// `parseUnary`'s and `parsePrimary`'s: what an operator builds is in methods of its own, so
+    /// that the frames on the way down stay small (at -O0 every temporary has its own slot).
     mut fn parseBinary(min: int): Expr throws SyntaxError {
         let first = this.current();
         var left = try this.parseUnary();
@@ -728,41 +1194,62 @@ class Parser {
                 break;
             }
             this.advance();
-            if (this.isWord(t, "as")) {
-                let ty = try this.parseType();
-                left = Expr.Cast(boxed(left), ty, this.since(first));
+            if (this.isWord(t, "as") || this.isWord(t, "is")) {
+                left = try this.typeOperator(left, t, first);
                 continue;
             }
             let right = try this.parseBinary(r);
-            let span = this.since(first);
-            let compound = assignmentOp(t.kind);
-            if (t.kind == .Assign) {
-                left = Expr.Assign(boxed(left), null, boxed(right), span);
-            } else if (compound != null) {
-                left = Expr.Assign(boxed(left), compound, boxed(right), span);
-            } else if (t.kind == .DotDot || t.kind == .DotDotEq) {
-                left = Expr.Range(boxed(left), boxed(right), t.kind == .DotDotEq, span);
-                if (this.at(.DotDot) || this.at(.DotDotEq)) {
-                    throw this.failure(
-                        "LYS-PAR0005",
-                        "ranges chained: a range has two ends",
-                        this.current()
-                    );
-                }
-            } else {
-                let op = if (t.kind == .Keyword) BinaryOp.In else binaryOp(t.kind);
-                left = Expr.Binary(boxed(left), op, boxed(right), span);
-                // `a < b < c` and `a == b == c` are refused, not read left to right (08 Y4)
-                if ((l == 11 || l == 9) && this.power(this.current()).0 == l) {
-                    throw this.failure(
-                        "LYS-PAR0059",
-                        "comparisons chained: write each comparison on its own and join them with '&&'",
-                        this.current()
-                    );
-                }
-            }
+            left = try this.infix(left, t, l, right, first);
         }
         return left;
+    }
+
+    /// `x as T`, and `x is T`, which stands at the comparisons' level and does not chain.
+    mut fn typeOperator(left: Expr, t: Token, first: Token): Expr throws SyntaxError {
+        let ty = try this.parseType();
+        if (this.isWord(t, "as")) {
+            return Expr.Cast(boxed(left), ty, this.since(first));
+        }
+        if (this.power(this.current()).0 == 11) {
+            throw this.failure(
+                "LYS-PAR0059",
+                "comparisons chained: write each on its own and join them with '&&'",
+                this.current()
+            );
+        }
+        return Expr.Is(boxed(left), ty, this.since(first));
+    }
+
+    /// `left t right`: an assignment, a range or a binary operation.
+    mut fn infix(left: Expr, t: Token, l: int, right: Expr, first: Token): Expr throws SyntaxError {
+        let span = this.since(first);
+        let compound = assignmentOp(t.kind);
+        if (t.kind == .Assign) {
+            return Expr.Assign(boxed(left), null, boxed(right), span);
+        }
+        if (compound != null) {
+            return Expr.Assign(boxed(left), compound, boxed(right), span);
+        }
+        if (t.kind == .DotDot || t.kind == .DotDotEq) {
+            if (this.at(.DotDot) || this.at(.DotDotEq)) {
+                throw this.failure(
+                    "LYS-PAR0005",
+                    "ranges chained: a range has two ends",
+                    this.current()
+                );
+            }
+            return Expr.Range(boxed(left), boxed(right), t.kind == .DotDotEq, span);
+        }
+        // `a < b < c` and `a == b == c` are refused, not read left to right (08 Y4)
+        if ((l == 11 || l == 9) && this.power(this.current()).0 == l) {
+            throw this.failure(
+                "LYS-PAR0059",
+                "comparisons chained: write each comparison on its own and join them with '&&'",
+                this.current()
+            );
+        }
+        let op = if (t.kind == .Keyword) BinaryOp.In else binaryOp(t.kind);
+        return Expr.Binary(boxed(left), op, boxed(right), span);
     }
 
     mut fn parseUnary(): Expr throws SyntaxError {
@@ -770,64 +1257,145 @@ class Parser {
         let next = this.peek(1);
         // a `-` right before a number belongs to it: `-9223372036854775808` is int's least value
         if (t.kind == .Minus && t.end == next.start && (next.kind == .Int || next.kind == .Float)) {
-            this.advance();
-            this.advance();
-            let text = this.text(next);
-            let literal = if (next.kind == .Int) Expr.Int(
-                intValue(text, true, next, this.errors),
-                this.since(t)
-            )
-                else Expr.Float(floatValue(text, true), this.since(t));
-            return try this.parsePostfix(literal, t);
+            return try this.parsePostfix(this.negativeLiteral(t, next), t);
         }
-        let op: ?UnaryOp = match (t.kind) {
-            .Minus => UnaryOp.Neg,
-            .Bang => UnaryOp.Not,
-            .Tilde => UnaryOp.BitNot,
-            _ => null,
-        };
-        if (op != null) {
-            this.advance();
-            try this.enter(t);
-            defer {
-                this.depth -= 1;
-            }
-            let operand = try this.parseUnary();
-            return Expr.Unary(op, boxed(operand), this.since(t));
+        if (t.kind == .Minus || t.kind == .Bang || t.kind == .Tilde) {
+            return try this.prefixed(t);
         }
         return try this.parsePostfix(this.parsePrimary(), t);
     }
 
-    /// Calls, indices and members after an operand.
+    /// `-1`, `-2.5`: the sign and the number, one literal.
+    mut fn negativeLiteral(t: Token, next: Token): Expr {
+        this.advance();
+        this.advance();
+        let text = this.text(next);
+        return if (next.kind == .Int) Expr.Int(
+            intValue(text, true, next, this.errors),
+            this.since(t)
+        )
+            else Expr.Float(floatValue(text, true), this.since(t));
+    }
+
+    /// `-x`, `!x`, `~x`: the operator before its operand.
+    mut fn prefixed(t: Token): Expr throws SyntaxError {
+        let op = match (t.kind) {
+            .Minus => UnaryOp.Neg,
+            .Bang => UnaryOp.Not,
+            _ => UnaryOp.BitNot,
+        };
+        this.advance();
+        try this.enter(t);
+        defer {
+            this.depth -= 1;
+        }
+        let operand = try this.parseUnary();
+        return Expr.Unary(op, boxed(operand), this.since(t));
+    }
+
+    /// Calls, indices and members after an operand; each form built in a method of its own, so
+    /// that a call nested in an argument holds a small frame here.
     mut fn parsePostfix(base: Expr, first: Token): Expr throws SyntaxError {
         var e = base;
         loop {
             if (this.at(.LParen)) {
-                let args = try this.parseArgs();
-                e = Expr.Call(boxed(e), args, this.since(first));
+                e = try this.callAfter(e, first);
+            } else if (this.at(.Lt) && takesTypeArgs(e) && this.typeArgsAhead()) {
+                e = try this.typeArgsAfter(e, first);
+            } else if (this.at(.LBrace) && takesTrailing(e)) {
+                e = try this.trailingAfter(e, first);
             } else if (this.at(.LBracket)) {
+                e = try this.indexAfter(e, first);
+            } else if (this.atWord("with") && this.peek(1).kind == .LBrace) {
+                e = try this.withAfter(e, first);
+            } else if (this.at(.Bang)) {
+                // `x!`: a `!` after an operand is the unwrap; before one it is `not`
                 this.advance();
-                let index = try this.parseExpr();
-                try this.expect(.RBracket, "LYS-PAR0004", "']' after the index");
-                e = Expr.Index(boxed(e), boxed(index), this.since(first));
+                e = Expr.Unwrap(boxed(e), this.since(first));
             } else if (this.at(.Dot) || this.at(.QuestionDot)) {
-                let optional = this.at(.QuestionDot);
-                this.advance();
-                let name = this.current();
-                if (name.kind != .Ident && name.kind != .Keyword && name.kind != .Int) {
-                    throw this.failure(
-                        "LYS-PAR0003",
-                        f"a member's name is missing: found {this.shown(name)}",
-                        name
-                    );
-                }
-                this.advance();
-                e = Expr.Member(boxed(e), this.text(name), optional, this.since(first));
+                e = try this.memberAfter(e, first);
             } else {
                 break;
             }
         }
         return e;
+    }
+
+    mut fn callAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        let args = try this.parseArgs();
+        return Expr.Call(boxed(e), args, this.since(first));
+    }
+
+    /// `f<int>(x)`: type arguments written, a call after them.
+    mut fn typeArgsAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        this.advance();
+        let args = List<TypeExpr>.new();
+        while (!this.at(.Gt)) {
+            args.push(try this.parseType());
+            if (!this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        try this.expect(.Gt, "LYS-PAR0004", "'>' after the type arguments");
+        return Expr.Instance(boxed(e), args.toArray(), this.since(first));
+    }
+
+    /// `xs.map { it * 2 }`, `run { … }`: the call's last argument (Lyric 5 03 §8.2).
+    mut fn trailingAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        let block = try this.parseTrailing();
+        return match (e) {
+            .Call(callee, args, _) => {
+                let all = List<Arg>.new();
+                for (a in args) {
+                    all.push(a);
+                }
+                all.push(Arg { name = null, value = block });
+                Expr.Call(callee, all.toArray(), this.since(first))
+            }
+            _ => Expr.Call(boxed(e), [Arg { name = null, value = block }], this.since(first)),
+        };
+    }
+
+    mut fn indexAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        this.advance();
+        let index = try this.parseExpr();
+        try this.expect(.RBracket, "LYS-PAR0004", "']' after the index");
+        return Expr.Index(boxed(e), boxed(index), this.since(first));
+    }
+
+    /// `p with { x = 1 }` (Lyric 5 02 M6): a postfix, `with` contextual.
+    mut fn withAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        this.advance();
+        let fields = try this.parseWithFields();
+        return Expr.With(boxed(e), fields, this.since(first));
+    }
+
+    /// `x.name`, `x?.name`, and `Shape.Rect { w = 1 }`, a struct variant built.
+    mut fn memberAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        let optional = this.at(.QuestionDot);
+        this.advance();
+        let name = this.current();
+        if (name.kind != .Ident && name.kind != .Keyword && name.kind != .Int) {
+            throw this.failure(
+                "LYS-PAR0003",
+                f"a member's name is missing: found {this.shown(name)}",
+                name
+            );
+        }
+        this.advance();
+        let member = this.text(name);
+        if (!optional && this.at(.LBrace) && isTypeName(member)) {
+            let enumName = match (e) {
+                .Name(n, _) => if (isTypeName(n)) n else "",
+                _ => "",
+            };
+            if (enumName != "") {
+                let fields = try this.parseFieldInits();
+                return Expr.VariantInit(enumName, member, fields, this.since(first));
+            }
+        }
+        return Expr.Member(boxed(e), member, optional, this.since(first));
     }
 
     /// `(a, b, name: c)`: positional arguments first, named ones after them (Lyric 5 §8.1.1).
@@ -851,81 +1419,322 @@ class Parser {
         return args.toArray();
     }
 
+    /// An operand, by its first token; each form read in a method of its own (see `parseBinary`).
     mut fn parsePrimary(): Expr throws SyntaxError {
         let t = this.current();
-        let span = this.spanOf(t);
-        match (t.kind) {
-            .Int => {
-                this.advance();
-                return Expr.Int(intValue(this.text(t), false, t, this.errors), span);
-            }
-            .Float => {
-                this.advance();
-                return Expr.Float(floatValue(this.text(t), false), span);
-            }
-            .Str => {
-                this.advance();
-                return Expr.Str(stringValue(this.text(t), t, this.errors), span);
-            }
-            .ByteStr => {
-                this.advance();
-                return Expr.Bytes(bytesValue(this.text(t), t, this.errors), span);
-            }
-            .Char => {
-                this.advance();
-                return Expr.Char(charValue(this.text(t), t, this.errors), span);
-            }
-            .FormatStr => {
-                this.advance();
-                return this.interpolated(t);
-            }
-            .LParen => {
-                this.advance();
-                let inner = try this.parseExpr();
-                try this.expect(.RParen, "LYS-PAR0008", "')'");
-                return inner;
-            }
-            .LBracket => {
-                return try this.parseCollection();
-            }
-            .LBrace => {
-                let b = try this.parseBlock();
-                return Expr.Block(b, b.span);
-            }
-            .Keyword => {
-                let w = this.text(t);
-                if (w == "true" || w == "false") {
-                    this.advance();
-                    return Expr.Bool(w == "true", span);
-                }
-                if (w == "null") {
-                    this.advance();
-                    return Expr.Null(span);
-                }
-                if (w == "this") {
-                    this.advance();
-                    return Expr.This(span);
-                }
-                if (w == "if") {
-                    return try this.parseIfExpr();
-                }
-            }
-            .Ident => {
-                if (this.atWord("loop") && this.peek(1).kind == .LBrace) {
-                    this.advance();
-                    let body = try this.parseBlock();
-                    return Expr.Loop(body, null, this.since(t));
-                }
-                let name = this.text(t);
-                this.advance();
-                if (this.at(.LBrace) && isTypeName(name)) {
-                    return try this.parseStructInit(name, t);
-                }
-                return Expr.Name(name, span);
-            }
-            _ => { }
+        let e: ?Expr = match (t.kind) {
+            .Int | .Float | .Str | .ByteStr | .Char | .FormatStr => this.literal(t),
+            .LParen => try this.parseParen(t),
+            .LBracket => try this.parseCollection(),
+            .LBrace => try this.blockValue(),
+            .Dot => try this.implicitMember(t),
+            .Keyword => try this.keywordValue(t),
+            .Ident => try this.nameValue(t),
+            _ => null,
+        };
+        if (e != null) {
+            return e;
         }
-        throw this.failure("LYS-PAR0002", f"an expression is missing: found {this.shown(t)}", t);
+        throw this.missingExpr(t);
+    }
+
+    mut fn missingExpr(t: Token): SyntaxError {
+        return this.failure("LYS-PAR0002", f"an expression is missing: found {this.shown(t)}", t);
+    }
+
+    /// A literal token's value.
+    mut fn literal(t: Token): Expr {
+        this.advance();
+        let span = this.spanOf(t);
+        return match (t.kind) {
+            .Int => Expr.Int(intValue(this.text(t), false, t, this.errors), span),
+            .Float => Expr.Float(floatValue(this.text(t), false), span),
+            .Str => Expr.Str(stringValue(this.text(t), t, this.errors), span),
+            .ByteStr => Expr.Bytes(bytesValue(this.text(t), t, this.errors), span),
+            .Char => Expr.Char(charValue(this.text(t), t, this.errors), span),
+            _ => this.interpolated(t),
+        };
+    }
+
+    /// `(e)`, a grouping; `(a, b)`, a tuple; `(a: int) => …`, a lambda.
+    mut fn parseParen(t: Token): Expr throws SyntaxError {
+        if (!this.inGuard && this.lambdaAhead()) {
+            return try this.parseLambda();
+        }
+        this.advance();
+        let inner = try this.parseExpr();
+        if (!this.at(.Comma)) {
+            try this.expect(.RParen, "LYS-PAR0008", "')'");
+            return inner;
+        }
+        let items = List<Expr>.new();
+        items.push(inner);
+        while (this.at(.Comma)) {
+            this.advance();
+            if (this.at(.RParen)) {
+                break;
+            }
+            items.push(try this.parseExpr());
+        }
+        try this.expect(.RParen, "LYS-PAR0008", "')' to close the tuple");
+        if (items.length() < 2) {
+            throw this.failure(
+                "LYS-PAR0010",
+                "a tuple has two elements or more: one in parentheses is a grouping",
+                t
+            );
+        }
+        return Expr.Tuple(items.toArray(), this.since(t));
+    }
+
+    /// A value block.
+    mut fn blockValue(): Expr throws SyntaxError {
+        let b = try this.parseBlock();
+        return Expr.Block(b, b.span);
+    }
+
+    /// `.Red`, `.Num(3)`, `.Rect { w = 1 }`: a member of the enum the position expects; `null`
+    /// where no name follows the `.`.
+    mut fn implicitMember(t: Token): ?Expr throws SyntaxError {
+        if (this.peek(1).kind != .Ident) {
+            return null;
+        }
+        this.advance();
+        let name = this.text(this.advance());
+        if (this.at(.LBrace) && isTypeName(name)) {
+            let fields = try this.parseFieldInits();
+            return Expr.VariantInit(null, name, fields, this.since(t));
+        }
+        return Expr.Implicit(name, this.since(t));
+    }
+
+    /// `true`, `false`, `null`, `this`, an `if` or a `match` where a value stands; `null` for any
+    /// other word.
+    mut fn keywordValue(t: Token): ?Expr throws SyntaxError {
+        let w = this.text(t);
+        let span = this.spanOf(t);
+        if (w == "true" || w == "false") {
+            this.advance();
+            return Expr.Bool(w == "true", span);
+        }
+        if (w == "null") {
+            this.advance();
+            return Expr.Null(span);
+        }
+        if (w == "this") {
+            this.advance();
+            return Expr.This(span);
+        }
+        if (w == "if") {
+            return try this.parseIfExpr();
+        }
+        if (w == "match") {
+            return try this.parseMatch();
+        }
+        return null;
+    }
+
+    /// A name, `loop { … }`, `x => …` (a lambda of one parameter, its type from the position), or
+    /// `Name { … }`, an initializer.
+    mut fn nameValue(t: Token): Expr throws SyntaxError {
+        if (this.atWord("loop") && this.peek(1).kind == .LBrace) {
+            this.advance();
+            let body = try this.parseBlock();
+            return Expr.Loop(body, null, this.since(t));
+        }
+        let name = this.text(t);
+        let span = this.spanOf(t);
+        if (this.peek(1).kind == .FatArrow && !this.inGuard) {
+            this.advance();
+            this.advance();
+            let body = try this.lambdaBody();
+            let param = LambdaParam { name = name, type = null, span = span };
+            return Expr.Lambda([param], null, boxed(body), false, this.since(t));
+        }
+        this.advance();
+        if (this.at(.LBrace) && isTypeName(name)) {
+            return try this.parseStructInit(name, t);
+        }
+        return Expr.Name(name, span);
+    }
+
+    /// Whether the `(` here opens a lambda: its `)` is followed by `=>`, or by `:` and a result
+    /// type before a `=>`.
+    mut fn lambdaAhead(): bool {
+        var k = 0;
+        var depth = 0;
+        loop {
+            let kind = this.peek(k).kind;
+            if (kind == .Eof) {
+                return false;
+            }
+            if (kind == .LParen || kind == .LBracket || kind == .LBrace) {
+                depth += 1;
+            } else if (kind == .RParen || kind == .RBracket || kind == .RBrace) {
+                depth -= 1;
+                if (depth == 0) {
+                    break;
+                }
+            }
+            k += 1;
+        }
+        let after = this.peek(k + 1).kind;
+        if (after == .FatArrow) {
+            return true;
+        }
+        if (after != .Colon) {
+            return false;
+        }
+        // `): T =>` — a type goes on to its `=>`, and stops at what ends an expression
+        var j = k + 2;
+        var inner = 0;
+        while (j < k + 40) {
+            let kind = this.peek(j).kind;
+            if (kind == .FatArrow) {
+                return true;
+            }
+            // `fn(int, int) -> int`: a comma in the type's own parentheses
+            if (kind == .LParen) {
+                inner += 1;
+            } else if (kind == .RParen) {
+                inner -= 1;
+            }
+            if (kind == .Eof
+                || kind == .Newline
+                || (kind == .Comma && inner == 0)
+                || kind == .Assign
+                || kind == .RBracket
+                || kind == .RBrace
+                || kind == .LBrace
+                || kind == .Semi) {
+                return false;
+            }
+            j += 1;
+        }
+        return false;
+    }
+
+    /// `(a: int, b): int => body`.
+    mut fn parseLambda(): Expr throws SyntaxError {
+        let first = this.advance();
+        let params = List<LambdaParam>.new();
+        while (!this.at(.RParen)) {
+            let pt = try this.expect(.Ident, "LYS-PAR0020", "a parameter's name");
+            var ty: ?TypeExpr = null;
+            if (this.at(.Colon)) {
+                this.advance();
+                ty = try this.parseType();
+            }
+            params.push(LambdaParam { name = this.text(pt), type = ty, span = this.since(pt) });
+            if (!this.at(.Comma)) {
+                break;
+            }
+            this.advance();
+        }
+        try this.expect(.RParen, "LYS-PAR0008", "')' after the lambda's parameters");
+        var result: ?TypeExpr = null;
+        if (this.at(.Colon)) {
+            this.advance();
+            result = try this.parseType();
+        }
+        try this.expect(.FatArrow, "LYS-PAR0034", "'=>' before the lambda's body");
+        let body = try this.lambdaBody();
+        return Expr.Lambda(params.toArray(), result, boxed(body), false, this.since(first));
+    }
+
+    /// `{ a, b => … }` or `{ … }`: a trailing block, its parameters named before `=>`, or `it`.
+    mut fn parseTrailing(): Expr throws SyntaxError {
+        let open = this.advance();
+        // the names before a `=>`, if the block begins so
+        var k = 0;
+        while (this.peek(k).kind == .Newline) {
+            k += 1;
+        }
+        var named = false;
+        var j = k;
+        loop {
+            if (this.peek(j).kind != .Ident) {
+                break;
+            }
+            let next = this.peek(j + 1).kind;
+            if (next == .FatArrow) {
+                named = true;
+                break;
+            }
+            if (next != .Comma) {
+                break;
+            }
+            j += 2;
+        }
+        let params = List<LambdaParam>.new();
+        if (named) {
+            this.skipNewlines();
+            while (!this.at(.FatArrow)) {
+                let pt = this.advance();
+                params.push(
+                    LambdaParam { name = this.text(pt), type = null, span = this.since(pt) }
+                );
+                if (this.at(.Comma)) {
+                    this.advance();
+                }
+            }
+            this.advance();
+        }
+        let body = try this.parseBlockAfter(open);
+        return Expr.Lambda(
+            params.toArray(),
+            null,
+            boxed(Expr.Block(body, body.span)),
+            !named,
+            this.since(open)
+        );
+    }
+
+    /// Whether the `<` here opens type arguments: its matching `>` is followed by what no
+    /// comparison goes on with — `(`, a closer, `,`, a line end, `.`, `==` (C#'s rule for the
+    /// same doubt) —, and nothing between belongs to no type.
+    mut fn typeArgsAhead(): bool {
+        var k = 0;
+        var depth = 0;
+        loop {
+            let kind = this.peek(k).kind;
+            if (kind == .Lt) {
+                depth += 1;
+            } else if (kind == .Gt) {
+                depth -= 1;
+            } else if (kind == .Shr) {
+                depth -= 2;
+            } else if (!(kind == .Ident
+                || kind == .Comma
+                || kind == .Question
+                || kind == .QuestionQuestion
+                || kind == .LBracket
+                || kind == .RBracket
+                || kind == .LParen
+                || kind == .RParen
+                || kind == .Arrow
+                || kind == .Colon
+                || kind == .Keyword)) {
+                return false;
+            }
+            k += 1;
+            if (depth <= 0) {
+                break;
+            }
+            if (k > 64) {
+                return false;
+            }
+        }
+        return depth == 0 && endsTypeArgs(this.peek(k).kind);
+    }
+
+    /// A lambda's body: a value block, or an expression.
+    mut fn lambdaBody(): Expr throws SyntaxError {
+        if (this.at(.LBrace)) {
+            let b = try this.parseBlock();
+            return Expr.Block(b, b.span);
+        }
+        return try this.parseExpr();
     }
 
     /// `if (c) a else b` where a value stands; each branch an expression or a value block.
@@ -978,7 +1787,7 @@ class Parser {
                     break;
                 }
                 let key = try this.parseExpr();
-                try this.expect(.Colon, "LYS-PAR0102", "':' between a key and its value");
+                try this.expect(.Colon, "LYS-PAR0902", "':' between a key and its value");
                 entries.push(MapEntry { key = key, value = try this.parseExpr() });
             }
             try this.expect(.RBracket, "LYS-PAR0004", "']' to close the map");
@@ -1000,6 +1809,12 @@ class Parser {
     /// `Name { field = value, … }`: fields end at `,` or a line end; `name` alone is
     /// `name = name`.
     mut fn parseStructInit(name: string, first: Token): Expr throws SyntaxError {
+        let fields = try this.parseFieldInits();
+        return Expr.StructInit(name, fields, this.since(first));
+    }
+
+    /// `{ x = 1, y }`: an initializer's fields, a name alone standing for `name = name`.
+    mut fn parseFieldInits(): FieldInit[] throws SyntaxError {
         this.advance();
         let fields = List<FieldInit>.new();
         loop {
@@ -1034,7 +1849,135 @@ class Parser {
             }
         }
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the initializer");
-        return Expr.StructInit(name, fields.toArray(), this.since(first));
+        return fields.toArray();
+    }
+
+    /// `{ x = 1, pos.y = 2 }` after `with`: as an initializer's fields, a path on the left, the
+    /// `=` always written.
+    mut fn parseWithFields(): WithField[] throws SyntaxError {
+        this.advance();
+        let fields = List<WithField>.new();
+        loop {
+            while (this.at(.Newline) || this.at(.Comma)) {
+                this.advance();
+            }
+            if (this.at(.RBrace)) {
+                break;
+            }
+            let ft = try this.expect(.Ident, "LYS-PAR0026", "a field's name");
+            let path = List<string>.new();
+            path.push(this.text(ft));
+            while (this.at(.Dot)) {
+                this.advance();
+                path.push(
+                    this.text(try this.expect(.Ident, "LYS-PAR0026", "a field's name after '.'"))
+                );
+            }
+            if (!this.at(.Assign)) {
+                let t = this.current();
+                this.report(
+                    "LYS-PAR0037",
+                    f"a field in 'with' without '=': found {this.shown(t)}",
+                    t
+                );
+                // the rest of the fields is given up and the copy kept: one report, no cascade
+                this.skipToClose();
+                break;
+            }
+            this.advance();
+            let value = try this.parseExpr();
+            fields.push(WithField { path = path.toArray(), value = value, span = this.since(ft) });
+            if (!(this.at(.Comma) || this.at(.Newline) || this.at(.RBrace))) {
+                let t = this.current();
+                this.report(
+                    "LYS-PAR0029",
+                    f"fields without ',' or a line end between them: found {this.shown(t)}",
+                    t
+                );
+                this.skipToClose();
+                break;
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' to close 'with'");
+        return fields.toArray();
+    }
+
+    /// `match (e) { p => v, p if g => { … } }`: arms apart by `,` or a line end. A line that
+    /// begins with `.` goes on the line before (09 NL rule 3), so a value arm before a `.Variant`
+    /// arm on the next line ends with `,`.
+    mut fn parseMatch(): Expr throws SyntaxError {
+        let first = this.advance();
+        try this.expect(.LParen, "LYS-PAR0019", "'(' after 'match'");
+        let scrutinee = try this.parseExpr();
+        try this.expect(.RParen, "LYS-PAR0008", "')' after the matched value");
+        try this.expect(.LBrace, "LYS-PAR0017", "'{' before the arms");
+        let arms = List<MatchArm>.new();
+        loop {
+            while (this.at(.Newline) || this.at(.Comma)) {
+                this.advance();
+            }
+            if (this.at(.RBrace) || this.at(.Eof)) {
+                break;
+            }
+            let armFirst = this.current();
+            let pattern = try this.parseOrPattern();
+            var guard: ?Expr = null;
+            if (this.atWord("if")) {
+                this.advance();
+                this.inGuard = true;
+                defer {
+                    this.inGuard = false;
+                }
+                guard = try this.parseExpr();
+            }
+            try this.expect(.FatArrow, "LYS-PAR0034", "'=>' after the arm's pattern");
+            var isBlock = false;
+            var body = Expr.Null(this.spanOf(armFirst));
+            if (this.at(.LBrace)) {
+                let b = try this.parseBlock();
+                body = Expr.Block(b, b.span);
+                isBlock = true;
+            } else {
+                body = try this.parseExpr();
+            }
+            arms.push(
+                MatchArm {
+                    pattern = pattern,
+                    guard = guard,
+                    body = body,
+                    span = this.since(armFirst),
+                }
+            );
+            if (!(isBlock || this.at(.Comma) || this.at(.Newline) || this.at(.RBrace))) {
+                let t = this.current();
+                this.report(
+                    "LYS-PAR0035",
+                    f"arms without ',' or a line end between them: found {this.shown(t)} — a line that begins with '.' goes on the line before, so end the arm before it with ','",
+                    t
+                );
+                // the rest of the arms is given up and the match kept: one report, no cascade
+                this.skipToClose();
+                break;
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the match");
+        return Expr.Match(boxed(scrutinee), arms.toArray(), this.since(first));
+    }
+
+    /// Skips to the `}` that closes the brace the parser stands in, past nested brackets.
+    mut fn skipToClose(): void {
+        var depth = 0;
+        while (!this.at(.Eof)) {
+            if (this.at(.LBrace) || this.at(.LParen) || this.at(.LBracket)) {
+                depth += 1;
+            } else if (this.at(.RBrace) || this.at(.RParen) || this.at(.RBracket)) {
+                if (depth == 0 && this.at(.RBrace)) {
+                    return;
+                }
+                depth -= 1;
+            }
+            this.advance();
+        }
     }
 
     /// An f-string: its text, and each hole's expression read from the source where it stands.
@@ -1079,6 +2022,169 @@ class Parser {
     // --- types -----------------------------------------------------------------------------------
 
     /// A written type: `int`, `Point`, `List<int>`, `?T`, `T[]`, `(A, B)`, `fn(A) -> B`.
+    /// `P | Q | …`: an or-pattern, or the one pattern.
+    mut fn parseOrPattern(): Pattern throws SyntaxError {
+        let first = this.current();
+        let p = try this.parsePattern();
+        if (!this.at(.Pipe)) {
+            return p;
+        }
+        let alternatives = List<Pattern>.new();
+        alternatives.push(p);
+        while (this.at(.Pipe)) {
+            this.advance();
+            alternatives.push(try this.parsePattern());
+        }
+        return Pattern.Or(alternatives.toArray(), this.since(first));
+    }
+
+    /// A pattern (Lyric 5 §9 §2): `_`, a name, a literal, a range, `.Variant`, `Enum.Variant`,
+    /// `Type { … }`, a tuple, or one in parentheses.
+    mut fn parsePattern(): Pattern throws SyntaxError {
+        let first = this.current();
+        if (this.at(.LParen)) {
+            this.advance();
+            let items = List<Pattern>.new();
+            var commas = 0;
+            while (!this.at(.RParen)) {
+                items.push(try this.parseOrPattern());
+                if (!this.at(.Comma)) {
+                    break;
+                }
+                this.advance();
+                commas += 1;
+            }
+            try this.expect(.RParen, "LYS-PAR0008", "')' to close the pattern");
+            if (items.length() == 1 && commas == 0) {
+                return items[0];
+            }
+            if (items.length() < 2) {
+                throw this.failure(
+                    "LYS-PAR0010",
+                    "a tuple has two elements or more: one in parentheses is a grouping",
+                    first
+                );
+            }
+            return Pattern.Tuple(items.toArray(), this.since(first));
+        }
+        if (this.at(.Dot) && this.peek(1).kind == .Ident) {
+            this.advance();
+            let name = this.text(this.advance());
+            return try this.variantPattern(null, name, first);
+        }
+        if (this.at(.Ident)) {
+            let name = this.text(first);
+            // `c: Circle`, `_: Circle`: a type pattern
+            if (this.peek(1).kind == .Colon) {
+                this.advance();
+                this.advance();
+                let ty = try this.parseType();
+                return Pattern.Typed(if (name == "_") null else name, ty, this.since(first));
+            }
+            if (name == "_") {
+                this.advance();
+                return Pattern.Ignore(this.since(first));
+            }
+            if (isTypeName(name) && this.peek(1).kind == .Dot && this.peek(2).kind == .Ident) {
+                this.advance();
+                this.advance();
+                let variant = this.text(this.advance());
+                return try this.variantPattern(name, variant, first);
+            }
+            if (isTypeName(name) && this.peek(1).kind == .LBrace) {
+                this.advance();
+                let fields = try this.parseFieldPatterns();
+                return Pattern.Fields(name, fields, this.since(first));
+            }
+            this.advance();
+            return Pattern.Name(name, this.since(first));
+        }
+        let low = try this.parseLiteralPattern();
+        if (this.at(.DotDot) || this.at(.DotDotEq)) {
+            let inclusive = this.at(.DotDotEq);
+            this.advance();
+            let high = try this.parseLiteralPattern();
+            return Pattern.Range(low, high, inclusive, this.since(first));
+        }
+        return Pattern.Literal(low, this.since(first));
+    }
+
+    /// After `.Name` or `Enum.Name`: its payload's patterns, its fields, or neither.
+    mut fn variantPattern(
+        enumName: ?string,
+        name: string,
+        first: Token
+    ): Pattern throws SyntaxError {
+        if (this.at(.LParen)) {
+            this.advance();
+            let items = List<Pattern>.new();
+            while (!this.at(.RParen)) {
+                items.push(try this.parseOrPattern());
+                if (!this.at(.Comma)) {
+                    break;
+                }
+                this.advance();
+            }
+            try this.expect(.RParen, "LYS-PAR0008", "')' after the payload's patterns");
+            return Pattern.Variant(enumName, name, items.toArray(), this.since(first));
+        }
+        if (this.at(.LBrace)) {
+            let fields = try this.parseFieldPatterns();
+            return Pattern.VariantFields(enumName, name, fields, this.since(first));
+        }
+        return Pattern.Variant(enumName, name, null, this.since(first));
+    }
+
+    /// `{ w = 0, h }`: a field tested against a pattern, or bound to its own name.
+    mut fn parseFieldPatterns(): FieldPattern[] throws SyntaxError {
+        this.advance();
+        let fields = List<FieldPattern>.new();
+        loop {
+            while (this.at(.Newline) || this.at(.Comma)) {
+                this.advance();
+            }
+            if (this.at(.RBrace) || this.at(.Eof)) {
+                break;
+            }
+            let ft = try this.expect(.Ident, "LYS-PAR0026", "a field's name");
+            let name = this.text(ft);
+            var p = Pattern.Name(name, this.spanOf(ft));
+            if (this.at(.Assign)) {
+                this.advance();
+                p = try this.parseOrPattern();
+            }
+            fields.push(FieldPattern { name = name, pattern = p, span = this.since(ft) });
+            if (!(this.at(.Comma) || this.at(.Newline) || this.at(.RBrace))) {
+                let t = this.current();
+                throw this.failure(
+                    "LYS-PAR0029",
+                    f"fields without ',' or a line end between them: found {this.shown(t)}",
+                    t
+                );
+            }
+        }
+        try this.expect(.RBrace, "LYS-PAR0018", "'}' after the field patterns");
+        return fields.toArray();
+    }
+
+    /// A literal in a pattern: a number, `-` and a number, a character, a string, `true`,
+    /// `false` or `null`.
+    mut fn parseLiteralPattern(): Expr throws SyntaxError {
+        let t = this.current();
+        let literal = t.kind == .Int
+            || t.kind == .Float
+            || t.kind == .Str
+            || t.kind == .Char
+            || (t.kind == .Minus && (this.peek(1).kind == .Int || this.peek(1).kind == .Float))
+            || this.isWord(t, "true")
+            || this.isWord(t, "false")
+            || this.isWord(t, "null");
+        if (!literal) {
+            throw this.failure("LYS-PAR0002", f"a pattern is missing: found {this.shown(t)}", t);
+        }
+        return try this.parseUnary();
+    }
+
     mut fn parseType(): TypeExpr throws SyntaxError {
         let first = this.current();
         var ty = try this.parseTypeAtom();
@@ -1097,21 +2203,55 @@ class Parser {
             let inner = try this.parseType();
             return TypeExpr.Optional(boxedType(inner), this.since(first));
         }
+        // `??T`: the lexer reads `??` as one token; in a type it is two `?`
+        if (this.at(.QuestionQuestion)) {
+            this.advance();
+            let inner = try this.parseType();
+            let once = TypeExpr.Optional(boxedType(inner), this.since(first));
+            return TypeExpr.Optional(boxedType(once), this.since(first));
+        }
         if (this.at(.LParen)) {
             this.advance();
             let elements = List<TypeExpr>.new();
+            let labels = List<string>.new();
+            var commas = 0;
             while (!this.at(.RParen)) {
+                // `x: T`: a label, a name for the reader (Lyric 5 §6 rule 3)
+                var label = "";
+                if (this.at(.Ident) && this.peek(1).kind == .Colon) {
+                    let named = this.advance();
+                    label = this.text(named);
+                    for (l in labels) {
+                        if (l == label) {
+                            throw this.failure(
+                                "LYS-PAR0010",
+                                f"the label '{label}' is given twice in one tuple",
+                                named
+                            );
+                        }
+                    }
+                    this.advance();
+                }
                 elements.push(try this.parseType());
+                labels.push(label);
                 if (!this.at(.Comma)) {
                     break;
                 }
                 this.advance();
+                commas += 1;
             }
             try this.expect(.RParen, "LYS-PAR0008", "')' to close the tuple type");
-            if (elements.length() == 1) {
+            if (elements.length() == 1 && commas == 0 && labels[0] == "") {
                 return elements[0];
             }
-            return TypeExpr.Tuple(elements.toArray(), this.since(first));
+            if (elements.length() < 2) {
+                throw this.failure(
+                    "LYS-PAR0010",
+                    "a tuple has two elements or more: one in parentheses is a grouping",
+                    first
+                );
+            }
+            return TypeExpr.Tuple(elements.toArray(), labels.toArray(), this.since(first));
         }
         if (this.atWord("fn")) {
             this.advance();
@@ -1136,12 +2276,30 @@ class Parser {
                 first
             );
         }
-        let name = this.text(this.advance());
+        var name = this.text(this.advance());
+        // `T.Item`, `Self.Item`: an associated type through a type (05 §8 rule 4)
+        if (this.at(.Dot) && this.peek(1).kind == .Ident) {
+            let parts = List<string>.new();
+            parts.push(name);
+            while (this.at(.Dot) && this.peek(1).kind == .Ident) {
+                this.advance();
+                parts.push(this.text(this.advance()));
+            }
+            name = parts.toArray().join(".");
+        }
         let args = List<TypeExpr>.new();
         if (this.at(.Lt)) {
             this.advance();
             loop {
-                args.push(try this.parseType());
+                // `Iterator<Item = int>`: an associated type fixed, written `=Item` (05 §8 rule 6)
+                if (this.at(.Ident) && this.peek(1).kind == .Assign) {
+                    let fname = this.advance();
+                    this.advance();
+                    let fty = try this.parseType();
+                    args.push(TypeExpr.Named("=" + this.text(fname), [fty], this.since(fname)));
+                } else {
+                    args.push(try this.parseType());
+                }
                 if (!this.at(.Comma)) {
                     break;
                 }
@@ -1190,6 +2348,25 @@ fn boxedStmt(s: Stmt): Box<Stmt> {
 
 /// Whether a name is a type's, by its form: a capital first letter. `Name {` opens an initializer
 /// only after one; after any other name the brace is a block's (spec 2 D-init).
+/// Whether a `{` after `e` is a trailing block: after a call, a member, or a name that is no
+/// type's (after a type's name it is an initializer).
+fn takesTrailing(e: Expr): bool {
+    return match (e) {
+        .Call(_, _, _) => true,
+        .Member(_, name, _, _) => !isTypeName(name),
+        .Name(name, _) => !isTypeName(name),
+        _ => false,
+    };
+}
+
+/// Whether type arguments may follow `e`: a function's name, or a member's.
+fn takesTypeArgs(e: Expr): bool {
+    return match (e) {
+        .Name(_, _) | .Member(_, _, _, _) => true,
+        _ => false,
+    };
+}
+
 fn isTypeName(name: string): bool {
     for (c in name.chars()) {
         return c >= 'A' && c <= 'Z';
@@ -1262,4 +2439,20 @@ fn frontmatterText(text: string): string {
         k += 1;
     }
     return inner.toArray().join("\n");
+}
+
+/// Whether a token after a `>` closes type arguments, not a comparison: a call's `(`, or what
+/// ends or continues a value without an operand (`id<int>` as a value, S3i).
+fn endsTypeArgs(k: TokenKind): bool {
+    return k == .LParen
+        || k == .RParen
+        || k == .RBracket
+        || k == .RBrace
+        || k == .Comma
+        || k == .Semi
+        || k == .Newline
+        || k == .Eof
+        || k == .Dot
+        || k == .EqEq
+        || k == .NotEq;
 }

@@ -140,7 +140,7 @@ fn integersInEveryBase(): void {
     let errors = List<Diagnostic>.new();
     intValue("9223372036854775808", false, at, errors);
     intValue("0b12", false, at, errors);
-    assertEq(codes(errors), ["LYS-PAR0007", "LYS-PAR0100"]);
+    assertEq(codes(errors), ["LYS-PAR0007", "LYS-PAR0900"]);
 }
 
 @Test

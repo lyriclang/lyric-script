@@ -20,12 +20,113 @@ enum Ty :: [Equatable, Debug] {
     List(Box<Ty>),
     Map(Box<Ty>, Box<Ty>),
     Optional(Box<Ty>),
+    /// The type of a `null` no place has given a type yet.
+    NullLit,
+    Tuple(TupleTy),
+    /// `fn(A, B) -> R`: a function value, an object holding its function and its captures.
+    Fn(FnTy),
+    /// A captured `var`'s box, holding a value of the type: a reference.
+    Cell(Box<Ty>),
+    /// Type parameter `k` of the generic being checked (S3g): opaque, its constraints' members.
+    Param(int),
+    /// `T.Item`: the associated type `Item`, which interface `k` declares, of a type parameter;
+    /// the type's answer in each copy (S3i).
+    Assoc(Box<Ty>, int, string),
+}
+
+/// A type parameter: its name and the interfaces its argument satisfies.
+struct TypeParamInfo :: [Debug] {
+    name: string,
+    constraints: int[],
+    // the associated types its constraints fix: `T :: [Iterator<Item = int>]` (S3i)
+    fixed: FixedTy[] = [],
+}
+
+/// An associated type a constraint fixes: the interface that declares it, its name, its type.
+struct FixedTy :: [Debug] {
+    iface: int,
+    name: string,
+    ty: Ty,
+}
+
+/// A function type's parameters and result.
+pub struct FnTy :: [Debug, Equatable] {
+    params: Ty[],
+    result: Box<Ty>,
+
+    /// Whether `o` takes the same parameters and gives the same result.
+    pub fn equals(o: FnTy): bool {
+        if (this.params.length() != o.params.length() || this.result.value != o.result.value) {
+            return false;
+        }
+        var k = 0;
+        while (k < this.params.length()) {
+            if (this.params[k] != o.params[k]) {
+                return false;
+            }
+            k += 1;
+        }
+        return true;
+    }
+}
+
+/// A capture of a lambda: the value's type, and whether it is a `var`'s box.
+struct CaptureInfo :: [Debug] {
+    ty: Ty,
+    isCell: bool,
+}
+
+/// A tuple's elements, and the labels its written type gave them (`""` where none). A label is a
+/// name for the reader and no part of the type (Lyric 5 §6 rule 3): equality skips it.
+pub struct TupleTy :: [Debug, Equatable] {
+    elements: Ty[],
+    labels: string[],
+
+    /// Whether `o` has the same elements, whatever their labels.
+    pub fn equals(o: TupleTy): bool {
+        if (this.elements.length() != o.elements.length()) {
+            return false;
+        }
+        var k = 0;
+        while (k < this.elements.length()) {
+            if (this.elements[k] != o.elements[k]) {
+                return false;
+            }
+            k += 1;
+        }
+        return true;
+    }
+}
+
+/// The tuple type `t` is; none of no elements where it is no tuple.
+fn tupleOf(t: Ty): TupleTy {
+    return match (t) {
+        .Tuple(tt) => tt,
+        _ => TupleTy { elements = [], labels = [] },
+    };
+}
+
+/// Where element `k` of a tuple starts among its slots: the slots of the elements before it.
+fn elemOffset(tt: TupleTy, k: int, types: TypeInfo[]): (int, int) {
+    var s = 0;
+    var r = 0;
+    var j = 0;
+    while (j < k) {
+        let (ns, nr) = slotsOf(tt.elements[j], types);
+        s += ns;
+        r += nr;
+        j += 1;
+    }
+    return (s, r);
 }
 
 enum TypeKind :: [Equatable, Debug] {
     Struct,
     Class,
     Enum,
+    Interface,
+    /// `int`, `float`, `bool`, `char`, `string`: their methods and conformances (S3f).
+    Builtin,
 }
 
 struct FieldInfo :: [Debug] {
@@ -42,7 +143,44 @@ class TypeInfo {
     kind: TypeKind,
     var fields: FieldInfo[] = [],
     var variants: string[] = [],
+    // each variant's payload — positions named "0", "1", … — and whether it has named fields
+    var variantFields: FieldInfo[][] = [],
+    var variantNamed: bool[] = [],
+    // whether a variant carries a payload: the enum's values are then objects, else `int`s
+    var payload: bool = false,
     methods: Map<string, int>,
+    // an interface's: its parents, its members' names in order and the slot of each
+    var parents: int[] = [],
+    var memberNames: string[] = [],
+    var slotOf: Map<string, int> = Map<string, int>.new(),
+    var sealed: bool = false,
+    // a conformer's: every interface it conforms to, parents included, and the function each of
+    // their slots runs on it
+    var ifaces: int[] = [],
+    var witness: Map<int, int> = Map<int, int>.new(),
+    // a generic type's parameters; an instance's template and arguments — the template is the
+    // instance with its own parameters
+    var typeParams: TypeParamInfo[] = [],
+    var template: int = -1,
+    var args: Ty[] = [],
+    // an instance whose fields the template has given, and whose table the copies have made
+    var filled: bool = false,
+    var tabled: bool = false,
+    // an interface whose members name `Self` beyond the receiver or are static: they are generic
+    // over `Self`, its type parameter 0 (S3i); one that is a constraint only, and why
+    var selfParam: bool = false,
+    var constraintOnly: bool = false,
+    var onlyWhy: string = "",
+    // a constraint only whatever is fixed: a member names `Self` itself, or is static or generic
+    var hardOnly: bool = false,
+    // an interface's associated types; a type's answers to them, by name (S3i)
+    var assocNames: string[] = [],
+    var answers: Map<string, Ty> = Map<string, Ty>.new(),
+    // its constants, `static let`, by name: the globals that hold them (S3i)
+    var staticLets: Map<string, int> = Map<string, int>.new(),
+    // a generic type's conformances a block gives under constraints: the block's parameters,
+    // by interface (05 §13 rule 3)
+    var condIfaces: Map<int, TypeParamInfo[]> = Map<int, TypeParamInfo[]>.new(),
 }
 
 struct ParamInfo :: [Debug] {
@@ -63,6 +201,25 @@ class FnInfo {
     var returns: Ty = Ty.Void,
     var locals: Ty[] = [],
     var body: TStmt[] = [],
+    // a lambda's function: its first parameter, local 0, is the function value itself
+    var env: bool = false,
+    // the locals a lambda captures as `var`s: they live in a box
+    var boxed: bool[] = [],
+    // what a lambda's function value holds after its function's index
+    var captures: CaptureInfo[] = [],
+    // an interface's member without a body
+    var abstract: bool = false,
+    // a generic's type parameters; its body, checked once, kept for the copies
+    var typeParams: TypeParamInfo[] = [],
+    var template: TStmt[] = [],
+    // a lambda made in a generic's body: the generic whose type parameters it uses
+    var templateOf: int = -1,
+    // a shared copy's hidden parameters (S3i): the locals that receive the descriptors of its
+    // type arguments, after the parameters
+    var descParams: int[] = [],
+    // a member of a generic extend block: the block's parameters, whose constraints an instance
+    // meets or has no such member (05 §13 rule 2)
+    var blockParams: TypeParamInfo[] = [],
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).
@@ -110,6 +267,43 @@ fn typeOf(e: TExpr): Ty {
         .Block(_, _, t) => t,
         .Loop(_, t) => t,
         .Unit => Ty.Void,
+        .Null(t) => t,
+        .Wrap(_, t) => t,
+        .Narrow(_, t) => t,
+        .Unwrap(_, t) => t,
+        .IsNull(_) => Ty.Bool,
+        .Coalesce(_, _, t) => t,
+        .Tuple(_, t) => t,
+        .Elem(_, _, t) => t,
+        .MakeVariant(i, _, _) => Ty.Named(i),
+        .Tag(_) => Ty.Int,
+        .Payload(_, _, _, _, t) => t,
+        .Unreachable(t) => t,
+        .Closure(_, _, t) => t,
+        .Captured(_, t) => t,
+        .CapturedCell(_, t) => t,
+        .CellOf(_, t) => t,
+        .CallValue(_, _, t) => t,
+        .Upcast(_, t) => t,
+        .BoxOf(_, _, t) => t,
+        .Unbox(_, t) => t,
+        .IsType(_, _, _) | .IsIface(_, _, _) | .SameRef(_, _) => Ty.Bool,
+        .CallGeneric(_, _, _, t) => t,
+        .CallConstraint(_, _, _, _, _, t) => t,
+        .CallIface(_, _, t) => t,
+        .IsParam(_, _, _) | .IsDesc(_, _) => Ty.Bool,
+        .DescOfType(_, t) => t,
+        .InstDesc(_, _, t) => t,
+        .DescOfValue(_, t) => t,
+        .DescArg(_, _, t) => t,
+        .DescVariant(_, _, t) => t,
+        .NewD(_, _, _, _, t) => t,
+        .DebugParam(_, _, t) => t,
+        .CallStatic(_, _, _, _, _, t) => t,
+        .CallBound(_, _, _, _, _, t) => t,
+        .GenericValue(_, _, t) => t,
+        .CallStaticD(_, _, _, t) => t,
+        .TextParam(_, _, t) => t,
         .Unknown => Ty.Unknown,
     };
 }
@@ -120,6 +314,8 @@ enum Place :: [Debug] {
     Global(int),
     /// A field of an object, by index; the object is evaluated once.
     Field(Box<TExpr>, int),
+    /// A captured `var`, through the box capture `k` of the lambda's function value holds.
+    CapturedCell(int),
 }
 
 enum TExpr :: [Debug] {
@@ -154,7 +350,98 @@ enum TExpr :: [Debug] {
     Loop(TStmt[], Ty),
     /// The value of what gives none: a `void` call's, a block's without a value.
     Unit,
+    /// `null` of an optional type.
+    Null(Ty),
+    /// A value of `T` where a `?T` is taken: present (03 O).
+    Wrap(Box<TExpr>, Ty),
+    /// An optional's value where it is known to be there — a narrowed binding: no check.
+    Narrow(Box<TExpr>, Ty),
+    /// `x!`: the optional's value, the script's panic where it is absent (`LYS-RT0004`).
+    Unwrap(Box<TExpr>, Ty),
+    /// Whether an optional is absent, a `bool`.
+    IsNull(Box<TExpr>),
+    /// `a ?? b`: `a`'s value where it is there, else `b`.
+    Coalesce(Box<TExpr>, Box<TExpr>, Ty),
     /// After a fault.
+    /// `(a, b)`: the elements' slots in order, no object.
+    Tuple(TExpr[], Ty),
+    /// Element `k` of a tuple, read where it lies.
+    Elem(Box<TExpr>, int, Ty),
+    /// A variant of an enum with payloads built: the enum, the variant, the payload's values.
+    MakeVariant(int, int, TExpr[]),
+    /// Which variant an enum's value is, as an `int`.
+    Tag(Box<TExpr>),
+    /// Field `k` of the payload of variant `v` of enum `t`, of a value that is that variant.
+    Payload(Box<TExpr>, int, int, int, Ty),
+    /// Where no arm of a `match` took the value — never reached once the arms are exhaustive.
+    Unreachable(Ty),
+    /// A function value: the function, what it captures in order, its type.
+    Closure(int, TExpr[], Ty),
+    /// Capture `k` of the running lambda's function value, as it holds it.
+    Captured(int, Ty),
+    /// The value in the box capture `k` holds.
+    CapturedCell(int, Ty),
+    /// The box of local `id`, which a lambda captures; typed `Cell(T)`.
+    CellOf(int, Ty),
+    /// A call through a function value.
+    CallValue(Box<TExpr>, TExpr[], Ty),
+    /// A value as a value of an interface it conforms to, or of a parent of its interface.
+    Upcast(Box<TExpr>, Ty),
+    /// A call through an interface value: the method's slot, the receiver and the arguments.
+    CallIface(int, TExpr[], Ty),
+    /// A value of a scalar type or a `string` as an interface value: put in a box of the type
+    /// of the program `k` names.
+    BoxOf(Box<TExpr>, int, Ty),
+    /// The value a box holds.
+    Unbox(Box<TExpr>, Ty),
+    /// Whether an interface value holds a value of the program's type `k`; the type tested.
+    IsType(Box<TExpr>, int, Ty),
+    /// Whether it holds a value of a type that conforms to interface `k`.
+    IsIface(Box<TExpr>, int, Ty),
+    /// Whether two references are one object: `==` on a class that is an `Identity`.
+    SameRef(Box<TExpr>, Box<TExpr>),
+    /// A call of a generic function with the type arguments it bound; an instance's call once
+    /// the copies are made.
+    CallGeneric(int, Ty[], TExpr[], Ty),
+    /// A member of a constraint of type parameter `k` called on a value of it: the interface, the
+    /// member, its slot, the receiver first among the arguments.
+    CallConstraint(int, int, string, int, TExpr[], Ty),
+    /// `x is T` for type parameter `k` of the generic being checked; a test of the argument's
+    /// type in each copy (S3i).
+    IsParam(Box<TExpr>, int, Ty),
+    /// S3i, descriptors (11 Gen), each a reference of the type given last: the descriptor of a
+    /// type known where it stands.
+    DescOfType(Ty, Ty),
+    /// The descriptor of the template of shape `t` at the descriptors given: a type whose
+    /// arguments a shared copy knows at run time only.
+    InstDesc(Ty, TExpr[], Ty),
+    /// The descriptor of the object's type; a variant's is its enum's.
+    DescOfValue(Box<TExpr>, Ty),
+    /// Type argument `k` of a descriptor; variant `k` of an enum's.
+    DescArg(Box<TExpr>, int, Ty),
+    DescVariant(Box<TExpr>, int, Ty),
+    /// An object with the layout of program type `k` (variant `v`, -1 for a struct or a class)
+    /// whose descriptor is the one given: what a shared copy builds of a type it knows at run
+    /// time only.
+    NewD(Box<TExpr>, int, int, TExpr[], Ty),
+    /// Whether the value is one of the type the descriptor names.
+    IsDesc(Box<TExpr>, Box<TExpr>),
+    /// A static member of a constraint of type parameter `k`, reached through it (`T.parse(s)`):
+    /// the interface, the member, its slot, the arguments (S3i).
+    CallStatic(int, int, string, int, TExpr[], Ty),
+    /// A generic function as a value at type arguments: `id<int>`, or `id` where the position's
+    /// function type binds them; a thunk of its copy, holding the descriptors it takes (S3i).
+    GenericValue(int, Ty[], Ty),
+    /// A member of a bound of an associated type, called on a value of it (`it.next()` with
+    /// `it: A.Iter`): the type, the interface, the member, its slot, the arguments (S3i).
+    CallBound(Ty, int, string, int, TExpr[], Ty),
+    /// The function in slot `k` of the descriptor given, called with the arguments: a static
+    /// member through a shared copy's type parameter.
+    CallStaticD(int, Box<TExpr>, TExpr[], Ty),
+    /// The Debug form of a value of type parameter `k`: the argument's in each copy (S3i); and
+    /// its text where it stands alone, `{x}` — a string's itself.
+    DebugParam(Box<TExpr>, int, Ty),
+    TextParam(Box<TExpr>, int, Ty),
     Unknown,
 }
 
@@ -171,6 +458,8 @@ enum TStmt :: [Debug] {
     Continue(int),
     Return(?TExpr, int),
     Block(TStmt[], int),
+    /// `var x: T` without a value: its box where a lambda captures it.
+    DeclareLocal(int, int),
 }
 
 /// The checked program: its types, its functions (one of them `main`), its globals.
@@ -179,13 +468,54 @@ struct Program {
     functions: FnInfo[],
     globals: GlobalInfo[],
     main: int,
+    // the interface methods' slots, numbered across the program
+    slots: int,
+    // the slot of every type's Debug form, -1 where nothing prints through a table; the
+    // function a function value's table holds there (S3i)
+    debugSlot: int = -1,
+    fnDebug: int = -1,
+}
+
+/// How many scalar and reference slots a value of the type holds (11 V2): one of its file for a
+/// scalar or a reference. `?T` over a reference that is no optional is that reference, `nil` for
+/// null; any other `?T` holds the slots of `T` and, after them, one scalar for its presence —
+/// `?int` two scalar slots, `??int` three. The value comes first, so a narrowed optional is read
+/// where it lies.
+fn slotsOf(t: Ty, types: TypeInfo[]): (int, int) {
+    return match (t) {
+        .Void | .Never | .Unknown => (0, 0),
+        .Optional(inner) => {
+            let (s, r) = slotsOf(inner.value, types);
+            if (isPlainRef(inner.value, types)) (s, r) else (s + 1, r)
+        }
+        // a tuple is its elements' slots in order, inline
+        .Tuple(tt) => {
+            var s = 0;
+            var r = 0;
+            for (e in tt.elements) {
+                let (ns, nr) = slotsOf(e, types);
+                s += ns;
+                r += nr;
+            }
+            (s, r)
+        }
+        _ => if (isScalar(t, types)) (1, 0) else (0, 1),
+    };
+}
+
+/// Whether the type is a reference that is no optional: its `?` costs no slot.
+fn isPlainRef(t: Ty, types: TypeInfo[]): bool {
+    return match (t) {
+        .Optional(_) | .Tuple(_) | .Void | .Never | .Unknown => false,
+        _ => !isScalar(t, types),
+    };
 }
 
 /// Whether a value of this type lives in the scalar file (true) or the reference file of the VM.
 fn isScalar(t: Ty, types: TypeInfo[]): bool {
     return match (t) {
         .Int | .Float | .Bool | .Char => true,
-        .Named(i) => types[i].kind == .Enum,
+        .Named(i) => types[i].kind == .Enum && !types[i].payload,
         _ => false,
     };
 }

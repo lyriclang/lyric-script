@@ -76,6 +76,26 @@ pub enum Op :: [Variants, Equatable] {
     GetGR,
     SetGR,
     CallN,
+    // S3: values of several slots, and null.
+    RetN,
+    CheckS,
+    CheckR,
+    IsNil,
+    // S3e: a call through a function value.
+    CallV,
+    // S3f: a call through an interface value, and what an interface value holds.
+    CallI,
+    IsT,
+    IsI,
+    // S3i: descriptors as values (11 Gen).
+    LoadT,
+    InstT,
+    DescOf,
+    DescArg,
+    DescVar,
+    NewD,
+    IsD,
+    CallS,
 }
 
 /// What an operand of an operation names.
@@ -187,6 +207,22 @@ pub fn info(op: Op): OpInfo {
         .GetGR => OpInfo { mnemonic = "get.gr", operands = [.Ref, .GlobalR] },
         .SetGR => OpInfo { mnemonic = "set.gr", operands = [.GlobalR, .Ref] },
         .CallN => OpInfo { mnemonic = "call.n", operands = [.Native, .ScalarBase, .RefBase] },
+        .RetN => OpInfo { mnemonic = "ret.n", operands = [.ScalarBase, .RefBase] },
+        .CheckS => OpInfo { mnemonic = "check.s", operands = [.Scalar] },
+        .CheckR => OpInfo { mnemonic = "check.r", operands = [.Ref] },
+        .IsNil => OpInfo { mnemonic = "is.nil", operands = [.Scalar, .Ref] },
+        .CallV => OpInfo { mnemonic = "call.v", operands = [.ScalarBase, .RefBase] },
+        .CallI => OpInfo { mnemonic = "call.i", operands = [.Imm, .ScalarBase, .RefBase] },
+        .IsT => OpInfo { mnemonic = "is.t", operands = [.Scalar, .Ref, .Imm] },
+        .IsI => OpInfo { mnemonic = "is.i", operands = [.Scalar, .Ref, .Imm] },
+        .LoadT => OpInfo { mnemonic = "load.t", operands = [.Ref, .Type] },
+        .InstT => OpInfo { mnemonic = "inst.t", operands = [.Ref, .Type, .RefBase] },
+        .DescOf => OpInfo { mnemonic = "desc.of", operands = [.Ref, .Ref] },
+        .DescArg => OpInfo { mnemonic = "desc.arg", operands = [.Ref, .Ref, .Imm] },
+        .DescVar => OpInfo { mnemonic = "desc.var", operands = [.Ref, .Ref, .Imm] },
+        .NewD => OpInfo { mnemonic = "new.d", operands = [.Ref, .Ref] },
+        .IsD => OpInfo { mnemonic = "is.d", operands = [.Scalar, .Ref, .Ref] },
+        .CallS => OpInfo { mnemonic = "call.s", operands = [.Imm, .ScalarBase, .RefBase] },
     };
 }
 

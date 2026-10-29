@@ -41,7 +41,7 @@ summary = "An `int` operation's result does not fit 64 bits. The code and its me
 title = "a null value used"
 severity = "panic"
 area = "03-types"
-summary = "A field of `null` read or written. The code and its meaning are Lyric 5's LYR-RT0004."
+summary = "An optional unwrapped with `!` where it is null, or a field of `null` read or written. The code and its meaning are Lyric 5's LYR-RT0004."
 
 [LYS-RT0006]
 title = "stack overflow"
@@ -79,8 +79,8 @@ severity = "error"
 area = "14-cli"
 summary = "Reported when a command cannot read the file it is given. The exit code is 2."
 
-# The lexer (S2b). Below 0100 a code means what Lyric 5's LYR-LEX code of the same number means;
-# from 0100 on the codes are Lyric-Script's own.
+# The lexer (S2b). A code means what Lyric 5's LYR-LEX code of the same number means;
+# Lyric-Script's own codes start at 0900.
 
 [LYS-LEX0001]
 title = "a character that starts no token, or a name beyond ASCII"
@@ -152,7 +152,7 @@ severity = "error"
 area = "01-lexical"
 summary = "`1.` or `.5`: a digit stands on both sides of a float's point. The literal is refused once and read as the float it means. `3.show()` is a call and `1..3` a range; after an operand `.5` names a tuple's element. Lyric 5's LYR-LEX0016."
 
-[LYS-LEX0100]
+[LYS-LEX0900]
 title = "a frontmatter block that is not closed"
 severity = "error"
 area = "01-lexical"
@@ -166,7 +166,7 @@ csv = "1"
 println("hello")
 '''
 
-[LYS-LEX0101]
+[LYS-LEX0901]
 title = "a line that starts with a sign"
 severity = "warning"
 area = "01-lexical"
@@ -223,8 +223,8 @@ severity = "error"
 area = "01-lexical"
 summary = "The closing line's indentation is taken off every line; a line with less of it is refused (a blank one need not have it). Lyric 5's LYR-LEX0015."
 
-# The parser (S2c). Below 0100 a code means what Lyric 5's LYR-PAR code of the same number
-# means; from 0100 on the codes are Lyric-Script's own.
+# The parser (S2c). A code means what Lyric 5's LYR-PAR code of the same number means;
+# Lyric-Script's own codes start at 0900.
 
 [LYS-PAR0001]
 title = "a token after one whole statement"
@@ -273,6 +273,12 @@ title = "an angle bracket of a type list is missing"
 severity = "error"
 area = "02-grammar"
 summary = "A list of type arguments, `List<int>`, is not closed by `>`. Lyric 5's LYR-PAR0009."
+
+[LYS-PAR0010]
+title = "a tuple of fewer than two elements, or a label given twice"
+severity = "error"
+area = "03-types"
+summary = "`(1,)` or `(int,)`: a tuple has two elements or more, one value in parentheses is a grouping; and a tuple type gives each label once. Lyric 5's LYR-PAR0010."
 
 [LYS-PAR0011]
 title = "a type is missing"
@@ -338,13 +344,25 @@ summary = "`type Name = T`. Lyric 5's LYR-PAR0028."
 title = "fields without ',' or a line end between them"
 severity = "error"
 area = "02-grammar"
-summary = "The fields of a struct, a class or an initializer end at `,` or at a line end. Lyric 5's LYR-PAR0029."
+summary = "The fields of a struct, a class, an initializer or a `with` end at `,` or at a line end. Lyric 5's LYR-PAR0029."
 
 [LYS-PAR0031]
 title = "a parameter or field without ':' before its type"
 severity = "error"
 area = "02-grammar"
 summary = "`name: Type`. Lyric 5's LYR-PAR0031."
+
+[LYS-PAR0034]
+title = "a match arm without its '=>'"
+severity = "error"
+area = "09-patterns"
+summary = "An arm is a pattern, a guard if any, `=>` and its value. Lyric 5's LYR-PAR0034."
+
+[LYS-PAR0035]
+title = "match arms without a separator"
+severity = "error"
+area = "09-patterns"
+summary = "Arms stand apart by `,` or a line end. A line that begins with `.` goes on the line before (09 NL rule 3), so a value arm before a `.Variant` arm on the next line ends with `,`. Lyric 5's LYR-PAR0035."
 
 [LYS-PAR0036]
 title = "an if expression without 'else'"
@@ -356,13 +374,19 @@ summary = "Where an `if` gives a value, both branches give one: the `else` is re
 title = "a field in an initializer without '='"
 severity = "error"
 area = "02-grammar"
-summary = "`Point { x = 1 }`, or `Point { x }` for `x = x`. Lyric 5's LYR-PAR0037."
+summary = "`Point { x = 1 }`, or `Point { x }` for `x = x`; a field of `with` always has its `=`. Lyric 5's LYR-PAR0037."
 
 [LYS-PAR0045]
 title = "nesting deeper than the parser carries"
 severity = "error"
 area = "02-grammar"
 summary = "Expressions, blocks and prefix operators nest at most 64 levels: the parser recurses on its caller's stack. Lyric 5's LYR-PAR0045."
+
+[LYS-PAR0047]
+title = "'by' in an enum's list"
+severity = "error"
+area = "05-interfaces"
+summary = "An enum delegates nothing: `I by field` stands in a struct's or a class's list. Lyric 5's LYR-PAR0047."
 
 [LYS-PAR0053]
 title = "a visibility word where none belongs"
@@ -376,26 +400,32 @@ severity = "error"
 area = "02-grammar"
 summary = "`a < b < c` is refused rather than read left to right: write each comparison on its own and join them with `&&`. Lyric 5's LYR-PAR0059."
 
-[LYS-PAR0100]
+[LYS-PAR0060]
+title = "a default on a local function's parameter"
+severity = "error"
+area = "03-types"
+summary = "A local function is one closure: its parameters take no default. Lyric 5's LYR-PAR0060."
+
+[LYS-PAR0900]
 title = "a digit beyond its literal's base"
 severity = "error"
 area = "02-grammar"
 summary = "A digit the literal's base does not have: `0b12`, `0o9`."
 
-[LYS-PAR0101]
+[LYS-PAR0901]
 title = "a field in an enum"
 severity = "error"
 area = "02-grammar"
 summary = "An enum holds variants and methods (spec 2 D3)."
 
-[LYS-PAR0102]
+[LYS-PAR0902]
 title = "an entry of a map literal without ':'"
 severity = "error"
 area = "02-grammar"
 summary = "`[\"a\": 1, \"b\": 2]`: every entry is `key: value` (spec 2 D5)."
 
-# The checker (S2d). Below 0100 a code means what Lyric 5's LYR-SEM code of the same number
-# means; from 0100 on the codes are Lyric-Script's own.
+# The checker (S2d). A code means what Lyric 5's LYR-SEM code of the same number means;
+# Lyric-Script's own codes start at 0900.
 
 [LYS-SEM0001]
 title = "a value of another type than the place takes"
@@ -421,6 +451,12 @@ severity = "error"
 area = "07-statements"
 summary = "A condition is a `bool`. Lyric 5's LYR-SEM0004."
 
+[LYS-SEM0005]
+title = "a null operator on a value that is never null"
+severity = "error"
+area = "03-types"
+summary = "`!`, `??`, `?.`, `??=`, `if let` or `while let` on a value whose type is no optional: it is never null (`== null` there is LYS-SEM0059). Lyric 5's LYR-SEM0005."
+
 [LYS-SEM0006]
 title = "a conversion that does not exist"
 severity = "error"
@@ -437,7 +473,7 @@ summary = "`this` is a method's receiver. Lyric 5's LYR-SEM0008."
 title = "a binding whose type nothing fixes"
 severity = "error"
 area = "03-types"
-summary = "A binding's value gives no value, or a function's type depends on itself: write the type. Lyric 5's LYR-SEM0010."
+summary = "A binding has neither a type nor a value, its value gives none or is a bare `null`, a `var x = null` has nothing in its function that fixes its type (03 Leer), or a function's type depends on itself: write the type. Lyric 5's LYR-SEM0010."
 
 [LYS-SEM0011]
 title = "a name in type position that is no type"
@@ -449,7 +485,13 @@ summary = "The name names no type. Lyric 5's LYR-SEM0011."
 title = "a member the type does not have"
 severity = "error"
 area = "05-interfaces"
-summary = "The type has no field, method or variant of the name; `Point(1, 2)` is `Point.new(1, 2)` and needs a `static fn new`. Lyric 5's LYR-SEM0012."
+summary = "The type has no field, method or variant of the name, a tuple no element at the position or under the label; `Point(1, 2)` is `Point.new(1, 2)` and needs a `static fn new`. Lyric 5's LYR-SEM0012."
+
+[LYS-SEM0013]
+title = "a call on something that is no function"
+severity = "error"
+area = "03-types"
+summary = "A call `f(…)` whose callee is no function value, or a function named without a call where several of the name exist and the position's function type does not pick one. Lyric 5's LYR-SEM0013."
 
 [LYS-SEM0014]
 title = "a call with the wrong number of arguments"
@@ -461,7 +503,7 @@ summary = "The function takes another number of arguments, or one without a defa
 title = "a field the type does not declare"
 severity = "error"
 area = "03-types"
-summary = "An initializer names a field the type does not have. Lyric 5's LYR-SEM0015."
+summary = "An initializer, a field pattern or a `with` names a field the type does not have. Lyric 5's LYR-SEM0015."
 
 [LYS-SEM0016]
 title = "branches whose types do not unify"
@@ -475,11 +517,23 @@ severity = "error"
 area = "07-statements"
 summary = "A function with a result type can reach its end without a `return`. Lyric 5's LYR-SEM0017."
 
+[LYS-SEM0018]
+title = "a variable read before it is surely assigned"
+severity = "error"
+area = "07-statements"
+summary = "A `var` declared without a value is read on a way no assignment has reached: a branch without `else`, a `while` or `for` that may not run, the right side of `&&`, `||` or `??`. Lyric 5's LYR-SEM0018."
+
 [LYS-SEM0019]
 title = "a write to something that cannot be written"
 severity = "error"
 area = "07-statements"
-summary = "A `let`, a struct's field, or a class's field that is no `var`. Lyric 5's LYR-SEM0019."
+summary = "A `let`, a struct's field, or a class's field that is no `var`; or a field reached through `?.`, which narrows first. Lyric 5's LYR-SEM0019."
+
+[LYS-SEM0020]
+title = "a conformance that leaves an interface member unimplemented"
+severity = "error"
+area = "05-interfaces"
+summary = "A type that conforms to an interface implements every member of its chain that has no default. Lyric 5's LYR-SEM0020."
 
 [LYS-SEM0022]
 title = "an expression statement without an effect"
@@ -493,11 +547,59 @@ severity = "error"
 area = "03-types"
 summary = "`List` takes one, `Map` two, the other types none (generics come with S3). Lyric 5's LYR-SEM0026."
 
+[LYS-SEM0027]
+title = "a member of an associated type that no bound provides"
+severity = "error"
+area = "05-interfaces"
+summary = "A generic body calls a method on a value of an associated type, `it.next()` with `it: A.Iter`, that none of the type's bounds declares; without a bound it has no member. Lyric 5's LYR-SEM0027."
+
+[LYS-SEM0028]
+title = "a type argument that does not satisfy its parameter's constraints"
+severity = "error"
+area = "03-types"
+summary = "An argument, written or inferred, conforms to every interface its type parameter's constraints name. Lyric 5's LYR-SEM0028."
+
+[LYS-SEM0029]
+title = "a pattern that cannot match the value's type"
+severity = "error"
+area = "09-patterns"
+summary = "`null` against a value that is never null, a literal or range of another type, a tuple pattern of another arity, a variant the enum does not have, the dotted form or a field pattern against another type. Lyric 5's LYR-SEM0029."
+
 [LYS-SEM0031]
 title = "an enum variant used against its shape"
 severity = "error"
 area = "03-types"
 summary = "An enum's values are its variants, `Color.Red`; it has no initializer. Lyric 5's LYR-SEM0031."
+
+[LYS-SEM0032]
+title = "alternatives that bind different names"
+severity = "error"
+area = "09-patterns"
+summary = "Every alternative of `P | Q` binds the same names at the same types. Lyric 5's LYR-SEM0032."
+
+[LYS-SEM0042]
+title = "an implementation whose signature differs from the member's"
+severity = "error"
+area = "05-interfaces"
+summary = "A conformer's method takes the member's parameters and gives its result, exactly — its own type where the interface writes `Self` —, and is static where the member is. Lyric 5's LYR-SEM0042."
+
+[LYS-SEM0043]
+title = "two defaults of one name, which the type does not write"
+severity = "error"
+area = "05-interfaces"
+summary = "A type conforms to two interfaces whose defaults give a member of the same name and writes none itself: it writes the member, one function for both. Lyric 5's LYR-SEM0043."
+
+[LYS-SEM0045]
+title = "a lambda parameter whose type nothing gives"
+severity = "error"
+area = "03-types"
+summary = "A parameter without a written type in a lambda where no function type is expected, or a trailing block's `it` where the expected function does not take one parameter. Lyric 5's LYR-SEM0045."
+
+[LYS-SEM0050]
+title = "a match that does not cover every value"
+severity = "error"
+area = "09-patterns"
+summary = "The unguarded arms cover every value of the matched type: an enum's variants, `false` and `true`, `null` and the values of an optional, a tuple through its columns; any other type needs an arm with `_` or a name. The diagnostic names a value no arm takes, written as a pattern. Lyric 5's LYR-SEM0050."
 
 [LYS-SEM0052]
 title = "a type used as a value"
@@ -509,13 +611,25 @@ summary = "A type's name stands where a value is expected. Lyric 5's LYR-SEM0052
 title = "a member that needs a receiver named without one"
 severity = "error"
 area = "05-interfaces"
-summary = "A method is called through its type; it needs a value to be called on. Lyric 5's LYR-SEM0055."
+summary = "A method is called through its type, or through a type parameter, and needs a value to be called on; or a static member is called on a value, where the type reaches it. Lyric 5's LYR-SEM0055."
+
+[LYS-SEM0058]
+title = "a destructuring that does not fit the value"
+severity = "error"
+area = "03-types"
+summary = "`let (a, b) = …` takes apart a value that is no tuple, or of another number of elements. Lyric 5's LYR-SEM0058."
 
 [LYS-SEM0059]
 title = "an equality the type does not support"
 severity = "error"
 area = "08-expressions"
-summary = "`==` and `!=` compare two values of one type. Lyric 5's LYR-SEM0059."
+summary = "`==` and `!=` compare two values of one type; `== null` asks an optional, never a value that cannot be null. Lyric 5's LYR-SEM0059."
+
+[LYS-SEM0060]
+title = "a type argument nothing gives"
+severity = "error"
+area = "03-types"
+summary = "A type parameter that occurs in no argument and not in the expected type is not inferred: write it. Lyric 5's LYR-SEM0060."
 
 [LYS-SEM0064]
 title = "a type alias that expands to itself"
@@ -524,16 +638,22 @@ area = "03-types"
 summary = "An alias names itself through its own expansion. Lyric 5's LYR-SEM0064."
 
 [LYS-SEM0070]
-title = "a field written twice in one initializer"
+title = "a field written twice in one initializer or 'with'"
 severity = "error"
 area = "03-types"
-summary = "An initializer gives a field twice. Lyric 5's LYR-SEM0070."
+summary = "An initializer or a `with` gives a field twice. Lyric 5's LYR-SEM0070."
 
 [LYS-SEM0074]
 title = "a static member called on a value"
 severity = "error"
 area = "05-interfaces"
 summary = "A static function is called through its type. Lyric 5's LYR-SEM0074."
+
+[LYS-SEM0078]
+title = "a name in a conformance list that is no interface"
+severity = "error"
+area = "05-interfaces"
+summary = "A type's list and an interface's parents name interfaces only, and an interface does not extend itself. Lyric 5's LYR-SEM0078."
 
 [LYS-SEM0085]
 title = "two functions of one name taking the same number of arguments"
@@ -547,11 +667,53 @@ severity = "error"
 area = "08-expressions"
 summary = "No function of the name takes as many arguments as the call gives. Lyric 5's LYR-SEM0087."
 
+[LYS-SEM0097]
+title = "a name bound twice in one pattern"
+severity = "error"
+area = "03-types"
+summary = "One pattern binds a name once: `let (a, a) = …` is refused. Lyric 5's LYR-SEM0097."
+
+[LYS-SEM0098]
+title = "a pattern that can fail where nothing takes the miss"
+severity = "error"
+area = "09-patterns"
+summary = "A `let` takes apart only what cannot fail; a pattern that tests goes in a `match`. Lyric 5's LYR-SEM0098."
+
+[LYS-SEM0104]
+title = "an if let whose pattern matches every value"
+severity = "warning"
+area = "09-patterns"
+summary = "`if (let P = e)` with a pattern that cannot fail always takes its block: write `let`. Lyric 5's LYR-SEM0104."
+
 [LYS-SEM0106]
 title = "an initializer that omits a field without a default"
 severity = "error"
 area = "03-types"
 summary = "Every field without a default is given; the message names them all. Lyric 5's LYR-SEM0106."
+
+[LYS-SEM0111]
+title = "a bare name in a pattern that spells a variant"
+severity = "error"
+area = "09-patterns"
+summary = "A bare name binds the whole value; where it spells a variant of the matched enum it would match every value under that name. Write `.Name` to test the variant. Lyric 5's LYR-SEM0111."
+
+[LYS-SEM0112]
+title = "an arm no value reaches"
+severity = "warning"
+area = "09-patterns"
+summary = "An arm after an unguarded arm that takes every value, or one repeating a unit variant, a literal or `null` an unguarded arm above tests. Lyric 5's LYR-SEM0112."
+
+[LYS-SEM0113]
+title = "`.Name` where no enum is expected"
+severity = "error"
+area = "03-types"
+summary = "`.Red`, `.Num(1)` and `.Rect { … }` name a member of the enum the position expects; where it expects none, name the enum: `Color.Red`. Lyric 5's LYR-SEM0113."
+
+[LYS-SEM0116]
+title = "'with' on something other than a struct"
+severity = "error"
+area = "03-types"
+summary = "The target of `with` is a class, a tuple, an enum or another type that is no struct, or a path among its fields reaches through a field that is no struct. Lyric 5's LYR-SEM0116."
 
 [LYS-SEM0119]
 title = "a named argument that does not fit the parameters"
@@ -564,6 +726,54 @@ title = "a second member of one name on a type"
 severity = "error"
 area = "03-types"
 summary = "A type has one field, method or variant of each name. Lyric 5's LYR-SEM0121."
+
+[LYS-SEM0123]
+title = "a delegation to what is no field holding the interface"
+severity = "error"
+area = "05-interfaces"
+summary = "`I by f` names a field of the type that conforms to `I`, or holds a value of it or of a child of it. Lyric 5's LYR-SEM0123."
+
+[LYS-SEM0124]
+title = "an extend block on what is no type it adds to"
+severity = "error"
+area = "05-interfaces"
+summary = "`extend T { … }` adds to a struct, a class, an enum or a built-in type; an interface is not extended directly. Lyric 5's LYR-SEM0124."
+
+[LYS-SEM0125]
+title = "a qualified call's receiver that does not conform"
+severity = "error"
+area = "05-interfaces"
+summary = "`I.m(x, …)` calls the member of interface `I` with `x` as its receiver; `x`'s type conforms to `I`. Lyric 5's LYR-SEM0125."
+
+[LYS-SEM0126]
+title = "an interface that is a constraint only, written as a value's type"
+severity = "error"
+area = "05-interfaces"
+summary = "An interface whose members name `Self` beyond the receiver, are static or generic, or that extends such an interface, has no values: a table would hold no one function for such a member. It is refused as the type of a binding, a parameter, a result or a field, and goes on as no type. Lyric 5's LYR-SEM0126."
+
+[LYS-SEM0127]
+title = "an interface's constant with a value"
+severity = "error"
+area = "05-interfaces"
+summary = "`static let zero: Self` in an interface asks each conformer for its own constant and has no value; the conformer writes `static let zero: P = …`. Lyric 5's LYR-SEM0127."
+
+[LYS-SEM0128]
+title = "an associated type with no answer, or none of the name"
+severity = "error"
+area = "05-interfaces"
+summary = "A conforming type answers every associated type of its interfaces that has no default, `type Item = int`; and a path `T.Item` names one that a constraint of `T` declares, or a type answers. Lyric 5's LYR-SEM0128."
+
+[LYS-SEM0129]
+title = "an answer no interface asks for"
+severity = "error"
+area = "05-interfaces"
+summary = "A type answers an associated type, `type Item = int`, that no interface it conforms to declares. Lyric 5's LYR-SEM0129."
+
+[LYS-SEM0131]
+title = "a type test of what is no interface value"
+severity = "error"
+area = "05-interfaces"
+summary = "`x is T` and a type pattern ask an interface value what it holds; on a value of a known type, and against a type no interface value holds, they are refused. Lyric 5's LYR-SEM0131."
 
 [LYS-SEM0147]
 title = "'break' or 'continue' outside a loop"
@@ -583,11 +793,35 @@ severity = "error"
 area = "07-statements"
 summary = "A `loop` gives a value at every break, or at none. Lyric 5's LYR-SEM0149."
 
+[LYS-SEM0133]
+title = "a conformance at a second site"
+severity = "error"
+area = "05-interfaces"
+summary = "A type conforms to an interface once, from whichever site — its own list, an extend block, a generic block; a second site for the same interface is refused where it stands. Lyric 5's LYR-SEM0133."
+
+[LYS-SEM0134]
+title = "a generic block's member on an instance that does not meet its constraints"
+severity = "error"
+area = "05-interfaces"
+summary = "A member of `extend<T :: [Show]> Box<T> { … }` is there on the instances whose arguments meet the block's constraints and on no other: `Box<int>` has no such member when `int` is no `Show`. Lyric 5's LYR-SEM0134."
+
+[LYS-SEM0160]
+title = "an associated type's answer does not meet its bound"
+severity = "error"
+area = "05-interfaces"
+summary = "A conforming type answers an associated type with a type that does not conform to the bound the interface declares for it, `type Iter :: [Iterator]` answered with `int`. Lyric 5's LYR-SEM0160."
+
 [LYS-SEM0176]
 title = "a name bound twice in one scope"
 severity = "error"
 area = "07-statements"
 summary = "A scope binds a name once; an inner scope may bind it again. Lyric 5's LYR-SEM0176."
+
+[LYS-SEM0197]
+title = "more copies of generics than there may be"
+severity = "error"
+area = "03-types"
+summary = "A program asks for more than 20 000 copies of generics, or a chain of copies each asking for the next. Lyric 5's LYR-SEM0197."
 
 [LYS-SEM0226]
 title = "a 'return' without the value the function returns"
@@ -595,23 +829,35 @@ severity = "error"
 area = "07-statements"
 summary = "The function has a result type; its `return` gives a value. Lyric 5's LYR-SEM0226."
 
-[LYS-SEM0100]
+[LYS-SEM0231]
+title = "a static member called through its interface"
+severity = "error"
+area = "05-interfaces"
+summary = "`Make.make(s)` is refused: the interface has no value to call it for; it is called on a type that conforms, `Item.make(s)`, or through a type parameter, `T.make(s)`. Lyric 5's LYR-SEM0231."
+
+[LYS-SEM0900]
 title = "a width type of Lyric 5"
 severity = "error"
 area = "03-types"
 summary = "Lyric-Script has one integer type, `int`, and one float type, `float` (spec 3 rule 1)."
 
-[LYS-SEM0101]
+[LYS-SEM0901]
 title = "'var' on a struct's field"
 severity = "error"
 area = "03-types"
 summary = "A struct's fields are never written; a class has `var` fields (spec 3 rule 3)."
 
-[LYS-SEM0102]
+[LYS-SEM0902]
 title = "'return' outside a function"
 severity = "error"
 area = "07-statements"
 summary = "A script ends at its end, or with `exit(n)` (spec 7 rule 1)."
+
+[LYS-SEM0903]
+title = "a global of the script without a value"
+severity = "error"
+area = "07-statements"
+summary = "A `let` or `var` of the script's outermost code takes its value where it is declared: a function may read it before any statement assigns it (spec 7)."
 
 # What the plan builds later, and the toolchain's own faults.
 

@@ -51,13 +51,14 @@ pub let tupleKind: int = -3;
 pub let optionalKind: int = -4;
 
 /// A region of a function's code, `start` up to before `end`, whose errors go to `target`: the
-/// error arrives in reference register `reg` (S4a). A function's regions are listed innermost
-/// first, so the first that covers an instruction takes its errors.
+/// error arrives in reference register `reg` (S4a), its record in `rec` (S4b). A function's
+/// regions are listed innermost first, so the first that covers an instruction takes its errors.
 pub struct Handler {
     start: int,
     end: int,
     target: int,
     reg: int,
+    rec: int,
 }
 
 /// A compiled function. Its first `paramsS` scalar registers and first `paramsR` reference
@@ -142,14 +143,16 @@ fn checkFunction(module: Module, f: Function, errors: List<CheckError>): void {
                 CheckError { function = f.name, pc = h.start, message = "a handler's target" }
             );
         }
-        if (h.reg < 0 || h.reg >= f.refs) {
-            errors.push(
-                CheckError {
-                    function = f.name,
-                    pc = h.start,
-                    message = f"a handler's register {h.reg} of {f.refs}",
-                }
-            );
+        for (x in [h.reg, h.rec]) {
+            if (x < 0 || x >= f.refs) {
+                errors.push(
+                    CheckError {
+                        function = f.name,
+                        pc = h.start,
+                        message = f"a handler's register {x} of {f.refs}",
+                    }
+                );
+            }
         }
     }
     var pc = 0;

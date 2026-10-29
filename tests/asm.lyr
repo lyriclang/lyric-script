@@ -92,14 +92,14 @@ fn aFunctionWithoutEndIsNamed(): void {
 
 let handled: string = """
     type Oops
-    fn f() -> s regs 1 1
+    fn f() -> s regs 1 2
     from:
         new r0, Oops
         throw r0
     to:
         load.i s0, 1
         ret.s s0
-        catch @from, @to, @to, r0
+        catch @from, @to, @to, r0, r1
     end
     """;
 
@@ -110,6 +110,6 @@ fn aHandlerReadsBackToTheSameModule(): void {
     assertEq(m.functions[0].handlers[0].end, 2);
     assertEq(check(m).length(), 0);
     let once = disassemble(m);
-    assertTrue(once.contains("    catch @L0, @L2, @L2, r0"), once);
+    assertTrue(once.contains("    catch @L0, @L2, @L2, r0, r1\n"), once);
     assertEq(disassemble(try! assemble(once, "demo")), once);
 }

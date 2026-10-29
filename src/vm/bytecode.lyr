@@ -105,6 +105,7 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
             w.word(h.end);
             w.word(h.target);
             w.word(h.reg);
+            w.word(h.rec);
         }
     }
     return w.out.toArray();
@@ -252,7 +253,10 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
             let end = try r.word();
             let target = try r.word();
             let reg = try r.word();
-            handlers.push(Handler { start = start, end = end, target = target, reg = reg });
+            let rec = try r.word();
+            handlers.push(
+                Handler { start = start, end = end, target = target, reg = reg, rec = rec }
+            );
             k -= 1;
         }
         functions.push(

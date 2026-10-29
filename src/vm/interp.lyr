@@ -10,9 +10,11 @@
 //! VM) is caught at a task boundary (`execute`).
 //!
 //! An error the script throws leaves frame after frame, each like a return without a value,
-//! until a region of a function takes it (S4a, 06 §5 rule 1). One that leaves every frame is
-//! reported: the VM calls its `message()` and its `cause()` in the same run, each call returning
-//! to a frame of function `-1`, and the run ends with `Outcome.Error`.
+//! until a region of a function takes it (S4a, 06 §5 rule 1); its record — where it was first
+//! thrown — goes with it, to the region's second register and on with `rethrow` (S4b). One that
+//! leaves every frame is reported: the VM calls its `message()` and its `cause()` in the same
+//! run, each call returning to a frame of function `-1`, and the run ends with `Outcome.Error`,
+//! the record's frames its trace.
 import std.collections { List };
 import std.core { arrayOf };
 import std.io { print, println };
@@ -20,6 +22,7 @@ import std.task { spawn, yieldNow };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
+    ErrorRecord,
     HeapRef,
     Nil,
     ScriptObject,
@@ -891,13 +894,17 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                 pc += 1;
             }
             // S4a: the error leaves frames until a handler covers where it stands — the throw, or
-            // in a caller the call (06 §5 rule 1)
-            .Throw => {
+            // in a caller the call (06 §5 rule 1); `throw` starts its record, `rethrow` goes on
+            // with the one in register `b` (S4b)
+            .Throw | .Rethrow => {
                 let value = r[br + a];
+                let held = if (ins.op == .Rethrow) r[br + b] else nilRef();
+                let record = if (held is ErrorRecord) held else recordOf(frames, fi, pc);
                 if (caught(module, frames, f, pc)) {
                     loop {
                         if (let h = handlerAt(f, pc)) {
                             r[br + h.reg] = value;
+                            r[br + h.rec] = record;
                             pc = h.target;
                             break;
                         }
@@ -931,7 +938,7 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                         else "";
                     let started = Report {
                         typeName = typeName,
-                        trace = traceOf(module, frames, fi, pc),
+                        trace = recordLines(module, record),
                         messages = List<string>.new(),
                         at = value,
                     };
@@ -978,11 +985,50 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
                         let q = textOf(r[y + 1]);
                         s[x] = (if (p < q) -1 else if (p == q) 0 else 1) as uint64;
                     }
+                    .TraceText => {
+                        let lines = List<string>.new();
+                        for (line in recordLines(module, r[y])) {
+                            lines.push(f"    {line}");
+                        }
+                        r[y] = ScriptString { text = lines.toArray().join("\n") };
+                    }
                 }
                 pc += 1;
             }
         }
     }
+}
+
+/// The record of an error thrown at `pc` of function `fi`: that frame, then its callers at their
+/// calls; a report's call stands for none.
+fn recordOf(frames: List<CallFrame>, fi: int, pc: int): ErrorRecord {
+    let functions = List<int>.new();
+    let pcs = List<int>.new();
+    functions.push(fi);
+    pcs.push(pc);
+    var i = frames.length() - 1;
+    while (i >= 0) {
+        let fr = frames[i];
+        if (fr.function >= 0) {
+            functions.push(fr.function);
+            pcs.push(fr.pc - 1);
+        }
+        i -= 1;
+    }
+    return ErrorRecord { functions = functions.toArray(), pcs = pcs.toArray() };
+}
+
+/// The frames of a record as a trace's lines; none for what holds no record.
+fn recordLines(module: Module, v: HeapRef): string[] {
+    let out = List<string>.new();
+    if (v is ErrorRecord) {
+        var k = 0;
+        while (k < v.functions.length()) {
+            out.push(frameText(module.functions[v.functions[k]], v.pcs[k]));
+            k += 1;
+        }
+    }
+    return out.toArray();
 }
 
 /// The first region of `f` that covers instruction `pc`.

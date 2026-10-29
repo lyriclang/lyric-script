@@ -241,6 +241,8 @@ enum Native :: [Equatable, Debug] {
     StrEq,
     /// -1, 0 or 1, by bytes.
     StrCmp,
+    /// The frames of an error's record as text (S4b).
+    TraceText,
 }
 
 /// The type of a checked expression.
@@ -304,7 +306,7 @@ fn typeOf(e: TExpr): Ty {
         .GenericValue(_, _, t) => t,
         .CallStaticD(_, _, _, t) => t,
         .TextParam(_, _, t) => t,
-        .Throw(_) => Ty.Never,
+        .Throw(_) | .Rethrow(_, _) => Ty.Never,
         .Unknown => Ty.Unknown,
     };
 }
@@ -445,6 +447,9 @@ enum TExpr :: [Debug] {
     TextParam(Box<TExpr>, int, Ty),
     /// `throw e`: the error as a value of `Error`; of type `never` (06 §1 rule 3, S4a).
     Throw(Box<TExpr>),
+    /// `throw e` of a clause's binding in its clause: the error it took goes on with its record,
+    /// the locals of both (06 §4 rule 4, S4b).
+    Rethrow(int, int),
     Unknown,
 }
 
@@ -463,9 +468,9 @@ enum TStmt :: [Debug] {
     Block(TStmt[], int),
     /// `var x: T` without a value: its box where a lambda captures it.
     DeclareLocal(int, int),
-    /// `try { … } catch …`: the body, the local an error of it arrives in, the clauses in order
-    /// (06 §4, S4a).
-    Try(TStmt[], int, TClause[], int),
+    /// `try { … } catch …`: the body, the locals an error of it arrives in and its record, the
+    /// clauses in order (06 §4, S4a, S4b).
+    Try(TStmt[], int, int, TClause[], int),
 }
 
 /// A clause of a `try`: the test it makes of the error — none where it takes every error — and

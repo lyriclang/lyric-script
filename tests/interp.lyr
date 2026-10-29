@@ -285,7 +285,7 @@ let throwing: string = """
     handler:
         load.i s0, 42
         ret.s s0
-        catch @from, @to, @handler, r0
+        catch @from, @to, @handler, r0, r1
     end
     fn missed() -> s regs 1 2
         call inner, s0, r1
@@ -296,7 +296,7 @@ let throwing: string = """
     handler:
         load.i s0, 42
         ret.s s0
-        catch @from, @to, @handler, r0
+        catch @from, @to, @handler, r0, r1
     end
     """;
 

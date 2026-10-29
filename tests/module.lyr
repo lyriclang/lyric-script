@@ -142,8 +142,8 @@ fn aHandlerOutOfTheFunctionIsNamed(): void {
         strings = [],
         lines = [1],
         handlers = [
-            Handler { start = 0, end = 2, target = 0, reg = 0 },
-            Handler { start = 0, end = 1, target = 1, reg = 3 },
+            Handler { start = 0, end = 2, target = 0, reg = 0, rec = 0 },
+            Handler { start = 0, end = 1, target = 1, reg = 3, rec = 0 },
         ],
     };
     let errors = check(Module { name = "m", functions = [f], types = [] });

@@ -96,8 +96,9 @@ pub enum Op :: [Variants, Equatable] {
     NewD,
     IsD,
     CallS,
-    // S4a: throwing (06 §5).
+    // S4a: throwing (06 §5); S4b: the same error going on, with its record.
     Throw,
+    Rethrow,
 }
 
 /// What an operand of an operation names.
@@ -226,6 +227,7 @@ pub fn info(op: Op): OpInfo {
         .IsD => OpInfo { mnemonic = "is.d", operands = [.Scalar, .Ref, .Ref] },
         .CallS => OpInfo { mnemonic = "call.s", operands = [.Imm, .ScalarBase, .RefBase] },
         .Throw => OpInfo { mnemonic = "throw", operands = [.Ref] },
+        .Rethrow => OpInfo { mnemonic = "rethrow", operands = [.Ref, .Ref] },
     };
 }
 

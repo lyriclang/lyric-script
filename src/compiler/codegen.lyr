@@ -965,7 +965,7 @@ class FnGen {
             .Block(list, _) => this.stmts(list),
             // the body's region sends its errors to the clauses' tests, in order; what none
             // takes is thrown on (06 §4, §5); a block without a clause is refused before
-            .Try(body, caught, clauses, line) => {
+            .Try(body, caught, record, clauses, line) => {
                 this.line = line;
                 if (clauses.length() == 0) {
                     this.stmts(body);
@@ -976,8 +976,15 @@ class FnGen {
                     let toEnd = List<int>.new();
                     toEnd.push(this.emit(Op.Jump, 0, 0, 0));
                     let reg = this.localLoc[caught].r;
+                    let rec = this.localLoc[record].r;
                     this.handlers.push(
-                        Handler { start = start, end = end, target = this.here(), reg = reg }
+                        Handler {
+                            start = start,
+                            end = end,
+                            target = this.here(),
+                            reg = reg,
+                            rec = rec,
+                        }
                     );
                     for (c in clauses) {
                         this.line = line;
@@ -993,8 +1000,9 @@ class FnGen {
                             this.patch(skip, this.here());
                         }
                     }
+                    // the same error goes on, with its record (S4b)
                     this.line = line;
-                    this.emit(Op.Throw, reg, 0, 0);
+                    this.emit(Op.Rethrow, reg, rec, 0);
                     for (j in toEnd) {
                         this.patch(j, this.here());
                     }
@@ -1381,6 +1389,9 @@ class FnGen {
             .Throw(x) => {
                 let at = this.any(x.value);
                 this.emit(Op.Throw, at.r, 0, 0);
+            }
+            .Rethrow(caught, record) => {
+                this.emit(Op.Rethrow, this.localLoc[caught].r, this.localLoc[record].r, 0);
             }
             // a static member through a descriptor: the descriptor first, the arguments after
             // it, the result where the callee's frame begins (S3i)
@@ -1801,5 +1812,6 @@ fn nativeFn(n: Native): NativeFn {
         .CharToStr => NativeFn.CharToStr,
         .StrEq => NativeFn.StrEq,
         .StrCmp => NativeFn.StrCmp,
+        .TraceText => NativeFn.TraceText,
     };
 }

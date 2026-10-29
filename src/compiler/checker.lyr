@@ -79,9 +79,9 @@ struct Checked {
 
 /// The prelude's declarations written in Lyric-Script: the literal protocols (03 Lit), each a
 /// static member that builds the conforming type from a literal of its kind; `Error`, the root of
-/// what is thrown, and `Exception`, the ready-made one with a message (05 E3, E6; Lyric 5's
-/// std.core).
-let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\n";
+/// what is thrown, `Exception`, the ready-made one with a message, and `Backtrace`, where an error
+/// was first thrown (05 E3, E6; Lyric 5's std.core).
+let preludeSource: string = "interface Error {\n    fn message(): string\n    fn cause(): ?Error {\n        return null\n    }\n}\nclass Exception :: Error {\n    text: string\n    inner: ?Error = null\n    static fn new(message: string, cause: ?Error = null): Exception {\n        return Exception { text = message, inner = cause }\n    }\n    fn message(): string {\n        return this.text\n    }\n    fn cause(): ?Error {\n        return this.inner\n    }\n}\nstruct Backtrace {\n    text: string\n    fn show(): string = this.text\n}\ninterface FromIntLiteral {\n    static fn fromIntLiteral(v: int): Self\n}\ninterface FromFloatLiteral {\n    static fn fromFloatLiteral(v: float): Self\n}\ninterface FromStringLiteral {\n    static fn fromStringLiteral(v: string): Self\n}\ninterface FromBoolLiteral {\n    static fn fromBoolLiteral(v: bool): Self\n}\ninterface FromNullLiteral {\n    static fn fromNullLiteral(): Self\n}\n";
 
 /// Checks a parsed module.
 fn checkModule(parsed: Module): Checked {
@@ -170,6 +170,9 @@ class FnCtx {
     captures: List<Capture>,
     captureIndex: Map<string, int>,
     boxed: List<bool>,
+    // a clause's binding: the locals the error it took and its record are in (06 §4 rule 4)
+    var clauseErrors: Map<int, int> = Map<int, int>.new(),
+    var clauseRecords: Map<int, int> = Map<int, int>.new(),
 
     static fn new(fnIndex: int, returns: Ty, isMain: bool, fixing: bool): FnCtx {
         let scopes = List<Scope>.new();
@@ -2792,14 +2795,14 @@ class Checker {
             .Return(v, l) => TStmt.Return(this.specOpt(v, a), l),
             .Block(b, l) => TStmt.Block(this.specStmts(b, a), l),
             .DeclareLocal(id, l) => TStmt.DeclareLocal(id, l),
-            .Try(b, caught, clauses, l) => {
+            .Try(b, caught, record, clauses, l) => {
                 let out = List<TClause>.new();
                 for (c in clauses) {
                     out.push(
                         TClause { test = this.specOpt(c.test, a), body = this.specStmts(c.body, a) }
                     );
                 }
-                TStmt.Try(this.specStmts(b, a), caught, out.toArray(), l)
+                TStmt.Try(this.specStmts(b, a), caught, record, out.toArray(), l)
             }
         };
     }
@@ -2822,6 +2825,7 @@ class Checker {
         return match (e) {
             .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Variant(_, _) | .Unit | .Unknown => e,
             .Throw(x) => TExpr.Throw(this.specBox(x, a)),
+            .Rethrow(_, _) => e,
             .Local(id, t) => TExpr.Local(id, this.subst(t, a)),
             .Global(g, t) => TExpr.Global(g, this.subst(t, a)),
             .Unary(op, x, t) => TExpr.Unary(op, this.specBox(x, a), this.subst(t, a)),
@@ -3805,6 +3809,20 @@ class Checker {
     /// `throw e`: `e` an `Error` — a value of a type that conforms, of the interface or of one
     /// that extends it —, thrown as the interface's value (06 §1 rule 3, 05 E3).
     mut fn throwOf(value: Expr): TExpr {
+        // a clause's own binding: the error it took goes on, with its record (06 §4 rule 4)
+        match (value) {
+            .Name(name, _) => {
+                let id = this.lookupLocal(name);
+                if (id != null) {
+                    let caught = this.ctx.clauseErrors.get(id);
+                    let record = this.ctx.clauseRecords.get(id);
+                    if (caught != null && record != null) {
+                        return TExpr.Rethrow(caught, record);
+                    }
+                }
+            }
+            _ => { }
+        }
         let v = this.expr(value, null);
         let t = typeOf(v);
         if (t == .Unknown) {
@@ -3839,6 +3857,8 @@ class Checker {
         var after = this.ctx.unassigned;
         let err = this.errorTy();
         let caught = this.hidden(err, at);
+        // the error's record, a value of the VM's own; one reference, never read as an `Any`
+        let record = this.hidden(Ty.Named(this.anyIndex), at);
         let out = List<TClause>.new();
         for (c in clauses) {
             if (c.isSet) {
@@ -3873,6 +3893,8 @@ class Checker {
             if (c.name != "_") {
                 let id = this.declareLocal(c.name, bound, false, c.span);
                 stmts.push(TStmt.SetLocal(id, value, c.span.line));
+                this.ctx.clauseErrors.insert(id, caught);
+                this.ctx.clauseRecords.insert(id, record);
             }
             for (s in this.block(c.body)) {
                 stmts.push(s);
@@ -3882,7 +3904,40 @@ class Checker {
             out.push(TClause { test = test, body = stmts.toArray() });
         }
         this.ctx.unassigned = after;
-        return TStmt.Try(b, caught, out.toArray(), at.line);
+        return TStmt.Try(b, caught, record, out.toArray(), at.line);
+    }
+
+    /// `e.backtrace()`: a `?Backtrace` of the prelude, the text of the record's frames.
+    mut fn backtraceOf(record: int): TExpr {
+        let bi = this.typeIndex.get("Backtrace");
+        if (bi == null) {
+            return TExpr.Unknown;
+        }
+        let text = TExpr.Native(
+            Native.TraceText,
+            [TExpr.Local(record, Ty.Named(this.anyIndex))],
+            Ty.Str
+        );
+        let bt = Ty.Named(bi);
+        return TExpr.Wrap(boxE(TExpr.New(bi, [text])), Ty.Optional(boxTy(bt)));
+    }
+
+    /// Whether a value of `t` has a field or a method named `name`.
+    mut fn hasMember(t: Ty, name: string): bool {
+        return match (t) {
+            .Named(i) => {
+                if (this.types[i].kind == .Interface) {
+                    this.ifaceMember(i, name) != null
+                } else {
+                    var found = this.types[i].methods.containsKey(name);
+                    for (f in this.types[i].fields) {
+                        found = found || f.name == name;
+                    }
+                    found
+                }
+            }
+            _ => false,
+        };
     }
 
     /// Whether a value of `t` is thrown: its type conforms to `Error`, or it is an interface
@@ -8215,6 +8270,20 @@ class Checker {
         memberAt: Span
     ): TExpr {
         let t = typeOf(receiver);
+        // a clause's binding tells where the error was first thrown, where its type has no
+        // member of the name (06 §4 rule 4)
+        match (receiver) {
+            .Local(id, _) => {
+                let record = this.ctx.clauseRecords.get(id);
+                if (record != null
+                    && method == "backtrace"
+                    && args.length() == 0
+                    && !this.hasMember(t, method)) {
+                    return this.backtraceOf(record);
+                }
+            }
+            _ => { }
+        }
         match (t) {
             .Unknown => {
                 return TExpr.Unknown;
@@ -8833,7 +8902,7 @@ fn leaves(s: TStmt): bool {
         .If(_, then, otherwise, _) => leavesAll(then) && leavesAll(otherwise),
         .Block(stmts, _) => leavesAll(stmts),
         // an error no clause takes leaves it too
-        .Try(body, _, clauses, _) => {
+        .Try(body, _, _, clauses, _) => {
             var all = leavesAll(body);
             for (c in clauses) {
                 all = all && leavesAll(c.body);
@@ -8850,7 +8919,7 @@ fn ends(s: TStmt): bool {
         .If(_, then, otherwise, _) => endsAll(then) && endsAll(otherwise),
         .Block(stmts, _) => endsAll(stmts),
         .Expr(e, _) => typeOf(e) == .Never,
-        .Try(body, _, clauses, _) => {
+        .Try(body, _, _, clauses, _) => {
             var all = endsAll(body);
             for (c in clauses) {
                 all = all && endsAll(c.body);

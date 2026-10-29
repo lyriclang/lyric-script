@@ -20,6 +20,9 @@ enum NativeFn :: [Equatable] {
     StrEq,
     /// -1, 0 or 1 as the first string sorts before, with or after the second, by bytes.
     StrCmp,
+    /// The frames of an error's record as text, a line `    at <function> (line <n>)` each,
+    /// innermost first (S4b).
+    TraceText,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -33,7 +36,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 9;
+let nativeCount: int = 10;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -46,7 +49,8 @@ fn nativeOf(n: int): NativeFn {
         5 => NativeFn.BoolToStr,
         6 => NativeFn.CharToStr,
         7 => NativeFn.StrEq,
-        _ => NativeFn.StrCmp,
+        8 => NativeFn.StrCmp,
+        _ => NativeFn.TraceText,
     };
 }
 
@@ -62,6 +66,7 @@ fn nativeNumber(n: NativeFn): int {
         .CharToStr => 6,
         .StrEq => 7,
         .StrCmp => 8,
+        .TraceText => 9,
     };
 }
 
@@ -76,6 +81,7 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .CharToStr => sig("char.text", 1, 0, false, true),
         .StrEq => sig("string.eq", 0, 2, true, false),
         .StrCmp => sig("string.cmp", 0, 2, true, false),
+        .TraceText => sig("error.trace", 0, 1, false, true),
     };
 }
 

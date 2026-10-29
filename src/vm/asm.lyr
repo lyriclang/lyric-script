@@ -14,8 +14,9 @@
 //! ```
 //!
 //! A line holds one declaration, label or instruction; `#` starts a comment. In a function,
-//! `catch @from, @to, @handler, r2` sends the errors of the instructions from `@from` up to
-//! before `@to` to `@handler`, the error in `r2` (S4a). Operands by kind:
+//! `catch @from, @to, @handler, r2, r3` sends the errors of the instructions from `@from` up to
+//! before `@to` to `@handler`, the error in `r2` and its record in `r3` (S4a, S4b). Operands by
+//! kind:
 //! `s3` a scalar register, `r1` a reference register, `-5` an immediate, a literal (`12`,
 //! `1.5`, `"text"`) a constant, `@name` a label, a function or a type by its name, a field as
 //! `Type.field` or `.index`.
@@ -86,10 +87,10 @@ pub fn assemble(text: string, name: string): Module throws AsmError {
                 d.labels[label] = d.body.length();
             } else if (line.startsWith("catch ")) {
                 let operands = splitOperands(line[6..line.length()].toString());
-                if (operands.length() != 4) {
+                if (operands.length() != 5) {
                     throw AsmError {
                         line = lineNo,
-                        text = "a handler is 'catch @from, @to, @handler, rN'",
+                        text = "a handler is 'catch @from, @to, @handler, rError, rRecord'",
                     };
                 }
                 d.catches.push(Pending { line = lineNo, op = .Throw, operands = operands });
@@ -360,6 +361,7 @@ fn resolve(d: Draft, drafts: List<Draft>, types: List<TypeDesc>): Function throw
                 end = try handlerLabel(d, p, 1),
                 target = try handlerLabel(d, p, 2),
                 reg = try register(p.operands[3], 'r', p.line),
+                rec = try register(p.operands[4], 'r', p.line),
             }
         );
     }
@@ -617,7 +619,7 @@ pub fn disassemble(module: Module): string {
             out.appendStr(f"L{f.code.length()}:\n");
         }
         for (h in f.handlers) {
-            out.appendStr(f"    catch @L{h.start}, @L{h.end}, @L{h.target}, r{h.reg}\n");
+            out.appendStr(f"    catch @L{h.start}, @L{h.end}, @L{h.target}, r{h.reg}, r{h.rec}\n");
         }
         out.appendStr("end\n");
     }

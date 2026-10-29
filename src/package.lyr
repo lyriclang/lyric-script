@@ -1,0 +1,461 @@
+//! A package's manifest, `lyric-script.toml` (design/v1, 07 Man; Lyric 5 15 §1–§2): read and never
+//! run. S5b reads `[package]` and `[dependencies]` with a path; a git dependency, `[override]`,
+//! `[lints]`, `include` and `exclude` come with later slices and are refused until then.
+import std.collections { List };
+import std.toml { TomlError, TomlTable, TomlValue, parse as parseToml };
+import lyric_script.compiler.diagnostic { Diagnostic };
+
+/// The manifest's file name, at a package's root.
+let manifestName: string = "lyric-script.toml";
+
+/// What a manifest says: the package's name, version and edition, the least toolchain it asks
+/// for, and its dependencies.
+struct Manifest {
+    name: string,
+    version: string,
+    edition: string,
+    toolchain: ?string,
+    deps: Dep[],
+}
+
+/// A dependency read from a directory: its name, the directory relative to the manifest, and
+/// the line it is declared on.
+struct Dep {
+    name: string,
+    path: string,
+    line: int,
+}
+
+/// What reading a manifest gave: the manifest, `null` where it has errors, and the errors, each
+/// at its line in the manifest's text.
+struct ManifestRead {
+    manifest: ?Manifest,
+    errors: Diagnostic[],
+}
+
+/// Reads a manifest's text (Lyric 5 15 §1 rules 1–4, 6; §2 rule 1).
+fn readManifest(text: string): ManifestRead {
+    let r = ManifestReader { source = text };
+    let doc = try parseToml(text) catch (e: TomlError) {
+        r.at("LYS-PKG0001", f"the manifest is no TOML: {e.detail}", e.line, e.column);
+        return ManifestRead { manifest = null, errors = r.errors.toArray() };
+    };
+    let root = match (doc) {
+        .Table(t) => t,
+        _ => {
+            r.at("LYS-PKG0001", "the manifest is no TOML table", 1, 1);
+            return ManifestRead { manifest = null, errors = r.errors.toArray() };
+        }
+    };
+    r.noFloats(doc, "");
+    if (r.errors.length() > 0) {
+        return ManifestRead { manifest = null, errors = r.errors.toArray() };
+    }
+    var manifest: ?Manifest = null;
+    for (key in root.keys()) {
+        match (key) {
+            "package" | "dependencies" => { }
+            "override" => r.notYet(key, "", "S5c (Git and the lock)"),
+            "lints" => r.notYet(key, "", "S11 (the lints)"),
+            _ => r.unknown(key, ""),
+        }
+    }
+    let pkg = match (root.get("package")) {
+        .Table(t) => t,
+        null => {
+            r.at("LYS-PKG0002", "the manifest has no [package]", 1, 1);
+            return ManifestRead { manifest = null, errors = r.errors.toArray() };
+        }
+        _ => {
+            r.key("LYS-PKG0002", "package", "", "[package] is a table");
+            return ManifestRead { manifest = null, errors = r.errors.toArray() };
+        }
+    };
+    let name = r.textOf(pkg, "package", "name", true) ?? "";
+    if (name != "" && !isPackageName(name)) {
+        r.key(
+            "LYS-PKG0002",
+            "package",
+            "name",
+            f"'{name}' is no package name: a lowercase letter, then lowercase letters, digits and '_', and not 'std'"
+        );
+    }
+    let version = r.textOf(pkg, "package", "version", true) ?? "";
+    if (version != "" && !isVersion(version)) {
+        r.key(
+            "LYS-PKG0002",
+            "package",
+            "version",
+            f"'{version}' is no semantic version: MAJOR.MINOR.PATCH"
+        );
+    }
+    let edition = r.textOf(pkg, "package", "edition", false) ?? "1";
+    if (edition != "1") {
+        r.key(
+            "LYS-PKG0002",
+            "package",
+            "edition",
+            f"'{edition}' is no edition of Lyric-Script: \"1\" is the one there is"
+        );
+    }
+    let toolchain = r.textOf(pkg, "package", "toolchain", false);
+    if (toolchain != null && versionOf(toolchainVersion(toolchain)) == null) {
+        r.key(
+            "LYS-PKG0002",
+            "package",
+            "toolchain",
+            f"'{toolchain}' names no toolchain: \"1.1\" or \">=1.1\""
+        );
+    }
+    for (key in pkg.keys()) {
+        match (key) {
+            "name" | "version" | "edition" | "toolchain" => { }
+            "description" | "license" | "repository" => {
+                r.textOf(pkg, "package", key, false);
+            }
+            "authors" => r.texts(pkg, "package", key),
+            "include" | "exclude" => r.notYet(key, "package", "S5c (Git and the lock)"),
+            _ => r.unknown(key, "package"),
+        }
+    }
+    let deps = List<Dep>.new();
+    match (root.get("dependencies")) {
+        .Table(t) => {
+            for (dep in t.keys()) {
+                let d = r.dependency(t, dep);
+                if (d != null) {
+                    deps.push(d);
+                }
+            }
+        }
+        null => { }
+        _ => r.key("LYS-PKG0002", "dependencies", "", "[dependencies] is a table"),
+    }
+    if (r.errors.length() == 0) {
+        manifest = Manifest {
+            name = name,
+            version = version,
+            edition = edition,
+            toolchain = toolchain,
+            deps = deps.toArray(),
+        };
+    }
+    return ManifestRead { manifest = manifest, errors = r.errors.toArray() };
+}
+
+/// Whether a toolchain of `version` builds a package that asks for `toolchain` (Lyric 5 15 §1
+/// rule 6): at least that version, a development build counting as its version.
+fn toolchainAllows(toolchain: string, version: string): bool {
+    let want = versionOf(toolchainVersion(toolchain)) ?? [0, 0, 0];
+    let have = versionOf(version) ?? [0, 0, 0];
+    var k = 0;
+    while (k < 3) {
+        if (have[k] != want[k]) {
+            return have[k] > want[k];
+        }
+        k += 1;
+    }
+    return true;
+}
+
+/// The version a `toolchain` field names: its text after `>=`.
+fn toolchainVersion(toolchain: string): string {
+    return if (toolchain.startsWith(
+        ">="
+    )) toolchain[2..toolchain.length()].toString().trim().toString()
+        else toolchain;
+}
+
+/// `MAJOR.MINOR` or `MAJOR.MINOR.PATCH`, with a pre-release or build part after the numbers:
+/// the three numbers, a missing patch 0; `null` for another form.
+fn versionOf(text: string): ?int[] {
+    var core = text;
+    let cut = text.find('-') ?? text.find('+');
+    if (cut != null) {
+        core = text[0..cut].toString();
+    }
+    let parts = List<int>.new();
+    for (part in core.split('.')) {
+        if (part.isEmpty()) {
+            return null;
+        }
+        var n = 0;
+        for (c in part.chars()) {
+            if (c < '0' || c > '9') {
+                return null;
+            }
+            n = n * 10 + (((c as uint32) as int) - 48);
+        }
+        parts.push(n);
+    }
+    if (parts.length() == 2) {
+        parts.push(0);
+    }
+    return if (parts.length() == 3) parts.toArray() else null;
+}
+
+/// A semantic version: three numbers, then an optional pre-release and build part.
+fn isVersion(text: string): bool {
+    let cut = text.find('-') ?? text.find('+');
+    let core = if (cut == null) text else text[0..cut].toString();
+    return core.split('.').count() == 3 && versionOf(text) != null;
+}
+
+/// A package's name: a lowercase letter, then lowercase letters, digits and `_`; not `std`.
+fn isPackageName(name: string): bool {
+    if (name == "std" || name.isEmpty()) {
+        return false;
+    }
+    var first = true;
+    for (c in name.chars()) {
+        let lower = c >= 'a' && c <= 'z';
+        if (first && !lower) {
+            return false;
+        }
+        if (!lower && !(c >= '0' && c <= '9') && c != '_') {
+            return false;
+        }
+        first = false;
+    }
+    return true;
+}
+
+/// Reads a manifest's fields and says what is wrong at the line of its key.
+class ManifestReader {
+    source: string,
+    var errors: List<Diagnostic> = List<Diagnostic>.new(),
+
+    mut fn at(code: string, message: string, line: int, column: int): void {
+        let start = this.offsetOf(line, column);
+        this.errors.push(
+            Diagnostic {
+                code = code,
+                message = message,
+                start = start,
+                end = this.lineEnd(start),
+                line = line,
+                column = column,
+                help = null,
+            }
+        );
+    }
+
+    /// An error at `key` of `[section]`; at the section where `key` is empty.
+    mut fn key(code: string, section: string, key: string, message: string): void {
+        let line = this.lineOf(section, key);
+        this.at(code, message, line, 1);
+    }
+
+    mut fn unknown(key: string, section: string): void {
+        let where = if (section == "") f"[{key}]" else f"'{key}' in [{section}]";
+        // a table's name: at its header
+        if (section == "") {
+            this.key("LYS-PKG0003", key, "", f"the manifest takes no {where}");
+        } else {
+            this.key("LYS-PKG0003", section, key, f"the manifest takes no {where}");
+        }
+    }
+
+    mut fn notYet(key: string, section: string, milestone: string): void {
+        let where = if (section == "") f"[{key}]" else f"'{key}' in [{section}]";
+        let message = f"{where} is part of Lyric-Script 1.0 and comes with {milestone}";
+        if (section == "") {
+            this.key("LYS-NYI0001", key, "", message);
+        } else {
+            this.key("LYS-NYI0001", section, key, message);
+        }
+    }
+
+    /// The string under `key`; reported where it is another value, or missing and required.
+    mut fn textOf(t: TomlTable, section: string, key: string, required: bool): ?string {
+        return match (t.get(key)) {
+            .String(s) => s,
+            null => {
+                if (required) {
+                    this.key("LYS-PKG0002", section, "", f"[{section}] has no '{key}'");
+                }
+                null
+            }
+            _ => {
+                this.key("LYS-PKG0002", section, key, f"'{key}' is a string");
+                null
+            }
+        };
+    }
+
+    /// An array of strings under `key`, reported where it is another value.
+    mut fn texts(t: TomlTable, section: string, key: string): void {
+        match (t.get(key)) {
+            .Array(xs) => {
+                for (x in xs) {
+                    match (x) {
+                        .String(_) => { }
+                        _ => {
+                            this.key(
+                                "LYS-PKG0002",
+                                section,
+                                key,
+                                f"'{key}' is an array of strings"
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+            _ => this.key("LYS-PKG0002", section, key, f"'{key}' is an array of strings"),
+        }
+    }
+
+    /// `geo = { path = "../geo" }` (Lyric 5 15 §2 rule 1); a git dependency comes with S5c, a
+    /// version alone is a registry's form, which 1.0 has none of.
+    mut fn dependency(t: TomlTable, name: string): ?Dep {
+        let line = this.lineOf("dependencies", name);
+        let spec = match (t.get(name)) {
+            .Table(d) => d,
+            .String(_) => {
+                this.key(
+                    "LYS-PKG0003",
+                    "dependencies",
+                    name,
+                    f"'{name}' names a version alone, a registry's form: Lyric-Script 1.0 has no registry; write {{ path = \"…\" }}"
+                );
+                return null;
+            }
+            _ => {
+                this.key(
+                    "LYS-PKG0002",
+                    "dependencies",
+                    name,
+                    f"'{name}' is a table: {{ path = \"…\" }}"
+                );
+                return null;
+            }
+        };
+        if (!isPackageName(name)) {
+            this.key("LYS-PKG0002", "dependencies", name, f"'{name}' is no package name");
+            return null;
+        }
+        var path: ?string = null;
+        for (k in spec.keys()) {
+            match (k) {
+                "path" => {
+                    path = match (spec.get(k)) {
+                        .String(s) => s,
+                        _ => {
+                            this.key(
+                                "LYS-PKG0002",
+                                "dependencies",
+                                name,
+                                f"'{name}'s path is a string"
+                            );
+                            null
+                        }
+                    };
+                }
+                "git" | "tag" | "branch" | "rev" => {
+                    this.notYet(name, "dependencies", "S5c (Git and the lock)");
+                    return null;
+                }
+                _ => {
+                    this.key(
+                        "LYS-PKG0003",
+                        "dependencies",
+                        name,
+                        f"a dependency takes no '{k}': {{ path = \"…\" }}"
+                    );
+                    return null;
+                }
+            }
+        }
+        let found = path;
+        if (found == null) {
+            this.key("LYS-PKG0002", "dependencies", name, f"'{name}' names no path");
+            return null;
+        }
+        return Dep { name = name, path = found, line = line };
+    }
+
+    /// A float or a date and time anywhere: no value a manifest takes (Lyric 5 15 §1 rule 1).
+    mut fn noFloats(v: TomlValue, where: string): void {
+        match (v) {
+            .Float(_) => this.key(
+                "LYS-PKG0001",
+                "*",
+                where,
+                f"'{where}' is a float: a manifest holds none"
+            ),
+            .Datetime(_) => this.key(
+                "LYS-PKG0001",
+                "*",
+                where,
+                f"'{where}' is a date or a time: a manifest holds none"
+            ),
+            .Array(xs) => {
+                for (x in xs) {
+                    this.noFloats(x, where);
+                }
+            }
+            .Table(t) => {
+                for (k in t.keys()) {
+                    this.noFloats(t.get(k) ?? TomlValue.Bool(false), k);
+                }
+            }
+            _ => { }
+        }
+    }
+
+    /// The line of `key` in `[section]` — in any section for `*` —, of the section where `key` is
+    /// empty or not found, else 1.
+    mut fn lineOf(section: string, key: string): int {
+        var current = "";
+        var sectionLine = 1;
+        var n = 0;
+        for (line in this.source.split('\n')) {
+            n += 1;
+            let t = line.trim();
+            if (t.startsWith("[")) {
+                let close = t.find(']') ?? t.length();
+                current = t[1..close].toString().trim().toString();
+                if (current == section) {
+                    sectionLine = n;
+                }
+                continue;
+            }
+            if ((current == section || section == "*") && key != "" && t.startsWith(key)) {
+                let rest = t[key.length()..t.length()].toString().trim();
+                if (rest.startsWith("=")) {
+                    return n;
+                }
+            }
+        }
+        return sectionLine;
+    }
+
+    /// The byte offset of `line`, `column` in the text.
+    mut fn offsetOf(line: int, column: int): int {
+        var n = 1;
+        var k = 0;
+        for (b in this.source.toBytes()) {
+            if (n == line) {
+                break;
+            }
+            if (b == 10u8) {
+                n += 1;
+            }
+            k += 1;
+        }
+        return k + column - 1;
+    }
+
+    /// The offset where the line holding `start` ends.
+    mut fn lineEnd(start: int): int {
+        var k = 0;
+        for (b in this.source.toBytes()) {
+            if (k >= start && b == 10u8) {
+                return k;
+            }
+            k += 1;
+        }
+        return this.source.length();
+    }
+}

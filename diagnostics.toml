@@ -451,6 +451,42 @@ summary = "`[\"a\": 1, \"b\": 2]`: every entry is `key: value` (spec 2 D5)."
 # The checker (S2d). A code means what Lyric 5's LYR-SEM code of the same number means;
 # Lyric-Script's own codes start at 0900.
 
+[LYS-PKG0001]
+title = "a manifest that is no TOML a manifest takes"
+severity = "error"
+area = "15-project"
+summary = "The manifest `lyric-script.toml` is TOML, the part a manifest needs: a syntax error, a key or a table written twice, a float, a date or a time is refused at its line. Lyric 5's LYR-PKG0001."
+
+[LYS-PKG0002]
+title = "a manifest field missing or malformed"
+severity = "error"
+area = "15-project"
+summary = "`[package]` is required, with a `name` (a lowercase letter, then lowercase letters, digits and `_`, not `std`), a semantic `version`, the `edition` \"1\" by default and a `toolchain` like \"1.1\" or \">=1.1\"; `description`, `license` and `repository` are strings, `authors` an array of strings; a dependency is `{ path = \"…\" }`. Lyric 5's LYR-PKG0002."
+
+[LYS-PKG0003]
+title = "a manifest key the toolchain does not know"
+severity = "error"
+area = "15-project"
+summary = "A section or a key the manifest does not take is refused, as an unknown option is; a dependency written as a version alone is a registry's form, and Lyric-Script 1.0 has no registry. Lyric 5's LYR-PKG0003."
+
+[LYS-PKG0004]
+title = "a dependency whose folder holds no such package"
+severity = "error"
+area = "15-project"
+summary = "A path dependency's folder holds a manifest naming the package under the name its dependent gives it; a folder without a manifest, or with another package, is refused at the dependency's line. Lyric 5's LYR-PKG0004."
+
+[LYS-PKG0005]
+title = "two packages of one name"
+severity = "error"
+area = "15-project"
+summary = "A program holds one package of each name: two folders for one name are refused. Lyric 5's LYR-PKG0005."
+
+[LYS-PKG0009]
+title = "a toolchain below what a package asks for"
+severity = "error"
+area = "15-project"
+summary = "A package's `toolchain` names the least toolchain that builds it; a toolchain below it refuses the program with exit code 2, a fault of the environment and not of the script. A development build counts as its version. Lyric 5's LYR-PKG0009."
+
 [LYS-RES0001]
 title = "a name imported beside a declaration, or imported twice"
 severity = "error"
@@ -492,6 +528,12 @@ title = "a name that is also a submodule"
 severity = "error"
 area = "04-modules"
 summary = "A module declares or imports a name that is also the last segment of one of its submodules: `x` in `a.b` beside the file `a/b/x.lyrs`. Reported whether or not the submodule is imported. Lyric 5's LYR-RES0012."
+
+[LYS-RES0014]
+title = "an import of a package the manifest does not declare"
+severity = "error"
+area = "04-modules"
+summary = "A module imports from its own package and from the packages its package's manifest declares, not from what those depend on. Lyric 5's LYR-RES0014."
 
 [LYS-SEM0001]
 title = "a value of another type than the place takes"
@@ -1100,3 +1142,9 @@ title = "an unknown option"
 severity = "error"
 area = "14-cli"
 summary = "A command is given an option it does not know. The exit code is 2."
+
+[LYS-CLI0005]
+title = "a package without a program"
+severity = "error"
+area = "14-cli"
+summary = "`lyric-script run` or `check` without a file, in a package's folder, takes its `src/main.lyrs`; a package without one has no program to name. The exit code is 2."

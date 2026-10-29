@@ -1,0 +1,597 @@
+//! The program the command line reads (S5a, S5b; design/v1, 07 Path and Man): the entry and the
+//! modules its imports reach, each file parsed once and ordered so that a module comes before
+//! those that import it. Without a manifest the entry's folder is the root and `import a.b` names
+//! `a/b.lyrs` below it. With one — the nearest `lyric-script.toml` above an entry that lies under
+//! its `src/` — Lyric 5's path rule holds (Lyric 5 04 §2): `pkg.a.b` is `src/a/b.lyrs` of the
+//! package `pkg`, `pkg` alone its `src/lib.lyrs`, and a module imports from its own package and
+//! from those its manifest declares.
+import std.collections { List, Map };
+import std.fs { DirEntry, absolute, exists, readDir, readText };
+import std.path { fileName, join, normalize, parent, stem };
+import lyric_script { version };
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.compiler.parser { Parsed, parse };
+import lyric_script.package { manifestName, readManifest, toolchainAllows };
+
+/// A package of the program: its name, its root folder, and the packages its manifest declares,
+/// by name (S5b).
+class Pkg {
+    name: string,
+    root: string,
+    deps: Map<string, int>,
+}
+
+/// A program as read: each file's path, text, parse, module name, submodules and package, in the
+/// order they were found — 0 the entry —; the order their imports need, each module after those
+/// it imports; the program's packages and the manifests read; what the reading found wrong.
+class Loaded {
+    paths: List<string>,
+    texts: List<string>,
+    names: List<string>,
+    // each module's submodules: the `.lyrs` files in the folder of its name
+    subs: List<string[]>,
+    pkgOf: List<int>,
+    parses: List<Parsed>,
+    order: List<int>,
+    errors: List<Diagnostic>,
+    // the packages, none without a manifest; the manifests read, a diagnostic about the `k`th
+    // naming file `-2 - k`
+    pkgs: List<Pkg>,
+    docPaths: List<string>,
+    docTexts: List<string>,
+    // 2 where a fault of the environment stops the program (`LYS-PKG0009`), else 0
+    var exit: int = 0,
+
+    /// The text the cache keys the program by: the entry's alone where it is the one file, else
+    /// every file's module name and text.
+    fn cacheText(): string {
+        if (this.texts.length() == 1) {
+            return this.texts[0];
+        }
+        let parts = List<string>.new();
+        var k = 0;
+        while (k < this.texts.length()) {
+            parts.push(this.names[k]);
+            parts.push(this.texts[k]);
+            k += 1;
+        }
+        return parts.toArray().join("\u{0}");
+    }
+}
+
+/// Where an import leads: the folder its path is read below, its segments there, its package;
+/// or why it leads nowhere.
+struct Target {
+    src: string,
+    segments: string[],
+    pkg: int,
+    // the module's file as a message shows it
+    shown: string,
+    // whether it is a package's root module, `src/lib.lyrs`
+    isRoot: bool,
+    code: string,
+    message: string,
+}
+
+/// Reads the program whose entry is `path`, its text `text`.
+fn loadProgram(path: string, text: string): Loaded {
+    let l = Loaded {
+        paths = List<string>.new(),
+        texts = List<string>.new(),
+        names = List<string>.new(),
+        subs = List<string[]>.new(),
+        pkgOf = List<int>.new(),
+        parses = List<Parsed>.new(),
+        order = List<int>.new(),
+        errors = List<Diagnostic>.new(),
+        pkgs = List<Pkg>.new(),
+        docPaths = List<string>.new(),
+        docTexts = List<string>.new(),
+    };
+    l.paths.push(path);
+    l.texts.push(text);
+    l.pkgOf.push(0);
+    var folder = parent(path);
+    let inPackage = packageRoot(path);
+    if (inPackage != null) {
+        let (root, rel) = inPackage;
+        loadPackages(root, l);
+        if (l.pkgs.length() == 0) {
+            // the root manifest does not read: its errors are all there is to say
+            l.parses.push(parse(text, 0));
+            return l;
+        }
+        folder = below(root, "src");
+        l.names.push(l.pkgs[0].name + "." + rel.replace("/", "."));
+        l.subs.push(lyrsIn(below(folder, rel)));
+    } else {
+        l.names.push(stem(path));
+        // the entry is the root: the modules beside it are no submodules of it
+        l.subs.push([]);
+    }
+    // each module's imports: the module, and the import's place for a cycle through it
+    let edges = List<List<int>>.new();
+    let edgeAt = List<List<Diagnostic>>.new();
+    var i = 0;
+    while (i < l.paths.length()) {
+        let parsed = parse(l.texts[i], i);
+        l.parses.push(parsed);
+        let deps = List<int>.new();
+        let at = List<Diagnostic>.new();
+        for (item in parsed.module.items) {
+            let im = match (item) {
+                .Decl(.Import(im)) => im,
+                _ => {
+                    continue;
+                }
+            };
+            let name = im.path.join(".");
+            let where = Diagnostic {
+                code = "LYS-RES0003",
+                message = "",
+                start = im.span.start,
+                end = im.span.end,
+                line = im.span.line,
+                column = im.span.column,
+                help = null,
+                file = i,
+            };
+            var j = indexOf(l.names, name);
+            if (j < 0) {
+                let t = if (l.pkgs.length() == 0) plainTarget(folder, im.path)
+                    else packageTarget(l, l.pkgOf[i], im.path);
+                if (t.code != "") {
+                    l.errors.push(where with { code = t.code, message = t.message });
+                    continue;
+                }
+                let rel = t.segments.join("/") + ".lyrs";
+                let file = below(t.src, rel);
+                let found = try? readText(file);
+                if (found == null) {
+                    l.errors.push(
+                        where with { message = f"no module '{name}': there is no file {t.shown}" }
+                    );
+                    continue;
+                }
+                // the path names its file exactly, where the file system would take another case
+                let differs = misnamed(t.src, t.segments);
+                if (differs != null) {
+                    l.errors.push(
+                        where with {
+                            message = f"no module '{name}': the file is named '{differs}', not '{rel}'",
+                        }
+                    );
+                    continue;
+                }
+                j = l.paths.length();
+                l.paths.push(file);
+                l.texts.push(found);
+                l.names.push(name);
+                l.pkgOf.push(t.pkg);
+                // a package's root module stands beside each of its modules (Lyric 5 04 §4 rule 7)
+                l.subs.push(
+                    if (t.isRoot) without(lyrsIn(t.src), "lib")
+                        else lyrsIn(below(t.src, t.segments.join("/")))
+                );
+            }
+            deps.push(j);
+            at.push(where);
+        }
+        edges.push(deps);
+        edgeAt.push(at);
+        i += 1;
+    }
+    let state = List<int>.new();
+    for (_ in l.paths) {
+        state.push(0);
+    }
+    visit(0, edges, edgeAt, state, List<int>.new(), l);
+    return l;
+}
+
+/// Without a manifest: `a.b` is `a/b.lyrs` below the entry's folder (07 Path).
+fn plainTarget(folder: string, path: string[]): Target {
+    let rel = path.join("/") + ".lyrs";
+    return Target {
+        src = folder,
+        segments = path,
+        pkg = 0,
+        shown = f"'{rel}' beside the entry",
+        isRoot = false,
+        code = "",
+        message = "",
+    };
+}
+
+/// With a manifest: `pkg.a.b` is `src/a/b.lyrs` of the package `pkg` — the importing module's own,
+/// or one its manifest declares (`LYS-RES0014`) —, `pkg` alone its `src/lib.lyrs`.
+fn packageTarget(l: Loaded, from: int, path: string[]): Target {
+    let name = path.join(".");
+    let own = l.pkgs[from];
+    let head = path[0];
+    let none = Target {
+        src = "",
+        segments = [],
+        pkg = -1,
+        shown = "",
+        isRoot = false,
+        code = "LYS-RES0003",
+        message = "",
+    };
+    let p = if (head == own.name) from else own.deps.get(head) ?? -1;
+    if (p < 0) {
+        for (other in l.pkgs) {
+            if (other.name == head) {
+                return none with {
+                    code = "LYS-RES0014",
+                    message = f"'{head}' is no package the manifest of '{own.name}' declares: name it in its [dependencies]",
+                };
+            }
+        }
+        return none with {
+            message = f"no module '{name}': '{head}' is neither this package, '{own.name}', nor one it declares",
+        };
+    }
+    let pkg = l.pkgs[p];
+    let src = below(pkg.root, "src");
+    if (path.length() == 1) {
+        return Target {
+            src = src,
+            segments = ["lib"],
+            pkg = p,
+            shown = f"'src/lib.lyrs' in the package '{pkg.name}'",
+            isRoot = true,
+            code = "",
+            message = "",
+        };
+    }
+    let tail = List<string>.new();
+    var k = 1;
+    while (k < path.length()) {
+        tail.push(path[k]);
+        k += 1;
+    }
+    let rest = tail.toArray();
+    if (rest.length() == 1 && rest[0] == "lib") {
+        return none with {
+            message = f"no module '{name}': the package's src/lib.lyrs is the module '{head}'",
+        };
+    }
+    return Target {
+        src = src,
+        segments = rest,
+        pkg = p,
+        shown = f"'src/{rest.join("/")}.lyrs' in the package '{pkg.name}'",
+        isRoot = false,
+        code = "",
+        message = "",
+    };
+}
+
+/// The package root holding the entry `path` under its `src/`, and the entry's path below
+/// `src/` without its extension, `a/main`: where the nearest manifest above the entry is such a
+/// package's; `null` where there is none, or the entry lies outside its `src/`.
+fn packageRoot(path: string): ?(string, string) {
+    let abs = try? absolute(path);
+    if (abs == null) {
+        return null;
+    }
+    var dir = parent(abs);
+    let names = List<string>.new();
+    var up = 0;
+    while (up < 64) {
+        if (exists(join(dir, manifestName))) {
+            break;
+        }
+        let next = parent(dir);
+        if (next == dir) {
+            return null;
+        }
+        names.push(fileName(dir));
+        dir = next;
+        up += 1;
+    }
+    if (up == 0 || names[names.length() - 1] != "src") {
+        return null;
+    }
+    // the folders from `src/` down to the entry's, then the entry's stem
+    let rel = List<string>.new();
+    var k = names.length() - 2;
+    while (k >= 0) {
+        rel.push(names[k]);
+        k -= 1;
+    }
+    rel.push(stem(path));
+    // the root as the entry's path is written: as many folders up from the entry's
+    var root = parent(path);
+    var n = 0;
+    while (n < up) {
+        root = normalize(join(root, ".."));
+        n += 1;
+    }
+    return (root, rel.toArray().join("/"));
+}
+
+/// A dependency to read: its folder, the name the depending manifest gives it, where that
+/// manifest declares it, and the package that declares it; `from` -1 for the root package.
+struct Wanted {
+    root: string,
+    name: string,
+    doc: int,
+    line: int,
+    from: int,
+}
+
+/// Reads the package at `root` and every package its dependencies reach, each once (Lyric 5 15
+/// §1–§2): a manifest's faults at their lines; a folder without the package its dependent names
+/// (`LYS-PKG0004`); two folders for one name (`LYS-PKG0005`); a toolchain the package asks more
+/// of (`LYS-PKG0009`).
+fn loadPackages(root: string, l: Loaded): void {
+    let queue = List<Wanted>.new();
+    queue.push(Wanted { root = root, name = "", doc = -1, line = 0, from = -1 });
+    var k = 0;
+    while (k < queue.length()) {
+        let w = queue[k];
+        k += 1;
+        // a folder reached again is the package read before
+        var known = -1;
+        var j = 0;
+        while (j < l.pkgs.length()) {
+            if (l.pkgs[j].root == w.root) {
+                known = j;
+            }
+            j += 1;
+        }
+        if (known >= 0) {
+            l.pkgs[w.from].deps.insert(w.name, known);
+            continue;
+        }
+        let mpath = below(w.root, manifestName);
+        let text = try? readText(mpath);
+        if (text == null) {
+            docError(
+                l,
+                w.doc,
+                w.line,
+                "LYS-PKG0004",
+                f"no package at '{w.root}': it holds no {manifestName}"
+            );
+            continue;
+        }
+        let d = l.docPaths.length();
+        l.docPaths.push(mpath);
+        l.docTexts.push(text);
+        let read = readManifest(text);
+        for (e in read.errors) {
+            l.errors.push(e with { file = -2 - d });
+        }
+        let m = read.manifest;
+        if (m == null) {
+            continue;
+        }
+        if (w.from >= 0 && m.name != w.name) {
+            docError(
+                l,
+                w.doc,
+                w.line,
+                "LYS-PKG0004",
+                f"'{w.root}' holds the package '{m.name}', not '{w.name}'"
+            );
+            continue;
+        }
+        let asked = m.toolchain;
+        if (asked != null && !toolchainAllows(asked, version)) {
+            docError(
+                l,
+                d,
+                lineOfKey(text, "toolchain"),
+                "LYS-PKG0009",
+                f"the package '{m.name}' asks for the toolchain {asked}; this one is {version}"
+            );
+            l.exit = 2;
+        }
+        for (other in l.pkgs) {
+            if (other.name == m.name) {
+                docError(
+                    l,
+                    w.doc,
+                    w.line,
+                    "LYS-PKG0005",
+                    f"two packages named '{m.name}': '{other.root}' and '{w.root}'"
+                );
+            }
+        }
+        let index = l.pkgs.length();
+        l.pkgs.push(Pkg { name = m.name, root = w.root, deps = Map<string, int>.new() });
+        if (w.from >= 0) {
+            l.pkgs[w.from].deps.insert(m.name, index);
+        }
+        for (dep in m.deps) {
+            queue.push(
+                Wanted {
+                    root = normalize(below(w.root, dep.path)),
+                    name = dep.name,
+                    doc = d,
+                    line = dep.line,
+                    from = index,
+                }
+            );
+        }
+    }
+}
+
+/// An error at `line` of manifest `doc`.
+fn docError(l: Loaded, doc: int, line: int, code: string, message: string): void {
+    let text = if (doc >= 0) l.docTexts[doc] else "";
+    var start = 0;
+    var n = 1;
+    var k = 0;
+    for (b in text.toBytes()) {
+        if (n == line) {
+            break;
+        }
+        if (b == 10u8) {
+            n += 1;
+            start = k + 1;
+        }
+        k += 1;
+    }
+    var end = start;
+    let bytes = text.toBytes();
+    while (end < bytes.length() && bytes[end] != 10u8) {
+        end += 1;
+    }
+    l.errors.push(
+        Diagnostic {
+            code = code,
+            message = message,
+            start = start,
+            end = end,
+            line = if (line > 0) line else 1,
+            column = 1,
+            help = null,
+            file = -2 - doc,
+        }
+    );
+}
+
+/// The line of the first `key = …` in a manifest's text; 1 where there is none.
+fn lineOfKey(text: string, key: string): int {
+    var n = 0;
+    for (line in text.split('\n')) {
+        n += 1;
+        let t = line.trim().toString();
+        if (t.startsWith(key) && t[key.length()..t.length()].toString().trim().startsWith("=")) {
+            return n;
+        }
+    }
+    return 1;
+}
+
+/// Depth first from module `k`: its imports first, then it; `stack` the modules on the way, which
+/// an import of one of them closes to a cycle (LYS-RES0005). `state`: 0 not seen, 1 on the way,
+/// 2 placed.
+fn visit(
+    k: int,
+    edges: List<List<int>>,
+    edgeAt: List<List<Diagnostic>>,
+    state: List<int>,
+    stack: List<int>,
+    l: Loaded
+): void {
+    state[k] = 1;
+    stack.push(k);
+    var e = 0;
+    while (e < edges[k].length()) {
+        let j = edges[k][e];
+        if (state[j] == 1) {
+            let names = List<string>.new();
+            var n = 0;
+            while (stack[n] != j) {
+                n += 1;
+            }
+            while (n < stack.length()) {
+                names.push(l.names[stack[n]]);
+                n += 1;
+            }
+            names.push(l.names[j]);
+            let chain = names.toArray().join(" -> ");
+            l.errors.push(
+                edgeAt[k][e] with {
+                    code = "LYS-RES0005",
+                    message = f"modules that import each other: {chain}",
+                }
+            );
+        } else if (state[j] == 0) {
+            visit(j, edges, edgeAt, state, stack, l);
+        }
+        e += 1;
+    }
+    stack.pop();
+    state[k] = 2;
+    l.order.push(k);
+}
+
+/// `rel` below the folder `folder`.
+fn below(folder: string, rel: string): string {
+    return if (folder == ".") rel else join(folder, rel);
+}
+
+/// The path below `folder` as the folders name it, where it differs from `segments` — a module
+/// path — in case: `A/b.lyrs` for `a.b`; `null` where each name is exact (Lyric 5 04 §2 rule 4).
+fn misnamed(folder: string, segments: string[]): ?string {
+    var dir = folder;
+    let shown = List<string>.new();
+    var k = 0;
+    while (k < segments.length()) {
+        let want = if (k == segments.length() - 1) segments[k] + ".lyrs" else segments[k];
+        var exact = false;
+        var other: ?string = null;
+        for (e in entriesOf(dir)) {
+            if (e.name == want) {
+                exact = true;
+            } else if (e.name.toLower() == want.toLower()) {
+                other = e.name;
+            }
+        }
+        if (!exact && other != null) {
+            shown.push(other);
+            k += 1;
+            while (k < segments.length()) {
+                shown.push(if (k == segments.length() - 1) segments[k] + ".lyrs" else segments[k]);
+                k += 1;
+            }
+            return shown.toArray().join("/");
+        }
+        shown.push(want);
+        dir = below(dir, segments[k]);
+        k += 1;
+    }
+    return null;
+}
+
+/// The modules in folder `dir`: its `.lyrs` files' names without the extension; none where it is
+/// no folder.
+fn lyrsIn(dir: string): string[] {
+    let out = List<string>.new();
+    for (e in entriesOf(dir)) {
+        if (e.isFile && e.name.endsWith(".lyrs")) {
+            out.push(stem(e.name));
+        }
+    }
+    return out.toArray();
+}
+
+fn without(xs: string[], x: string): string[] {
+    let out = List<string>.new();
+    for (y in xs) {
+        if (y != x) {
+            out.push(y);
+        }
+    }
+    return out.toArray();
+}
+
+/// The entries of folder `dir`; none where it cannot be read.
+fn entriesOf(dir: string): DirEntry[] {
+    let out = List<DirEntry>.new();
+    try {
+        for (e in readDir(dir)) {
+            out.push(e);
+        }
+    } catch (_) {
+        return [];
+    }
+    return out.toArray();
+}
+
+fn indexOf(xs: List<string>, x: string): int {
+    var k = 0;
+    while (k < xs.length()) {
+        if (xs[k] == x) {
+            return k;
+        }
+        k += 1;
+    }
+    return -1;
+}

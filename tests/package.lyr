@@ -1,0 +1,108 @@
+// A package's manifest (S5b; Script 07 Man, Lyric 5 15 §1–§2): `[package]` with its name,
+// version, edition and toolchain; `[dependencies]` read from a folder; what the manifest does not
+// take, and what comes with later slices, refused at its line.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.package { readManifest, toolchainAllows };
+
+/// The codes of a manifest's errors, each with its line.
+fn said(text: string): string[] {
+    let out = List<string>.new();
+    for (e in readManifest(text).errors) {
+        out.push(f"{e.code}@{e.line}");
+    }
+    return out.toArray();
+}
+
+@Test
+fn aManifestNamesItsPackageAndItsDependencies(): void {
+    let read = readManifest(
+        "# the app\n[package]\nname = \"app\"\nversion = \"0.1.0-beta.1+b7\"\ntoolchain = \">=1.0\"\nauthors = [\"a\", \"b\"]\n\n[dependencies]\ngeo = { path = \"../geo\" }\nunits = { path = \"vendor/units\" }\n"
+    );
+    assertEq(read.errors.length(), 0);
+    let m = read.manifest;
+    assertTrue(m != null);
+    if (m != null) {
+        assertEq(m.name, "app");
+        assertEq(m.version, "0.1.0-beta.1+b7");
+        assertEq(m.edition, "1");
+        assertEq(m.toolchain, ">=1.0");
+        let deps = List<string>.new();
+        for (d in m.deps) {
+            deps.push(f"{d.name}={d.path}@{d.line}");
+        }
+        assertEq(deps.toArray(), ["geo=../geo@9", "units=vendor/units@10"]);
+    }
+}
+
+@Test
+fn aManifestFieldIsGivenAndWellFormed(): void {
+    // `[package]` and its name and version; the name's form; the edition there is
+    assertEq(said("[dependencies]\n"), ["LYS-PKG0002@1"]);
+    assertEq(said("[package]\nversion = \"1.0.0\"\n"), ["LYS-PKG0002@1"]);
+    assertEq(said("[package]\nname = \"App\"\nversion = \"1.0.0\"\n"), ["LYS-PKG0002@2"]);
+    assertEq(said("[package]\nname = \"std\"\nversion = \"1.0.0\"\n"), ["LYS-PKG0002@2"]);
+    assertEq(said("[package]\nname = \"a\"\nversion = \"1.0\"\n"), ["LYS-PKG0002@3"]);
+    assertEq(
+        said("[package]\nname = \"a\"\nversion = \"1.0.0\"\nedition = \"5\"\n"),
+        ["LYS-PKG0002@4"]
+    );
+    assertEq(
+        said("[package]\nname = \"a\"\nversion = \"1.0.0\"\ntoolchain = \"new\"\n"),
+        ["LYS-PKG0002@4"]
+    );
+    assertEq(
+        said("[package]\nname = \"a\"\nversion = \"1.0.0\"\nauthors = \"me\"\n"),
+        ["LYS-PKG0002@4"]
+    );
+}
+
+@Test
+fn aManifestTakesWhatItKnows(): void {
+    // an unknown key or section; a registry's version; TOML's floats and dates; what is later
+    assertEq(
+        said("[package]\nname = \"a\"\nversion = \"1.0.0\"\nflavour = \"x\"\n"),
+        ["LYS-PKG0003@4"]
+    );
+    assertEq(
+        said("[package]\nname = \"a\"\nversion = \"1.0.0\"\n[extra]\nk = 1\n"),
+        ["LYS-PKG0003@4"]
+    );
+    assertEq(
+        said("[package]\nname = \"a\"\nversion = \"1.0.0\"\n[dependencies]\ngeo = \"1.2\"\n"),
+        ["LYS-PKG0003@5"]
+    );
+    assertEq(
+        said(
+            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n[dependencies]\ngeo = { path = \"g\", depth = 1 }\n"
+        ),
+        ["LYS-PKG0003@5"]
+    );
+    assertEq(
+        said("[package]\nname = \"a\"\nversion = \"1.0.0\"\nratio = 1.5\n"),
+        ["LYS-PKG0001@4"]
+    );
+    assertEq(
+        said("[package]\nname = \"a\"\nversion = \"1.0.0\"\nwhen = 2026-10-29\n"),
+        ["LYS-PKG0001@4"]
+    );
+    assertEq(said("[package]\nname = \"a\"\nname = \"b\"\n"), ["LYS-PKG0001@3"]);
+    assertEq(
+        said(
+            "[package]\nname = \"a\"\nversion = \"1.0.0\"\n[dependencies]\ngeo = { git = \"https://x\" }\n"
+        ),
+        ["LYS-NYI0001@5"]
+    );
+    assertEq(said("[package]\nname = \"a\"\nversion = \"1.0.0\"\n[override]\n"), ["LYS-NYI0001@4"]);
+}
+
+@Test
+fn aToolchainBuildsWhatAsksForItOrLess(): void {
+    // at least the version asked for; a development build counts as its version
+    assertTrue(toolchainAllows("1.0", "1.0.0-dev"));
+    assertTrue(toolchainAllows(">=1.0", "1.0.0"));
+    assertTrue(toolchainAllows("0.9.3", "1.0.0"));
+    assertTrue(!toolchainAllows(">=1.1", "1.0.9"));
+    assertTrue(!toolchainAllows("2.0", "1.10.0"));
+    assertTrue(toolchainAllows("1.2", "1.10.0"));
+}

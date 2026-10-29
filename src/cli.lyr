@@ -2,17 +2,17 @@
 //! `check`, `--version`, `help`, and, until the debugging tools come, `asm`, which runs bytecode in
 //! its text form.
 import std.collections { List };
-import std.fs { DirEntry, readDir, readText };
+import std.fs { exists, readText };
 import std.io { eprintln, println };
 import std.os { args };
-import std.path { join, parent, stem };
 import lyric_script { version };
 import lyric_script.cache { clean, load, store };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.checker { ProgramUnit, checkModule };
 import lyric_script.compiler.codegen { generate, scriptEntry };
-import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.compiler.render { SourceLines, renderJson, renderSummary, renderText };
+import lyric_script.loader { Loaded, loadProgram };
+import lyric_script.package { manifestName };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
 import lyric_script.vm.heap { ScriptString };
@@ -61,7 +61,18 @@ fn main(): int {
         if (o.fault != 0) {
             return o.fault;
         }
-        let file = o.file;
+        // in a package's folder `run` and `check` take its program, `src/main.lyrs` (S5b)
+        var file = o.file;
+        if (file == null && command != "asm" && exists(manifestName)) {
+            if (!exists("src/main.lyrs")) {
+                eprintln(
+                    "error[LYS-CLI0005]: the package has no program: there is no src/main.lyrs"
+                );
+                eprintln(f"  = help: lyric-script {command} names the module to start from");
+                return 2;
+            }
+            file = "src/main.lyrs";
+        }
         if (file == null || (command == "asm" && o.json)) {
             let example = if (command == "asm") "program.lyrsasm" else "script.lyrs";
             eprintln(f"error[LYS-CLI0002]: '{command}' takes one file");
@@ -131,244 +142,11 @@ fn checkScript(path: string, json: bool): int {
     if (text == null) {
         return 2;
     }
-    return if (compile(loadProgram(path, text), json).module != null) 0 else 1;
-}
-
-/// A program as read (S5a): each file's path, text, parse and module name, in the order they were
-/// found — 0 the entry —; the order their imports need, each module after those it imports; what
-/// the reading found wrong.
-class Loaded {
-    paths: List<string>,
-    texts: List<string>,
-    names: List<string>,
-    // each module's submodules: the `.lyrs` files in the folder of its name
-    subs: List<string[]>,
-    parses: List<Parsed>,
-    order: List<int>,
-    errors: List<Diagnostic>,
-
-    /// The text the cache keys the program by: the entry's alone where it is the one file, else
-    /// every file's module name and text.
-    fn cacheText(): string {
-        if (this.texts.length() == 1) {
-            return this.texts[0];
-        }
-        let parts = List<string>.new();
-        var k = 0;
-        while (k < this.texts.length()) {
-            parts.push(this.names[k]);
-            parts.push(this.texts[k]);
-            k += 1;
-        }
-        return parts.toArray().join("\u{0}");
+    let loaded = loadProgram(path, text);
+    if (compile(loaded, json).module != null) {
+        return 0;
     }
-}
-
-/// Reads the program whose entry is `path`, its text `text`: every module an import reaches,
-/// `import a.b` the file `a/b.lyrs` below the entry's folder (07 Path).
-fn loadProgram(path: string, text: string): Loaded {
-    let folder = parent(path);
-    let l = Loaded {
-        paths = List<string>.new(),
-        texts = List<string>.new(),
-        names = List<string>.new(),
-        subs = List<string[]>.new(),
-        parses = List<Parsed>.new(),
-        order = List<int>.new(),
-        errors = List<Diagnostic>.new(),
-    };
-    l.paths.push(path);
-    l.texts.push(text);
-    l.names.push(stem(path));
-    // the entry is the root: the modules beside it are no submodules of it
-    l.subs.push([]);
-    // each module's imports: the module, and the import's place for a cycle through it
-    let edges = List<List<int>>.new();
-    let edgeAt = List<List<Diagnostic>>.new();
-    var i = 0;
-    while (i < l.paths.length()) {
-        let parsed = parse(l.texts[i], i);
-        l.parses.push(parsed);
-        let deps = List<int>.new();
-        let at = List<Diagnostic>.new();
-        for (item in parsed.module.items) {
-            let im = match (item) {
-                .Decl(.Import(im)) => im,
-                _ => {
-                    continue;
-                }
-            };
-            let name = im.path.join(".");
-            let where = Diagnostic {
-                code = "LYS-RES0003",
-                message = "",
-                start = im.span.start,
-                end = im.span.end,
-                line = im.span.line,
-                column = im.span.column,
-                help = null,
-                file = i,
-            };
-            var j = indexOf(l.names, name);
-            if (j < 0) {
-                let rel = im.path.join("/") + ".lyrs";
-                let file = below(folder, rel);
-                let found = try? readText(file);
-                if (found == null) {
-                    l.errors.push(
-                        where with {
-                            message = f"no module '{name}': there is no file '{rel}' beside the entry",
-                        }
-                    );
-                    continue;
-                }
-                // the path names its file exactly, where the file system would take another case
-                let differs = misnamed(folder, im.path);
-                if (differs != null) {
-                    l.errors.push(
-                        where with {
-                            message = f"no module '{name}': the file is named '{differs}', not '{rel}'",
-                        }
-                    );
-                    continue;
-                }
-                j = l.paths.length();
-                l.paths.push(file);
-                l.texts.push(found);
-                l.names.push(name);
-                l.subs.push(lyrsIn(below(folder, im.path.join("/"))));
-            }
-            deps.push(j);
-            at.push(where);
-        }
-        edges.push(deps);
-        edgeAt.push(at);
-        i += 1;
-    }
-    let state = List<int>.new();
-    for (_ in l.paths) {
-        state.push(0);
-    }
-    visit(0, edges, edgeAt, state, List<int>.new(), l);
-    return l;
-}
-
-/// Depth first from module `k`: its imports first, then it; `stack` the modules on the way, which
-/// an import of one of them closes to a cycle (LYS-RES0005). `state`: 0 not seen, 1 on the way,
-/// 2 placed.
-fn visit(
-    k: int,
-    edges: List<List<int>>,
-    edgeAt: List<List<Diagnostic>>,
-    state: List<int>,
-    stack: List<int>,
-    l: Loaded
-): void {
-    state[k] = 1;
-    stack.push(k);
-    var e = 0;
-    while (e < edges[k].length()) {
-        let j = edges[k][e];
-        if (state[j] == 1) {
-            let names = List<string>.new();
-            var n = 0;
-            while (stack[n] != j) {
-                n += 1;
-            }
-            while (n < stack.length()) {
-                names.push(l.names[stack[n]]);
-                n += 1;
-            }
-            names.push(l.names[j]);
-            let chain = names.toArray().join(" -> ");
-            l.errors.push(
-                edgeAt[k][e] with {
-                    code = "LYS-RES0005",
-                    message = f"modules that import each other: {chain}",
-                }
-            );
-        } else if (state[j] == 0) {
-            visit(j, edges, edgeAt, state, stack, l);
-        }
-        e += 1;
-    }
-    stack.pop();
-    state[k] = 2;
-    l.order.push(k);
-}
-
-/// `rel` below the folder `folder`, the entry's.
-fn below(folder: string, rel: string): string {
-    return if (folder == ".") rel else join(folder, rel);
-}
-
-/// The path below `folder` as the folders name it, where it differs from `segments` — a module
-/// path — in case: `A/b.lyrs` for `a.b`; `null` where each name is exact (Lyric 5 04 §2 rule 4).
-fn misnamed(folder: string, segments: string[]): ?string {
-    var dir = folder;
-    let shown = List<string>.new();
-    var k = 0;
-    while (k < segments.length()) {
-        let want = if (k == segments.length() - 1) segments[k] + ".lyrs" else segments[k];
-        var exact = false;
-        var other: ?string = null;
-        for (e in entriesOf(dir)) {
-            if (e.name == want) {
-                exact = true;
-            } else if (e.name.toLower() == want.toLower()) {
-                other = e.name;
-            }
-        }
-        if (!exact && other != null) {
-            shown.push(other);
-            k += 1;
-            while (k < segments.length()) {
-                shown.push(if (k == segments.length() - 1) segments[k] + ".lyrs" else segments[k]);
-                k += 1;
-            }
-            return shown.toArray().join("/");
-        }
-        shown.push(want);
-        dir = below(dir, segments[k]);
-        k += 1;
-    }
-    return null;
-}
-
-/// The modules in folder `dir`: its `.lyrs` files' names without the extension; none where it is
-/// no folder.
-fn lyrsIn(dir: string): string[] {
-    let out = List<string>.new();
-    for (e in entriesOf(dir)) {
-        if (e.isFile && e.name.endsWith(".lyrs")) {
-            out.push(stem(e.name));
-        }
-    }
-    return out.toArray();
-}
-
-/// The entries of folder `dir`; none where it cannot be read.
-fn entriesOf(dir: string): DirEntry[] {
-    let out = List<DirEntry>.new();
-    try {
-        for (e in readDir(dir)) {
-            out.push(e);
-        }
-    } catch (_) {
-        return [];
-    }
-    return out.toArray();
-}
-
-fn indexOf(xs: List<string>, x: string): int {
-    var k = 0;
-    while (k < xs.length()) {
-        if (xs[k] == x) {
-            return k;
-        }
-        k += 1;
-    }
-    return -1;
+    return if (loaded.exit != 0) loaded.exit else 1;
 }
 
 /// Runs a script: 0 at its end, 1 where it does not compile or an error leaves it, 101 for a
@@ -399,7 +177,7 @@ fn runScript(path: string, json: bool): int {
     let compiled = compile(loaded, json);
     let module = compiled.module;
     if (module == null) {
-        return 1;
+        return if (loaded.exit != 0) loaded.exit else 1;
     }
     if (compiled.warnings == 0) {
         store(key, module);
@@ -443,7 +221,17 @@ fn compile(l: Loaded, json: bool): Compiled {
         lines.push(SourceLines.of(t));
     }
     let path = l.paths[0];
-    let r = Reporter { paths = l.paths.toArray(), lines = lines.toArray(), json = json };
+    let docLines = List<SourceLines>.new();
+    for (t in l.docTexts) {
+        docLines.push(SourceLines.of(t));
+    }
+    let r = Reporter {
+        paths = l.paths.toArray(),
+        lines = lines.toArray(),
+        docPaths = l.docPaths.toArray(),
+        docLines = docLines.toArray(),
+        json = json,
+    };
     var broken = l.errors.length();
     for (parsed in l.parses) {
         r.all(parsed.errors, parsed.warnings);
@@ -464,6 +252,7 @@ fn compile(l: Loaded, json: bool): Compiled {
                     module = l.parses[k].module,
                     file = k,
                     submodules = l.subs[k],
+                    package = l.pkgOf[k],
                 }
             );
         }
@@ -490,9 +279,12 @@ fn compile(l: Loaded, json: bool): Compiled {
 
 /// Says a script's diagnostics, in the form asked for, and counts them.
 class Reporter {
-    // each file's path and lines, by its place among the program's files
+    // each file's path and lines, by its place among the program's files; the manifests', a
+    // diagnostic about the `k`th naming file `-2 - k`
     paths: string[],
     lines: SourceLines[],
+    docPaths: string[],
+    docLines: SourceLines[],
     json: bool,
     var errors: int = 0,
     var warnings: int = 0,
@@ -510,11 +302,20 @@ class Reporter {
 
     mut fn say(severity: string, d: Diagnostic): void {
         // the file it is about; the prelude's, which is no file of the program, as the entry's
-        let k = if (d.file >= 0 && d.file < this.paths.length()) d.file else 0;
+        var path = this.paths[0];
+        var lines = this.lines[0];
+        let doc = -2 - d.file;
+        if (d.file >= 0 && d.file < this.paths.length()) {
+            path = this.paths[d.file];
+            lines = this.lines[d.file];
+        } else if (doc >= 0 && doc < this.docPaths.length()) {
+            path = this.docPaths[doc];
+            lines = this.docLines[doc];
+        }
         if (this.json) {
-            println(renderJson(d, severity, this.paths[k], this.lines[k]));
+            println(renderJson(d, severity, path, lines));
         } else {
-            eprintln(renderText(d, severity, this.paths[k], this.lines[k]));
+            eprintln(renderText(d, severity, path, lines));
         }
     }
 

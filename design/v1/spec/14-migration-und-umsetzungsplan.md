@@ -729,3 +729,25 @@ Pseudo-Terminal geprüft). Spec 17 Regel 1, vier Fälle (Runner: `env:`, `stderr
 gegen S5d. Mutanten: ein eigener Mutant baute nicht; eine Vorhersage verfehlt, weil zwei
 Mutanten im selben Lauf sich maskierten (ohne gesammelte Rechte ist `-A` gleichgültig) — allein
 fiel der zweite wie vorhergesagt. Tests 275 → 278, Fälle 226 → 230.
+
+**S5, Abschluss (2026-10-29).** Abgleich der Bereichszeilen 07 Top, Path, Dep, Man, V1–V7 und
+02 V gegen den Code: gebaut sind Datei = Modul mit exakten Namen und Laden je Datei einmal (V1),
+die drei Importformen, `pub import`, die Nichtnutzungswarnung (V3), Sichtbarkeit mit `private`
+je Datei und `internal` je Paket (V2, 02 V), Modul-`let`/`var` in Abhängigkeitsreihenfolge (V5),
+Namensräume mit `RES0001/0011/0012` (V6), Pakete mit Pfad und Git, Lock, MVS über Versionslinien
+und `[override]` (V7, Man), Frontmatter-Abhängigkeiten (Dep), nur der Einstieg führt Anweisungen
+aus und `fn main` als Einstieg (Top). Mit Uhr woanders: die Prelude-Zusätze `eprintln`,
+`readLine`, `args`, `exit` (V3 I8) mit dem std-Kern (**S7**), dort auch die feste Rechtetabelle;
+die Note, dass ein lokaler Name ein Modul verdeckt (V6), und `@Test`/`lyric-script test` (V4)
+mit **S11**; Bereiche auf Rechten (`--allow file=./data`) und die Rechte von Host-Modulen mit
+**S8** (01 S1–S2); `[lints]` mit **S11**. Das Austrittskriterium — ein Skriptprojekt aus
+mehreren Dateien mit Git-Abhängigkeit, ein Einzelskript mit Frontmatter — erfüllen die
+Paketfälle der Suite, die die CI auf allen vier Plattformen fährt (Git-Repositories baut der
+Runner), dazu `examples/project` (Paket mit Pfad-Abhängigkeit) und `examples/scripts/square.lyrs`
+(Kopf) als Schritte der CI. Gefunden über den Meilenstein: drei Schleifen über `Map.keys()`, ein
+Lambda ohne Wert lief nie (S3e), `run` nahm Bytecode aus dem Cache vor den Ladefehlern (S5a), ein
+Lyric-5-ICE (lyriclang/lyric#624). Je Slice Mutanten mit vorher geschriebener Vorhersage;
+verfehlt: ein Reihenfolgetest mit zu wenigen Einträgen (S5a), eine `--locked`-Prüfung, die eine
+andere verdeckte (S5c2), zwei sich maskierende Mutanten (S5e); jeweils geschärft oder getrennt
+nachgeprüft. Neue Werkzeugfalle: Lyric 5s Map ist bis etwa acht Einträge geordnet. 278 Tests,
+230 Fälle; Bytecode-Format 9.

@@ -1,0 +1,10 @@
+// The package's root module: `import stats { square }`.
+fn square(x: int): int = x * x
+
+fn sumOfSquares(from: int, to: int): int {
+    var total = 0
+    for (k in from..to + 1) {
+        total += square(k)
+    }
+    return total
+}

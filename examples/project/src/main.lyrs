@@ -1,0 +1,5 @@
+// A package of modules: `lyric-script run` in this folder runs src/main.lyrs.
+import tally.report { line }
+import stats { sumOfSquares }
+
+println(line("squares of 1 to 4", sumOfSquares(1, 4)))

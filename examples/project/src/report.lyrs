@@ -1,0 +1,2 @@
+// A module of the package, `tally.report`.
+fn line(what: string, value: int): string = f"{what}: {value}"

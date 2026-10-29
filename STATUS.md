@@ -33,7 +33,15 @@ Lyric 4.x status up to the 4.6 cut is archived at
   `defer` and `using` with suppressed errors, labels, `do … while`, `never` and the prelude's
   panics; 245 tests, 165 conformance cases. Found on the way: a copy at a scalar handed it to an
   interface parameter as a reference (since S3g).
-- **Open milestone: S5** — modules and packages.
+- **S5 done (2026-10-29)**: modules and packages — a program of modules below the entry's folder
+  or a package's `src/`, the three forms of import and `pub import`, `private` per file and
+  `internal` per package, types through modules, `fn main`; `lyric-script.toml` with path and git
+  dependencies, the lock with commits and content hashes, minimal version selection, `[override]`,
+  `update`, `--offline`, `--locked`; a script's frontmatter dependencies; rights from imports with
+  `--allow`, `-A` and the question at a terminal; 278 tests, 230 conformance cases, bytecode
+  format 9. Found on the way: loops over `Map.keys()` ordered per run, a lambda of no value that
+  never ran (since S3e), `run` taking a cached module before the loader's errors (since S5a).
+- **Open milestone: S6** — coroutines and tasks.
 
 ## Milestones
 
@@ -44,7 +52,7 @@ Lyric 4.x status up to the 4.6 cut is archived at
 | S2 | Front-end core | XL | **done** 2026-10-28 |
 | S3 | Type system complete | L | **done** 2026-10-29 |
 | S4 | Errors and control | M | **done** 2026-10-29 |
-| S5 | Modules and packages | M | — |
+| S5 | Modules and packages | M | **done** 2026-10-29 |
 | S6 | Coroutines and tasks | L | — |
 | S7 | std core | XL | — |
 | S8 | Security and embedding | L | — |
@@ -122,7 +130,7 @@ Errors and control (plan 14, S4): VM exceptions, inferred error sets, a written 
 
 Exit criterion: the error examples run; exit codes 1 and 101.
 
-### S5 — open
+### S5 — done
 
 Modules and packages (plan 14, "S5 — Slices"): a file is a module, imports, globals, the path
 rule, the prelude, `lyric-script.toml`, the lock, Git and path dependencies, frontmatter
@@ -140,7 +148,11 @@ dependencies, rights classes from imports (07).
 | S5e rights from imports | done — the classes `file`, `net`, `process`, `os`, `native`; each import of a module of a class asks for it, recorded with its place in the bytecode (format 9); `run` checks before the start: `--allow`, `-A`, the one question at a terminal, else `LYS-CAP0001` for all at once (exit 2); the table for `std` provisional until S7, `LYRIC_SCRIPT_RIGHTS` its stand-in in tests. Found: lyriclang/lyric#624 (an ICE of `?? null`) |
 
 Exit criterion: a script project of several files with a Git dependency; a single script with
-frontmatter.
+frontmatter. Met by the suite's package cases, which CI runs on all four
+platforms (the runner builds the git repositories), and by `examples/project` and
+`examples/scripts/square.lyrs` as steps of CI. Clocks elsewhere: the prelude's `eprintln`,
+`readLine`, `args`, `exit` and the fixed rights table (S7); scopes on rights and host rights (S8);
+`[lints]`, `test`, the note of a local hiding a module (S11).
 
 ## Working mode
 

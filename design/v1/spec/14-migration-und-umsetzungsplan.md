@@ -919,3 +919,23 @@ blieb zweimal grün — erst lag der Wert noch vom `await` im Register, dann sta
 Probe-Vorhersage verfehlt: `TaskStatus.Running == …` meldet zuerst `SEM0060` (die generische
 Variante braucht den Typ vom Ort), der Fall vergleicht zwei Status. Tests 328 → 330, Fälle 294 →
 298.
+
+**S6d, Schnitt (2026-10-29).** Drei Teile. **S6d1** `Channel<T>` und `Semaphore` in der VM.
+**S6d2** `select`: `Select`/`Selection` als Prelude-Quelltext in Script (wie Lyric 5s `std.task`
+sie in Lyric schreibt; source-first), über drei VM-Intrinsics — ein Kanal ist bereit, ein Task
+beobachtet einen Kanal, ein Task parkt bis zur Regung eines beobachteten. **S6d3** Zeit:
+`Duration`, `sleep`, `Timer.after`, `.timeout(d)` im Select, `withTimeout` (Prelude-Quelltext mit
+eigenem `TaskScope`, damit ein scheiternder Arbeits-Task nicht den Lauf scheitern lässt) und der
+Scheduler, der auf den frühesten Zeitgeber wartet.
+
+**S6d1, Ergebnis (2026-10-29).** `Channel<T>.new(capacity)` (ungepuffert bei 0), `send`, `recv(): ?T`,
+`close()`, `ChannelClosed` in der Prelude; `Semaphore.new(n)` mit `acquire`, `tryAcquire`,
+`release`, `available`. Ein Kanal hält Puffer, wartende Empfänger und wartende Sender samt Wert;
+`recv` antwortet in der Form von `?T` wie ein Pull. Ein schon übergebener Wert oder eine übergebene
+Erlaubnis gehört dem Task, auch wenn ihn danach ein Abbruch weckt — der wirkt am nächsten Warten
+(sonst ginge der Wert verloren). Ein Abbruch nimmt den Task auch aus den Wartelisten von Kanal und
+Semaphor. Dazu ein statischer Aufruf auf einer Typinstanz, `Channel<int>.new(1)`, den es bisher
+nicht gab. Format 16. Spec 10 Regeln 14–15, zehn Fälle, alle rot gegen S6c3; sechs Mutanten in zwei
+Läufen, alle wie vorher aufgeschrieben (ohne Hänger: jede Verklemmung paniert mit `RT0018`). Ein
+Fall kam beim Entwerfen der Mutanten hinzu: die Regel, dass der Wert eines wartenden Senders auf den
+frei gewordenen Pufferplatz rückt, hatte keine Probe. Tests 330 → 336, Fälle 298 → 308.

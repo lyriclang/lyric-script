@@ -181,7 +181,9 @@ Exit criterion: a concurrent example.
   `cancel()`; bytecode format 14.
 - **S6c3 done** — `TaskStatus<T>` with the value, the error or the `PanicInfo`; `isDone()`;
   bytecode format 15. S6c (cancellation and scopes) complete.
-- Next: **S6d** — channels, `select`, time, `Semaphore`, `withTimeout`.
+- **S6d1 done** — `Channel<T>` (send, recv, close, `ChannelClosed`), `Semaphore`; bytecode
+  format 16.
+- Next: **S6d2** — `select` (prelude source over three VM intrinsics), then **S6d3** time.
 
 ## Working mode
 

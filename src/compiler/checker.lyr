@@ -3396,7 +3396,8 @@ class Checker {
         dropIntKeyed(this.debugFns, n);
         dropIntKeyed(this.unboxers, n);
         dropTextKeyed(this.listDebugFns, n);
-        dropTextKeyed(this.instances, n);
+        // `instances` keeps the instances of types too, keyed `type …`: their values are types'
+        dropCopies(this.instances, n);
         dropTextKeyed(this.descThunks, n);
     }
 
@@ -12552,6 +12553,20 @@ fn dropTextKeyed(m: Map<string, int>, n: int): void {
     let stale = List<string>.new();
     for (k in m.keys()) {
         if ((m.get(k) ?? -1) >= n) {
+            stale.push(k);
+        }
+    }
+    for (k in stale) {
+        m.remove(k);
+    }
+}
+
+/// The copies of generic functions in `instances` that are `n` or later: gone; its instances of
+/// types, keyed `type …`, stay — their values are indices of types, not of functions.
+fn dropCopies(m: Map<string, int>, n: int): void {
+    let stale = List<string>.new();
+    for (k in m.keys()) {
+        if (!k.startsWith("type ") && (m.get(k) ?? -1) >= n) {
             stale.push(k);
         }
     }

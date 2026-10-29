@@ -1142,3 +1142,40 @@ nennt sie — Uhr jetzt **S7c**, wo `FromIterator<T>` sie braucht; mit ihnen geh
 und die Liste als Interfacewert mit Deskriptor samt `typeOf`-Prüfstein dorthin, die dieselbe
 Tabellenmechanik brauchen (P18). Spec 03 Regel 8, 06 Regel 10, 08 Regel 3; sieben Fälle, alle rot
 gegen S7b2a. Vier Mutanten in einem Lauf, alle wie vorhergesagt. Fälle 355 → 362.
+
+**S7b3, Ergebnis (2026-10-30).** `Index<K>`/`IndexSet<K>` sind in Lyric 5 generische Interfaces
+und gehen mit P18 nach S7c; S7b3 sind die Listenmuster (Lyric 5 §9s Array-Muster): `[p, q]`,
+`[first, ..rest]`, `[a, .., z]`, ein `..` höchstens (`LYS-PAR0033`, gemeldet ohne Abbruch wie in
+Lyric 5), vor dem `..` von vorn, danach vom Ende gezählt, `..name` eine Kopie (09 Y6), die Länge
+vor jedem Element geprüft, durch ein Optional hindurch, in `match`, `let … else`, `if let`. Die
+Abdeckung zählt Längen wie Rust: jede Länge bis zur ersten, die kein Muster ohne `..` erreicht
+und jedes mit `..` deckt, diese für alle längeren (`Space.Seq`); der Zeuge zeigt `[_, _, ..]`.
+Spec 09 Regel 5, acht Fälle, alle rot gegen S7b2b. Vier Mutanten in drei Läufen (drei hätten
+denselben Fall getroffen), alle wie vorhergesagt; ein Lauf griff erst nicht, weil `fmt` eine
+Zeile des Ankers umgebrochen hatte. **Gefunden in der eigenen Arbeit:** das Aufräumen aus S7b2b
+löschte aus `instances` auch Typinstanzen (Schlüssel `type …`, Werte Typindizes), sobald ein
+Typindex über der Funktionszahl lag — `Box<S299>` gab es dann zweimal (`SEM0001`); ein Test mit
+300 Typen war rot, ist es nach dem Fix nicht mehr. Tests 353 → 354, Fälle 362 → 370.
+
+**S7b, Abschluss (2026-10-30).** Listen sind gebaut: das native Objekt mit Slots je Element,
+Literale, Index mit `^n`, Slices mit offenen Enden, die Methoden von Lyric 5s `List` (in Script
+über `extend<T> T[]`, vergleichende je Elementtyp synthetisiert), `+`, `*`, `in`, `==`, `for` mit
+Lyric 5s Änderungspanik, das leere Literal über die erste Verwendung, `e.suppressed()`, Muster.
+Mit Uhr woanders: `Index<K>`/`IndexSet<K>`, `FromArrayLiteral<T>`, eine Liste als Interfacewert
+und `typeOf([1, 2])` mit den generischen Interfaces (**S7c**, P18); die vergleichenden Methoden
+über einem Typparameter mit `Equatable` als Interface (**S7d**); `sort` mit den Iteratoren
+(**S7c**). Gefunden über den Teil-Meilenstein: der erfundene „nachgeschobenes Element wird
+besucht“-Satz von S7b1 (Lyric 5 paniert), veraltete Funktionen nach dem ersten Durchlauf von 03
+Leer (seit S3b/S3h), die fehlenden generischen Interfaces (seit S3), der Runner, der
+`stderr-has:` in Ablehnungen überging. 354 Tests, 370 Fälle; Bytecode-Format 23.
+
+**S7c, geteilt (2026-10-30).** S7c trägt jetzt die generischen Interfaces (P18) vor den Iteratoren;
+fünf Teile, jeder braucht den vorigen.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S7c1 Generische Interfaces** | `interface I<T> { … }` (Lyric 5 §5): Typparameter am Interface, Instanzen `I<int>` als eigene Interfaces mit eigener Tabelle, Konformanz `:: [I<int>]` am Typ und im Extend-Block, Constraints `T :: [I<int>]`, `I<int>` als Wert (Interfacewert), Defaults über `T`; Objektsicherheit wie für `Self` | Konformanzfälle |
+| **S7c2 Index und Literal** | `Index<K>`/`IndexSet<K>` in der Prelude: `x[k]`, `x[k] = v`, `x[k] op= v` auf eigenen Typen (03 Index), Objekt und Schlüssel einmal ausgewertet; `FromArrayLiteral<T>` mit `fromArrayLiteral` (Namensregel Spec 03 Regel 14) | Konformanzfälle |
+| **S7c3 Werte ohne Deskriptor** | eine Liste als Interfacewert (Deskriptor `T[]`, Tabelle des `List`-Eintrags je Element, `is int[]`, Debug über `Any`), Konformanzen `extend<T> T[] :: [I]`; Tasks, Koroutinen, Kanäle als Interfacewerte (Uhr aus S6) | Konformanzfälle |
+| **S7c4 Iteratoren** | `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator<T>`, `collect()`; `for` über jedes Iterable, `Closeable`-Iteratoren geschlossen (05 E7); `T[] :: Iterable` mit der Änderungspanik; `Coroutine :: Iterator` | Konformanzfälle |
+| **S7c5 `std.iter`** | die Adapter von Lyric 5s `iter` in Script, die Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …), `sort` nativ mit Kostenregel | Konformanzfälle; Kostenregel für `sort` |

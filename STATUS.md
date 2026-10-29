@@ -228,7 +228,9 @@ VM's call path, S7k measurement point 3.
   use; `e.suppressed()`; bytecode format 23. Found: the first pass of 03 Leer left stale
   synthesized functions (an empty line for a struct's Debug form, since S3b/S3h). Moved to S7c
   with generic interfaces (P18): `FromArrayLiteral`, a list as an interface value.
-- Next: **S7b3** — `Index<K>`/`IndexSet<K>` for one's own types, array patterns.
+- **S7b3 done** — list patterns `[a, b]`, `[first, ..rest]`, `[a, .., z]` with their coverage by
+  lengths; `Index<K>` moved to S7c with the generic interfaces (P18). **S7b complete.**
+- Next: **S7c** — generic interfaces first (P18), then the iterators; to be cut in plan 14.
 
 ## Working mode
 

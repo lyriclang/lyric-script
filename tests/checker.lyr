@@ -161,3 +161,22 @@ fn whatLyricScriptHasNot(): void {
     // what a later milestone builds is named as such
     assertEq(errs("let m = [\"a\": 1]\nprintln(1)"), ["LYS-NYI0001"]);
 }
+
+@Test
+fn aFirstPassKeepsTheInstancesOfTypes(): void {
+    // more types than functions: an instance's index lies past the count of functions the first
+    // pass of 03 Leer drops from (S7b2b dropped type instances with the copies of functions)
+    let parts = List<string>.new();
+    var k = 0;
+    while (k < 300) {
+        parts.push("struct S" + f"{k}" + " { }");
+        k += 1;
+    }
+    parts.push("struct Box<T> {\n    v: T,\n}");
+    parts.push("fn f(b: Box<S299>): int = 1");
+    parts.push("var x = null");
+    parts.push("let b: Box<S299> = Box { v = S299 { } }");
+    parts.push("println(f(b))");
+    parts.push("x = 1");
+    assertEq(errs(parts.toArray().join("\n")), []);
+}

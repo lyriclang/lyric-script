@@ -649,3 +649,23 @@ erstmals mit Konformanzlauf, weil der Lader nur dort getestet ist: sechs auf ein
 wie vorhergesagt (Unit 265/267, Konformanz 196/202). Tests 263 → 267, Fälle 192 → 202.
 Vorhersage verfehlt: in einer Probe meldete ein Programm mit `RES0014` nicht auch den
 `internal`-Verstoß der zweiten Zeile — Ladefehler beenden vor dem Prüfer.
+
+**S5c, geteilt (2026-10-29).** S5c ist der größte Slice von S5; er wird in drei Teile geschnitten,
+je mit eigenem Ergebnis: **S5c1** Git-Abhängigkeiten (Revisionen, Normalform der URL, Nutzer-Cache,
+`--offline`), **S5c2** die Lockdatei (Commit und Inhalts-Hash, `--locked`, `lyric-script update`),
+**S5c3** Versionslinien und MVS, `[override]`, Paketzyklen (`PKG0010`), `include`/`exclude`.
+
+**S5c1, Ergebnis (2026-10-29).** Eine Git-Abhängigkeit liest eine Revision: Tag, Branch, Commit
+(`rev`, 7–64 Hex-Ziffern) oder den Branch, den `HEAD` nennt; die URL in ihrer Normalform
+verglichen, gecacht und geklont. Der Lader klont ein Repository einmal bare in den Nutzer-Cache
+(`<cache>/git/<schlüssel>`), holt nach, wo ein Branch verlangt ist oder die Revision fehlt, und
+checkt jeden Commit einmal aus (`<cache>/src/<schlüssel>/<commit>`) — über `git` als Prozess
+(`std.process`). Fehlende Revision, fehlendes Paket, ein Versions-Tag über einem anderen Manifest:
+`PKG0006`; unerreichbar oder `--offline` ohne Cache: `PKG0007`, Exit 2; ein Paket aus Git nennt
+seine Abhängigkeiten per Git (`PKG0004`). Ein Import einer Abhängigkeit, die nicht gelesen wurde,
+schweigt (der Fehler steht am Manifest). Der Runner baut `repos/<name>/<version>/` zu
+Git-Repositories (fester Autor, feste Zeit), ersetzt `{repos}` und gibt jedem Paketfall eine Kopie
+und einen eigenen Cache; `option:` reicht Optionen durch. Spec 15 Regeln 6–7, acht Fälle, alle rot
+gegen S5b. Ein Fall war vor den Mutanten zu weich (der Pfad zeigte ins Leere, PKG0004 auch ohne
+die Regel) und wurde geschärft; danach trafen alle vier Mutanten wie vorhergesagt. Tests 267 →
+269, Fälle 202 → 210.

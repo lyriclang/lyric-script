@@ -88,3 +88,17 @@ fn aConstrainedParameterIsHandedOn(): void {
     let e = "interface Show {\n    fn show(): int\n}\ninterface More :: [Show] {\n}\nstruct S :: [More] {\n    x: int\n\n    fn show(): int = this.x\n}\nfn inner<T :: [Show]>(x: T): int = x.show()\nfn outer<T :: [Show]>(x: T): int = inner(x)\nfn child<T :: [More]>(x: T): int = inner(x)\nfn e(): int = outer(S { x = 2 }) * 10 + child(S { x = 3 })";
     assertEq(value(e, "e"), 23);
 }
+
+// A type's constants are set where the script begins (Lyric 5 04 §1 rule 2), which an entry run
+// alone does not: they are read in the conformance suite, 05-interfaces, which runs the script.
+let zeros = "interface Zero {\n    static let zero: Self\n}\nstruct Z :: [Zero] {\n    x: int\n    static let zero: Z = Z { x = 0 }\n}\nextend int :: [Zero] {\n    static let zero: int = 0\n}\nclass K :: [Zero, Identity] {\n    var n: int = 7\n    static let zero: K = K { }\n}\nfn zeroOf<T :: [Zero]>(): T = T.zero\n";
+
+@Test
+fn whatConstantsRefuse(): void {
+    // an interface's constant has no value
+    assertEq(errs("interface Bad {\n    static let zero: int = 1\n}"), ["LYS-SEM0127"]);
+    // a type's needs its type and its value
+    assertEq(errs("struct Q {\n    x: int\n    static let zero = Q { x = 0 }\n}"), ["LYS-SEM0010"]);
+    // an interface with a constant is a constraint only
+    assertEq(errs(zeros + "let z: Zero = Z.zero"), ["LYS-SEM0126"]);
+}

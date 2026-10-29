@@ -34,6 +34,7 @@ import lyric_script.compiler.ast {
     Pattern,
     Segment,
     Span,
+    StaticLet,
     Stmt,
     TypeAnswer,
     TypeDecl,
@@ -414,6 +415,7 @@ class Parser {
         let fields = List<FieldDecl>.new();
         let methods = List<FnDecl>.new();
         let answers = List<TypeAnswer>.new();
+        let statics = List<StaticLet>.new();
         loop {
             while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
                 this.advance();
@@ -422,7 +424,7 @@ class Parser {
                 break;
             }
             try {
-                this.parseMember(fields, methods, answers);
+                this.parseMember(fields, methods, answers, statics);
             } catch (_: SyntaxError) {
                 this.synchronize();
             }
@@ -430,6 +432,7 @@ class Parser {
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the type's body");
         return TypeDecl {
             answers = answers.toArray(),
+            statics = statics.toArray(),
             name = this.text(name),
             typeParams = typeParams,
             conforms = conforms,
@@ -444,7 +447,8 @@ class Parser {
     mut fn parseMember(
         fields: List<FieldDecl>,
         methods: List<FnDecl>,
-        answers: List<TypeAnswer>
+        answers: List<TypeAnswer>,
+        statics: List<StaticLet>
     ): void throws SyntaxError {
         let first = this.current();
         // `type Item = int`: the answer to an associated type (Lyric 5 05 §8 rule 3)
@@ -470,6 +474,11 @@ class Parser {
         }
         if (this.atWord("fn")) {
             methods.push(try this.parseFn(isPub, isStatic, first));
+            return;
+        }
+        // `static let zero: int = 0`: a constant of the type (05 §7 rule 2)
+        if (isStatic && this.atWord("let")) {
+            statics.push(try this.parseStaticLet(first));
             return;
         }
         var isVar = false;
@@ -521,6 +530,7 @@ class Parser {
         let fields = List<FieldDecl>.new();
         let methods = List<FnDecl>.new();
         let answers = List<TypeAnswer>.new();
+        let statics = List<StaticLet>.new();
         loop {
             while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
                 this.advance();
@@ -561,7 +571,7 @@ class Parser {
                         );
                     }
                 } else {
-                    this.parseMember(fields, methods, answers);
+                    this.parseMember(fields, methods, answers, statics);
                 }
             } catch (_: SyntaxError) {
                 this.synchronize();
@@ -577,6 +587,7 @@ class Parser {
         }
         return EnumDecl {
             answers = answers.toArray(),
+            statics = statics.toArray(),
             name = this.text(name),
             typeParams = typeParams,
             conforms = conforms,
@@ -684,6 +695,28 @@ class Parser {
         return out.toArray();
     }
 
+    /// `static let name: T = value`, after `static`; in an interface without its value.
+    mut fn parseStaticLet(first: Token): StaticLet throws SyntaxError {
+        this.advance();
+        let name = try this.expect(.Ident, "LYS-PAR0026", "the constant's name");
+        var ty: ?TypeExpr = null;
+        if (this.at(.Colon)) {
+            this.advance();
+            ty = try this.parseType();
+        }
+        var value: ?Expr = null;
+        if (this.at(.Assign)) {
+            this.advance();
+            value = try this.parseExpr();
+        }
+        return StaticLet {
+            name = this.text(name),
+            type = ty,
+            value = value,
+            span = this.since(first),
+        };
+    }
+
     /// `interface I :: [P] { … }`, `sealed` before it: members with a body are defaults, the
     /// others abstract.
     mut fn parseInterface(isPub: bool, first: Token): InterfaceDecl throws SyntaxError {
@@ -698,6 +731,7 @@ class Parser {
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the interface's body");
         let members = List<FnDecl>.new();
         let assoc = List<AssocDecl>.new();
+        let ifaceStatics = List<StaticLet>.new();
         this.inInterface = true;
         defer {
             this.inInterface = false;
@@ -737,6 +771,10 @@ class Parser {
                     isStatic = true;
                     this.advance();
                 }
+                if (isStatic && this.atWord("let")) {
+                    ifaceStatics.push(this.parseStaticLet(at));
+                    continue;
+                }
                 if (!this.atWord("fn")) {
                     throw this.failure(
                         "LYS-PAR0001",
@@ -752,6 +790,7 @@ class Parser {
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the interface's body");
         return InterfaceDecl {
             assoc = assoc.toArray(),
+            statics = ifaceStatics.toArray(),
             name = this.text(name),
             parents = parents,
             members = members.toArray(),
@@ -771,6 +810,7 @@ class Parser {
         let fields = List<FieldDecl>.new();
         let methods = List<FnDecl>.new();
         let answers = List<TypeAnswer>.new();
+        let statics = List<StaticLet>.new();
         loop {
             while (this.at(.Newline) || this.at(.Comma) || this.at(.Semi)) {
                 this.advance();
@@ -779,7 +819,7 @@ class Parser {
                 break;
             }
             try {
-                this.parseMember(fields, methods, answers);
+                this.parseMember(fields, methods, answers, statics);
             } catch (_: SyntaxError) {
                 this.synchronize();
             }
@@ -794,6 +834,7 @@ class Parser {
         }
         return ExtendDecl {
             answers = answers.toArray(),
+            statics = statics.toArray(),
             target = target,
             conforms = conforms,
             methods = methods.toArray(),

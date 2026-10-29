@@ -176,6 +176,8 @@ class TypeInfo {
     // an interface's associated types; a type's answers to them, by name (S3i)
     var assocNames: string[] = [],
     var answers: Map<string, Ty> = Map<string, Ty>.new(),
+    // its constants, `static let`, by name: the globals that hold them (S3i)
+    var staticLets: Map<string, int> = Map<string, int>.new(),
 }
 
 struct ParamInfo :: [Debug] {

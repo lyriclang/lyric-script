@@ -739,6 +739,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "An interface whose members name `Self` beyond the receiver, are static or generic, or that extends such an interface, has no values: a table would hold no one function for such a member. It is refused as the type of a binding, a parameter, a result or a field, and goes on as no type. Lyric 5's LYR-SEM0126."
 
+[LYS-SEM0127]
+title = "an interface's constant with a value"
+severity = "error"
+area = "05-interfaces"
+summary = "`static let zero: Self` in an interface asks each conformer for its own constant and has no value; the conformer writes `static let zero: P = …`. Lyric 5's LYR-SEM0127."
+
 [LYS-SEM0128]
 title = "an associated type with no answer, or none of the name"
 severity = "error"

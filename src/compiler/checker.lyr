@@ -32,6 +32,7 @@ import lyric_script.compiler.ast {
     Pattern,
     Segment,
     Span,
+    StaticLet,
     Stmt,
     TypeAnswer,
     TypeDecl,
@@ -236,6 +237,8 @@ class Checker {
     assocBounds: Map<string, int[]>,
     // the interfaces with fixed associated types, the types of values (05 §8 rule 6)
     fixedForms: Map<string, int>,
+    // the types' constants: the first globals, set where the script begins (05 §7 rule 2)
+    staticInits: List<StaticInit>,
     // the entries of the built-in types that have methods or conformances, by name
     builtinIndex: Map<string, int>,
     // the function each boxed conformer's method runs through its box, by method
@@ -272,6 +275,7 @@ class Checker {
             assocDefaults = Map<string, TypeExpr>.new(),
             assocBounds = Map<string, int[]>.new(),
             fixedForms = Map<string, int>.new(),
+            staticInits = List<StaticInit>.new(),
             ctx = FnCtx.new(-1, Ty.Void, false, false),
         };
     }
@@ -504,6 +508,7 @@ class Checker {
             info.filled = true;
         }
         this.declareAnswers(index, t.answers);
+        this.declareStatics(index, t.statics);
         let fields = List<FieldInfo>.new();
         let seen = Map<string, bool>.new();
         for (f in t.fields) {
@@ -586,6 +591,14 @@ class Checker {
                 }
             }
             info.assocNames = assoc.toArray();
+            for (sl in i.statics) {
+                info.selfParam = true;
+                if (!info.hardOnly) {
+                    info.hardOnly = true;
+                    info.constraintOnly = true;
+                    info.onlyWhy = f"its member '{sl.name}' is static";
+                }
+            }
             for (m in i.members) {
                 // `Self` itself, or a static: a constraint only whatever is fixed; `Self.Item`
                 // alone reads an associated type, which a value's type may fix (rule 6)
@@ -1008,7 +1021,99 @@ class Checker {
             this.slotCount += 1;
             names.push(m.name);
         }
+        // its constants: each conformer gives its own (05 §7 rule 2), read through a getter
+        let savedSelf = this.selfTyIs;
+        this.selfTyIs = this.selfFor(index);
+        for (sl in i.statics) {
+            if (sl.value != null) {
+                this.error(
+                    "LYS-SEM0127",
+                    f"'{i.name}.{sl.name}' has no value: each conformer gives its own",
+                    sl.span
+                );
+            }
+            if (info.methods.containsKey(sl.name)) {
+                this.error("LYS-SEM0121", f"'{i.name}' has a second member '{sl.name}'", sl.span);
+                continue;
+            }
+            let written = sl.type;
+            let ty = if (written != null) this.resolveType(written) else Ty.Unknown;
+            let fi = this.functions.length();
+            this.functions.push(
+                FnInfo { name = sl.name, owner = index, isStatic = true, line = sl.span.line }
+            );
+            this.fnDecls.push(null);
+            this.fnStates.push(FnState.Done);
+            let f = this.functions[fi];
+            f.returns = ty;
+            f.abstract = true;
+            f.typeParams = [TypeParamInfo { name = "Self", constraints = [index] }];
+            info.methods.insert(sl.name, fi);
+            info.slotOf.insert(sl.name, this.slotCount);
+            this.slotCount += 1;
+            names.push(sl.name);
+        }
+        this.selfTyIs = savedSelf;
         info.memberNames = names.toArray();
+    }
+
+    /// A type's constants (05 §7 rule 2): each a global the script sets where it begins, and a
+    /// static getter, the member an interface's constant is answered by.
+    mut fn declareStatics(index: int, statics: StaticLet[]): void {
+        let info = this.types[index];
+        let savedSelf = this.selfTyIs;
+        this.selfTyIs = this.selfTy(index);
+        for (sl in statics) {
+            let value = sl.value;
+            let written = sl.type;
+            if (value == null || written == null) {
+                this.error(
+                    "LYS-SEM0010",
+                    f"'{info.name}.{sl.name}' needs its type and its value: static let {sl.name}: T = …",
+                    sl.span
+                );
+                continue;
+            }
+            if (info.methods.containsKey(sl.name)) {
+                this.error(
+                    "LYS-SEM0121",
+                    f"'{info.name}' has a second member '{sl.name}'",
+                    sl.span
+                );
+                continue;
+            }
+            let ty = this.resolveType(written);
+            let g = this.globals.length();
+            let gname = f"{info.name}.{sl.name}";
+            this.globals.push(GlobalInfo { name = gname, ty = ty, isVar = false });
+            this.globalIndex.insert(gname, g);
+            info.staticLets.insert(sl.name, g);
+            let fi = this.functions.length();
+            this.functions.push(
+                FnInfo { name = sl.name, owner = index, isStatic = true, line = sl.span.line }
+            );
+            this.fnDecls.push(null);
+            this.fnStates.push(FnState.Done);
+            let f = this.functions[fi];
+            f.returns = ty;
+            f.body = [TStmt.Return(TExpr.Global(g, ty), sl.span.line)];
+            info.methods.insert(sl.name, fi);
+            this.staticInits.push(StaticInit { global = g, value = value, ty = ty, owner = index });
+        }
+        this.selfTyIs = savedSelf;
+    }
+
+    /// The statements that set the types' constants, before the script's own (05 §7 rule 2).
+    mut fn staticInitStmts(): TStmt[] {
+        let out = List<TStmt>.new();
+        for (si in this.staticInits) {
+            let saved = this.selfTyIs;
+            this.selfTyIs = this.selfTy(si.owner);
+            let v = this.coerce(this.expr(si.value, si.ty), si.ty, spanOf(si.value));
+            this.selfTyIs = saved;
+            out.push(TStmt.SetGlobal(si.global, v, spanOf(si.value).line));
+        }
+        return out.toArray();
     }
 
     /// `extend T { … }`: methods added to a type of the program (on a built-in type with S3f's
@@ -1029,6 +1134,7 @@ class Checker {
         }
         let info = this.types[index];
         this.declareAnswers(index, x.answers);
+        this.declareStatics(index, x.statics);
         for (m in x.methods) {
             if (info.methods.containsKey(m.name)) {
                 this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
@@ -1498,6 +1604,7 @@ class Checker {
             info.filled = true;
         }
         this.declareAnswers(index, e.answers);
+        this.declareStatics(index, e.statics);
         let variants = List<string>.new();
         let payloads = List<FieldInfo[]>.new();
         let named = List<bool>.new();
@@ -2007,12 +2114,25 @@ class Checker {
             this.stmtList(stmts.toArray());
             fixes = this.ctx.fixes;
             this.dropFunctionsFrom(made);
-            this.globals.clear();
+            // the script's globals go; the types' constants, the first ones, stay
+            let keep = this.staticInits.length();
+            while (this.globals.length() > keep) {
+                this.globals.pop();
+            }
             this.globalIndex.clear();
+            var gk = 0;
+            for (gi in this.globals) {
+                this.globalIndex.insert(gi.name, gk);
+                gk += 1;
+            }
         }
         this.ctx = FnCtx.new(index, Ty.Void, true, false);
         this.ctx.fixes = fixes;
         let body = List<TStmt>.new();
+        // the types' constants first
+        for (s in this.staticInitStmts()) {
+            body.push(s);
+        }
         for (s in this.stmtList(stmts.toArray())) {
             body.push(s);
         }
@@ -6158,12 +6278,29 @@ class Checker {
             let access = TExpr.Field(boxE(present), index, this.types[owner].fields[index].ty);
             return this.optChain(tmp, o, access, at);
         }
-        // `Color.Red`: a variant of an enum
+        // `Color.Red`: a variant of an enum; `P.zero`, `T.zero`: a constant (05 §7 rule 2)
         match (x) {
             .Name(typeName, _) => {
                 if (this.lookupLocal(typeName) == null && !this.globalIndex.containsKey(typeName)) {
-                    let index = this.typeIndex.get(typeName);
+                    let pk = this.typeParams.get(typeName);
+                    if (pk != null) {
+                        return this.paramStatic(pk, name, [], at);
+                    }
+                    var index = this.typeIndex.get(typeName);
+                    if (typeName == "Self") {
+                        let s = this.selfTyIs;
+                        if (s != null) {
+                            let si = this.entryOf(s);
+                            if (si >= 0) {
+                                index = si;
+                            }
+                        }
+                    }
                     if (index != null) {
+                        let g = this.types[index].staticLets.get(name);
+                        if (g != null) {
+                            return TExpr.Global(g, this.globals[g].ty);
+                        }
                         let k = this.variantIndex(index, name);
                         if (k >= 0) {
                             return this.unitVariant(index, k, at);
@@ -8563,6 +8700,15 @@ fn declaredName(name: string): string {
         k += 1;
     }
     return name;
+}
+
+/// A type's constant to set where the script begins: its global, its value, its type, its type's
+/// entry.
+struct StaticInit {
+    global: int,
+    value: Expr,
+    ty: Ty,
+    owner: int,
 }
 
 /// The place of what the compiler makes without a source of its own.

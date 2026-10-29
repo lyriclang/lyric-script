@@ -415,13 +415,15 @@ fn onlyAnErrorIsThrownOrCaught(): void {
 
 @Test
 fn aBindingTellsWhereTheErrorWasThrown(): void {
-    // the frames of the first throw, innermost first, in a panic's trace form (06 §4 rule 4)
+    // the frames of the first throw, innermost first, in a panic's trace form (06 §4 rule 4); a
+    // caller stands at its call, not at what follows it
     let source = """
 fn fail() {
     throw Exception("x")
 }
 fn mid() {
     fail()
+    println("after")
 }
 fn go(): string {
     try {
@@ -432,7 +434,7 @@ fn go(): string {
     return "no"
 }
 """;
-    assertEq(text(source, "go"), "    at fail (line 2)\n    at mid (line 5)\n    at go (line 9)");
+    assertEq(text(source, "go"), "    at fail (line 2)\n    at mid (line 5)\n    at go (line 10)");
 }
 
 @Test

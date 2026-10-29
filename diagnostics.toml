@@ -481,6 +481,12 @@ severity = "error"
 area = "04-modules"
 summary = "An import or a use reaches a declaration of another module that is `private` to its file. Lyric 5's LYR-RES0009."
 
+[LYS-RES0011]
+title = "a declaration that takes a builtin type's name"
+severity = "error"
+area = "04-modules"
+summary = "A top-level declaration is named like a builtin type: `struct int`, `fn string()`, `let bool = …` at the top of a module. Lyric 5's LYR-RES0011."
+
 [LYS-SEM0001]
 title = "a value of another type than the place takes"
 severity = "error"
@@ -954,6 +960,12 @@ title = "a generic block's member on an instance that does not meet its constrai
 severity = "error"
 area = "05-interfaces"
 summary = "A member of `extend<T :: [Show]> Box<T> { … }` is there on the instances whose arguments meet the block's constraints and on no other: `Box<int>` has no such member when `int` is no `Show`. Lyric 5's LYR-SEM0134."
+
+[LYS-SEM0153]
+title = "a name hides one of the prelude's"
+severity = "warning"
+area = "04-modules"
+summary = "A module declares or imports a name the prelude already gives every module (`Error`, `Exception`, `println`, `assert` …); the module's own wins in that module, and the prelude's own code keeps its. Lyric 5's LYR-SEM0153."
 
 [LYS-SEM0160]
 title = "an associated type's answer does not meet its bound"

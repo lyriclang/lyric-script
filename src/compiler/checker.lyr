@@ -315,12 +315,11 @@ class Checker {
     // where each function writes its `throws` (S4c)
     var throwsAt: Map<int, Span> = Map<int, Span>.new(),
     // the modules (S5a): the current one, by its file — 0 the entry, -1 the prelude —; each
-    // imported module's dotted path and its view, a name to its key; the entry's own names, which
-    // an imported module does not see unimported; the modules a qualified import binds, by name
+    // imported module's dotted path and its view, a name to its key; the modules a qualified
+    // import binds, by name
     var mod: int = 0,
     var modNames: Map<int, string> = Map<int, string>.new(),
     var modScopes: Map<int, View> = Map<int, View>.new(),
-    var entryNames: Set<string> = Set<string>.new(),
     var modAliases: Map<int, ModuleNames> = Map<int, ModuleNames>.new(),
     var modByName: Map<string, int> = Map<string, int>.new(),
     var sources: Map<int, string> = Map<int, string>.new(),
@@ -431,40 +430,53 @@ class Checker {
         };
     }
 
-    /// The key a declaration of the current module is registered under: its name in the entry
-    /// and the prelude, "<path>::<name>" in an imported module (S5a).
+    /// The key a declaration of the current module is registered under: "<path>::<name>" in a
+    /// module of the program — the entry's path empty —, its name alone in the prelude (S5a).
     mut fn declKey(name: string): string {
-        if (this.mod <= 0) {
-            return name;
-        }
-        let path = this.modNames.get(this.mod) ?? "";
-        return path + "::" + name;
+        return keyIn(this.modNames.get(this.mod) ?? "", this.mod, name);
     }
 
-    /// The current module sees a declaration of its own by its name, before a name an import
-    /// binds beside it (`LYS-RES0001`, said with the imports).
-    mut fn register(name: string): void {
-        if (this.mod > 0) {
-            this.viewOf(this.mod).insert(name, this.declKey(name));
-        } else if (this.mod == 0) {
-            this.entryNames.insert(name);
-            let view = this.modScopes.get(0);
-            if (view != null) {
-                view.names.remove(name);
-            }
+    /// The current module sees a declaration of its own by its name, before the prelude's of
+    /// that name (`LYS-SEM0153`) and before a name an import binds beside it (`LYS-RES0001`, said
+    /// with the imports). A builtin type's name is no declaration's (`LYS-RES0011`).
+    mut fn register(name: string, at: Span): void {
+        if (this.mod < 0) {
+            return;
         }
+        this.viewOf(this.mod).insert(name, this.declKey(name));
+        if (isBuiltinType(name)) {
+            this.error("LYS-RES0011", f"'{name}' is a builtin type's name", at);
+        } else if (this.inPrelude(name)) {
+            this.hidesPrelude(name, at);
+        }
+    }
+
+    /// Whether the prelude gives every module `name`: a declaration of it, or one of the
+    /// functions the compiler knows.
+    mut fn inPrelude(name: string): bool {
+        return this.typeIndex.containsKey(name)
+            || this.fnByName.containsKey(name)
+            || this.globalIndex.containsKey(name)
+            || this.aliases.containsKey(name)
+            || isPreludeFn(name);
+    }
+
+    mut fn hidesPrelude(name: string, at: Span): void {
+        this.warn(
+            "LYS-SEM0153",
+            f"'{name}' hides the prelude's: in this module the name is its own",
+            at
+        );
     }
 
     /// Whether module `m` declares `name` itself.
     mut fn declaresOwn(m: int, name: string): bool {
-        if (m <= 0) {
-            return this.entryNames.contains(name);
-        }
-        let key = (this.modNames.get(m) ?? "") + "::" + name;
-        return this.typeIndex.containsKey(key)
-            || this.fnByName.containsKey(key)
-            || this.globalIndex.containsKey(key)
-            || this.aliases.containsKey(key);
+        let key = keyIn(this.modNames.get(m) ?? "", m, name);
+        return m >= 0
+            && (this.typeIndex.containsKey(key)
+                || this.fnByName.containsKey(key)
+                || this.globalIndex.containsKey(key)
+                || this.aliases.containsKey(key));
     }
 
     /// The module a qualified or aliased import binds under `name` here; `null` for none.
@@ -486,8 +498,7 @@ class Checker {
     /// The key of what module `target` offers under `name`: its declaration's, or what it passes
     /// on with `pub import`.
     mut fn exportKey(target: int, name: string): string {
-        let path = this.modNames.get(target) ?? "";
-        var key = if (target <= 0) name else path + "::" + name;
+        var key = keyIn(this.modNames.get(target) ?? "", target, name);
         var hops = 0;
         while (hops < 64) {
             let on = this.reexports.get(key);
@@ -518,9 +529,11 @@ class Checker {
                 }
                 // a declaration of the module's own keeps its name
                 let own = this.viewOf(this.mod).get(bound);
-                if (!(this.mod == 0 && this.entryNames.contains(bound))
-                    && (own == null || own != this.declKey(bound))) {
+                if (own == null || own != this.declKey(bound)) {
                     this.viewOf(this.mod).insert(bound, key);
+                }
+                if (this.inPrelude(bound)) {
+                    this.hidesPrelude(bound, it.span);
                 }
                 if (im.isPub) {
                     this.reexports.insert(this.declKey(bound), key);
@@ -633,15 +646,12 @@ class Checker {
                 return key;
             }
         }
-        if (this.mod > 0 && this.entryNames.contains(name)) {
-            return "!" + name;
-        }
         return name;
     }
 
     /// `Error`'s type: the prelude's interface.
     mut fn errorTy(): Ty {
-        let i = this.typeIndex.get(this.q("Error"));
+        let i = this.typeIndex.get("Error");
         return if (i != null && this.types[i].kind == .Interface) Ty.Named(i) else Ty.Unknown;
     }
 
@@ -760,7 +770,9 @@ class Checker {
     // --- declarations ----------------------------------------------------------------------------
 
     mut fn declare(module: Module): void {
-        // `Any`, the empty interface every struct, class, enum and built-in value is (05 §9)
+        // `Any`, the empty interface every struct, class, enum and built-in value is (05 §9); it
+        // and `Identity` are the prelude's
+        this.mod = -1;
         this.anyIndex = this.types.length();
         this.declareTypeName(
             "Any",
@@ -794,7 +806,7 @@ class Checker {
                                 this.error("LYS-SEM0176", f"'{a.name}' is declared twice", a.span);
                             } else {
                                 this.aliases.insert(key, a);
-                                this.register(a.name);
+                                this.register(a.name, a.span);
                             }
                         }
                         .Fn(f) => {
@@ -1089,14 +1101,12 @@ class Checker {
 
     mut fn declareTypeName(name: string, kind: TypeKind, at: Span): void {
         let key = this.declKey(name);
-        if (this.typeIndex.containsKey(key)
-            || this.aliases.containsKey(key)
-            || isBuiltinType(name)) {
+        if (this.typeIndex.containsKey(key) || this.aliases.containsKey(key)) {
             this.error("LYS-SEM0176", f"'{name}' is declared twice", at);
             return;
         }
         this.typeIndex.insert(key, this.types.length());
-        this.register(name);
+        this.register(name, at);
         this.types.push(TypeInfo { name = name, kind = kind, methods = Map<string, int>.new() });
     }
 
@@ -2489,7 +2499,7 @@ class Checker {
                 let list = List<int>.new();
                 list.push(index);
                 this.fnByName.insert(this.declKey(f.name), list);
-                this.register(f.name);
+                this.register(f.name, f.span);
             }
         }
         return index;
@@ -4332,7 +4342,7 @@ class Checker {
             _ => TExpr.Unknown,
         };
         let t = typeOf(read);
-        let ci = this.typeIndex.get(this.q("Closeable"));
+        let ci = this.typeIndex.get("Closeable");
         if (t == .Unknown || ci == null) {
             return (bind, []);
         }
@@ -4835,7 +4845,7 @@ class Checker {
 
     /// `e.backtrace()`: a `?Backtrace` of the prelude, the text of the record's frames.
     mut fn backtraceOf(record: int): TExpr {
-        let bi = this.typeIndex.get(this.q("Backtrace"));
+        let bi = this.typeIndex.get("Backtrace");
         if (bi == null) {
             return TExpr.Unknown;
         }
@@ -4972,7 +4982,7 @@ class Checker {
             _ => false,
         };
         // a Closeable an expression statement drops is never closed (06 §7 rule 4)
-        let ci = this.typeIndex.get(this.q("Closeable"));
+        let ci = this.typeIndex.get("Closeable");
         if (ci != null && effect) {
             let rt = typeOf(checked);
             if (rt != .Void && rt != .Unknown && rt != .Never && this.conformsTo(rt, ci)) {
@@ -6263,7 +6273,7 @@ class Checker {
         // a global's name is its key: the quiet pass of 03 Leer builds the index again from it
         this.globals.push(GlobalInfo { name = key, ty = t, isVar = isVar });
         this.globalIndex.insert(key, g);
-        this.register(name);
+        this.register(name, at);
         return g;
     }
 
@@ -11058,6 +11068,20 @@ fn fileModule(file: int): int {
 fn bindsGlobals(st: Stmt): bool {
     return match (st) {
         .Let(_, _, _, _, _) | .Destructure(_, _, _, _, _) => true,
+        _ => false,
+    };
+}
+
+/// The key of `name` in module `m` whose path is `path`: "<path>::<name>" in a module of the
+/// program — the entry's path empty —, the name alone in the prelude.
+fn keyIn(path: string, m: int, name: string): string {
+    return if (m < 0) name else path + "::" + name;
+}
+
+/// The prelude's functions the compiler knows rather than declares.
+fn isPreludeFn(name: string): bool {
+    return match (name) {
+        "print" | "println" | "panic" | "unreachable" | "todo" | "assert" => true,
         _ => false,
     };
 }

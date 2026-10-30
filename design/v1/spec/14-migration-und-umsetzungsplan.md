@@ -1479,3 +1479,22 @@ bedingten Konformanz, deren Bedingung sie nicht erfüllt; (3) `operatorMember` r
 Block-Methode einer Liste ohne ihr Element. Spec 05 Regel 8, 08 Regel 5; sechs Fälle (zwei davon
 für die Uhren), alle rot gegen S7c5c2. Sieben Mutanten in zwei Läufen, alle wie vorhergesagt.
 Fälle 429 → 435.
+
+**S7c5d, Ergebnis (2026-10-30).** Mehrere Mitglieder eines Namens und mehrere Instanzen eines
+generischen Interfaces an einem Typ (Lyric 5 05 §3 Regeln 1, 4–5, §8 Regel 3, 08 §1.2), in drei
+Schritten. (d1) Jede Instanz eines generischen Interfaces hat eigene Slots: eine Tabelle hält
+`From<int>`s und `From<string>`s Mitglied auseinander, eine Instanz eines generischen Typs bekommt
+die Slots ihrer Interface-Instanzen. (d2) Die Mitglieder eines Typs teilen einen Namen bei
+verschiedener Anzahl, je Konformanz-Block (der unqualifizierte Aufruf `LYS-SEM0122`) oder je
+Instanz (Wahl nach den Argumenttypen, `LYS-SEM0086`; zwei für eine Instanz `LYS-SEM0085`); ein
+Lesen ohne Aufruf nimmt das, das der Funktionstyp der Stelle sagt (`LYS-SEM0089`). (d3) Eine
+Antwort gehört ihrer Konformanz-Instanz: `extend V :: [Mul<float>] { type Out = float }` neben
+`V :: [Mul]`, `T.Out` unter `T :: [Mul<float>]` liest sie; die Prelude gibt `int :: [Add<float>,
+…]` und `float :: [Add<int>, …]` (03 Mix). **Gefunden:** (1) **seit S2d** weitete ein Default
+keine Anzahl — `fn f(a)` neben `fn f(a, b = 0)` kompilierte (Lyric 5 08 §1.2 Regel 2); (2) beim
+Bauen von d3 sickerte die Antwort eines Blocks typweit in andere Konformanzen (`int`s `Neg` nahm
+`Add<float>`s `Out`); (3) Lyric-5-ICE bei `Map<string, Map<string, Ty>>` als Feld (lyric#612).
+Ein Block auf einer Instanz hält ein Mitglied je Namen (P22, Uhr S7f). Spec 05 Regel 18, Regeln 13
+und 17 verweisen darauf; sieben Fälle, sechs rot gegen S7c5c3 — der siebte hält eine Ablehnung
+fest, die schon galt. Mutanten: vier Läufe, 437, 437, 441 und 440 von 442; drei Abweichungen von der Vorhersage, alle erklärt (eine bestehende Prüfung von `5.add(3)` und eine von `G.Output` mehr getroffen als vorhergesagt; die Kopien über Klassen und Structs rufen über die Tabelle, nicht über `memberFor`).
+Fälle 435 → 442.

@@ -273,8 +273,11 @@ VM's call path, S7k measurement point 3.
 - **S7c5c3 done** — `++`/`--` as expressions, `Contains<T>` for `in` (the needle first). Found:
   a conditional conformance to an instance of a generic interface held for every instance (since
   S7c1). Stale NYI clocks sharpened.
-- Next: **S7c5d** — several instances of a generic interface at a type (members per block,
-  answers per instance), the built-in mixed conformances; then S7c6 `std.iter`.
+- **S7c5d done** — several members of one name: by count, per conformance block
+  (`LYS-SEM0122`), per instance of a generic interface (chosen by the arguments' types); each
+  instance its own slots and its own answers; `int :: Add<float>` and the like. Found: a default
+  did not widen a count (since S2d).
+- Next: **S7c6** — `std.iter`, `Range<T>` as a value, the placeholder `_`, `sort`.
 
 ## Working mode
 
@@ -330,4 +333,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P19 | The operator interfaces of 05 D6 (`Add<Rhs = Self> { type Out = Self }` …, `Neg`), `++`/`--` as expressions, `+=` derived, `Equatable`/`Ordered`/`TotalOrder`/`Contains` as interfaces and conversion through `From`/`Into` had no clock: the S3f note sent the operators "with S3h", S3h did not take them, no plan line names them (found while cutting S7c4c3: `i++` is PAR0001, `:: Add` SEM0078). Clocked now: comparisons and operators to S7c5, before `std.iter` (now S7c6), whose `sort` needs `TotalOrder`; `From`/`Into` with 05 §13 rule 9 to S7f. Say if they should come elsewhere. | S7c4c2 |
 | P20 | Default type arguments (Lyric 5 03 §9.1 rule 5, T18: `interface Add<Rhs = Self>`) had no clock: the Script design adopts them (03 "Generics … Default-Typargumente"), the spec took §9.1 rules 1–3 alone, no plan line names them (found while cutting S7c5c — `Add<Rhs = Self>` is PAR0004). Clocked now to S7c5c1, before the operator interfaces that need them. Several instances of one generic interface at a type (Lyric 5 05 §3 rules 4–5, answers per instance §8 rule 3), which 05 rule 13 gave only "S7", are clocked to S7c5d. | S7c5b |
 | P21 | The prelude grows with S7, and every program checks it: a cold `hello` (a fresh cache, the debug build) went from about 91 ms (median of ten, S7c4c1) to about 121 ms (S7c5c1) as FromIterator, the blanket blocks, Equatable's list block and the scalars' Ordered blocks came; S7c5c2's operator blocks add more. The ratchet (cold ≤ 50 ms, design 11) is the release build's and was not measured here. Clocked to S7k (measurement point 3): measure the release build; past the ratchet, check a prelude body only where it is used, or keep the checked prelude in the cache. | S7c5c1 |
+| P22 | A block on one instance (`extend Box<int> { … }`, 05 §13 rule 1) holds one member of a name: a second is `LYS-SEM0121`, where Lyric 5 08 §1.2 lets a scope's members share a name by count, and S7c5d gave every other block that. The instance's own members are kept apart from the template's (`ownMethods`), and a set over both would have to say which one a copy of the template reaches. Clocked to S7f, with `From`/`Into` — the first place a block on one instance is likely to hold two conversions. | S7c5d |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

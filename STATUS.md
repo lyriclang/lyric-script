@@ -260,8 +260,12 @@ VM's call path, S7k measurement point 3.
   an interface value, every type a blanket block reaches with its table. Found: a forward
   `Box<int>` was SEM0026 (since S3g); `fn f<T>(xs: T[]): Any` crashed at run time, silently
   compiled; a conditional conformance held at run time for every instance (since S3i).
-- Next: **S7c5** — comparisons as interfaces (`Equatable`, `Ordered`, `TotalOrder`) and the
-  operator interfaces (P19); then S7c6 `std.iter`.
+- **S7c5a done** (S7c5 cut in three) — `Equatable` as an interface: `==` over a type parameter,
+  a type's own `equals`, classes through `:: Equatable` or `:: Identity`, the comparing list
+  methods in the prelude. Found: an initializer of a generic type at a `Box<T>` parameter was
+  checked against the open `T` (since S3g).
+- Next: **S7c5b** — `Ordered`, `TotalOrder`, `Ordering`; then S7c5c the operator interfaces,
+  S7c6 `std.iter`.
 
 ## Working mode
 

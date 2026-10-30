@@ -1389,3 +1389,26 @@ eine Kopie machte, hatte keine Debug-Form; (5) **seit S3i:** der Laufzeit-Deskri
 Instanz führte die bedingten Konformanzen der Vorlage ohne Bedingung — `Cond<int> is Named` war
 `true`. Spec 03 Regeln 12, 16; 05 Regel 12; sechs Fälle, alle rot gegen S7c4c3a. Sieben Mutanten in vier Läufen, die Fälle alle wie vorhergesagt; bei einem (der Listendeskriptor wieder `Any`) stimmte der Mechanismus nicht — statt `false` paniert der Lauf, `inst.t` über einen Deskriptor ohne Argumente.
 Fälle 409 → 415. Damit ist **S7c4** fertig.
+
+**S7c5, geschnitten (2026-10-30).** Nach Lyric 5 05 §12 (Script 05 D6, 03 Mix): **S7c5a**
+`Equatable` als Interface — `==` über einen Typparameter, das eigene `equals`, Klassen über
+`:: Equatable` oder `:: Identity`, die vergleichenden Listen-Methoden über `T`; **S7c5b**
+`Ordered`, `TotalOrder` und `Ordering` (`float :: TotalOrder`, Fl), `<` … über sie, die
+Synthese; **S7c5c** die Operator-Interfaces (`Add<Rhs = Self> { type Out = Self }` …, `Neg`,
+die Bit-Operatoren), die Auflösung am rechten Operanden, `+=` abgeleitet, `++`/`--` als
+Ausdrücke, `Contains<T>` für `in`, die gemischte Arithmetik über eingebaute Konformanzen.
+
+**S7c5a, Ergebnis (2026-10-30).** Die Prelude deklariert `Equatable { fn equals(o: Self): bool }`
+(eine reine Constraint) und die vergleichenden Listen-Methoden als Script-Quelltext,
+`extend<T :: [Equatable]> T[]` — die synthetisierten `#indexOf`/`#dedup` und der eigene Weg von
+`in` sind weg, `x in xs` ist `xs.contains(x)`. Ein Struct, ein Enum, ein Tupel, eine Liste, ein
+Optional sind `Equatable`, wenn ihre Teile es sind; eine Klasse über `:: Equatable` (ihr
+`equals`, sonst feldweise) oder `:: Identity`. `==` eines Typs, der einen Typparameter nennt,
+wartet als `GenericEq` auf die Kopie und vergleicht dort mit der einen Gleichheit, die es gibt;
+ein Parameter unter `Equatable` wird dafür nie geteilt (wie unter assoziierten Typen). Das eigene
+`equals(o: Self): bool` eines Typs ruft `==`, `x.equals(y)` ist `x == y`, wo der Typ keins hat.
+**Gefunden beim Bauen (seit S3g):** ein Initialisierer eines generischen Typs an einem Parameter
+`Box<T>` wurde gegen das offene `T` geprüft („expected T, found int“) — die Vorlage bei ihren
+eigenen Parametern zählte nicht als „nennt einen Parameter“. Spec 05 Regel 8, 03 Regel 16; vier
+Fälle, alle rot gegen S7c4. Sechs Mutanten in fünf Läufen: vier wie vorhergesagt; im ersten (kein `GenericEq`) wurde auch ein S7b-Fall rot — die Listen-Methoden der Prelude vergleichen selbst über `T`, das hatte die Vorhersage übersehen.
+Fälle 415 → 419.

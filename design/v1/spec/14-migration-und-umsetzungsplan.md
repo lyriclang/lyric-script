@@ -1440,3 +1440,12 @@ des rechten Operanden — eine Instanz je Operator-Interface und Typ —, `+=` a
 `Contains<T>` für `in`; **S7c5d** mehrere Instanzen eines generischen Interfaces an einem Typ
 (Mitglieder je Block, `SEM0122`; nebeneinander je Instanz), Antworten je Konformanz-Instanz, die
 eingebauten gemischten Konformanzen (`int :: Add<float>`, 03 Mix).
+
+**S7c5c1, Ergebnis (2026-10-30).** Ein Typparameter darf einen Standardwert tragen (`= T` nach
+seinen Constraints); eine Verwendung mit weniger Argumenten — eines Typs, eines Interfaces, an
+einem Aufruf, einer Methode — nimmt die nachfolgenden, gelesen, wo das Generic deklariert ist:
+seine früheren Parameter die Argumente, `Self` in einer Konformanz der Konformer, in einem
+Constraint der Parameter (`V :: [Add]` ist `V :: [Add<V>]`); ein Extend-Block nimmt keine
+(`SEM0026`). `Coroutine<Y>` ist jetzt das `R = void` der Prelude — der fest eingebaute
+Sonderfall ist weg. **Gefunden über einen überlebenden Mutanten (seit S7c1):** `T :: [Combine<T>]` einer `fn f<T>` war die Vorlage selbst — `typeInstance` gibt sie für Argumente zurück, die wie ihre eigenen Parameter lauten —, und die erfüllt jede Instanz: ein `B :: Combine<int>` ging als `T` durch, der Aufruf las ein `B` als `int`; ein geschriebenes Interface ist jetzt immer eine Instanz. Spec 03 Regel 12; drei Fälle, alle rot gegen S7c5b. Drei Mutanten in drei Läufen: zwei wie vorhergesagt (der ohne Standardwerte traf alle 30 Fälle mit `Coroutine<X>` und 15 Tests); der dritte (das `Self` einer Konformanz) überlebte zuerst — wegen des Fehlers oben — und scheiterte nach dem Fix wie vorhergesagt.
+Fälle 422 → 425.

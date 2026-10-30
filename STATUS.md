@@ -266,8 +266,10 @@ VM's call path, S7k measurement point 3.
   checked against the open `T` (since S3g).
 - **S7c5b done** — `Ordered`, `TotalOrder`, `Ordering`: `<` … through `compare`, over a type
   parameter too, the synthesized order of a type that lists it, `float` totally ordered (Fl).
-- Next: **S7c5c1** — default type arguments (P20); then S7c5c2 the operator interfaces, S7c5c3
-  `++`/`--` and `Contains`, S7c5d several instances of a generic interface, S7c6 `std.iter`.
+- **S7c5c1 done** — default type arguments (P20): `interface Add<Rhs = Self>`, `Coroutine<Y>`
+  through the prelude's `R = void`.
+- Next: **S7c5c2** — the operator interfaces; then S7c5c3 `++`/`--` and `Contains`, S7c5d
+  several instances of a generic interface, S7c6 `std.iter`.
 
 ## Working mode
 

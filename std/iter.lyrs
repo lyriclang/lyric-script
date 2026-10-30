@@ -316,6 +316,21 @@ class PeekableIter<I :: [Iterator]> :: Iterator {
     }
 }
 
+// the values over and over, from a clone of the iterator each time — none where it has none; made
+// by `it.cycle()` (S7c6c1)
+class CycleIter<I :: [Iterator, Clone]> :: Iterator {
+    type Item = I.Item
+    origin: I
+    var current: I
+    fn next(): ?I.Item {
+        if (let x = this.current.next()) {
+            return x
+        }
+        this.current = this.origin.clone()
+        return this.current.next()
+    }
+}
+
 // the values of an iterator from both ends, from the back; made by `it.rev()` — no DoubleEnded
 // itself
 class RevIter<I :: [DoubleEnded]> :: Iterator {
@@ -479,6 +494,11 @@ extend<I :: [Iterator<Item = T>], T :: [Equatable]> I {
 // an iterator from both ends walks from the back
 extend<I :: [DoubleEnded]> I {
     fn rev(): RevIter<I> = RevIter { inner = this }
+}
+
+// an iterator that clones walks over and over
+extend<I :: [Iterator, Clone]> I {
+    fn cycle(): CycleIter<I> = CycleIter { origin = this.clone(), current = this }
 }
 
 // the terminators of every iterator (S7c6b2): each walks it to an answer — a class iterator where

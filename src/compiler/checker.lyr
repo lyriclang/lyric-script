@@ -323,6 +323,15 @@ enum FnState :: [Equatable] {
     Done,
 }
 
+/// The interfaces the compiler synthesizes beside `Equatable` — `Clone`, `Default` — and the
+/// functions it made for them, by "clone:" or "default:" and the type (S7c6c1): one field of the
+/// checker, whose Debug form Lyric 5 nests a level deeper for each field it has.
+class Synthesized {
+    var cloneIx: int = -1,
+    var defaultIx: int = -1,
+    fns: Map<string, int> = Map<string, int>.new(),
+}
+
 class Checker {
     errors: List<Diagnostic>,
     warnings: List<Diagnostic>,
@@ -388,6 +397,8 @@ class Checker {
     var listDebugFns: Map<string, int> = Map<string, int>.new(),
     // the prelude's `Equatable` (S7c5a); each type's comparison a copy made, by the type's key
     var equatableIndex: int = -1,
+    // `Clone` and `Default`, synthesized as `Equatable` is (S7c6c1)
+    synth: Synthesized = Synthesized { },
     // what `Self` is in a default type argument being read: the conformer, the parameter a
     // constraint is of (S7c5c1)
     var defaultSelf: ?Ty = null,
@@ -1086,6 +1097,8 @@ class Checker {
         }
         // what `==` asks of a type parameter (S7c5a)
         this.equatableIndex = this.typeIndex.get("Equatable") ?? -1;
+        this.synth.cloneIx = this.typeIndex.get("Clone") ?? -1;
+        this.synth.defaultIx = this.typeIndex.get("Default") ?? -1;
         this.orderedIndex = this.typeIndex.get("Ordered") ?? -1;
         this.totalOrderIndex = this.typeIndex.get("TotalOrder") ?? -1;
         this.orderingIndex = this.typeIndex.get("Ordering") ?? -1;
@@ -3138,9 +3151,417 @@ class Checker {
                         }
                     }
                 }
+                // `Clone` and `Default` (S7c6c1): each part one, at the type's own parameters
+                // where it is generic — an instance is one where its arguments are
+                if (this.synth.cloneIx >= 0
+                    && this.listsItself(i, this.synth.cloneIx)
+                    && this.methodOf(i, "clone") == null) {
+                    if (let why = this.partsNotCloneable(i)) {
+                        this.error(
+                            "LYS-SEM0020",
+                            f"'{info.name}' does not implement 'Clone.clone': {why}",
+                            this.conformedAt.get(f"{i}:Clone") ?? nowhereSpan
+                        );
+                    }
+                }
+                if (this.synth.defaultIx >= 0
+                    && this.listsItself(i, this.synth.defaultIx)
+                    && this.methodOf(i, "default") == null) {
+                    let at = this.conformedAt.get(f"{i}:Default") ?? nowhereSpan;
+                    if (info.kind == .Enum) {
+                        this.error(
+                            "LYS-SEM0135",
+                            f"'{info.name}' is an enum: no variant is its default",
+                            at
+                        );
+                    } else if (let why = this.partsNotDefaultable(i)) {
+                        this.error(
+                            "LYS-SEM0020",
+                            f"'{info.name}' does not implement 'Default.default': {why}",
+                            at
+                        );
+                    }
+                }
             }
             i += 1;
         }
+    }
+
+    /// Whether type `i` (or its template) lists interface `ii` itself.
+    mut fn saysItself(i: int, ii: int): bool {
+        let t = if (this.types[i].template >= 0) this.types[i].template else i;
+        return this.listsItself(t, ii) || this.listsItself(i, ii);
+    }
+
+    /// Whether a value of `t` is a reference a clone clones (S7c6c1): an object, a list — and an
+    /// optional or a tuple holding one; a struct, an enum, a scalar, a string and a function are
+    /// values, copied.
+    mut fn clonesAsReference(t: Ty): bool {
+        return match (t) {
+            .List(_) | .Map(_, _) => true,
+            .Optional(inner) => this.clonesAsReference(inner.value),
+            .Tuple(tt) => {
+                var any = false;
+                for (x in tt.elements) {
+                    any = any || this.clonesAsReference(x);
+                }
+                any
+            }
+            .Named(i) => this.types[i].kind == .Class
+                || this.types[i].kind == .Interface
+                || this.types[i].vmHeld,
+            .Param(_) | .Assoc(_, _, _) => true,
+            _ => false,
+        };
+    }
+
+    /// What keeps a value of `t` from being cloned, `null` where nothing does (S7c6c1): a type
+    /// that does not list `Clone` and writes no `clone`, a reference part that does not clone.
+    mut fn notCloneable(t: Ty, seen: List<int>): ?string {
+        return match (t) {
+            .Int | .Float | .Bool | .Char | .Str | .Unknown | .NullLit | .Fn(_) => null,
+            // a type parameter: at a declaration the conformance is conditional on it (Lyric 5
+            // §14 rule 4), in a generic's body its constraints say
+            .Param(_) | .Assoc(_, _, _) => if (this.genericFn < 0
+                || this.conformsDirect(t, this.synth.cloneIx)) null
+                else f"{this.tyName(t)} is no Clone",
+            .Optional(inner) => this.notCloneable(inner.value, seen),
+            .List(e) => this.notCloneable(e.value, seen),
+            .Tuple(tt) => {
+                var why: ?string = null;
+                for (x in tt.elements) {
+                    why = why ?? this.notCloneable(x, seen);
+                }
+                why
+            }
+            .Named(i) => {
+                if (!this.saysItself(i, this.synth.cloneIx)) {
+                    return f"{this.tyName(t)} is no Clone";
+                }
+                if (this.methodOf(i, "clone") != null) {
+                    return null;
+                }
+                for (s in seen) {
+                    if (s == i) {
+                        return null;
+                    }
+                }
+                seen.push(i);
+                this.partsNotCloneable(i, seen)
+            }
+            _ => f"{this.tyName(t)} is no Clone",
+        };
+    }
+
+    /// The first part of type `i` a synthesized `clone` cannot clone, named; `null` where each
+    /// can: a reference field, a reference payload, that is no Clone (S7c6c1).
+    mut fn partsNotCloneable(i: int, seen: List<int> = List<int>.new()): ?string {
+        let info = this.types[i];
+        for (f in info.fields) {
+            if (this.clonesAsReference(f.ty)) {
+                if (let why = this.notCloneable(f.ty, seen)) {
+                    return f"its field '{f.name}': {why}";
+                }
+            }
+        }
+        var v = 0;
+        for (vf in info.variantFields) {
+            for (f in vf) {
+                if (this.clonesAsReference(f.ty)) {
+                    if (let why = this.notCloneable(f.ty, seen)) {
+                        return f"a payload of '{info.variants[v]}': {why}";
+                    }
+                }
+            }
+            v += 1;
+        }
+        return null;
+    }
+
+    /// What keeps `t` from having a default, `null` where nothing does (S7c6c1): an enum, an
+    /// interface, a function, a type that does not list `Default` and writes no `default`, a field
+    /// without an initializer whose type has none.
+    mut fn notDefaultable(t: Ty, seen: List<int>): ?string {
+        return match (t) {
+            .Int | .Float | .Bool | .Char | .Str | .Optional(_) | .List(_) => null,
+            .Param(_) | .Assoc(_, _, _) => if (this.genericFn < 0
+                || this.conformsDirect(t, this.synth.defaultIx)) null
+                else f"{this.tyName(t)} has no Default",
+            .Tuple(tt) => {
+                var why: ?string = null;
+                for (x in tt.elements) {
+                    why = why ?? this.notDefaultable(x, seen);
+                }
+                why
+            }
+            .Named(i) => {
+                if (this.types[i].kind == .Enum || !this.saysItself(i, this.synth.defaultIx)) {
+                    return f"{this.tyName(t)} has no Default";
+                }
+                if (this.methodOf(i, "default") != null) {
+                    return null;
+                }
+                for (s in seen) {
+                    if (s == i) {
+                        return f"{this.tyName(t)} defaults through itself";
+                    }
+                }
+                seen.push(i);
+                this.partsNotDefaultable(i, seen)
+            }
+            _ => f"{this.tyName(t)} has no Default",
+        };
+    }
+
+    /// The first field of type `i` a synthesized `default` gives no value, named; `null` where
+    /// each has one: its initializer, or its type's default (S7c6c1).
+    mut fn partsNotDefaultable(i: int, seen: List<int> = List<int>.new()): ?string {
+        let info = this.types[i];
+        let tmpl = if (info.template >= 0) this.types[info.template] else info;
+        var k = 0;
+        for (f in info.fields) {
+            let written = k < tmpl.fields.length() && tmpl.fields[k].default != null;
+            if (!written) {
+                if (let why = this.notDefaultable(f.ty, seen)) {
+                    return f"its field '{f.name}': {why}";
+                }
+            }
+            k += 1;
+        }
+        return null;
+    }
+
+    /// Whether member `member` of interface `ii` is one the compiler synthesizes where a type does
+    /// not write it — `equals`, `compare`, `totalCompare`, `clone`, `default` (S7c6c1).
+    mut fn synthesizedMember(ii: int, member: string): bool {
+        if (let found = this.ifaceMember(ii, member)) {
+            let (fi, _) = found;
+            return this.functions[fi].abstract && this.synthesizable(this.functions[fi].owner);
+        }
+        return false;
+    }
+
+    /// `x.clone()` of a type that clones without a `clone` of its own (S7c6c1): its synthesized
+    /// function — over a type parameter the copy's; null for another call.
+    mut fn synthClone(t: Ty, receiver: TExpr, method: string, args: Arg[]): ?TExpr {
+        if (method != "clone"
+            || args.length() != 0
+            || this.synth.cloneIx < 0
+            || !this.conformsDirect(t, this.synth.cloneIx)) {
+            return null;
+        }
+        if (this.anyParamIn(t)) {
+            return TExpr.CallBound(
+                t,
+                this.synth.cloneIx,
+                "clone",
+                this.slotIn(this.synth.cloneIx, "clone"),
+                [receiver],
+                t
+            );
+        }
+        return TExpr.Call(this.cloneFnOf(t), [receiver], t);
+    }
+
+    /// The clone of `e`, of type `t`, in a synthesized function (S7c6c1): a value as it is, an
+    /// object or a list by its `clone`, an optional's value and a tuple's elements alike.
+    mut fn cloneOf(e: TExpr, t: Ty): TExpr {
+        if (!this.clonesAsReference(t)) {
+            return e;
+        }
+        return match (t) {
+            .Optional(inner) => {
+                let h = this.hidden(t, nowhereSpan);
+                let l = TExpr.Local(h, t);
+                TExpr.Block(
+                    [TStmt.SetLocal(h, e, 1)],
+                    boxE(
+                        TExpr.If(
+                            boxE(TExpr.IsNull(boxE(l))),
+                            boxE(TExpr.Null(t)),
+                            boxE(
+                                TExpr.Wrap(
+                                    boxE(
+                                        this.cloneOf(
+                                            TExpr.Narrow(boxE(l), inner.value),
+                                            inner.value
+                                        )
+                                    ),
+                                    t
+                                )
+                            ),
+                            t
+                        )
+                    ),
+                    t
+                )
+            }
+            .Tuple(tt) => {
+                let h = this.hidden(t, nowhereSpan);
+                let l = TExpr.Local(h, t);
+                let parts = List<TExpr>.new();
+                var k = 0;
+                for (x in tt.elements) {
+                    parts.push(this.cloneOf(TExpr.Elem(boxE(l), k, x), x));
+                    k += 1;
+                }
+                TExpr.Block([TStmt.SetLocal(h, e, 1)], boxE(TExpr.Tuple(parts.toArray(), t)), t)
+            }
+            _ => this.memberCallOn(
+                t,
+                this.synth.cloneIx,
+                "clone",
+                this.slotIn(this.synth.cloneIx, "clone"),
+                [e],
+                t
+            ),
+        };
+    }
+
+    /// The function cloning a value of `t`, a type a copy knows (S7c6c1): a struct's, a class's,
+    /// an enum's variant's parts — value parts copied, reference parts cloned; a value without a
+    /// reference part is itself.
+    mut fn cloneFnOf(t: Ty): int {
+        let key = "clone:" + tyKey(t);
+        if (let known = this.synth.fns.get(key)) {
+            return known;
+        }
+        let (index, saved) = this.beginSynth(
+            "#clone",
+            [ParamInfo { name = "x", ty = t, default = null }],
+            t,
+            nowhereSpan
+        );
+        this.synth.fns.insert(key, index);
+        let x = TExpr.Local(0, t);
+        let body = List<TStmt>.new();
+        match (t) {
+            .Named(i) => {
+                let info = this.types[i];
+                if (info.kind == .Enum) {
+                    var v = 0;
+                    while (v < info.variantFields.length()) {
+                        let vf = info.variantFields[v];
+                        var any = false;
+                        for (f in vf) {
+                            any = any || this.clonesAsReference(f.ty);
+                        }
+                        if (any) {
+                            let parts = List<TExpr>.new();
+                            var k = 0;
+                            while (k < vf.length()) {
+                                parts.push(
+                                    this.cloneOf(
+                                        TExpr.Payload(boxE(x), i, v, k, vf[k].ty),
+                                        vf[k].ty
+                                    )
+                                );
+                                k += 1;
+                            }
+                            body.push(
+                                TStmt.If(
+                                    TExpr.Binary(
+                                        boxE(TExpr.Tag(boxE(x))),
+                                        BinaryOp.Eq,
+                                        boxE(TExpr.Int(v)),
+                                        Ty.Bool
+                                    ),
+                                    [TStmt.Return(TExpr.MakeVariant(i, v, parts.toArray()), 1)],
+                                    [],
+                                    1
+                                )
+                            );
+                        }
+                        v += 1;
+                    }
+                } else if (info.kind == .Struct || info.kind == .Class) {
+                    var any = info.kind == .Class;
+                    for (f in info.fields) {
+                        any = any || this.clonesAsReference(f.ty);
+                    }
+                    if (any) {
+                        let parts = List<TExpr>.new();
+                        var k = 0;
+                        for (f in info.fields) {
+                            parts.push(this.cloneOf(TExpr.Field(boxE(x), k, f.ty), f.ty));
+                            k += 1;
+                        }
+                        body.push(TStmt.Return(TExpr.New(i, parts.toArray()), 1));
+                    }
+                }
+            }
+            _ => { }
+        }
+        body.push(TStmt.Return(x, 1));
+        this.endSynth(index, body.toArray(), saved);
+        return index;
+    }
+
+    /// The function giving the default of `t`, a type a copy knows (S7c6c1): each field's
+    /// initializer, or its type's default.
+    mut fn defaultFnOf(t: Ty): int {
+        let key = "default:" + tyKey(t);
+        if (let known = this.synth.fns.get(key)) {
+            return known;
+        }
+        let (index, saved) = this.beginSynth("#default", [], t, nowhereSpan);
+        this.synth.fns.insert(key, index);
+        var value = TExpr.Unknown;
+        match (t) {
+            .Named(i) => {
+                let info = this.types[i];
+                let tmpl = if (info.template >= 0) this.types[info.template] else info;
+                let parts = List<TExpr>.new();
+                var k = 0;
+                for (f in info.fields) {
+                    let written = if (k < tmpl.fields.length()) tmpl.fields[k].default else null;
+                    if (let w = written) {
+                        parts.push(if (info.template >= 0) this.specExpr(w, info.args) else w);
+                    } else {
+                        parts.push(this.defaultOf(f.ty));
+                    }
+                    k += 1;
+                }
+                value = TExpr.New(i, parts.toArray());
+            }
+            _ => { }
+        }
+        this.endSynth(index, [TStmt.Return(value, 1)], saved);
+        return index;
+    }
+
+    /// The default of a part of type `t` (S7c6c1): zero, `false`, `'\0'`, `""`, `null`, `[]`, a
+    /// tuple of its elements' defaults, a type's `default()`.
+    mut fn defaultOf(t: Ty): TExpr {
+        return match (t) {
+            .Int => TExpr.Int(0),
+            .Float => TExpr.Float(0.0),
+            .Bool => TExpr.Bool(false),
+            .Char => TExpr.Char((0 as uint32) as char),
+            .Str => TExpr.Str(""),
+            .Optional(_) => TExpr.Null(t),
+            .List(_) => TExpr.ListOp(ListOp.Lit, [], t),
+            .Tuple(tt) => {
+                let parts = List<TExpr>.new();
+                for (x in tt.elements) {
+                    parts.push(this.defaultOf(x));
+                }
+                TExpr.Tuple(parts.toArray(), t)
+            }
+            .Named(i) => {
+                let own = this.methodOf(i, "default") ?? -1;
+                let info = this.types[i];
+                if (own < 0) TExpr.Call(this.defaultFnOf(t), [], t)
+                    else if (info.template >= 0 && info.template != i) TExpr.CallGeneric(
+                        own,
+                        info.args,
+                        [],
+                        t
+                    )
+                        else TExpr.Call(own, [], t)
+            }
+            _ => TExpr.Unknown,
+        };
     }
 
     /// Whether type `i` lists interface `ii` (or a child of it) in its own conformances.
@@ -4130,6 +4551,18 @@ class Checker {
 
     /// `conformsTo` without the blanket blocks.
     mut fn conformsDirect(t: Ty, ii: int): bool {
+        // `Clone` and `Default`: a value whose parts clone, a type whose parts have a default
+        // (S7c6c1) — a type parameter through its constraints, below
+        if ((ii == this.synth.cloneIx || ii == this.synth.defaultIx) && ii >= 0) {
+            match (t) {
+                .Param(_) | .Assoc(_, _, _) => { }
+                _ => {
+                    return (if (ii == this.synth.cloneIx) this.notCloneable(t, List<int>.new())
+                        else this.notDefaultable(t, List<int>.new()))
+                        == null;
+                }
+            }
+        }
         // `Equatable`: a value whose parts compare (03 Eq; S7c5a) — a type parameter through its
         // constraints, below
         if (ii == this.equatableIndex && ii >= 0) {
@@ -5370,6 +5803,8 @@ class Checker {
                 if (this.assocNamesOf(x).length() > 0
                     || this.hasOwnGeneric(x)
                     || (x == this.equatableIndex && x >= 0)
+                    || (x == this.synth.cloneIx && x >= 0)
+                    || (x == this.synth.defaultIx && x >= 0)
                     || this.instanceOverParams(x)) {
                     return true;
                 }
@@ -5835,6 +6270,11 @@ class Checker {
                     return TExpr.Unknown;
                 }
                 let (fi, _) = found;
+                // `Default.default` of a type that has one without its own (S7c6c1)
+                if (this.functions[fi].owner == this.synth.defaultIx
+                    && this.functions[fi].abstract) {
+                    return TExpr.Call(this.defaultFnOf(concrete), all, rt);
+                }
                 TExpr.Call(this.inferredCopy(fi, this.bindsOf(fi, ii, concrete), all), all, rt)
             }
             .CallStaticD(slot, d, xs, t) => TExpr.CallStaticD(
@@ -5933,8 +6373,10 @@ class Checker {
                 let concrete = if (k < a.length()) a[k] else Ty.Unknown;
                 // the slot of the instance the copy's arguments make (S7c5d1)
                 let at = this.slotAt(ii, member, a, slot);
-                if (this.sharedShape(concrete)) {
-                    // a shared copy: through the receiver's own table
+                // a shared copy: through the receiver's own table — not a member the compiler
+                // synthesizes, which no table holds, its copies exact (S7c6c1: `a.equals(b)` of
+                // `T :: [Equatable]` over a class was LYS-ICE0001 since S7c5a)
+                if (this.sharedShape(concrete) && !this.synthesizedMember(ii, member)) {
                     return TExpr.CallIface(at, all, rt);
                 }
                 this.memberCallOn(concrete, ii, member, at, all, rt)
@@ -5968,6 +6410,15 @@ class Checker {
         let entry = this.entryOf(concrete);
         let own = if (entry >= 0) this.memberFor(entry, ii, member) else null;
         if (own != null) {
+            // a list's block member: at its element (S7c6c1; operatorMember's since S7c5c3)
+            match (concrete) {
+                .List(e) => {
+                    if (this.functions[own].typeParams.length() > 0) {
+                        return TExpr.CallGeneric(own, [e.value], all, rt);
+                    }
+                }
+                _ => { }
+            }
             // a generic entry's method (a list's, S7c3): its copy at the entry's arguments
             let info = this.types[entry];
             if (this.functions[own].typeParams.length() > 0
@@ -6004,6 +6455,10 @@ class Checker {
         // `Equatable.equals` of a type that compares without one of its own (S7c5a)
         if (this.functions[fi].owner == this.equatableIndex && this.functions[fi].abstract) {
             return TExpr.Call(this.genericEqFnOf(concrete, nowhereSpan), all, rt);
+        }
+        // `Clone.clone` of a type that clones without one of its own (S7c6c1)
+        if (this.functions[fi].owner == this.synth.cloneIx && this.functions[fi].abstract) {
+            return TExpr.Call(this.cloneFnOf(concrete), all, rt);
         }
         let owner = this.functions[fi].owner;
         if ((owner == this.orderedIndex || owner == this.totalOrderIndex)
@@ -10705,7 +11160,11 @@ class Checker {
     /// comparing family, `Equatable`, `Ordered`, `TotalOrder` (Lyric 5 05 §14; S7c5a, S7c5b).
     fn synthesizable(ii: int): bool {
         return ii >= 0
-            && (ii == this.equatableIndex || ii == this.orderedIndex || ii == this.totalOrderIndex);
+            && (ii == this.equatableIndex
+                || ii == this.orderedIndex
+                || ii == this.totalOrderIndex
+                || ii == this.synth.cloneIx
+                || ii == this.synth.defaultIx);
     }
 
     /// `x.compare(y)` and `x.totalCompare(y)` of an `Ordered` or `TotalOrder` without its own
@@ -14988,6 +15447,9 @@ class Checker {
                     if (let cmp = this.synthCompare(t, receiver, method, args, at)) {
                         return cmp;
                     }
+                    if (let copy = this.synthClone(t, receiver, method, args)) {
+                        return copy;
+                    }
                     if (let call = this.blanketCall(
                         t,
                         receiver,
@@ -15282,6 +15744,13 @@ class Checker {
         let m = picked ?? this.methodOf(typeIndex, method);
         let checkedArgs = this.pickedArgs;
         this.pickedArgs = [];
+        // `P.default()` of a type that has one without its own (S7c6c1)
+        if (m == null && method == "default" && args.length() == 0 && this.synth.defaultIx >= 0) {
+            let self = this.selfTy(typeIndex);
+            if (!this.anyParamIn(self) && this.conformsDirect(self, this.synth.defaultIx)) {
+                return TExpr.Call(this.defaultFnOf(self), [], self);
+            }
+        }
         if (m == null) {
             // a blanket block's static member (05 §13 rule 7; S7c4c3a)
             if (let call = this.blanketStatic(this.selfTy(typeIndex), method, args, at)) {

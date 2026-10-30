@@ -1117,6 +1117,12 @@ severity = "error"
 area = "05-interfaces"
 summary = "A conforming type answers an associated type with a type that does not conform to the bound the interface declares for it, `type Iter :: [Iterator]` answered with `int`. Lyric 5's LYR-SEM0160."
 
+[LYS-SEM0135]
+title = "a Default of an enum"
+severity = "error"
+area = "05-interfaces"
+summary = "An enum that lists `Default` without a `default` of its own is refused: no variant is the default. Lyric 5's LYR-SEM0135."
+
 [LYS-SEM0168]
 title = "a type's member hides a blanket member"
 severity = "warning"

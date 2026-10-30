@@ -484,6 +484,49 @@ extend float :: [Add, Sub, Mul, Div, Rem, Neg] {
 extend string :: Add {
     fn add(rhs: string): string = this + rhs
 }
+// a value's own copy, and a type's value where nothing is given (Lyric 5 05 §14; S7c6c1):
+// synthesized where a struct, a class or an enum lists them without the member — `clone` copies
+// the value fields and clones the reference fields, `default` takes each field's initializer or
+// its type's default
+interface Clone {
+    fn clone(): Self
+}
+interface Default {
+    static fn default(): Self
+}
+extend int :: [Clone, Default] {
+    fn clone(): int = this
+    static fn default(): int = 0
+}
+extend float :: [Clone, Default] {
+    fn clone(): float = this
+    static fn default(): float = 0.0
+}
+extend bool :: [Clone, Default] {
+    fn clone(): bool = this
+    static fn default(): bool = false
+}
+extend char :: [Clone, Default] {
+    fn clone(): char = this
+    static fn default(): char = 0 as char
+}
+extend string :: [Clone, Default] {
+    fn clone(): string = this
+    static fn default(): string = ""
+}
+// of a Clone element a list is Clone: a new list of the elements' clones
+extend<T :: [Clone]> T[] :: Clone {
+    fn clone(): T[] {
+        let out: T[] = []
+        for (x in this) {
+            out.push(x.clone())
+        }
+        return out
+    }
+}
+extend<T> T[] :: Default {
+    static fn default(): T[] = []
+}
 // mixed arithmetic through the interfaces, the `int` widened (03 Mix; S7c5d3)
 extend int :: [Add<float>, Sub<float>, Mul<float>, Div<float>, Rem<float>] {
     type Out = float
@@ -587,7 +630,7 @@ interface Iterable {
     type Iter :: [Iterator]
     fn iter(): Self.Iter
 }
-class ListIter<T> :: [Iterator, DoubleEnded] {
+class ListIter<T> :: [Iterator, DoubleEnded, Clone] {
     type Item = T
     list: T[]
     var at: int = 0
@@ -611,6 +654,13 @@ class ListIter<T> :: [Iterator, DoubleEnded] {
         return this.list[this.end]
     }
     fn sizeHint(): (int, ?int) = (this.end - this.at, this.end - this.at)
+    // its walk, the list shared (S7c6c1)
+    fn clone(): ListIter<T> = ListIter {
+        list = this.list,
+        at = this.at,
+        end = this.end,
+        changes = this.changes,
+    }
 }
 extend<T> T[] :: Iterable {
     type Iter = ListIter<T>
@@ -712,6 +762,13 @@ extend<T :: [__Step]> RangeInclusiveIter<T> :: [Iterator, DoubleEnded] {
         }
         return value
     }
+}
+// a range's walk clones where it stands (S7c6c1)
+extend<T> RangeIter<T> :: Clone {
+    fn clone(): RangeIter<T> = RangeIter { start = this.start, end = this.end }
+}
+extend<T> RangeInclusiveIter<T> :: Clone {
+    fn clone(): RangeInclusiveIter<T> = RangeInclusiveIter { start = this.start, end = this.end }
 }
 extend<T :: [__Step]> Range<T> :: Iterable {
     type Iter = RangeIter<T>

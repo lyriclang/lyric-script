@@ -283,8 +283,8 @@ VM's call path, S7k measurement point 3.
   generic type's initializer at a named position took no field default (since S3g).
 - **S7c6b2 done** — the terminators of every iterator. Found: a copy's text of an optional or a
   tuple broke the code generator (since S3i).
-- Next: **S7c6c** — `Clone`/`Default` synthesis, `cycle()`, the list methods, `sort`; then S7c6d
-  the placeholder `_` (cut in plan 14).
+- Next: **S7c6c1** — `Clone`/`Default` synthesis and `cycle()`; then S7c6c2 the rest of Lyric 5's
+  array and list members with the sorts, S7c6d the placeholder `_` (cut in plan 14).
 
 ## Working mode
 

@@ -1558,3 +1558,14 @@ eines Werts vom offenen assoziierten Typ (`{x}` mit `x: I.Item`) in jeder Kopie:
 Code-Generator panikte; jetzt eine Funktion je Typ. Spec 12 Regel 4 mit Abweichung; acht Fälle,
 alle rot gegen S7c6b1. Mutanten: zwei Läufe, 460 und 458 von 463; einer traf zwei andere Fälle als vorhergesagt — der Fehler stürzt nur ab, wo die verirrte Lokale jenseits der Lokalen der Kopie liegt, darunter überschreibt er still einen ihrer Slots.
 Fälle 455 → 463.
+
+**S7c6c, geteilt (2026-10-30).** **S7c6c1** die Synthese von `Clone` und `Default` (Lyric 5 05
+§14; Script 05 D13: `Clone` ist bei Klassen sinnvoll, ein Struct wird geteilt) mit den Skalaren,
+Strings, Listen, Optionals und Tupeln als Konformern, `cycle()` über einen `Clone`-Iterator — der
+Listen-Iterator und die Bereichs-Iteratoren klonen ihren Lauf, nicht die Liste; **S7c6c2** die
+übrigen Glieder von Lyric 5s Array und `List` an `T[]`: die Sortierungen (`sort`, `sortBy`,
+`sortByKey`, `sortUnstable`, stabil bis auf die letzte, nativ mit Kostenregel), `binarySearch`,
+`partitionPoint`, `join`, `clone`, dazu `sorted`/`sortedBy` der Iteratoren und `List.of`/`from`/
+`withCapacity`. `map`, `filter` und `retain`, die die Planzeile von S7c nannte, hat Lyric 5s
+Array nicht — `xs.iter().map(f)` und `removeWhere` sind es; ein zweiter Weg wäre ein zweiter
+Mechanismus für dasselbe.

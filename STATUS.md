@@ -230,9 +230,12 @@ VM's call path, S7k measurement point 3.
   with generic interfaces (P18): `FromArrayLiteral`, a list as an interface value.
 - **S7b3 done** — list patterns `[a, b]`, `[first, ..rest]`, `[a, .., z]` with their coverage by
   lengths; `Index<K>` moved to S7c with the generic interfaces (P18). **S7b complete.**
-- Next: **S7c1** — generic interfaces (P18); S7c cut in plan 14: c1 generic interfaces, c2
+- **S7c1a done** (S7c1 split in two) — generic interfaces: `interface I<T>`, `:: [I<int>]`,
+  `T :: [I<int>]`, `I<int>` as a value's type, parents at the arguments, generic conformers at
+  their parameters (P18, the first half). S7c cut in plan 14: c1 generic interfaces, c2
   `Index<K>` and `FromArrayLiteral<T>`, c3 values without descriptors as interface values, c4
   iterators, c5 `std.iter`.
+- Next: **S7c1b** — `Self` and default members in a generic interface.
 
 ## Working mode
 

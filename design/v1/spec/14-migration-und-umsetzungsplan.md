@@ -1179,3 +1179,23 @@ fünf Teile, jeder braucht den vorigen.
 | **S7c3 Werte ohne Deskriptor** | eine Liste als Interfacewert (Deskriptor `T[]`, Tabelle des `List`-Eintrags je Element, `is int[]`, Debug über `Any`), Konformanzen `extend<T> T[] :: [I]`; Tasks, Koroutinen, Kanäle als Interfacewerte (Uhr aus S6) | Konformanzfälle |
 | **S7c4 Iteratoren** | `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator<T>`, `collect()`; `for` über jedes Iterable, `Closeable`-Iteratoren geschlossen (05 E7); `T[] :: Iterable` mit der Änderungspanik; `Coroutine :: Iterator` | Konformanzfälle |
 | **S7c5 `std.iter`** | die Adapter von Lyric 5s `iter` in Script, die Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …), `sort` nativ mit Kostenregel | Konformanzfälle; Kostenregel für `sort` |
+
+**S7c1, geteilt (2026-10-30).** **S7c1a** generische Interfaces ohne `Self` und ohne Defaults;
+**S7c1b** `Self` in einem generischen Interface (seine Mitglieder generisch über die Parameter
+und `Self` zugleich) und Default-Mitglieder über `T` — beides brauchen `FromArrayLiteral<T>`
+(statisch, gibt `Self`) und `Index<K>` (`Self.Output`).
+
+**S7c1a, Ergebnis (2026-10-30).** `interface I<T, …>` deklariert Typparameter (mit Constraints
+wie eine generische Funktion); seine Mitglieder sind generisch über sie wie die Methoden eines
+generischen Typs. `I<int>` — in einer Konformanz, einem Constraint, als Elternteil oder als Typ
+eines Werts — ist eine Instanz über `typeInstance`, ein Interface eigenen Rechts mit den Slots der
+Vorlage; Eltern einer Instanz werden bei Bedarf an ihren Argumenten gebildet (`parentsOf`), weil
+eine Instanz vor den Eltern der Vorlage entstehen kann. Eine Konformanz prüft die Signaturen an den
+Argumenten der Instanz; ein Aufruf über einen `I<int>`-Wert oder ein `T :: [I<int>]` belegt die
+Typparameter des Mitglieds mit den Argumenten der Instanz, die es deklariert (`memberBinds`).
+Ein generischer Typ konformiert an seinen eigenen Parametern (`class Cell<T> :: Store<T>`), jede
+Instanz an ihren Argumenten (`ifaceAt`). Gefunden beim Bauen: die Typparameter einer generischen
+Funktion wurden an einer zweiten Stelle nur über den Namen aufgelöst; `Source<T>` in einer
+generischen Funktion fällt über die Abkürzung „eigene Parameter“ auf die Vorlage zurück — die
+Vorlage steht darum für sich selbst an ihren Parametern. Spec 05 Regel 15, fünf Fälle, alle rot
+gegen S7b. Vier Mutanten in zwei Läufen, alle wie vorhergesagt. Fälle 370 → 375.

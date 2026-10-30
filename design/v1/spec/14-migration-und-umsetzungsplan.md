@@ -1655,3 +1655,24 @@ wurde als „kann scheitern“ abgelehnt, seit S3d. **Uhr:** `import std.collect
 (P28). Spec 12 Regel 5, 03 Regeln 4, 8, 12 und 14, 05 Regel 8, 07 Regel 9, 09 Regel 2; vierzehn
 Fälle, alle rot gegen S7d1. Mutanten: drei Läufe, 495, 494 und 495 von 498 — je genau die vorhergesagten Fälle; den Fall zweier Schlüssel eines Hashes gab es erst, als die Vorhersage zeigte, dass sonst kein Fall den zweiten Platz unter einem Hash erreicht.
 Fälle 484 → 498.
+
+**S7d3, Ergebnis (2026-10-31).** `class Set<T :: [Hashable]>` in `std.collections` über die
+Schlüssel einer `Map<T, bool>`, wie Lyric 5 sie baut, in Einfügereihenfolge: `new`, `of`,
+`withCapacity`, `insert` und `remove` mit ihren Antworten, `contains` und `in`, die sieben
+Mengenoperationen als Methoden, `Iterable` über `MapKeysIter` — die Änderungspanik nennt jetzt die
+Sammlung, Lyric 5s Text „Map: …“/„Set: …“ —, `FromArrayLiteral` (`let s: Set<int> = [1, 2]`),
+`FromIterator`, Gleichheit, `Clone`, Debug `{1, 2}`. `groupBy`, `toMap` und `toSet` als
+Blanket-Blöcke in `std.collections`, wo Lyric 5 sie hat (nicht in `std.iter`); der Lader nimmt das
+Modul auch bei den Wörtern `Set`, `groupBy`, `toMap` und `toSet` auf. **Gefunden, zwei Fehler
+früherer Slices:** (1) im generischen Rumpf bekam ein Argument keinen Typ von der Stelle, wo das
+Typargument des Empfängers die eigenen Parameter des Rumpfs nennt — `m.getOr(1, [])` einer
+`Map<int, T[]>` war `LYS-SEM0060`, seit S7c5a (ein Mutant, der genau das schrieb, prüfte nicht;
+so fiel es auf); (2) die Debug-Form eines generischen Typs, dessen Argument eine Liste eines
+offenen Parameters ist (`Box<T[]>` in einem generischen `k`), brachte den Codegenerator zum
+Absturz: die Kopie baute die Schleife über die Liste mit Locals eines fremden Kontexts, seit S7c4a.
+Behoben für Argumente, deren Werte Objekte sind; **offen, Uhr S7d4:** bei `T = int` fragt die
+geteilte Kopie die Tabelle einer rohen `int`-Liste, die keine hat — `LYS-ICE0001` zur Laufzeit
+statt beim Übersetzen. Spec 12 Regel 6; zehn Fälle, neun rot gegen S7d2 — `gathering_refused`
+grün, wie vorhergesagt: dort fehlten die Glieder ganz, die Ablehnung ist dieselbe; er bleibt für
+die Mutanten. Mutanten: A 504 und B 504 von 506, C nach dem Fund (1) 505 von 508 — je genau die vorhergesagten Fälle; Cs erster Lauf (493) war ein Mutant, der nicht prüfte.
+Fälle 498 → 508.

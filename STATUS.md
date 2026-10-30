@@ -296,8 +296,12 @@ VM's call path, S7k measurement point 3.
   (since S2d); `==` over a generic type's own `equals` answered wrongly and held where a
   conditional conformance did not (since S7c5a); a static's written type arguments were dropped
   (since S6d1); `let P { x, y } = p` was refused (since S3d).
-- Next: **S7d3** — `Set`, `groupBy`/`toMap`/`toSet`; then S7d4 `Deque`/`Heap` and
-  `import std.collections` (P28).
+- **S7d3 done** — `Set` over a map's keys, the set operations; `groupBy`, `toMap`, `toSet`.
+  Found: an argument in a generic body took no type where the receiver's argument names the
+  body's parameters (since S7c5a); `Box<T[]>`'s Debug form in a generic body broke the code
+  generator (since S7c4a) — fixed for object arguments, open for `int` (clock S7d4).
+- Next: **S7d4** — `Deque` and `Heap`, `import std.collections` (P28), the open `Box<T[]>` form
+  at `T = int`; then S7e.
 
 ## Working mode
 

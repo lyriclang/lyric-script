@@ -277,9 +277,10 @@ VM's call path, S7k measurement point 3.
   (`LYS-SEM0122`), per instance of a generic interface (chosen by the arguments' types); each
   instance its own slots and its own answers; `int :: Add<float>` and the like. Found: a default
   did not widen a count (since S2d).
-- Next: **S7c6a** — `Range<T>` and `RangeInclusive<T>` as values, `DoubleEnded`, `sizeHint`;
-  then S7c6b the adapters and terminators (`std.iter`), S7c6c `Clone`/`Default`, the list
-  methods and `sort`, S7c6d the placeholder `_` (cut in plan 14).
+- **S7c6a done** — `a..b` and `a..=b` as values (`Range<T>`, `RangeInclusive<T>`), walked by a
+  new iterator each time; `DoubleEnded`, `sizeHint`, a list's iterator from both ends.
+- Next: **S7c6b** — `std.iter`, the adapters and terminators; then S7c6c `Clone`/`Default`, the
+  list methods and `sort`, S7c6d the placeholder `_` (cut in plan 14).
 
 ## Working mode
 
@@ -337,4 +338,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P21 | The prelude grows with S7, and every program checks it: a cold `hello` (a fresh cache, the debug build) went from about 91 ms (median of ten, S7c4c1) to about 121 ms (S7c5c1) as FromIterator, the blanket blocks, Equatable's list block and the scalars' Ordered blocks came; S7c5c2's operator blocks add more. The ratchet (cold ≤ 50 ms, design 11) is the release build's and was not measured here. Clocked to S7k (measurement point 3): measure the release build; past the ratchet, check a prelude body only where it is used, or keep the checked prelude in the cache. | S7c5c1 |
 | P22 | A block on one instance (`extend Box<int> { … }`, 05 §13 rule 1) holds one member of a name: a second is `LYS-SEM0121`, where Lyric 5 08 §1.2 lets a scope's members share a name by count, and S7c5d gave every other block that. The instance's own members are kept apart from the template's (`ownMethods`), and a set over both would have to say which one a copy of the template reaches. Clocked to S7f, with `From`/`Into` — the first place a block on one instance is likely to hold two conversions. | S7c5d |
 | P23 | The synthesis of `Clone` and `Default` (design 09 Syn: the compiler's fixed list — `Equatable`, `Hashable`, `Ordered`, `TotalOrder`, `Debug`, `Default`, `Clone`, `Identity`, `Codable`) had no clock: S3h took `Equatable`, `Hashable` and `Debug`, S7c5 the orderings, S10 `Codable`, and no plan line names `Clone` or `Default` (found while cutting S7c6 — `cycle()` asks for a `Clone` iterator). Clocked now to S7c6c, with `cycle()`. | S7c5d |
+| P24 | A range is a value in Script (S7c6a). Lyric 5's `Range<T>` is a struct with `var` bounds that is its own `Iterator`: walked, it changes, and a `let` range is walked through a copy. Script's structs never change (02 T7), so the range is an `Iterable` whose `iter()` gives a new `RangeIter<T>` — `for` over one range twice walks it twice, as Lyric 5's copy does —, but `r.next()` and `(0..n).map(f)` are refused (`LYS-SEM0012`) where Lyric 5 takes them; `(0..n).iter().map(f)` is the form. The other way, a class walked in place, would leave a range a `for` walked empty the next time, silently. Decided by recommendation; say if a range should be its own iterator (a class that `for` copies first). | S7c6a |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

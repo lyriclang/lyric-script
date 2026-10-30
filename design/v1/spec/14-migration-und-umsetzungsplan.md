@@ -1512,3 +1512,17 @@ Modul erst laden, wo ein Iterator ein Mitglied nicht findet); **S7c6c** die Synt
 und `Default`, die keine Planzeile hatte (P23) und die `cycle()` braucht, dazu die Listen-Methoden
 und `sort` mit seiner Kostenregel; **S7c6d** der Platzhalter `_`. Was eine `Map` oder ein `Set`
 baut (`groupBy`, `toMap`, `toSet`), geht mit S7d.
+
+**S7c6a, Ergebnis (2026-10-30).** `a..b` und `a..=b` sind außerhalb eines `for`-Kopfes Werte von
+`Range<T>` und `RangeInclusive<T>` der Prelude, `T` der Typ, den die Stelle nennt, sonst der der
+ersten Grenze; über `int` und `char` `Iterable` durch `RangeIter<T>` und `RangeInclusiveIter<T>`
+(beide Enden, Zeichen ohne Surrogate, kein Wert über die Grenze des Typs), über einem geordneten
+Typ `Contains`; `for` über Grenzen aus `char` geht über den Wert. Dazu `sizeHint()` am `Iterator`
+und `DoubleEnded`, der Listen-Iterator von beiden Enden. **Entschieden nach Empfehlung (P24):**
+ein Bereich ist ein Wert, kein Iterator — Lyric 5s Struct mit `var`-Grenzen widerspräche 02 T7;
+`r.next()` und `(0..n).map(f)` sind abgelehnt, `r.iter()` läuft ihn. **Gefunden:** (1) `internal`
+wirkt in der Prelude nicht gegen das Programm — ihr `Step` heißt deshalb `__Step` wie ihre
+übrigen eigenen Namen; (2) vor dem Commit, durch den eigenen Fall: `let f: Range<float> = 0..3`
+nahm `T` von der ersten Grenze statt von der Stelle. Spec 07 Regel 8 mit Abweichung; fünf Fälle, alle rot gegen S7c5d.
+Mutanten: drei Läufe, 444, 445 und 444 von 447; einer traf zwei Fälle mehr als vorhergesagt (dasselbe `for` über Grenzen, die kein `int` sind, stand noch in zwei der neuen Fälle).
+Fälle 442 → 447.

@@ -287,7 +287,9 @@ VM's call path, S7k measurement point 3.
   member through a constraint over an object was LYS-ICE0001 (since S7c5a).
 - **S7c6c2 done** — the sorts (the VM's for scalars and strings), `binarySearch`,
   `partitionPoint`, `join`, `List<T>` statics, `sorted`/`sortedBy`.
-- Next: **S7c6d** — the placeholder `_` among type arguments; then S7d, maps and sets.
+- **S7c6d done — S7c6 done** — the placeholder `_` among type arguments; an initializer's
+  written type arguments, which did not parse.
+- Next: **S7d** — `Map` and `Set` (plan 14: cut first).
 
 ## Working mode
 

@@ -1596,3 +1596,12 @@ Prelude den Debug-Slot — jedes Programm baute die Debug-Formen aller Typen (un
 NYI-Uhr der Form von `TaskStatus<void>`); `join` einer Liste entsteht jetzt am Aufruf. Spec 03
 Regel 16, 12 Regel 4; sieben Fälle, alle rot gegen S7c6c1. Mutanten: zwei Läufe, 472 und 473 von 476 — wie vorhergesagt.
 Fälle 469 → 476.
+
+**S7c6d, Ergebnis (2026-10-30) — damit S7c6 fertig.** Der Platzhalter `_` unter den
+Typargumenten eines Aufrufs, einer Methode, eines Initialisierers und eines Funktionswerts
+(Lyric 5 03 §9.2 Regeln 4–5, §9.3 Regel 2, §9.4): die Inferenz füllt ihn aus den Argumenten,
+den Feldern oder der Stelle; anderswo `SEM0117`. **Gefunden:** ein Initialisierer mit
+geschriebenen Typargumenten (`Pair<int, string> { … }`, §9.3 Regel 1) parste in Script nicht, und
+Scripts Spec nannte ihn nicht — mit dem Platzhalter, der in ihm steht, aufgenommen. Spec 03
+Regel 12; drei Fälle, alle rot gegen S7c6c2. Mutanten: drei Läufe, 476, 476 und 477 von 479; zwei trafen auch den Ablehnungsfall, dessen `none<_>()` an denselben Stellen hängt.
+Fälle 476 → 479.

@@ -1241,3 +1241,25 @@ mit **S7c4**, wohin auch Tasks, Koroutinen und Kanäle als Interfacewerte gehen:
 Iterator` zieht deren Methoden in die Prelude, erst dann tragen ihre Tabellen. Spec 03 Regel 16,
 05 Regel 12; zwei Fälle, beide rot gegen S7c2. Vier Mutanten in drei Läufen, alle wie
 vorhergesagt; ein fünfter (der Referenzslot der Box) zeigte sich beim Bauen. Fälle 381 → 383.
+
+**S7c4, geteilt (2026-10-30).** **S7c4a** `Iterator`, `Iterable`, `for` über beide, `T[] ::
+Iterable`; **S7c4b** `Coroutine :: Iterator` und Tasks, Koroutinen, Kanäle als Interfacewerte —
+ihre Methoden wandern dafür als Funktionen über Intrinsics in die Prelude; **S7c4c**
+`FromIterator<T>` mit `collect()` (ein generisches statisches Mitglied eines Interfaces, das
+über `Self` generisch ist — seit S3i NYI), die Blanket-Blöcke (`extend<I :: [Iterator]> I ::
+[Iterable<Iter = I>]`, 05 Regeln 6–9) und Listen eines Typparameters als Interfacewerte.
+
+**S7c4a, Ergebnis (2026-10-30).** Die Prelude deklariert `Iterator` (`type Item`, `fn next():
+?Self.Item`, ohne Fehlertyp — 05) und `Iterable` (`type Iter :: [Iterator]`, `fn iter():
+Self.Iter`). `for (x in e)` über ein `Iterator` ist `while (let x = e.next())` über `e`, einmal
+gehalten, über ein `Iterable` über dessen `iter()`; ist der Iterator ein `Closeable`, schließt
+ihn ein `defer` an jedem Ausgang (05 E7); sonst `SEM0007`. Jede Liste ist ein `Iterable`
+(`extend<T> T[] :: Iterable` mit `ListIter<T>`, das nach einer Längenänderung wie die Schleife
+paniert). **Gefunden beim Bauen:** `classifyInterfaces` löste jeden Interfacenamen im Modul des
+letzten Items auf — ein eigenes `Iterator` des Skripts bekam die Klassifizierung der Prelude, die
+Prelude brach (seit S3i, latent, bis die Prelude ein Interface trug, das Skripte selbst
+schreiben); ein generischer Extend-Block trug die Antworten seiner assoziierten Typen nie ein;
+die Debug-Form eines `T[]`-Felds in einem generischen Typ war NYI — jetzt eine Schleife am Ort.
+Spec 03 Regel 16, 07 Regel 7; fünf Fälle, alle rot gegen S7c3. Vier Mutanten in einem Lauf, alle
+gefangen; einer traf drei Fälle mehr als vorhergesagt (die S3i-Fälle schreiben ihr eigenes
+`Iterator`, wie die Unit-Tests). Fälle 383 → 388.

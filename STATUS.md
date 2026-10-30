@@ -242,8 +242,10 @@ VM's call path, S7k measurement point 3.
 - **S7c3 done** — a list as an interface value (a box whose type is an entry for its element:
   `Any`, `is int[]`, Debug through the table), `extend<T> T[] :: [I]`; tasks, coroutines,
   channels moved to S7c4.
-- Next: **S7c4** — iterators: `Iterator`, `Iterable`, `for` over any iterable, `T[] ::
-  Iterable`, `Coroutine :: Iterator`, `FromIterator<T>`; tasks and kin as interface values.
+- **S7c4a done** (S7c4 split in three) — `Iterator`, `Iterable`, `for` over any of them (a
+  Closeable one closed), `T[] :: Iterable`. Found: a script's own `Iterator` broke the prelude
+  (interfaces classified in the wrong module, since S3i).
+- Next: **S7c4b** — `Coroutine :: Iterator`; tasks, coroutines, channels as interface values.
 
 ## Working mode
 

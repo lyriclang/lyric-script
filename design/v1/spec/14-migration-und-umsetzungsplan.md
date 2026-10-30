@@ -1275,3 +1275,20 @@ Interfacewert“) retirieren mit ihrer Regel: zwei Unit-Zusicherungen erwarten j
 Fehler, ein Konformanzfall entfällt. Spec 10 Regeln 8 und 19, die Abweichung zurückgezogen;
 zwei Fälle, beide rot gegen S7c4a. Vier Mutanten in drei Läufen, alle wie vorhergesagt.
 Fälle 388 → 389.
+
+**S7c4c, geteilt (2026-10-30).** Vor `FromIterator<T>` (ein generisches statisches Mitglied) und
+den Adaptern (`map<U>` …) fehlte die Grundlage: **S7c4c1** generische Methoden generischer
+Besitzer; **S7c4c2** `FromIterator<T>`, `collect()`, die Blanket-Blöcke, Listen eines
+Typparameters als Interfacewerte.
+
+**S7c4c1, Ergebnis (2026-10-30).** **Lücke seit S3, ohne Uhr:** eine generische Methode eines
+generischen Typs (`fn map<U>` in `Box<T>`) meldete „'T' names no type“ — die eigenen Parameter
+ersetzten den Scope des Besitzers; generische Mitglieder eines Interfaces mit `Self` waren NYI
+(S3i). Jetzt sind die Parameter des Besitzers zuerst — die eines generischen Typs, `Self` und die
+eines Interfaces, die eines Extend-Blocks (`outerParams`) —, die eigenen danach; ein Aufruf belegt
+die des Besitzers als Präfix, der Rest kommt aus den Argumenten. Die Deskriptoren einer Kopie
+teilen sich auf (`fromThisAt`): die eines generischen Typs und `Self` vom Empfänger, die eigenen
+und die eines generischen Interfaces als versteckte Parameter; eine Tabellenkopie ist darum
+immer exakt (ein Aufruf über die Tabelle reicht keinen versteckten Deskriptor). Spec 03 Regel
+12, 05 Regel 10; drei Fälle, alle rot gegen S7c4b. Drei Mutanten in drei Läufen, alle wie
+vorhergesagt. Fälle 389 → 392.

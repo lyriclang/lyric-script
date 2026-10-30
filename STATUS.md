@@ -247,7 +247,9 @@ VM's call path, S7k measurement point 3.
   (interfaces classified in the wrong module, since S3i).
 - **S7c4b done** — `Coroutine :: Iterator`; tasks, coroutines, scopes, channels, semaphores as
   interface values in a box; the S6 pins retired with their rule.
-- Next: **S7c4c** — `FromIterator<T>` and `collect()`, the blanket blocks, a list of a type
+- **S7c4c1 done** (S7c4c split in two) — generic methods of generic owners (a gap since S3: `fn
+  map<U>` in `Box<T>` never worked); generic members of interfaces with `Self`.
+- Next: **S7c4c2** — `FromIterator<T>` and `collect()`, the blanket blocks, a list of a type
   parameter as an interface value.
 
 ## Working mode

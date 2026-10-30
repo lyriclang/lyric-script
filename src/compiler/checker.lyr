@@ -2353,6 +2353,17 @@ class Checker {
         let added = List<int>.new();
         // the interfaces a field answers for: each one's field (05 §5)
         let via = Map<int, int>.new();
+        // a generic type's parameters in scope: `class Cell<T> :: Store<T>` (S7c1)
+        let savedScope = this.typeParams;
+        if (info.typeParams.length() > 0 && this.typeParams.length() == 0) {
+            let scope = Map<string, int>.new();
+            var j = 0;
+            for (tp in info.typeParams) {
+                scope.insert(tp.name, j);
+                j += 1;
+            }
+            this.typeParams = scope;
+        }
         for (c in conforms) {
             let ii = this.ifaceOf(c);
             if (ii < 0) {
@@ -2512,6 +2523,21 @@ class Checker {
             }
         }
         info.ifaces = all.toArray();
+        this.typeParams = savedScope;
+    }
+
+    /// Interface `x` of a generic type's template read at an instance's arguments: `Store<T>` of
+    /// `Cell<T>` is `Store<int>` for `Cell<int>` (S7c1); another interface as it is.
+    mut fn ifaceAt(x: int, args: Ty[]): int {
+        let base = this.ifaceBase(x);
+        if (this.types[base].typeParams.length() == 0 || args.length() == 0) {
+            return x;
+        }
+        let a = List<Ty>.new();
+        for (t in this.types[x].args) {
+            a.push(this.subst(t, args));
+        }
+        return this.typeInstance(base, a.toArray());
     }
 
     /// A method of type `owner` that calls member `declared` of interface `ii` on its field
@@ -2661,7 +2687,12 @@ class Checker {
                     else this.types[i].ifaces;
                 var found = false;
                 for (x in kinds) {
-                    found = found || x == ii;
+                    // a generic interface of a generic type: at the instance's arguments (S7c1)
+                    found = found
+                        || x == ii
+                        || (i != j
+                            && this.types[i].kind != .Interface
+                            && this.ifaceAt(x, this.types[j].args) == ii);
                 }
                 // given by a generic block: where the instance's arguments meet its constraints
                 let cond = this.types[i].condIfaces.get(ii);

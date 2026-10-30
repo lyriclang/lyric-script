@@ -22,6 +22,7 @@ import lyric_script.compiler.typed {
     isScalar,
     slotsOf,
     tupleOf,
+    tyKey,
     typeOf,
 };
 import lyric_script.vm.module {
@@ -375,6 +376,13 @@ struct Placement {
             byName = Map<string, int>.new(),
             base = descs.length(),
         };
+        di = 0;
+        for (t in p.types) {
+            if (t.kind == .Builtin && t.name.startsWith("List<") && t.args.length() == 1) {
+                structural.lists.insert(tyKey(t.args[0]), typeDescOf[di]);
+            }
+            di += 1;
+        }
         let all = descs.toArray();
         // an instance of a generic type knows its template and its arguments' descriptors; a
         // template, whose arguments are its own parameters, none
@@ -434,6 +442,8 @@ class Structural {
     descs: List<TypeDesc>,
     byName: Map<string, int>,
     base: int,
+    // the box descriptor of each list type's entry, by its element's key (S7c4c3b)
+    var lists: Map<string, int> = Map<string, int>.new(),
 
     /// The descriptor at module place `k`: the placement's or one made here.
     fn at(k: int, placed: TypeDesc[]): TypeDesc {
@@ -462,6 +472,7 @@ class Structural {
                 .Bool => builtinDesc.get("bool") ?? anyDesc,
                 .Char => builtinDesc.get("char") ?? anyDesc,
                 .Str => builtinDesc.get("string") ?? anyDesc,
+                .List(e) => this.lists.get(tyKey(e.value)) ?? anyDesc,
                 _ => anyDesc,
             };
         }
@@ -1289,6 +1300,7 @@ class FnGen {
             .If(_, _, _, _) | .Block(_, _, _) | .Loop(_, _) | .New(_, _) | .Coalesce(_, _, _) => true,
             // `t = (t.1, t.0)` reads the local after its first write
             .Tuple(_, _) | .MakeVariant(_, _, _) | .Closure(_, _, _) | .BoxOf(_, _, _) => true,
+            .BoxOfD(_, _, _) => true,
             .Wrap(_, _) => true,
             _ => false,
         };
@@ -1549,6 +1561,16 @@ class FnGen {
                 let v = this.temp(t);
                 this.to(x.value, v);
                 this.emit(Op.New, dst.r, this.layout.boxType[ti], 0);
+                this.setField(dst.r, Loc { s = 0, r = 0 }, v, t);
+            }
+            .BoxOfD(x, d, _) => {
+                let t = typeOf(x.value);
+                let v = this.temp(t);
+                this.to(x.value, v);
+                let dm = this.mark();
+                let rd = this.any(d.value).r;
+                this.emit(Op.NewD, dst.r, rd, 0);
+                this.release(dm);
                 this.setField(dst.r, Loc { s = 0, r = 0 }, v, t);
             }
             .SameRef(x, y) => {

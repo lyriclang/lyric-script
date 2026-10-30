@@ -183,6 +183,10 @@ class TypeInfo {
     // a blanket block's entry (05 §13 rule 7; S7c4c2): which of its parameters the receiver is;
     // -1 for any other type
     var blanketAt: int = -1,
+    // an instance's members and conformances a block on it alone gave (05 §13 rule 1; S7c4c3b):
+    // its `methods` are its template's, shared
+    var ownMethods: Map<string, int> = Map<string, int>.new(),
+    var instIfaces: int[] = [],
     var constraintOnly: bool = false,
     var onlyWhy: string = "",
     // a constraint only whatever is fixed: a member names `Self` itself, or is static or generic
@@ -265,6 +269,44 @@ enum Native :: [Equatable, Debug] {
     Std(int),
 }
 
+/// `t` as the key of the copies and instances made for it: one string per type, which its shown
+/// name is not — two types of one name in two modules, two type parameters (S7c4c2: `Pair<B, A>`
+/// and `Pair<A, A>` of one generic were one instance). A tuple's labels are no part of it.
+fn tyKey(t: Ty): string {
+    return match (t) {
+        .Named(i) => f"#{i}",
+        .Param(k) => f"'{k}",
+        .List(e) => f"[{tyKey(e.value)}]",
+        .Map(k, v) => f"Map<{tyKey(k.value)},{tyKey(v.value)}>",
+        .Optional(e) => f"?{tyKey(e.value)}",
+        .Tuple(tt) => {
+            let parts = List<string>.new();
+            for (e in tt.elements) {
+                parts.push(tyKey(e));
+            }
+            "(" + parts.toArray().join(",") + ")"
+        }
+        .Fn(ft) => {
+            let parts = List<string>.new();
+            for (x in ft.params) {
+                parts.push(tyKey(x));
+            }
+            "fn(" + parts.toArray().join(",") + ")->" + tyKey(ft.result.value)
+        }
+        .Cell(inner) => tyKey(inner.value),
+        .Assoc(b, ii, n) => f"{tyKey(b.value)}.#{ii}.{n}",
+        .Int => "int",
+        .Float => "float",
+        .Bool => "bool",
+        .Char => "char",
+        .Str => "string",
+        .Void => "void",
+        .Never => "never",
+        .Unknown => "?",
+        .NullLit => "null",
+    };
+}
+
 /// The type of a checked expression.
 fn typeOf(e: TExpr): Ty {
     return match (e) {
@@ -326,6 +368,7 @@ fn typeOf(e: TExpr): Ty {
         .CallValue(_, _, t) => t,
         .Upcast(_, t) => t,
         .BoxOf(_, _, t) => t,
+        .BoxOfD(_, _, t) => t,
         .Unbox(_, t) => t,
         .IsType(_, _, _) | .IsIface(_, _, _) | .SameRef(_, _) => Ty.Bool,
         .CallGeneric(_, _, _, t) => t,
@@ -460,6 +503,8 @@ enum TExpr :: [Debug] {
     /// A value of a scalar type or a `string` as an interface value: put in a box of the type
     /// of the program `k` names.
     BoxOf(Box<TExpr>, int, Ty),
+    // a list of a type parameter in a box whose descriptor the copy makes at run time (S7c4c3b)
+    BoxOfD(Box<TExpr>, Box<TExpr>, Ty),
     /// The value a box holds.
     Unbox(Box<TExpr>, Ty),
     /// Whether an interface value holds a value of the program's type `k`; the type tested.
@@ -641,7 +686,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         .IsType(x, _, _) | .IsIface(x, _, _) | .IsParam(x, _, _) | .DescOfValue(x, _) => [x.value],
         .DescArg(x, _, _) | .DescVariant(x, _, _) | .DebugParam(x, _, _) => [x.value],
         .TextParam(x, _, _) | .Throw(x) | .Block(_, x, _) | .Panic(x, _) => [x.value],
-        .Binary(x, _, y, _) | .Coalesce(x, y, _) | .SameRef(x, y) | .IsDesc(x, y) => [
+        .Binary(x, _, y, _) | .Coalesce(x, y, _) | .SameRef(x, y) | .IsDesc(x, y) | .BoxOfD(x, y, _) => [
             x.value,
             y.value,
         ],

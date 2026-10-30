@@ -72,6 +72,7 @@ import lyric_script.compiler.typed {
     TupleTy,
     TypeParamInfo,
     tupleOf,
+    tyKey,
     typeOf,
     stmtLine,
 };
@@ -408,6 +409,9 @@ class Checker {
     blanketVisiting: List<int> = List<int>.new(),
     // where a type's conformance to an interface stands, by `type:interface name`
     conformedAt: Map<string, Span> = Map<string, Span>.new(),
+    // the instance a block on one instance names, by the block's place (S7c4c3b); -2 where the
+    // target was refused
+    instanceBlocks: Map<string, int> = Map<string, int>.new(),
     // while a blanket block's signatures are checked: its target, and the answers it gives
     var selfAnswersAt: int = -1,
     var selfAnswers: Map<string, Ty> = Map<string, Ty>.new(),
@@ -956,8 +960,7 @@ class Checker {
                 if (info.kind == .Interface || !this.conformsTo(target, pi)) {
                     return null;
                 }
-                let tmpl = if (info.template >= 0 && info.template != i) info.template else i;
-                let own = this.types[tmpl].methods.get(member);
+                let own = this.methodOf(i, member);
                 if (own == null) {
                     return null;
                 }
@@ -1064,6 +1067,10 @@ class Checker {
             match (item) {
                 .Decl(d) => match (d) {
                     .Interface(i) => this.declareArity(i),
+                    // a generic type named before its declaration, `fn f(b: Box<int>)` (S7c4c3b;
+                    // SEM0026 since S3g)
+                    .Type(t) => this.declareTypeArity(t.name, t.typeParams),
+                    .Enum(e) => this.declareTypeArity(e.name, e.typeParams),
                     _ => { }
                 },
                 .Stmt(_) => { }
@@ -1125,6 +1132,13 @@ class Checker {
                         .Extend(x) => {
                             if (blanketTarget(x) >= 0) {
                                 this.blanketConformance(x);
+                                continue;
+                            }
+                            let inst = this.instanceBlocks.get(f"{x.span.file}:{x.span.start}");
+                            if (inst != null) {
+                                if (inst >= 0) {
+                                    this.conformAt(inst, x.conforms);
+                                }
                                 continue;
                             }
                             match (x.target) {
@@ -1913,6 +1927,28 @@ class Checker {
 
     /// A generic interface's parameters by name, their constraints to come with its declaration,
     /// and what an instance takes over from it (S7c4c2).
+    mut fn declareTypeArity(name: string, params: TypeParam[]): void {
+        let index = this.typeIndex.get(this.q(name));
+        if (index == null || params.length() == 0) {
+            return;
+        }
+        let info = this.types[index];
+        if (info.kind == .Interface || info.name != name || info.typeParams.length() > 0) {
+            return;
+        }
+        let ps = List<TypeParamInfo>.new();
+        let own = List<Ty>.new();
+        var j = 0;
+        for (tp in params) {
+            ps.push(TypeParamInfo { name = tp.name, constraints = [] });
+            own.push(Ty.Param(j));
+            j += 1;
+        }
+        info.typeParams = ps.toArray();
+        info.template = index;
+        info.args = own.toArray();
+    }
+
     mut fn declareArity(i: InterfaceDecl): void {
         let index = this.typeIndex.get(this.q(i.name));
         if (index == null || i.typeParams.length() == 0) {
@@ -2236,6 +2272,15 @@ class Checker {
             this.declareBlanket(x, at);
             return;
         }
+        // `extend Box<int> { … }`, `extend int[] { … }`: a block on one instance (S7c4c3b)
+        let inst = this.instanceTarget(x);
+        if (inst != -1) {
+            this.instanceBlocks.insert(f"{x.span.file}:{x.span.start}", inst);
+            if (inst >= 0) {
+                this.declareInstanceBlock(inst, x);
+            }
+            return;
+        }
         let name = match (x.target) {
             .Named(n, _, _) => n,
             .List(_, _) => "List",
@@ -2264,6 +2309,48 @@ class Checker {
             }
             info.methods.insert(m.name, this.declareFn(m, index));
         }
+    }
+
+    /// The instance a block without parameters names — `Box<int>`, `int[]` (05 §13 rule 1;
+    /// S7c4c3b) —; -1 for a target that is no instance, -2 for one refused already.
+    mut fn instanceTarget(x: ExtendDecl): int {
+        if (x.typeParams.length() > 0) {
+            return -1;
+        }
+        let written = match (x.target) {
+            .Named(_, targs, _) => targs.length() > 0,
+            .List(_, _) => true,
+            _ => false,
+        };
+        if (!written) {
+            return -1;
+        }
+        return match (this.resolveType(x.target)) {
+            .Named(j) => if (this.types[j].template >= 0 && this.types[j].template != j) j else -2,
+            .List(e) => if (hasParam(Ty.List(e))) -2 else this.entryOf(Ty.List(e)),
+            _ => -2,
+        };
+    }
+
+    /// A block on instance `inst` alone: its answers, constants and members that instance's,
+    /// checked at it (`this` a `Box<int>`), no other instance's (05 §13 rules 1–2; S7c4c3b).
+    mut fn declareInstanceBlock(inst: int, x: ExtendDecl): void {
+        let info = this.types[inst];
+        this.declareAnswers(inst, x.answers);
+        this.declareStatics(inst, x.statics);
+        for (m in x.methods) {
+            if (this.methodOf(inst, m.name) != null) {
+                this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
+                continue;
+            }
+            info.ownMethods.insert(m.name, this.declareFn(m, inst));
+        }
+    }
+
+    /// Method `name` of type `i`: one a block on the instance alone gave it (S7c4c3b), else its
+    /// type's.
+    fn methodOf(i: int, name: string): ?int {
+        return this.types[i].ownMethods.get(name) ?? this.types[i].methods.get(name);
     }
 
     /// `extend<I :: [Iterator]> I { … }`: members of every type its constraints admit (05 §13
@@ -2711,18 +2798,11 @@ class Checker {
                 let plain = (info.kind == .Struct
                     || info.kind == .Class
                     || info.kind == .Enum
-                    || (info.kind == .Builtin && info.blanketAt < 0 && info.name != "List"))
+                    || (info.kind == .Builtin && info.blanketAt < 0))
                     && (info.template < 0 || info.template == i);
                 if (plain) {
                     if (let b = this.blanketBindsAt(e, this.selfTy(i))) {
-                        // a generic type the VM holds, or whose conformance the block needs is
-                        // conditional: its answers alone, no table (S7c4c3b)
-                        if ((info.typeParams.length() > 0 && this.boxed(this.selfTy(i)))
-                            || this.conditionallyReached(i, e)) {
-                            this.blanketAnswers(i, e, b);
-                        } else {
-                            this.blanketConform(i, e, b);
-                        }
+                        this.blanketConform(i, e, b, this.reachCond(i, e));
                     }
                 }
                 i += 1;
@@ -2730,37 +2810,47 @@ class Checker {
         }
     }
 
-    /// Whether generic type `i` meets blanket block `e`'s target constraints only through a
-    /// conformance a generic block gives on a condition (S7c4c3a: such a type waits for S7c4c3b).
-    mut fn conditionallyReached(i: int, e: int): bool {
+    /// The condition on generic type `i`'s arguments under which it meets blanket block `e`'s
+    /// target constraints — a conformance a generic block gives on one (S7c4c3b) —; null where it
+    /// meets them on none.
+    mut fn reachCond(i: int, e: int): ?TypeParamInfo[] {
         let info = this.types[i];
         if (info.typeParams.length() == 0) {
-            return false;
+            return null;
         }
         let entry = this.types[e];
+        var out: ?TypeParamInfo[] = null;
         for (c in entry.typeParams[entry.blanketAt].constraints) {
             var plain = false;
-            var cond = false;
+            var cond: ?TypeParamInfo[] = null;
             for (x in info.ifaces) {
                 for (a in this.ancestry(x)) {
                     if (this.isOf(a, c) || this.ifaceBase(a) == this.ifaceBase(c)) {
-                        if (info.condIfaces.containsKey(x)) {
-                            cond = true;
+                        let given = info.condIfaces.get(x);
+                        if (given != null) {
+                            cond = given;
                         } else {
                             plain = true;
                         }
                     }
                 }
             }
-            if (cond && !plain) {
-                return true;
+            if (!plain) {
+                if (let more = cond) {
+                    if (let have = out) {
+                        out = mergeConds(have, more);
+                    } else {
+                        out = more;
+                    }
+                }
             }
         }
-        return false;
+        return out;
     }
 
-    /// Type `i` given blanket block `e`'s interfaces at the block's parameters `b`.
-    mut fn blanketConform(i: int, e: int, b: Ty[]): void {
+    /// Type `i` given blanket block `e`'s interfaces at the block's parameters `b` — for a
+    /// generic type's instances that meet `cond` alone, where it has one.
+    mut fn blanketConform(i: int, e: int, b: Ty[], cond: ?TypeParamInfo[]): void {
         let info = this.types[i];
         let entry = this.types[e];
         let chain = this.chainOf(e);
@@ -2787,6 +2877,9 @@ class Checker {
         for (c in chain) {
             let a = this.constraintAt(c, b);
             ifaces.push(a);
+            if (let given = cond) {
+                info.condIfaces.insert(a, given);
+            }
             let iface = this.types[this.ifaceBase(a)];
             let instanceArgs: Ty[] = if (this.ifaceBase(a) != a) this.types[a].args else [];
             for (member in iface.memberNames) {
@@ -2851,18 +2944,6 @@ class Checker {
             }
         }
         return nowhereSpan;
-    }
-
-    /// Whether a value of `t` as one of interface `ii` would want a table the blanket block that
-    /// gives `ii` has not filled: a list, a generic type whose conformance is conditional or that
-    /// the VM holds (S7c4c3b).
-    mut fn unreachedByBlanket(t: Ty, ii: int): bool {
-        let held = match (t) {
-            .List(_) => true,
-            .Named(j) => this.types[j].kind != .Interface,
-            _ => false,
-        };
-        return held && !this.conformsDirect(t, ii) && this.blanketGives(t, ii) >= 0;
     }
 
     /// The blanket block that gives type `t` interface `ii` (05 §13 rule 8; S7c4c3a); -1 for
@@ -3170,7 +3251,20 @@ class Checker {
         if (index < 0) {
             return;
         }
+        this.conformAt(index, conforms);
+    }
+
+    /// Type `index`'s conformances `conforms`: an instance's a block on it alone gives (S7c4c3b),
+    /// its own beside its template's.
+    mut fn conformAt(index: int, conforms: Conformance[]): void {
+        if (conforms.length() == 0) {
+            return;
+        }
         let info = this.types[index];
+        let instance = info.template >= 0 && info.template != index;
+        for (c in conforms) {
+            this.conformedAt.insert(f"{index}:{c.name}", c.span);
+        }
         let self = this.selfTy(index);
         let boxedSelf = this.boxed(self);
         let added = List<int>.new();
@@ -3226,6 +3320,8 @@ class Checker {
             for (x in info.ifaces) {
                 twice = twice || x == ii;
             }
+            // an instance whose template conforms already, for every instance or one it meets
+            twice = twice || (instance && this.conformsDirect(self, ii));
             if (twice) {
                 this.error(
                     "LYS-SEM0133",
@@ -3302,7 +3398,7 @@ class Checker {
                 let slot = iface.slotOf.get(member) ?? -1;
                 info.slotArgs.insert(slot, instanceArgs);
                 let declared = iface.methods.get(member) ?? -1;
-                let own = info.methods.get(member);
+                let own = this.methodOf(index, member);
                 if (own != null) {
                     let selfArgs: Ty[] = if (iface.selfParam) withSelfTy(self, instanceArgs)
                         else instanceArgs;
@@ -3352,6 +3448,9 @@ class Checker {
             }
         }
         info.ifaces = all.toArray();
+        if (instance) {
+            info.instIfaces = info.ifaces;
+        }
         // an answer meets its bounds with every conformance of the list in place: `type Iter =
         // Both` of a `Both :: [Iterator, Iterable]` (S7c4c3a; since S3i the bound was asked
         // before the type's other conformances stood)
@@ -3387,6 +3486,9 @@ class Checker {
         let out = List<int>.new();
         for (x in this.types[info.template].ifaces) {
             out.push(this.ifaceAt(x, info.args));
+        }
+        for (x in info.instIfaces) {
+            out.push(x);
         }
         return out.toArray();
     }
@@ -3614,6 +3716,15 @@ class Checker {
                 for (x in this.types[i].ifaces) {
                     found = found || this.isOf(x, ii) || this.ifaceAt(x, [e.value]) == ii;
                 }
+                // a block on this list type alone, `extend string[] :: Show` (S7c4c3b)
+                let inst = if (hasParam(t)) -1 else this.entryOf(t);
+                if (inst >= 0 && inst != i) {
+                    for (x in this.types[inst].instIfaces) {
+                        if (this.isOf(x, ii)) {
+                            return true;
+                        }
+                    }
+                }
                 let cond = this.types[i].condIfaces.get(ii);
                 if (found && cond != null) {
                     found = this.meetsBlock([e.value], cond);
@@ -3637,6 +3748,12 @@ class Checker {
                 let cond = this.types[i].condIfaces.get(ii);
                 if (found && cond != null && i != j) {
                     found = this.meetsBlock(this.types[j].args, cond);
+                }
+                // by a block on the instance alone (S7c4c3b)
+                if (!found && i != j) {
+                    for (x in this.types[j].instIfaces) {
+                        found = found || this.isOf(x, ii);
+                    }
                 }
                 found
             }
@@ -4208,40 +4325,9 @@ class Checker {
         if (actual == target || actual == .Unknown || target == .Unknown || actual == .Never) {
             return e;
         }
-        // a value of an interface a blanket block gives a type whose table it has not filled
-        match (target) {
-            .Named(ii) => {
-                if (this.types[ii].kind == .Interface && this.unreachedByBlanket(actual, ii)) {
-                    return this.notYet(
-                        f"a {this.tyName(actual)} as a {this.tyName(target)} a blanket block gives it",
-                        "S7c4c3b (blocks on one instance)",
-                        at
-                    );
-                }
-            }
-            _ => { }
-        }
         let fitted = this.fit(e, target);
         if (fitted != null) {
             return fitted;
-        }
-        // a list of a type parameter as an interface value needs its descriptor made at run time
-        match (actual) {
-            .List(_) => {
-                match (target) {
-                    .Named(ii) => {
-                        if (this.types[ii].kind == .Interface && hasParam(actual)) {
-                            return this.notYet(
-                                f"a {this.tyName(actual)} as a {this.tyName(target)}",
-                                "S7c4 (a list of a type parameter as an interface value)",
-                                at
-                            );
-                        }
-                    }
-                    _ => { }
-                }
-            }
-            _ => { }
         }
         this.error(
             "LYS-SEM0001",
@@ -4272,7 +4358,11 @@ class Checker {
                 if (this.types[ii].kind == .Interface
                     && this.conformsTo(actual, ii)
                     && (!this.heldWithoutDescriptor(actual) || this.boxed(actual))) {
-                    // a scalar or a string goes into a box; a reference is its own
+                    // a scalar or a string goes into a box; a reference is its own; a list of a type
+                    // parameter into the box its copy makes (S7c4c3b — the template's box before)
+                    if (this.boxed(actual) && hasParam(actual)) {
+                        return TExpr.Upcast(boxE(e), target);
+                    }
                     if (this.boxed(actual)) {
                         return TExpr.BoxOf(boxE(e), this.entryOf(actual), target);
                     }
@@ -4839,6 +4929,11 @@ class Checker {
                 }
             }
             .Optional(inner) => parts.push(this.descExpr(inner.value, a)),
+            // a list's: its entry's box at the element's descriptor (S7c4c3b)
+            .List(inner) => {
+                this.entryOf(Ty.List(boxTy(Ty.Named(this.anyIndex))));
+                parts.push(this.descExpr(inner.value, a));
+            }
             .Tuple(tt) => {
                 for (x in tt.elements) {
                     parts.push(this.descExpr(x, a));
@@ -5115,11 +5210,24 @@ class Checker {
             .Upcast(x, t) => {
                 let v = this.specExpr(x.value, a);
                 let vt = typeOf(v);
-                if (this.boxed(vt)) TExpr.BoxOf(boxE(v), this.entryOf(vt), this.subst(t, a))
-                    else TExpr.Upcast(boxE(v), this.subst(t, a))
+                let written = typeOf(x.value);
+                if (this.boxed(vt) && this.dynamic(written)) {
+                    // a `T[]` of a shared copy: `List<Any>`'s box at run time, of `T`'s descriptor
+                    this.entryOf(Ty.List(boxTy(Ty.Named(this.anyIndex))));
+                    TExpr.BoxOfD(boxE(v), boxE(this.descExpr(written, a)), this.subst(t, a))
+                } else if (this.boxed(vt)) {
+                    TExpr.BoxOf(boxE(v), this.entryOf(vt), this.subst(t, a))
+                } else {
+                    TExpr.Upcast(boxE(v), this.subst(t, a))
+                }
             }
             .CallIface(slot, xs, t) => TExpr.CallIface(slot, this.specAll(xs, a), this.subst(t, a)),
             .BoxOf(x, k, t) => TExpr.BoxOf(this.specBox(x, a), k, this.subst(t, a)),
+            .BoxOfD(x, d, t) => TExpr.BoxOfD(
+                this.specBox(x, a),
+                this.specBox(d, a),
+                this.subst(t, a)
+            ),
             .Unbox(x, t) => TExpr.Unbox(this.specBox(x, a), this.subst(t, a)),
             .IsType(x, k, t) => if (this.dynamic(Ty.Named(k))) TExpr.IsDesc(
                 this.specBox(x, a),
@@ -5136,7 +5244,15 @@ class Checker {
                     TExpr.IsParam(this.specBox(x, a), k, t)
                 }
             }
-            .IsDesc(x, d) => TExpr.IsDesc(this.specBox(x, a), this.specBox(d, a)),
+            .IsDesc(x, d) => TExpr.IsDesc(
+                this.specBox(x, a),
+                match (d.value) {
+                    // `is T[]` (S7c4c3b): the copy's descriptor of the list type
+                    .DescOfType(dt, _) => if (hasParam(dt)) boxE(this.descExpr(dt, a))
+                        else this.specBox(d, a),
+                    _ => this.specBox(d, a),
+                }
+            ),
             .CallStatic(k, ii, member, slot, xs, t) => {
                 let all = this.specAll(xs, a);
                 let rt = this.subst(t, a);
@@ -5147,7 +5263,7 @@ class Checker {
                 }
                 let concrete = if (k < a.length()) a[k] else Ty.Unknown;
                 let entry = this.entryOf(concrete);
-                let own = if (entry >= 0) this.types[entry].methods.get(member) else null;
+                let own = if (entry >= 0) this.methodOf(entry, member) else null;
                 if (own != null && this.functions[own].isStatic) {
                     // a static generic of its own (S7c4c2: `fromIter<I>`): its copy, its owner's
                     // parameters the entry's arguments, its own the arguments' types
@@ -5266,7 +5382,7 @@ class Checker {
         }
         // a copy of its own: the type's own method, or the interface's default
         let entry = this.entryOf(concrete);
-        let own = if (entry >= 0) this.types[entry].methods.get(member) else null;
+        let own = if (entry >= 0) this.methodOf(entry, member) else null;
         if (own != null) {
             // a generic entry's method (a list's, S7c3): its copy at the entry's arguments
             let info = this.types[entry];
@@ -5662,7 +5778,30 @@ class Checker {
         }
         info.tabled = true;
         let tmpl = this.types[info.template];
-        info.ifaces = tmpl.ifaces;
+        // an instance of the lists' entry a copy made, after `fillDebugSlot`: its Debug form out
+        // of its box too (S7c4c3b: `f([1, 2])` of `fn f<T>(xs: T[]): Any` printed through nothing)
+        if (this.debugSlot >= 0
+            && (info.kind == .Builtin || info.vmHeld)
+            && !info.witness.containsKey(this.debugSlot)) {
+            let quiet = this.quietDebug;
+            this.quietDebug = true;
+            info.witness.insert(this.debugSlot, this.debugBoxOf(i));
+            this.quietDebug = quiet;
+        }
+        // its template's conformances, and those a block on it alone gave (S7c4c3b) — a
+        // conditional one where its arguments meet the condition: what `is` asks at run time
+        // (since S3i every instance's descriptor listed them all, `Cond<int> is Named`)
+        let merged = List<int>.new();
+        for (x in tmpl.ifaces) {
+            let cond = tmpl.condIfaces.get(x);
+            if (cond == null || this.meetsBlock(info.args, cond)) {
+                merged.push(x);
+            }
+        }
+        for (x in info.instIfaces) {
+            merged.push(x);
+        }
+        info.ifaces = merged.toArray();
         // by slot: the instances are made in the same order in every run
         var slot = 0;
         while (slot < this.slotCount) {
@@ -5672,10 +5811,21 @@ class Checker {
             if (fi >= 0 && this.ownTypeParams(fi) > 0) {
                 info.witness.insert(slot, fi);
             } else if (fi >= 0 && this.blanketOwned(fi)) {
-                // a blanket block's member: its copy at what the instance binds (S7c4c3a)
-                let b = this.blanketBindsAt(this.functions[fi].owner, Ty.Named(i));
+                // a blanket block's member: its copy at what the instance binds (S7c4c3a), through
+                // the box of a list or of a value the VM holds unboxed (S7c4c3b)
+                let self = this.selfTy(i);
+                let b = this.blanketBindsAt(this.functions[fi].owner, self);
                 if (b != null) {
-                    info.witness.insert(slot, this.selfCopyIn(fi, b));
+                    let copy = this.selfCopyIn(fi, b);
+                    info.witness.insert(
+                        slot,
+                        if (this.boxed(self) && !this.functions[fi].isStatic) this.unboxer(
+                            copy,
+                            self,
+                            Ty.Named(this.slotIface(i, slot))
+                        )
+                            else copy
+                    );
                 } else {
                     info.witness.insert(slot, fi);
                 }
@@ -6620,7 +6770,7 @@ class Checker {
                 if (this.types[i].kind == .Interface) {
                     this.ifaceMember(i, name) != null
                 } else {
-                    var found = this.types[i].methods.containsKey(name);
+                    var found = this.methodOf(i, name) != null;
                     for (f in this.types[i].fields) {
                         found = found || f.name == name;
                     }
@@ -7637,10 +7787,10 @@ class Checker {
                 target
             ),
             // a list of a known element (S7c3)
-            .List(_) => if (hasParam(target)) this.notYet(
-                f"'is' {this.tyName(target)}",
-                "S7c4 (a list of a type parameter as an interface value)",
-                at
+            // of a type parameter's element: the descriptor its copy makes (S7c4c3b)
+            .List(_) => if (hasParam(target)) TExpr.IsDesc(
+                boxE(x),
+                boxE(TExpr.DescOfType(target, Ty.Named(this.anyIndex)))
             )
                 else TExpr.IsType(boxE(x), this.entryOf(target), target),
             // a type parameter: the argument's type, tested in each copy (S3i)
@@ -10294,7 +10444,7 @@ class Checker {
             }
             // a method without a call: bound to the object (§8.4 rule 2)
             .Named(i) => {
-                let m = this.types[i].methods.get(name);
+                let m = this.methodOf(i, name);
                 if (m != null && !this.functions[m].isStatic) {
                     return this.boundMethod(o, m, at);
                 }
@@ -11520,7 +11670,7 @@ class Checker {
         if (k >= 0) {
             return this.unitVariant(index, k, at);
         }
-        let m = this.types[index].methods.get(name);
+        let m = this.methodOf(index, name);
         if (m != null && this.functions[m].isStatic) {
             this.mayName(index, name, at);
             return this.thunk(m, at);
@@ -13486,7 +13636,7 @@ class Checker {
                         _ => call,
                     };
                 }
-                let m = this.types[i].methods.get(method);
+                let m = this.methodOf(i, method);
                 // a generic block's member: on an instance that meets its constraints (rule 2)
                 if (m != null
                     && this.functions[m].blockParams.length() > 0
@@ -13616,6 +13766,22 @@ class Checker {
                 }
                 // a built-in type's methods: its extend blocks', and its conformances' defaults
                 let i = this.builtinOf(t);
+                // a block on this list type alone, `extend int[] { … }` (S7c4c3b)
+                let inst = this.entryOf(t);
+                if (i >= 0 && inst >= 0 && inst != i) {
+                    let own = this.types[inst].ownMethods.get(method);
+                    if (own != null) {
+                        return this.callExpecting(
+                            posTy,
+                            writtenTys,
+                            method,
+                            [own],
+                            receiver,
+                            args,
+                            at
+                        );
+                    }
+                }
                 if (i >= 0) {
                     let m = this.types[i].methods.get(method);
                     if (m != null) {
@@ -13681,6 +13847,18 @@ class Checker {
                 }
                 if (let call = this.blanketCall(t, receiver, method, args, at, posTy, writtenTys)) {
                     return call;
+                }
+                // a list's methods are all here (S7b); a string's and a number's come with S7e, S7f
+                match (t) {
+                    .List(_) => {
+                        this.error(
+                            "LYS-SEM0012",
+                            f"'{this.tyName(t)}' has no method '{method}'",
+                            memberAt
+                        );
+                        return TExpr.Unknown;
+                    }
+                    _ => { }
                 }
                 return this.notYet(
                     f"the methods of {this.tyName(t)}",
@@ -13822,7 +14000,7 @@ class Checker {
         if (k >= 0) {
             return this.variantCall(typeIndex, k, args, at);
         }
-        let m = info.methods.get(method);
+        let m = this.methodOf(typeIndex, method);
         if (m == null) {
             // a blanket block's static member (05 §13 rule 7; S7c4c3a)
             if (let call = this.blanketStatic(this.selfTy(typeIndex), method, args, at)) {
@@ -14054,15 +14232,6 @@ class Checker {
                             this.error(
                                 "LYS-SEM0028",
                                 f"{this.tyName(b)} is no {this.types[ii].name}, which '{tp.name}' of '{name}' asks",
-                                at
-                            );
-                        } else if (this.sharedShape(b)
-                            && !this.assocConstrained(chosen, j)
-                            && this.unreachedByBlanket(b, ii)) {
-                            // a shared copy would call through a table the block has not filled
-                            this.notYet(
-                                f"a {this.tyName(b)} as the '{tp.name}' of '{name}', a {this.types[ii].name} through a blanket block",
-                                "S7c4c3b (blocks on one instance)",
                                 at
                             );
                         }
@@ -14789,44 +14958,6 @@ struct WithUpdate {
 }
 
 /// Whether `a` is `b`, or one of them unknown after a fault reported already.
-/// `t` as the key of the copies and instances made for it: one string per type, which its shown
-/// name is not — two types of one name in two modules, two type parameters (S7c4c2: `Pair<B, A>`
-/// and `Pair<A, A>` of one generic were one instance). A tuple's labels are no part of it.
-fn tyKey(t: Ty): string {
-    return match (t) {
-        .Named(i) => f"#{i}",
-        .Param(k) => f"'{k}",
-        .List(e) => f"[{tyKey(e.value)}]",
-        .Map(k, v) => f"Map<{tyKey(k.value)},{tyKey(v.value)}>",
-        .Optional(e) => f"?{tyKey(e.value)}",
-        .Tuple(tt) => {
-            let parts = List<string>.new();
-            for (e in tt.elements) {
-                parts.push(tyKey(e));
-            }
-            "(" + parts.toArray().join(",") + ")"
-        }
-        .Fn(ft) => {
-            let parts = List<string>.new();
-            for (x in ft.params) {
-                parts.push(tyKey(x));
-            }
-            "fn(" + parts.toArray().join(",") + ")->" + tyKey(ft.result.value)
-        }
-        .Cell(inner) => tyKey(inner.value),
-        .Assoc(b, ii, n) => f"{tyKey(b.value)}.#{ii}.{n}",
-        .Int => "int",
-        .Float => "float",
-        .Bool => "bool",
-        .Char => "char",
-        .Str => "string",
-        .Void => "void",
-        .Never => "never",
-        .Unknown => "?",
-        .NullLit => "null",
-    };
-}
-
 /// Which of extend block `x`'s parameters its target is, where it is one alone, `extend<I ::
 /// [Iterator]> I` (05 §13 rule 7); -1 for any other target.
 fn blanketTarget(x: ExtendDecl): int {
@@ -14842,6 +14973,26 @@ fn blanketTarget(x: ExtendDecl): int {
         k += 1;
     }
     return -1;
+}
+
+/// Two conditions on one type's arguments, both asked: each parameter's constraints of either.
+fn mergeConds(a: TypeParamInfo[], b: TypeParamInfo[]): TypeParamInfo[] {
+    let out = List<TypeParamInfo>.new();
+    var k = 0;
+    for (p in a) {
+        let cs = List<int>.new();
+        for (c in p.constraints) {
+            cs.push(c);
+        }
+        if (k < b.length()) {
+            for (c in b[k].constraints) {
+                cs.push(c);
+            }
+        }
+        out.push(TypeParamInfo { name = p.name, constraints = cs.toArray(), fixed = p.fixed });
+        k += 1;
+    }
+    return out.toArray();
 }
 
 fn sameOrUnknown(a: Ty, b: Ty): bool {

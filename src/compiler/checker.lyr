@@ -1405,18 +1405,26 @@ class Checker {
     /// members are generic over `Self` — and each that is a constraint only: that, a generic
     /// member, or a parent that is one (Lyric 5 05 §7 rule 3).
     mut fn classifyInterfaces(module: Module): void {
+        // each with its module: a name resolves in the module that declares it (S7c4a — the
+        // prelude's `Iterator` was read as the script's of that name)
         let decls = List<InterfaceDecl>.new();
+        let files = List<int>.new();
         for (item in module.items) {
-            this.mod = itemFile(item);
             match (item) {
                 .Decl(d) => match (d) {
-                    .Interface(i) => decls.push(i),
+                    .Interface(i) => {
+                        decls.push(i);
+                        files.push(itemFile(item));
+                    }
                     _ => { }
                 },
                 .Stmt(_) => { }
             }
         }
+        var di = 0;
         for (i in decls) {
+            this.mod = files[di];
+            di += 1;
             let index = this.typeIndex.get(this.q(i.name));
             if (index == null) {
                 continue;
@@ -2224,6 +2232,9 @@ class Checker {
         let savedDeclaring = this.declaringParams;
         this.typeParams = scope;
         this.declaringParams = merged.toArray();
+        // its associated types' answers, at the block's parameters (S7c4a: `type Iter =
+        // ListIter<T>` in `extend<T> T[] :: Iterable`)
+        this.declareAnswers(index, x.answers);
         for (m in x.methods) {
             if (info.methods.containsKey(m.name)) {
                 this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
@@ -7506,11 +7517,79 @@ class Checker {
             }
             _ => { }
         }
+        // an Iterator, or an Iterable through its `iter()` (S7c4a; Lyric 5 §1): `while (let x =
+        // it.next())` over the iterator held once, closed at every way out where it is a
+        // `Closeable` (05 E7)
+        let iteratorI = this.typeIndex.get("Iterator") ?? -1;
+        let iterableI = this.typeIndex.get("Iterable") ?? -1;
+        let walks = iteratorI >= 0 && this.conformsTo(t, iteratorI);
+        if (walks || (iterableI >= 0 && this.conformsTo(t, iterableI))) {
+            let head = List<TStmt>.new();
+            let h = this.hidden(t, at);
+            head.push(TStmt.SetLocal(h, it, at.line));
+            var walker = Expr.Name(this.ctx.localNames[h], at);
+            var wt = t;
+            if (!walks) {
+                let made = this.expr(
+                    Expr.Call(
+                        Box<Expr> {
+                            value = Expr.Member(Box<Expr> { value = walker }, "iter", false, at),
+                        },
+                        [],
+                        at
+                    ),
+                    null
+                );
+                wt = typeOf(made);
+                let h2 = this.hidden(wt, at);
+                head.push(TStmt.SetLocal(h2, made, at.line));
+                walker = Expr.Name(this.ctx.localNames[h2], at);
+            }
+            let pull = Expr.Call(
+                Box<Expr> { value = Expr.Member(Box<Expr> { value = walker }, "next", false, at) },
+                [],
+                at
+            );
+            let loop = Stmt.WhileLet(Pattern.Name(name, at), pull, body, label, at);
+            let closeable = this.typeIndex.get("Closeable") ?? -1;
+            let stmts = if (closeable >= 0 && this.conformsTo(wt, closeable)) [
+                Stmt.Defer(
+                    Block {
+                        stmts = [
+                            Stmt.Expr(
+                                Expr.Call(
+                                    Box<Expr> {
+                                        value = Expr.Member(
+                                            Box<Expr> { value = walker },
+                                            "close",
+                                            false,
+                                            at
+                                        ),
+                                    },
+                                    [],
+                                    at
+                                ),
+                                at
+                            ),
+                        ],
+                        span = at,
+                    },
+                    at
+                ),
+                loop,
+            ]
+                else [loop];
+            for (s in this.stmtList(stmts)) {
+                head.push(s);
+            }
+            this.popScope();
+            return TStmt.Block(head.toArray(), at.line);
+        }
         this.popScope();
         if (t != .Unknown) {
-            this.notYet(
-                "a loop over anything but a range of ints or a coroutine",
-                "S7 (the core collections)",
+            this.error(
+                "LYS-SEM0007",
+                f"'{this.tyName(t)}' cannot be iterated: it is no Iterable",
                 spanOf(iterable)
             );
         }
@@ -9638,11 +9717,11 @@ class Checker {
             return true;
         }
         if (proto == "Index") {
-            this.error("LYS-SEM0007", f"a {this.tyName(t)} cannot be indexed: it is no Index", at);
+            this.error("LYS-SEM0007", f"'{this.tyName(t)}' cannot be indexed: it is no Index", at);
         } else {
             this.error(
                 "LYS-SEM0019",
-                f"an element of a {this.tyName(t)} cannot be written: it is no IndexSet",
+                f"an element of '{this.tyName(t)}' cannot be written: it is no IndexSet",
                 at
             );
         }
@@ -9878,6 +9957,50 @@ class Checker {
                 TExpr.ListOp(ListOp.Push, [receiver, v], Ty.Void)
             }
         };
+    }
+
+    /// The Debug form of a list of a type parameter (S7c4a), as a loop where it stands: a
+    /// generic's copies substitute its types, each element's form through its argument's table.
+    mut fn listDebugInline(v: TExpr, t: Ty, at: Span): TExpr {
+        let elem = match (t) {
+            .List(e) => e.value,
+            _ => Ty.Unknown,
+        };
+        let h = this.hidden(t, at);
+        let acc = this.hidden(Ty.Str, at);
+        let i = this.hidden(Ty.Int, at);
+        let x = TExpr.Local(h, t);
+        let text = TExpr.Local(acc, Ty.Str);
+        let k = TExpr.Local(i, Ty.Int);
+        let each = [
+            TStmt.If(
+                TExpr.Binary(boxE(k), BinaryOp.Gt, boxE(TExpr.Int(0)), Ty.Bool),
+                [TStmt.SetLocal(acc, concatAll([text, TExpr.Str(", ")]), at.line)],
+                [],
+                at.line
+            ),
+            TStmt.SetLocal(
+                acc,
+                concatAll([text, this.debugText(TExpr.ListOp(ListOp.Get, [x, k], elem), elem, at)]),
+                at.line
+            ),
+        ];
+        return TExpr.Block(
+            [
+                TStmt.SetLocal(h, v, at.line),
+                TStmt.SetLocal(acc, TExpr.Str("["), at.line),
+                TStmt.ForRange(
+                    i,
+                    TExpr.Int(0),
+                    TExpr.ListOp(ListOp.Len, [x], Ty.Int),
+                    false,
+                    each,
+                    at.line
+                ),
+            ],
+            boxE(concatAll([text, TExpr.Str("]")])),
+            Ty.Str
+        );
     }
 
     /// The Debug form of a list type (S7b1): `[1, 2, 3]`, each element's own form between commas;
@@ -11010,11 +11133,8 @@ class Checker {
             }
             .Fn(_) => TExpr.Str("<fn>"),
             .Unknown => v,
-            .List(_) => if (hasParam(t)) this.notYet(
-                f"text of a {this.tyName(t)}",
-                "S7c (the list's methods over a type parameter)",
-                at
-            )
+            // a list of a type parameter: the loop where it stands, each copy its own (S7c4a)
+            .List(_) => if (hasParam(t)) this.listDebugInline(v, t, at)
                 else TExpr.Call(this.listDebugFnOf(t, at), [v], Ty.Str),
             _ => if (this.quietDebug) TExpr.Str(f"<{this.tyName(t)}>")
                 else this.notYet(f"text of a {this.tyName(t)}", "S7 (the core collections)", at),

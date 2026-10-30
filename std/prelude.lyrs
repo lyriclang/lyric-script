@@ -369,3 +369,30 @@ interface IndexSet<K> :: Index<K> {
 interface FromArrayLiteral<T> {
     static fn fromArrayLiteral(items: T[]): Self
 }
+interface Iterator {
+    type Item
+    fn next(): ?Self.Item
+}
+interface Iterable {
+    type Iter :: [Iterator]
+    fn iter(): Self.Iter
+}
+class ListIter<T> :: Iterator {
+    type Item = T
+    list: T[]
+    var at: int = 0
+    changes: int
+    fn next(): ?T {
+        __listCheck(this.list, this.changes)
+        if (this.at >= this.list.length()) {
+            return null
+        }
+        let v = this.list[this.at]
+        this.at += 1
+        return v
+    }
+}
+extend<T> T[] :: Iterable {
+    type Iter = ListIter<T>
+    fn iter(): ListIter<T> = ListIter { list = this, changes = __listChanges(this) }
+}

@@ -436,6 +436,11 @@ class Checker {
     var preChecked: TExpr[] = [],
     // the type the position wants of a member read without a call (S7c5d2)
     var memberExpected: ?Ty = null,
+    // a conformance block's answers, by "<the block's place>#<name>" (05 §8 rule 3; S7c5d3)
+    siteAnswers: Map<string, Ty> = Map<string, Ty>.new(),
+    // the type's answers a conformance block's stand in for while its signatures are read
+    var answersBefore: List<(string, Ty)> = List<(string, Ty)>.new(),
+    var answersAbsent: List<string> = List<string>.new(),
     // while a blanket block's signatures are checked: its target, and the answers it gives
     var selfAnswersAt: int = -1,
     var selfAnswers: Map<string, Ty> = Map<string, Ty>.new(),
@@ -1794,11 +1799,13 @@ class Checker {
                             return f.ty;
                         }
                     }
+                    // the instance the constraint names: `T :: [Mul<float>]` reads `Mul<float>`'s
+                    // answer in each copy (S7c5d3)
                     for (c in infos[k].constraints) {
                         for (x in this.ancestry(c)) {
                             for (n in this.assocNamesOf(x)) {
                                 if (n == item) {
-                                    return Ty.Assoc(boxTy(base), this.ifaceBase(x), item);
+                                    return Ty.Assoc(boxTy(base), x, item);
                                 }
                             }
                         }
@@ -1848,6 +1855,21 @@ class Checker {
 
     /// The type a constraint of type parameter `k` fixes associated type `item` to, where one does
     /// (05 §8 rule 5): in the body being checked, or the declaration being read.
+    mut fn fixedAt(k: int, item: string, ii: int): ?Ty {
+        let infos = if (this.genericFn >= 0) this.functions[this.genericFn].typeParams
+            else this.declaringParams;
+        if (k < infos.length()) {
+            for (f in infos[k].fixed) {
+                if (f.name == item && f.iface == ii) {
+                    return f.ty;
+                }
+            }
+        }
+        return this.fixedOf(k, item);
+    }
+
+    /// The type a constraint of type parameter `k` fixes associated type `item` to (05 §8 rule 5),
+    /// whichever constraint.
     mut fn fixedOf(k: int, item: string): ?Ty {
         let infos = if (this.genericFn >= 0) this.functions[this.genericFn].typeParams
             else this.declaringParams;
@@ -1909,9 +1931,145 @@ class Checker {
                 this.error("LYS-SEM0121", f"'{info.name}' answers '{a.name}' twice", a.span);
                 continue;
             }
-            info.answers.insert(a.name, this.resolveType(a.type));
+            let t = this.resolveType(a.type);
+            info.answers.insert(a.name, t);
+            info.bodyAnswers.insert(a.name, t);
         }
         this.selfTyIs = saved;
+    }
+
+    /// A conformance block's answers: its conformances' (05 §8 rule 3; S7c5d3) — `Mul<int>` and
+    /// `Mul<float>` each answer `Out` in their own block —, the type's while the block's
+    /// signatures are read (`restoreAnswers` after).
+    mut fn declareBlockAnswers(index: int, x: ExtendDecl): void {
+        let info = this.types[index];
+        let saved = this.selfTyIs;
+        this.selfTyIs = this.selfTy(index);
+        let mine = Map<string, Ty>.new();
+        for (a in x.answers) {
+            if (mine.containsKey(a.name) || info.bodyAnswers.containsKey(a.name)) {
+                this.error("LYS-SEM0121", f"'{info.name}' answers '{a.name}' twice", a.span);
+                continue;
+            }
+            let t = this.resolveType(a.type);
+            mine.insert(a.name, t);
+            this.siteAnswers.insert(f"{x.span.file}:{x.span.start}#{a.name}", t);
+            if (let before = info.answers.get(a.name)) {
+                this.answersBefore.push((a.name, before));
+            } else {
+                this.answersAbsent.push(a.name);
+            }
+            info.answers.insert(a.name, t);
+        }
+        this.selfTyIs = saved;
+    }
+
+    /// The type's answers again after a conformance block's signatures are read: another
+    /// conformance does not take the block's (S7c5d3; `int`'s `Neg` took `Add<float>`'s `Out`).
+    mut fn restoreAnswers(index: int): void {
+        let info = this.types[index];
+        for (n in this.answersAbsent) {
+            info.answers.remove(n);
+        }
+        for (x in this.answersBefore) {
+            let (n, t) = x;
+            info.answers.insert(n, t);
+        }
+        this.answersAbsent = List<string>.new();
+        this.answersBefore = List<(string, Ty)>.new();
+    }
+
+    /// The answer to `n` type `index`'s conformance to `ii` takes, at `at` where it has none: the
+    /// block's, which is its conformances' (05 §8 rule 3; S7c5d3), else the body's; an instance of
+    /// a generic interface takes no other block's, a conformance to another interface — one per
+    /// type — the type's; else the default (`LYS-SEM0128` where there is none).
+    mut fn conformanceAnswer(index: int, ii: int, n: string, at: Span): ?Ty {
+        let info = this.types[index];
+        if (this.blockSite != "") {
+            if (let t = this.siteAnswers.get(f"{this.blockSite}#{n}")) {
+                return t;
+            }
+        }
+        if (let t = info.bodyAnswers.get(n)) {
+            return t;
+        }
+        if (this.ifaceBase(ii) == ii) {
+            if (let t = info.answers.get(n)) {
+                return t;
+            }
+        }
+        if (let d = this.assocDefaults.get(f"{this.ifaceBase(ii)}.{n}")) {
+            let saved = this.selfTyIs;
+            this.selfTyIs = this.selfTy(index);
+            let t = this.resolveType(d);
+            this.selfTyIs = saved;
+            return t;
+        }
+        this.error(
+            "LYS-SEM0128",
+            f"'{info.name}' does not answer '{this.types[this.ifaceBase(ii)].name}.{n}'",
+            at
+        );
+        return null;
+    }
+
+    /// A type's answer to `item` for its conformance to interface `ii` — `Mul<float>`'s beside
+    /// `Mul<int>`'s (05 §8 rule 3; S7c5d3), an instance's its template's at its arguments —; else
+    /// its answer.
+    mut fn answerIn(t: Ty, ii: int, item: string): ?Ty {
+        let e = this.entryOf(t);
+        if (e < 0) {
+            return null;
+        }
+        let info = this.types[e];
+        if (let own = info.instAnswers.get(f"{ii}.{item}")) {
+            return own;
+        }
+        if (info.template >= 0 && info.template != e) {
+            let tmpl = this.types[info.template];
+            for (x in tmpl.ifaces) {
+                if (this.ifaceAt(x, info.args) == ii) {
+                    if (let a = tmpl.instAnswers.get(f"{x}.{item}")) {
+                        return this.subst(a, info.args);
+                    }
+                }
+            }
+        }
+        return this.answerOf(t, item);
+    }
+
+    /// `answerThrough` for a fixation of interface `ii` (S7c5d3): a type's answer for that
+    /// conformance.
+    mut fn answerThroughAt(t: Ty, ii: int, item: string, at: Span): Ty {
+        return match (t) {
+            .Param(_) | .Assoc(_, _, _) => this.answerThrough(t, item, at),
+            _ => this.answerIn(t, ii, item) ?? Ty.Unknown,
+        };
+    }
+
+    /// The interface an associated type `Self.<name>` of interface `ii`, read at `a`, belongs to:
+    /// inside a generic interface's own declaration it names the template, and the interface's
+    /// binds — `Self`, then its parameters — make the instance (S7c5d3); else `ii`.
+    mut fn assocAt(ii: int, b: Ty, a: Ty[]): int {
+        let base = this.ifaceBase(ii);
+        let count = this.types[base].typeParams.length();
+        if (base != ii || count == 0 || a.length() < count + 1) {
+            return ii;
+        }
+        let selfParam = match (b) {
+            .Param(k) => k == 0,
+            _ => false,
+        };
+        if (!selfParam) {
+            return ii;
+        }
+        let args = sliceOf(a, 1, count + 1);
+        for (x in args) {
+            if (x == .Unknown) {
+                return ii;
+            }
+        }
+        return this.typeInstance(base, args);
     }
 
     /// Every type's answers: each one an interface of the type asks for (`LYS-SEM0129`).
@@ -2431,7 +2589,11 @@ class Checker {
             this.declareBlock(index, x);
             return;
         }
-        this.declareAnswers(index, x.answers);
+        if (x.conforms.length() > 0) {
+            this.declareBlockAnswers(index, x);
+        } else {
+            this.declareAnswers(index, x.answers);
+        }
         this.declareStatics(index, x.statics);
         for (m in x.methods) {
             let fi = this.declareFn(m, index);
@@ -2446,6 +2608,7 @@ class Checker {
                 info.methods.insert(m.name, fi);
             }
         }
+        this.restoreAnswers(index);
     }
 
     /// Adds `fi` to the members of `name` that type `index` has more than one of (S7c5d2).
@@ -2762,7 +2925,7 @@ class Checker {
             let b = binds[k];
             if (b != null) {
                 for (f in tp.fixed) {
-                    this.bind(f.ty, this.answerThrough(b, f.name, nowhereSpan), binds);
+                    this.bind(f.ty, this.answerThroughAt(b, f.iface, f.name, nowhereSpan), binds);
                 }
             }
             k += 1;
@@ -2783,7 +2946,7 @@ class Checker {
                 }
             }
             for (f in tp.fixed) {
-                let got = this.answerThrough(bound[k], f.name, nowhereSpan);
+                let got = this.answerThroughAt(bound[k], f.iface, f.name, nowhereSpan);
                 if (!sameOrUnknown(got, this.subst(f.ty, bound))) {
                     return null;
                 }
@@ -3281,7 +3444,11 @@ class Checker {
         this.declaringParams = merged.toArray();
         // its associated types' answers, at the block's parameters (S7c4a: `type Iter =
         // ListIter<T>` in `extend<T> T[] :: Iterable`)
-        this.declareAnswers(index, x.answers);
+        if (x.conforms.length() > 0) {
+            this.declareBlockAnswers(index, x);
+        } else {
+            this.declareAnswers(index, x.answers);
+        }
         for (m in x.methods) {
             let fi = this.declareFn(m, index);
             if (m.typeParams.length() == 0) {
@@ -3299,6 +3466,7 @@ class Checker {
                 info.methods.insert(m.name, fi);
             }
         }
+        this.restoreAnswers(index);
         this.typeParams = savedScope;
         this.declaringParams = savedDeclaring;
     }
@@ -3605,22 +3773,14 @@ class Checker {
             let instanceArgs: Ty[] = if (this.ifaceBase(ii) != ii) this.types[ii].args else [];
             // its associated types: answered by the type, or by the default (05 §8 rule 3)
             for (n in iface.assocNames) {
-                if (!info.answers.containsKey(n)) {
-                    let d = this.assocDefaults.get(f"{this.ifaceBase(ii)}.{n}");
-                    if (d != null) {
-                        let saved = this.selfTyIs;
-                        this.selfTyIs = self;
-                        info.answers.insert(n, this.resolveType(d));
-                        this.selfTyIs = saved;
-                    } else {
-                        this.error(
-                            "LYS-SEM0128",
-                            f"'{info.name}' does not answer '{iface.name}.{n}'",
-                            conforms[0].span
-                        );
+                let answer = this.conformanceAnswer(index, ii, n, conforms[0].span);
+                if (let got = answer) {
+                    info.instAnswers.insert(f"{ii}.{n}", got);
+                    // the type's answer: its list's conformance's, else the first
+                    if (this.blockSite == "" || !info.answers.containsKey(n)) {
+                        info.answers.insert(n, got);
                     }
                 }
-                let answer = info.answers.get(n);
                 if (answer != null) {
                     for (b in this.boundsOf(ii, n)) {
                         if (answer != .Unknown) {
@@ -5864,14 +6024,16 @@ class Checker {
             .Param(k) => if (k < a.length()) a[k] else t,
             .Assoc(b, ii, n) => {
                 let nb = this.subst(b.value, a);
+                // the instance of a generic interface it belongs to (S7c5d3)
+                let owner = this.assocAt(ii, b.value, a);
                 match (nb) {
                     // through a type parameter: what a constraint fixes, else still open
                     .Param(k) => this.selfAnswer(k, n)
-                        ?? this.fixedOf(k, n)
-                        ?? Ty.Assoc(boxTy(nb), this.ifaceBase(ii), n),
+                        ?? this.fixedAt(k, n, owner)
+                        ?? Ty.Assoc(boxTy(nb), owner, n),
                     // still open: an associated type of one
-                    .Unknown | .Assoc(_, _, _) => Ty.Assoc(boxTy(nb), this.ifaceBase(ii), n),
-                    _ => this.answerOf(nb, n) ?? Ty.Unknown,
+                    .Unknown | .Assoc(_, _, _) => Ty.Assoc(boxTy(nb), owner, n),
+                    _ => this.answerIn(nb, owner, n) ?? Ty.Unknown,
                 }
             }
             .Named(i) => {
@@ -6328,14 +6490,21 @@ class Checker {
         var k = 0;
         for (tp in params) {
             let fixed = List<FixedTy>.new();
+            var position = -1;
             for (c in tp.constraints) {
+                position += 1;
                 let ii = this.typeIndex.get(this.q(c.name));
                 if (ii == null) {
                     continue;
                 }
+                // the instance the constraint names: its fixations are its answers (S7c5d3)
+                let cs = infos[k].constraints;
+                let named = if (position < cs.length()
+                    && this.ifaceBase(cs[position]) == ii) cs[position]
+                    else ii;
                 for (fx in c.fixed) {
                     var declaring = -1;
-                    for (x in this.ancestry(ii)) {
+                    for (x in this.ancestry(named)) {
                         for (n in this.assocNamesOf(x)) {
                             if (n == fx.name && declaring < 0) {
                                 declaring = x;
@@ -14710,7 +14879,15 @@ class Checker {
                     }
                 }
                 if (i >= 0) {
-                    let m = this.types[i].methods.get(method);
+                    // of several members of the name, the one the arguments choose (S7c5d3:
+                    // `int`'s `add` for `Add<int>` and `Add<float>`)
+                    let picked = this.pickMember(i, method, args, at);
+                    if ((picked ?? 0) < 0) {
+                        return TExpr.Unknown;
+                    }
+                    let m = picked ?? this.types[i].methods.get(method);
+                    let checkedArgs = this.pickedArgs;
+                    this.pickedArgs = [];
                     if (m != null) {
                         match (t) {
                             .List(e) => {
@@ -14723,6 +14900,7 @@ class Checker {
                                     return TExpr.Unknown;
                                 }
                                 this.presetBinds = [e.value];
+                                this.preChecked = checkedArgs;
                                 let call = this.callExpecting(
                                     posTy,
                                     writtenTys,
@@ -14737,6 +14915,7 @@ class Checker {
                             }
                             _ => { }
                         }
+                        this.preChecked = checkedArgs;
                         return this.callExpecting(
                             posTy,
                             writtenTys,
@@ -15220,7 +15399,9 @@ class Checker {
             }
         }
         if (chosen < 0) {
-            // none takes and gives what the member declares: the conformance says so
+            // none takes and gives what the member declares: the conformance says so, and the
+            // member is no second error where it stands
+            this.refusedMembers.insert(pool[0], true);
             return pool[0];
         }
         info.setWitness.insert(f"{ii}.{member}", chosen);
@@ -15534,7 +15715,7 @@ class Checker {
                         if (b == .Unknown) {
                             continue;
                         }
-                        let got = this.answerThrough(b, f.name, at);
+                        let got = this.answerThroughAt(b, f.iface, f.name, at);
                         let asked = this.subst(f.ty, bindsNow);
                         if (got != .Unknown && asked != .Unknown && got != asked) {
                             this.error(

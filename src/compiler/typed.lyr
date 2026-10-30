@@ -197,6 +197,11 @@ class TypeInfo {
     var sets: Map<string, List<int>> = Map<string, List<int>>.new(),
     var setNames: List<string> = List<string>.new(),
     var setWitness: Map<string, int> = Map<string, int>.new(),
+    // the answer each conformance took, by "<interface>.<name>" — `Mul<int>`'s and `Mul<float>`'s
+    // apart (05 §8 rule 3; S7c5d3); the answers its body and its blocks without a conformance
+    // write, which every conformance takes
+    var instAnswers: Map<string, Ty> = Map<string, Ty>.new(),
+    var bodyAnswers: Map<string, Ty> = Map<string, Ty>.new(),
     var constraintOnly: bool = false,
     var onlyWhy: string = "",
     // a constraint only whatever is fixed: a member names `Self` itself, or is static or generic

@@ -484,6 +484,22 @@ extend float :: [Add, Sub, Mul, Div, Rem, Neg] {
 extend string :: Add {
     fn add(rhs: string): string = this + rhs
 }
+// mixed arithmetic through the interfaces, the `int` widened (03 Mix; S7c5d3)
+extend int :: [Add<float>, Sub<float>, Mul<float>, Div<float>, Rem<float>] {
+    type Out = float
+    fn add(rhs: float): float = this + rhs
+    fn sub(rhs: float): float = this - rhs
+    fn mul(rhs: float): float = this * rhs
+    fn div(rhs: float): float = this / rhs
+    fn rem(rhs: float): float = this % rhs
+}
+extend float :: [Add<int>, Sub<int>, Mul<int>, Div<int>, Rem<int>] {
+    fn add(rhs: int): float = this + rhs
+    fn sub(rhs: int): float = this - rhs
+    fn mul(rhs: int): float = this * rhs
+    fn div(rhs: int): float = this / rhs
+    fn rem(rhs: int): float = this % rhs
+}
 // what `<`, `<=`, `>` and `>=` make of a `compare`
 fn __less(c: ?Ordering): bool = c == Ordering.Less
 fn __lessOrEqual(c: ?Ordering): bool = c == Ordering.Less || c == Ordering.Equal

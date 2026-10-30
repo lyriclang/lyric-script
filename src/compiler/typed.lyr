@@ -190,6 +190,13 @@ class TypeInfo {
     // its `methods` are its template's, shared
     var ownMethods: Map<string, int> = Map<string, int>.new(),
     var instIfaces: int[] = [],
+    // the members of a name it has more than one of — told apart by count, each its own
+    // conformance block's, each its own instance's of a generic interface (Lyric 5 05 §3 rules
+    // 4–5, 08 §1.2; S7c5d2) — in the order they are declared, `methods` holding the first; those
+    // names in that order; the member of such a name each conformance took, by "<interface>.<name>"
+    var sets: Map<string, List<int>> = Map<string, List<int>>.new(),
+    var setNames: List<string> = List<string>.new(),
+    var setWitness: Map<string, int> = Map<string, int>.new(),
     var constraintOnly: bool = false,
     var onlyWhy: string = "",
     // a constraint only whatever is fixed: a member names `Self` itself, or is static or generic

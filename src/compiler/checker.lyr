@@ -424,6 +424,18 @@ class Checker {
     // the instance a block on one instance names, by the block's place (S7c4c3b); -2 where the
     // target was refused
     instanceBlocks: Map<string, int> = Map<string, int>.new(),
+    // a conformance block's members, by the block's place; the block whose conformances are
+    // checked now; the interfaces each member of a set answers; the members refused already
+    // (S7c5d2)
+    memberSite: Map<int, string> = Map<int, string>.new(),
+    var blockSite: string = "",
+    answering: Map<int, List<int>> = Map<int, List<int>>.new(),
+    refusedMembers: Map<int, bool> = Map<int, bool>.new(),
+    // the arguments a member's choice checked: for its call, not checked again (S7c5d2)
+    var pickedArgs: TExpr[] = [],
+    var preChecked: TExpr[] = [],
+    // the type the position wants of a member read without a call (S7c5d2)
+    var memberExpected: ?Ty = null,
     // while a blanket block's signatures are checked: its target, and the answers it gives
     var selfAnswersAt: int = -1,
     var selfAnswers: Map<string, Ty> = Map<string, Ty>.new(),
@@ -1165,7 +1177,9 @@ class Checker {
                                     this.blockCond = if (x.typeParams.length()
                                         > 0) this.typeParamsOf(x.typeParams)
                                         else [];
+                                    this.blockSite = f"{x.span.file}:{x.span.start}";
                                     this.conform(name, x.conforms);
+                                    this.blockSite = "";
                                     this.blockCond = [];
                                 }
                                 // `extend<T> T[] :: [I]`: every list's (S7c3)
@@ -1173,7 +1187,9 @@ class Checker {
                                     this.blockCond = if (x.typeParams.length()
                                         > 0) this.typeParamsOf(x.typeParams)
                                         else [];
+                                    this.blockSite = f"{x.span.file}:{x.span.start}";
                                     this.conform("List", x.conforms);
+                                    this.blockSite = "";
                                     this.blockCond = [];
                                 }
                                 _ => { }
@@ -1189,6 +1205,8 @@ class Checker {
         this.conformBlankets();
         // what a synthesized `equals` or `compare` asks of the parts (Lyric 5 05 §14; S7c5b)
         this.checkSynthesized();
+        // the members of one name a type has several of (05 §3, 08 §1.2; S7c5d2)
+        this.checkSets();
         // a type's member that hides a blanket block's (05 §13 rule 7; S7c4c2)
         if (this.blanketFns.length() > 0) {
             for (item in module.items) {
@@ -1478,12 +1496,20 @@ class Checker {
         }
         info.fields = fields.toArray();
         for (m in t.methods) {
-            if (seen.containsKey(m.name)) {
+            // a second member of a method's name joins its set, asked once the conformances
+            // stand (S7c5d2); a field's name stays refused
+            if (seen.containsKey(m.name) && !info.methods.containsKey(m.name)) {
                 this.error("LYS-SEM0121", f"'{t.name}' has a second member '{m.name}'", m.span);
                 continue;
             }
+            let fi = this.declareFn(m, index);
+            if (info.methods.containsKey(m.name)) {
+                // the name's visibility is its first member's
+                this.another(index, m.name, fi);
+                continue;
+            }
             seen.insert(m.name, true);
-            info.methods.insert(m.name, this.declareFn(m, index));
+            info.methods.insert(m.name, fi);
             if (!m.isPub) {
                 info.hidden.insert(m.name);
             } else if (m.isInternal) {
@@ -2408,12 +2434,40 @@ class Checker {
         this.declareAnswers(index, x.answers);
         this.declareStatics(index, x.statics);
         for (m in x.methods) {
-            if (info.methods.containsKey(m.name)) {
-                this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
-                continue;
+            let fi = this.declareFn(m, index);
+            // a conformance block's member answers its block's conformances (05 §3 rule 4;
+            // S7c5d2)
+            if (x.conforms.length() > 0) {
+                this.memberSite.insert(fi, f"{x.span.file}:{x.span.start}");
             }
-            info.methods.insert(m.name, this.declareFn(m, index));
+            if (info.methods.containsKey(m.name)) {
+                this.another(index, m.name, fi);
+            } else {
+                info.methods.insert(m.name, fi);
+            }
         }
+    }
+
+    /// Adds `fi` to the members of `name` that type `index` has more than one of (S7c5d2).
+    mut fn another(index: int, name: string, fi: int): void {
+        let info = this.types[index];
+        if (let set = info.sets.get(name)) {
+            set.push(fi);
+            return;
+        }
+        let set = List<int>.new();
+        set.push(info.methods.get(name) ?? fi);
+        set.push(fi);
+        info.sets.insert(name, set);
+        info.setNames.push(name);
+    }
+
+    /// Where function `fi` is declared; nowhere for one the compiler made.
+    fn fnSpan(fi: int): Span {
+        if (let d = this.fnDecls[fi]) {
+            return d.span;
+        }
+        return nowhereSpan;
     }
 
     /// The instance a block without parameters names — `Box<int>`, `int[]` (05 §13 rule 1;
@@ -2444,6 +2498,7 @@ class Checker {
         this.declareAnswers(inst, x.answers);
         this.declareStatics(inst, x.statics);
         for (m in x.methods) {
+            // one member of a name: a block on one instance holds no set (S7c5d2; P22)
             if (this.methodOf(inst, m.name) != null) {
                 this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
                 continue;
@@ -3228,16 +3283,21 @@ class Checker {
         // ListIter<T>` in `extend<T> T[] :: Iterable`)
         this.declareAnswers(index, x.answers);
         for (m in x.methods) {
-            if (info.methods.containsKey(m.name)) {
-                this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
-                continue;
-            }
             let fi = this.declareFn(m, index);
             if (m.typeParams.length() == 0) {
                 this.functions[fi].typeParams = merged.toArray();
             }
             this.functions[fi].blockParams = block;
-            info.methods.insert(m.name, fi);
+            // a second member of a name joins its set, as a block's without parameters does
+            // (S7c5d2)
+            if (x.conforms.length() > 0) {
+                this.memberSite.insert(fi, f"{x.span.file}:{x.span.start}");
+            }
+            if (info.methods.containsKey(m.name)) {
+                this.another(index, m.name, fi);
+            } else {
+                info.methods.insert(m.name, fi);
+            }
         }
         this.typeParams = savedScope;
         this.declaringParams = savedDeclaring;
@@ -3579,10 +3639,10 @@ class Checker {
                 let slot = this.slotIn(ii, member);
                 info.slotArgs.insert(slot, instanceArgs);
                 let declared = iface.methods.get(member) ?? -1;
-                let own = this.methodOf(index, member);
+                let selfArgs: Ty[] = if (iface.selfParam) withSelfTy(self, instanceArgs)
+                    else instanceArgs;
+                let own = this.memberAnswering(index, ii, member, declared, selfArgs);
                 if (own != null) {
-                    let selfArgs: Ty[] = if (iface.selfParam) withSelfTy(self, instanceArgs)
-                        else instanceArgs;
                     if (!this.sameSignatureAs(own, declared, selfArgs)
                         || this.functions[own].isStatic != this.functions[declared].isStatic) {
                         this.error(
@@ -4237,11 +4297,16 @@ class Checker {
         if (owner < 0) {
             let same = this.fnByName.get(this.declKey(f.name));
             if (same != null) {
+                // counts that meet for any number, a default widening one (Lyric 5 08 §1.2 rule 2;
+                // S7c5d2 — the parameters' counts alone were compared since S2d)
+                let (low, high) = this.countRange(index);
                 for (other in same) {
-                    if (this.functions[other].params.length() == params.length()) {
+                    let (otherLow, otherHigh) = this.countRange(other);
+                    if (low <= otherHigh && otherLow <= high) {
+                        let n = if (low > otherLow) low else otherLow;
                         this.error(
                             "LYS-SEM0085",
-                            f"two functions '{f.name}' take {params.length()} arguments",
+                            f"two functions '{f.name}' take {n} arguments",
                             f.span
                         );
                     }
@@ -5714,7 +5779,7 @@ class Checker {
         }
         // a copy of its own: the type's own method, or the interface's default
         let entry = this.entryOf(concrete);
-        let own = if (entry >= 0) this.methodOf(entry, member) else null;
+        let own = if (entry >= 0) this.memberFor(entry, ii, member) else null;
         if (own != null) {
             // a generic entry's method (a list's, S7c3): its copy at the entry's arguments
             let info = this.types[entry];
@@ -9524,7 +9589,10 @@ class Checker {
                 this.error("LYS-ICE0001", "a count from the end where no list is indexed", at);
                 TExpr.Unknown
             }
-            .Member(x, name, optional, at) => this.member(x.value, name, optional, at),
+            .Member(x, name, optional, at) => {
+                this.memberExpected = expected;
+                this.member(x.value, name, optional, at)
+            }
             .List(items, at) => this.listLiteral(items, expected, at),
             .Map(_, at) => this.notYet("a map literal", "S7d (maps and sets)", at),
             .StructInit(name, fields, at) => this.init(name, fields, expected, at),
@@ -9918,7 +9986,7 @@ class Checker {
             .Assoc(_, _, _) => TExpr.CallBound(ta, ii, member, slot, all.toArray(), rt),
             _ => {
                 let entry = this.entryOf(ta);
-                let own = if (entry >= 0) this.methodOf(entry, member) else null;
+                let own = if (entry >= 0) this.memberFor(entry, ii, member) else null;
                 if (own == null) {
                     return this.memberCallOn(ta, ii, member, slot, all.toArray(), rt);
                 }
@@ -11383,6 +11451,8 @@ class Checker {
     }
 
     mut fn member(x: Expr, name: string, optional: bool, at: Span): TExpr {
+        let want = this.memberExpected;
+        this.memberExpected = null;
         if (optional) {
             let held = this.optionalReceiver(x, at);
             if (held == null) {
@@ -11461,9 +11531,14 @@ class Checker {
             .Tuple(tt) => {
                 return this.element(o, tt, name, at);
             }
-            // a method without a call: bound to the object (§8.4 rule 2)
+            // a method without a call: bound to the object (§8.4 rule 2); of several of the name,
+            // the one the position's function type says (S7c5d2)
             .Named(i) => {
-                let m = this.methodOf(i, name);
+                let picked = this.pickBound(i, name, want, at);
+                if ((picked ?? 0) < 0) {
+                    return TExpr.Unknown;
+                }
+                let m = picked ?? this.methodOf(i, name);
                 if (m != null && !this.functions[m].isStatic) {
                     return this.boundMethod(o, m, at);
                 }
@@ -14473,7 +14548,14 @@ class Checker {
                         _ => call,
                     };
                 }
-                let m = this.methodOf(i, method);
+                // of several members of the name, the one the arguments choose (S7c5d2)
+                let picked = this.pickMember(i, method, args, at);
+                if ((picked ?? 0) < 0) {
+                    return TExpr.Unknown;
+                }
+                let m = picked ?? this.methodOf(i, method);
+                let checkedArgs = this.pickedArgs;
+                this.pickedArgs = [];
                 // a generic block's member: on an instance that meets its constraints (rule 2)
                 if (m != null
                     && this.functions[m].blockParams.length() > 0
@@ -14489,6 +14571,7 @@ class Checker {
                     && this.functions[m].typeParams.length() > 0
                     && this.types[i].args.length() > 0) {
                     this.presetBinds = this.types[i].args;
+                    this.preChecked = checkedArgs;
                     let call = this.callExpecting(
                         posTy,
                         writtenTys,
@@ -14594,6 +14677,7 @@ class Checker {
                     return TExpr.Unknown;
                 }
                 this.mayName(i, method, memberAt);
+                this.preChecked = checkedArgs;
                 return this.callExpecting(posTy, writtenTys, method, [m], receiver, args, at);
             }
             _ => {
@@ -14842,7 +14926,14 @@ class Checker {
         if (k >= 0) {
             return this.variantCall(typeIndex, k, args, at);
         }
-        let m = this.methodOf(typeIndex, method);
+        // of several members of the name, the one the arguments choose (S7c5d2)
+        let picked = this.pickMember(typeIndex, method, args, at);
+        if ((picked ?? 0) < 0) {
+            return TExpr.Unknown;
+        }
+        let m = picked ?? this.methodOf(typeIndex, method);
+        let checkedArgs = this.pickedArgs;
+        this.pickedArgs = [];
         if (m == null) {
             // a blanket block's static member (05 §13 rule 7; S7c4c3a)
             if (let call = this.blanketStatic(this.selfTy(typeIndex), method, args, at)) {
@@ -14866,7 +14957,352 @@ class Checker {
         if (!this.mayName(typeIndex, method, at)) {
             return TExpr.Unknown;
         }
+        this.preChecked = checkedArgs;
         return this.callAmong(method, [m], null, args, at);
+    }
+
+    /// The member of `name` a call with `args` reaches on type `i` where it has several (S7c5d2):
+    /// the one that takes as many arguments (Lyric 5 08 §1.2), of several the one whose parameters
+    /// take the arguments' types, of those the one whose parameters are those types — a literal
+    /// its default type (05 §3 rule 5); the arguments checked once, kept in `pickedArgs` for the
+    /// call. Members two conformance blocks give apart are called through their interfaces (rule
+    /// 4, `LYS-SEM0122`). Null where the type has one member of the name; -1 after an error.
+    mut fn pickMember(i: int, name: string, args: Arg[], at: Span): ?int {
+        let info = this.types[i];
+        let home = if (info.template >= 0) info.template else i;
+        let set = this.types[home].sets.get(name);
+        if (set == null) {
+            return null;
+        }
+        let byCount = List<int>.new();
+        for (c in set) {
+            let (low, high) = this.countRange(c);
+            if (args.length() >= low && args.length() <= high) {
+                byCount.push(c);
+            }
+        }
+        if (byCount.length() == 1) {
+            return byCount[0];
+        }
+        if (byCount.length() == 0) {
+            this.error(
+                "LYS-SEM0087",
+                f"no member '{name}' of {info.name} takes {args.length()} arguments",
+                at
+            );
+            for (a in args) {
+                this.expr(a.value, null);
+            }
+            return -1;
+        }
+        var perInstance = true;
+        var k = 1;
+        while (k < byCount.length()) {
+            perInstance = perInstance && this.instancesApart(byCount[0], byCount[k]);
+            k += 1;
+        }
+        if (!perInstance) {
+            let ways = List<string>.new();
+            for (c in byCount) {
+                for (x in this.answering.get(c) ?? List<int>.new()) {
+                    ways.push(f"{this.types[x].name}.{name}(…)");
+                }
+            }
+            this.error(
+                "LYS-SEM0122",
+                f"'{name}' of {info.name} is each conformance block's own: call it through its interface, {ways.toArray().join(" or ")}",
+                at
+            );
+            for (a in args) {
+                this.expr(a.value, null);
+            }
+            return -1;
+        }
+        let checked = List<TExpr>.new();
+        var unknown = false;
+        for (a in args) {
+            let v = this.expr(a.value, null);
+            unknown = unknown || typeOf(v) == .Unknown;
+            checked.push(v);
+        }
+        if (unknown) {
+            return -1;
+        }
+        let takers = List<int>.new();
+        let exact = List<int>.new();
+        for (c in byCount) {
+            let params = this.functions[c].params;
+            var takes = true;
+            var same = true;
+            var j = 0;
+            for (a in args) {
+                var p = j;
+                if (let given = a.name) {
+                    p = -1;
+                    var q = 0;
+                    for (x in params) {
+                        if (x.name == given) {
+                            p = q;
+                        }
+                        q += 1;
+                    }
+                }
+                if (p < 0) {
+                    takes = false;
+                } else {
+                    // an instance's members at its arguments
+                    let want = this.subst(params[p].ty, info.args);
+                    same = same && typeOf(checked[j]) == want;
+                    takes = takes && this.fit(checked[j], want) != null;
+                }
+                j += 1;
+            }
+            if (takes) {
+                takers.push(c);
+                if (same) {
+                    exact.push(c);
+                }
+            }
+        }
+        let pick = if (takers.length() == 1) takers[0]
+            else if (exact.length() == 1) exact[0] else -1;
+        if (pick < 0) {
+            this.error(
+                "LYS-SEM0086",
+                if (takers.length() == 0) f"no member '{name}' of {info.name} takes these arguments"
+                    else f"the arguments' types choose no one member '{name}' of {info.name}: write an argument as its type, `x as T`",
+                at
+            );
+            return -1;
+        }
+        this.pickedArgs = checked.toArray();
+        return pick;
+    }
+
+    /// The fewest and the most arguments function `f` takes, a default widening its count (Lyric
+    /// 5 08 §1.2 rule 2): read off its declaration, whose defaults are checked after the
+    /// declarations stand.
+    fn countRange(f: int): (int, int) {
+        var required = 0;
+        var total = 0;
+        if (let d = this.fnDecls[f]) {
+            for (p in d.params) {
+                total += 1;
+                if (p.default == null) {
+                    required += 1;
+                }
+            }
+            return (required, total);
+        }
+        for (p in this.functions[f].params) {
+            total += 1;
+            if (p.default == null) {
+                required += 1;
+            }
+        }
+        return (required, total);
+    }
+
+    /// Whether `f` and `g` each answer an instance of one generic interface the other does not
+    /// (05 §3 rule 5; S7c5d2).
+    mut fn instancesApart(f: int, g: int): bool {
+        let fs = this.answering.get(f);
+        let gs = this.answering.get(g);
+        if (fs == null || gs == null) {
+            return false;
+        }
+        for (x in fs) {
+            for (y in gs) {
+                let base = this.ifaceBase(x);
+                if (x != y && base != x && base == this.ifaceBase(y)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Whether members `f` and `g` of one name stand side by side (S7c5d2): each answering its
+    /// own instance of a generic interface (05 §3 rule 5); each its own conformance block's
+    /// (rule 4), one block's told apart by count; the type's own told apart by count (08 §1.2) —
+    /// never a conformance block's beside the type's own (rule 1).
+    mut fn standApart(f: int, g: int): bool {
+        if (this.instancesApart(f, g)) {
+            return true;
+        }
+        let fb = this.memberSite.get(f);
+        let gb = this.memberSite.get(g);
+        let (fl, fh) = this.countRange(f);
+        let (gl, gh) = this.countRange(g);
+        let meet = fl <= gh && gl <= fh;
+        if (fb != null && gb != null) {
+            return fb != gb || !meet;
+        }
+        if (fb != null || gb != null) {
+            return false;
+        }
+        return !meet;
+    }
+
+    /// The members of one name a type has several of (Lyric 5 05 §3, 08 §1.2; S7c5d2): a member
+    /// that stands apart from none before it is refused where it is declared (`LYS-SEM0121`).
+    mut fn checkSets(): void {
+        var i = 0;
+        while (i < this.types.length()) {
+            let info = this.types[i];
+            for (name in info.setNames) {
+                let set = info.sets.get(name) ?? List<int>.new();
+                var j = 1;
+                while (j < set.length()) {
+                    let g = set[j];
+                    var k = 0;
+                    while (k < j && !this.refusedMembers.containsKey(g)) {
+                        if (!this.standApart(set[k], g)) {
+                            this.refusedMembers.insert(g, true);
+                            this.error(
+                                "LYS-SEM0121",
+                                f"'{info.name}' has a second member '{name}'",
+                                this.fnSpan(g)
+                            );
+                        }
+                        k += 1;
+                    }
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    /// The member of type `index` that answers `member` of interface `ii` (`declared` its
+    /// declaration, read at `selfArgs`): of a name the type has several of (S7c5d2), one of the
+    /// block whose conformance this is, else one of no conformance block, whose signature is
+    /// the member's — two that are both answer one instance (`LYS-SEM0085`).
+    mut fn memberAnswering(
+        index: int,
+        ii: int,
+        member: string,
+        declared: int,
+        selfArgs: Ty[]
+    ): ?int {
+        let info = this.types[index];
+        let set = info.sets.get(member);
+        if (set == null) {
+            return this.methodOf(index, member);
+        }
+        let here = List<int>.new();
+        let plain = List<int>.new();
+        for (c in set) {
+            let site = this.memberSite.get(c);
+            if (site == null) {
+                plain.push(c);
+            } else if (site == this.blockSite) {
+                here.push(c);
+            }
+        }
+        let pool = if (here.length() > 0) here.toArray()
+            else if (plain.length() > 0) plain.toArray() else set.toArray();
+        var chosen = -1;
+        for (c in pool) {
+            if (declared >= 0
+                && this.sameSignatureAs(c, declared, selfArgs)
+                && this.functions[c].isStatic == this.functions[declared].isStatic) {
+                if (chosen < 0) {
+                    chosen = c;
+                } else {
+                    this.refusedMembers.insert(c, true);
+                    this.error(
+                        "LYS-SEM0085",
+                        f"'{info.name}' has two members '{member}' that answer '{this.types[ii].name}'",
+                        this.fnSpan(c)
+                    );
+                }
+            }
+        }
+        if (chosen < 0) {
+            // none takes and gives what the member declares: the conformance says so
+            return pool[0];
+        }
+        info.setWitness.insert(f"{ii}.{member}", chosen);
+        if (let list = this.answering.get(chosen)) {
+            list.push(ii);
+        } else {
+            let list = List<int>.new();
+            list.push(ii);
+            this.answering.insert(chosen, list);
+        }
+        return chosen;
+    }
+
+    /// The member of type `entry` that answers `member` of interface `ii`: of a name it has
+    /// several of, the one its conformance took (S7c5d2) — an instance's at its template's
+    /// interface; else its member of the name.
+    mut fn memberFor(entry: int, ii: int, member: string): ?int {
+        let info = this.types[entry];
+        let home = if (info.template >= 0) info.template else entry;
+        let tmpl = this.types[home];
+        if (!tmpl.sets.containsKey(member)) {
+            return this.methodOf(entry, member);
+        }
+        for (a in this.ancestry(ii)) {
+            if (let fi = tmpl.setWitness.get(f"{a}.{member}")) {
+                return fi;
+            }
+        }
+        if (home != entry) {
+            for (x in tmpl.ifaces) {
+                if (this.ifaceAt(x, info.args) == ii) {
+                    if (let fi = tmpl.setWitness.get(f"{x}.{member}")) {
+                        return fi;
+                    }
+                }
+            }
+        }
+        return this.methodOf(entry, member);
+    }
+
+    /// The member of `name` a read without a call takes on type `i` where it has several: the one
+    /// whose function type the position wants (Lyric 5 08 §1.2 rule 3; S7c5d2) — none or several
+    /// refused (`LYS-SEM0089`). Null where the type has one member of the name; -1 after an error.
+    mut fn pickBound(i: int, name: string, want: ?Ty, at: Span): ?int {
+        let info = this.types[i];
+        let home = if (info.template >= 0) info.template else i;
+        let set = this.types[home].sets.get(name);
+        if (set == null) {
+            return null;
+        }
+        var pick = -1;
+        var count = 0;
+        if (let w = want) {
+            for (c in set) {
+                if (this.functions[c].isStatic) {
+                    continue;
+                }
+                let tys = List<Ty>.new();
+                for (p in this.functions[c].params) {
+                    tys.push(this.subst(p.ty, info.args));
+                }
+                let ft = Ty.Fn(
+                    FnTy {
+                        params = tys.toArray(),
+                        result = boxTy(this.subst(this.returnsOf(c, at), info.args)),
+                    }
+                );
+                if (ft == w) {
+                    pick = c;
+                    count += 1;
+                }
+            }
+        }
+        if (count != 1) {
+            this.error(
+                "LYS-SEM0089",
+                f"'{name}' names several members of {info.name}: a value of one is taken where the position's function type says which",
+                at
+            );
+            return -1;
+        }
+        return pick;
     }
 
     /// `callAmong` for a method's call, with the position's type and the type arguments written
@@ -14899,6 +15335,9 @@ class Checker {
         let writtenTys = this.writtenArgs;
         this.callExpected = null;
         this.writtenArgs = [];
+        // the arguments a member's choice checked already (S7c5d2)
+        let pre = this.preChecked;
+        this.preChecked = [];
         var chosen = -1;
         for (c in candidates) {
             let params = this.functions[c].params;
@@ -14984,7 +15423,9 @@ class Checker {
         }
         var position = 0;
         var named = false;
+        var ai = -1;
         for (a in args) {
+            ai += 1;
             let argName = a.name;
             var k = position;
             if (argName != null) {
@@ -15022,7 +15463,7 @@ class Checker {
             }
             if (typeParams.length() == 0) {
                 given[k] = this.coerce(
-                    this.expr(a.value, params[k].ty),
+                    if (ai < pre.length()) pre[ai] else this.expr(a.value, params[k].ty),
                     params[k].ty,
                     spanOf(a.value)
                 );
@@ -15032,7 +15473,7 @@ class Checker {
                 .Lambda(_, _, _, _, _) => true,
                 _ => false,
             };
-            if (isLambda) {
+            if (isLambda && ai >= pre.length()) {
                 deferred.push(k);
                 deferredArgs.push(a.value);
                 continue;
@@ -15040,7 +15481,8 @@ class Checker {
             let want = this.substOpen(params[k].ty, binds.toArray());
             // a position still naming a parameter gives no type: `Box { v = 1 }` at a `Box<T>` binds
             // `T` from its field (S7c5a; since S3g it was checked against the open `T`)
-            let v = this.expr(a.value, if (this.anyParamIn(want)) null else want);
+            let v = if (ai < pre.length()) pre[ai]
+                else this.expr(a.value, if (this.anyParamIn(want)) null else want);
             this.bind(params[k].ty, typeOf(v), binds);
             given[k] = v;
         }

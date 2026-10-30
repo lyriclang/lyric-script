@@ -875,13 +875,25 @@ summary = "A type's list and an interface's parents name interfaces only, and an
 title = "two functions of one name taking the same number of arguments"
 severity = "error"
 area = "08-expressions"
-summary = "Functions may share a name when they take different numbers of arguments, never otherwise. Lyric 5's LYR-SEM0085."
+summary = "Functions may share a name when they take different numbers of arguments, never otherwise; two members of a type that both answer one instance of a generic interface are refused too. Lyric 5's LYR-SEM0085."
+
+[LYS-SEM0086]
+title = "a call whose arguments' types choose no one member"
+severity = "error"
+area = "05-interfaces"
+summary = "Members of one name and count answering instances of one generic interface are chosen by the arguments' types: the member whose parameters take them, of several the one whose parameters are those types. None or several left is refused; write the argument as its type, `x as float`. Lyric 5's LYR-SEM0086."
 
 [LYS-SEM0087]
 title = "a call that no function of the name takes"
 severity = "error"
 area = "08-expressions"
 summary = "No function of the name takes as many arguments as the call gives. Lyric 5's LYR-SEM0087."
+
+[LYS-SEM0089]
+title = "a member of a shared name read without a call where nothing says which"
+severity = "error"
+area = "08-expressions"
+summary = "A method read as a value, `c.from`, is one of several of its name only where the position's function type says which. Lyric 5's LYR-SEM0089."
 
 [LYS-SEM0097]
 title = "a name bound twice in one pattern"
@@ -959,7 +971,13 @@ summary = "A name no parameter has, a name given twice, or a positional argument
 title = "a second member of one name on a type"
 severity = "error"
 area = "03-types"
-summary = "A type has one field, method or variant of each name. Lyric 5's LYR-SEM0121."
+summary = "A type has one field or variant of each name, and one method of each name and count; members of one name and count stand side by side only each in its own conformance block, or each answering its own instance of a generic interface. A conformance block's member beside the type's own of the name is refused at any count. Lyric 5's LYR-SEM0121."
+
+[LYS-SEM0122]
+title = "an unqualified call of a member each conformance block gives apart"
+severity = "error"
+area = "05-interfaces"
+summary = "A name two conformance blocks of a type implement apart belongs to each block: `c.greet()` is refused, `Greeter.greet(c)` names the one. Lyric 5's LYR-SEM0122."
 
 [LYS-SEM0123]
 title = "a delegation to what is no field holding the interface"

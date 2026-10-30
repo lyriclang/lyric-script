@@ -8858,12 +8858,15 @@ class Checker {
                     .Unknown => {
                         return TExpr.Unknown;
                     }
-                    _ => {
+                    .Str | .Map(_, _) => {
                         return this.notYet(
                             f"indexing a {this.tyName(typeOf(lv))}",
                             "S7 (the core collections)",
                             indexAt
                         );
+                    }
+                    _ => {
+                        return this.indexWrite(lv, i.value, op, value, indexAt, at);
                     }
                 }
             }
@@ -9438,6 +9441,11 @@ class Checker {
     /// `[a, b, c]` (S7b1; 03 S): a list of the type the place gives, else of its elements' — an int
     /// among floats is a float (03 Mix); `[]` takes its type from the place.
     mut fn listLiteral(items: Expr[], expected: ?Ty, at: Span): TExpr {
+        if (let want = expected) {
+            if (let built = this.arrayLiteralBuilt(items, want, at)) {
+                return built;
+            }
+        }
         var elem: ?Ty = null;
         if (let want = expected) {
             match (want) {
@@ -9515,8 +9523,19 @@ class Checker {
             .Unknown => {
                 return TExpr.Unknown;
             }
-            _ => {
+            .Str | .Map(_, _) => {
                 return this.notYet(f"indexing a {this.tyName(t)}", "S7 (the core collections)", at);
+            }
+            _ => {
+                // a type of one's own (03 Index, S7c2): `x[k]` is `x.index(k)`
+                if (!this.indexable(t, "Index", at)) {
+                    return TExpr.Unknown;
+                }
+                if (countsFromEnd(i)) {
+                    this.error("LYS-SEM0007", "'^' counts from the end of a list alone", at);
+                    return TExpr.Unknown;
+                }
+                return this.methodCall(lv, "index", [Arg { name = null, value = i }], at, at);
             }
         }
     }
@@ -9533,6 +9552,153 @@ class Checker {
             _ => { }
         }
         return this.coerce(this.expr(i, Ty.Int), Ty.Int, spanOf(i));
+    }
+
+    /// Whether a value of `t` takes `[k]` through the prelude's `proto` (`Index`, `IndexSet`),
+    /// reported where it does not (`LYS-SEM0007`, `LYS-SEM0019`; S7c2).
+    mut fn indexable(t: Ty, proto: string, at: Span): bool {
+        if (t == .Unknown) {
+            return false;
+        }
+        let pi = this.typeIndex.get(proto) ?? -1;
+        if (pi >= 0 && this.conformsTo(t, pi)) {
+            return true;
+        }
+        if (proto == "Index") {
+            this.error("LYS-SEM0007", f"a {this.tyName(t)} cannot be indexed: it is no Index", at);
+        } else {
+            this.error(
+                "LYS-SEM0019",
+                f"an element of a {this.tyName(t)} cannot be written: it is no IndexSet",
+                at
+            );
+        }
+        return false;
+    }
+
+    /// `x[k] = v` and `x[k] op= v` of a type of one's own (S7c2): `x.setIndex(k, v)`, `x` and `k`
+    /// evaluated once — held in hidden locals, the read and the write through them.
+    mut fn indexWrite(
+        lv: TExpr,
+        k: Expr,
+        op: ?BinaryOp,
+        value: Expr,
+        indexAt: Span,
+        at: Span
+    ): TExpr {
+        let t = typeOf(lv);
+        if (!this.indexable(t, "IndexSet", indexAt)) {
+            return TExpr.Unknown;
+        }
+        if (countsFromEnd(k)) {
+            this.error("LYS-SEM0007", "'^' counts from the end of a list alone", indexAt);
+            return TExpr.Unknown;
+        }
+        let kv = this.expr(k, null);
+        let hx = this.hidden(t, at);
+        let hk = this.hidden(typeOf(kv), at);
+        let x = Expr.Name(this.ctx.localNames[hx], at);
+        let key = Expr.Name(this.ctx.localNames[hk], at);
+        var v = value;
+        if (let o = op) {
+            let read = Expr.Call(
+                Box<Expr> { value = Expr.Member(Box<Expr> { value = x }, "index", false, at) },
+                [Arg { name = null, value = key }],
+                at
+            );
+            v = Expr.Binary(Box<Expr> { value = read }, o, Box<Expr> { value = value }, at);
+        }
+        let write = this.methodCall(
+            TExpr.Local(hx, t),
+            "setIndex",
+            [Arg { name = null, value = key }, Arg { name = null, value = v }],
+            at,
+            indexAt
+        );
+        return TExpr.Block(
+            [TStmt.SetLocal(hx, lv, at.line), TStmt.SetLocal(hk, kv, at.line)],
+            boxE(write),
+            Ty.Void
+        );
+    }
+
+    /// The instance of the prelude's generic interface `proto` that `t` conforms to — through its
+    /// type's conformances, or its constraints' — -1 for none (S7c2).
+    mut fn instanceFor(t: Ty, proto: string): int {
+        let pi = this.typeIndex.get(proto) ?? -1;
+        if (pi < 0) {
+            return -1;
+        }
+        let kinds = List<int>.new();
+        match (t) {
+            .Named(i) => {
+                if (this.types[i].kind != .Interface) {
+                    for (x in this.ifacesOf(i)) {
+                        for (a in this.ancestry(x)) {
+                            kinds.push(a);
+                        }
+                    }
+                }
+            }
+            .Param(k) => {
+                let g = this.genericFn;
+                if (g >= 0 && k < this.functions[g].typeParams.length()) {
+                    for (c in this.functions[g].typeParams[k].constraints) {
+                        for (a in this.ancestry(c)) {
+                            kinds.push(a);
+                        }
+                    }
+                }
+            }
+            _ => { }
+        }
+        for (x in kinds) {
+            if (this.ifaceBase(x) == pi && x != pi) {
+                return x;
+            }
+        }
+        return -1;
+    }
+
+    /// `[a, b]` where the place's type conforms to `FromArrayLiteral<T>` (03 Lit, S7c2): a list of
+    /// `T` given to its `fromArrayLiteral`; `null` where the place takes no such type.
+    mut fn arrayLiteralBuilt(items: Expr[], expected: Ty, at: Span): ?TExpr {
+        let target = match (expected) {
+            .Optional(inner) => inner.value,
+            _ => expected,
+        };
+        let fi = this.instanceFor(target, "FromArrayLiteral");
+        if (fi < 0) {
+            return null;
+        }
+        let elem = this.types[fi].args[0];
+        let list = this.listLiteral(items, Ty.List(boxTy(elem)), at);
+        match (target) {
+            .Named(i) => {
+                let tmpl = if (this.types[i].template >= 0
+                    && this.types[i].template != i) this.types[i].template
+                    else i;
+                let own = this.types[tmpl].methods.get("fromArrayLiteral");
+                if (own == null) {
+                    return null;
+                }
+                if (this.functions[own].typeParams.length() > 0) {
+                    return TExpr.CallGeneric(own, this.types[i].args, [list], target);
+                }
+                return TExpr.Call(own, [list], target);
+            }
+            .Param(k) => {
+                let found = this.ifaceMember(fi, "fromArrayLiteral");
+                if (found == null) {
+                    return null;
+                }
+                let (_, slot) = found;
+                return TExpr.CallStatic(k, fi, "fromArrayLiteral", slot, [list], target);
+            }
+            _ => {
+                return null;
+            }
+        }
     }
 
     /// A list's own methods (S7b1): `length()`, `push(v)`, `pop()`; `null` for another name — the

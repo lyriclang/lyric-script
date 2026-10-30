@@ -632,10 +632,10 @@ area = "03-types"
 summary = "The name names no type. Lyric 5's LYR-SEM0011."
 
 [LYS-SEM0007]
-title = "a value that cannot be iterated"
+title = "a value that cannot be indexed or iterated"
 severity = "error"
 area = "07-statements"
-summary = "A `for` walks a value that gives none to bind — a `Coroutine<void>`. Lyric 5's LYR-SEM0007."
+summary = "A `for` walks a value that gives none to bind — a `Coroutine<void>` —, or `[k]` stands after a value whose type is no `Index` (S7c2), or `^n` counts from the end of what is no list. Lyric 5's LYR-SEM0007."
 
 [LYS-SEM0012]
 title = "a member the type does not have"

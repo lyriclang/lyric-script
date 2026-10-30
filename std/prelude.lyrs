@@ -359,3 +359,13 @@ fn __listSlice<T>(xs: T[], from: int, to: int): T[] {
     }
     return out
 }
+interface Index<K> {
+    type Output
+    fn index(k: K): Self.Output
+}
+interface IndexSet<K> :: Index<K> {
+    fn setIndex(k: K, v: Self.Output)
+}
+interface FromArrayLiteral<T> {
+    static fn fromArrayLiteral(items: T[]): Self
+}

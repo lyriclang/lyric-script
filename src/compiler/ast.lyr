@@ -129,7 +129,9 @@ enum Expr :: [Debug] {
     List(Expr[], Span),
     /// `["a": 1]`, and `[:]` with no entry.
     Map(MapEntry[], Span),
-    StructInit(string, FieldInit[], Span),
+    /// `Point { x = 1 }`, `Pair<int, _> { … }`: the type's name, its type arguments where written
+    /// (S7c6d), the fields.
+    StructInit(string, TypeExpr[], FieldInit[], Span),
     /// `if (c) a else b` where a value stands: each branch an expression or a value block.
     If(Box<Expr>, Box<Expr>, Box<Expr>, Span),
     Block(Block, Span),

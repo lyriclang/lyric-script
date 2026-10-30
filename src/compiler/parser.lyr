@@ -1669,6 +1669,8 @@ class Parser {
                 e = try this.callAfter(e, first);
             } else if (this.at(.Lt) && takesTypeArgs(e) && this.typeArgsAhead()) {
                 e = try this.typeArgsAfter(e, first);
+            } else if (this.at(.LBrace) && typedInit(e)) {
+                e = try this.typedInitAfter(e, first);
             } else if (this.at(.LBrace) && takesTrailing(e)) {
                 e = try this.trailingAfter(e, first);
             } else if (this.at(.LBracket)) {
@@ -1846,7 +1848,7 @@ class Parser {
             };
             if (moduleName != "") {
                 let fields = try this.parseFieldInits();
-                return Expr.StructInit(moduleName + "." + member, fields, this.since(first));
+                return Expr.StructInit(moduleName + "." + member, [], fields, this.since(first));
             }
         }
         return Expr.Member(boxed(e), member, optional, this.since(first));
@@ -2313,7 +2315,28 @@ class Parser {
     /// `name = name`.
     mut fn parseStructInit(name: string, first: Token): Expr throws SyntaxError {
         let fields = try this.parseFieldInits();
-        return Expr.StructInit(name, fields, this.since(first));
+        return Expr.StructInit(name, [], fields, this.since(first));
+    }
+
+    /// `Pair<int, string> { … }`: an initializer whose type arguments are written (Lyric 5 03
+    /// §9.3 rule 1; S7c6d).
+    mut fn typedInitAfter(e: Expr, first: Token): Expr throws SyntaxError {
+        var name = "";
+        var targs: TypeExpr[] = [];
+        match (e) {
+            .Instance(inner, ts, _) => {
+                targs = ts;
+                match (inner.value) {
+                    .Name(n, _) => {
+                        name = n;
+                    }
+                    _ => { }
+                }
+            }
+            _ => { }
+        }
+        let fields = try this.parseFieldInits();
+        return Expr.StructInit(name, targs, fields, this.since(first));
     }
 
     /// `{ x = 1, y }`: an initializer's fields, a name alone standing for `name = name`.
@@ -2949,8 +2972,21 @@ fn frontmatterText(text: string): string {
 
 /// Whether a token after a `>` closes type arguments, not a comparison: a call's `(`, or what
 /// ends or continues a value without an operand (`id<int>` as a value, S3i).
+/// Whether `e` is a type's name with its type arguments, `Pair<int, string>`, before which a `{`
+/// opens an initializer (S7c6d).
+fn typedInit(e: Expr): bool {
+    return match (e) {
+        .Instance(inner, _, _) => match (inner.value) {
+            .Name(n, _) => isTypeName(n),
+            _ => false,
+        },
+        _ => false,
+    };
+}
+
 fn endsTypeArgs(k: TokenKind): bool {
     return k == .LParen
+        || k == .LBrace
         || k == .RParen
         || k == .RBracket
         || k == .RBrace

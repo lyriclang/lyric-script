@@ -967,6 +967,12 @@ severity = "error"
 area = "08-expressions"
 summary = "A name no parameter has, a name given twice, or a positional argument after a named one. Lyric 5's LYR-SEM0119."
 
+[LYS-SEM0117]
+title = "the placeholder `_` where it is no type argument"
+severity = "error"
+area = "03-types"
+summary = "`_` stands for one type argument the inference fills, among the type arguments of a call, an initializer or a function's value; anywhere else — `let p: Pair<_, int>` — it is refused. Lyric 5's LYR-SEM0117."
+
 [LYS-SEM0121]
 title = "a second member of one name on a type"
 severity = "error"

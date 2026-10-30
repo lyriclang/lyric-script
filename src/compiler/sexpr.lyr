@@ -400,9 +400,15 @@ fn showExpr(e: Expr): string {
             }
             if (parts.length() == 0) "[:]" else "[" + parts.toArray().join(", ") + "]"
         }
-        .StructInit(name, fields, _) => {
+        .StructInit(name, targs, fields, _) => {
             let parts = List<string>.new();
-            parts.push(name);
+            let shown = List<string>.new();
+            for (x in targs) {
+                shown.push(showType(x));
+            }
+            parts.push(
+                if (targs.length() == 0) name else name + "<" + shown.toArray().join(", ") + ">"
+            );
             for (field in fields) {
                 parts.push(field.name + "=" + showExpr(field.value));
             }

@@ -5068,7 +5068,31 @@ class Checker {
         return t;
     }
 
+    /// A type argument written at a call, an initializer or a function's value: the placeholder
+    /// `_` there stands for one the inference fills (Lyric 5 03 §9.2 rule 4; S7c6d).
+    mut fn writtenType(x: TypeExpr): Ty {
+        match (x) {
+            .Named(n, args, _) => {
+                if (n == "_" && args.length() == 0) {
+                    return Ty.Param(-1);
+                }
+            }
+            _ => { }
+        }
+        return this.resolveType(x);
+    }
+
     mut fn resolveNamedType(name: string, args: TypeExpr[], at: Span): Ty {
+        // the placeholder stands only among a call's, an initializer's or a function value's type
+        // arguments (Lyric 5 03 §9.2 rule 5; S7c6d)
+        if (name == "_") {
+            this.error(
+                "LYS-SEM0117",
+                "'_' stands only among the type arguments of a call, an initializer or a function's value",
+                at
+            );
+            return Ty.Unknown;
+        }
         if (name.contains(".")) {
             // `util.Point`: a module's type through its name
             let dot = name.find('.') ?? 0;
@@ -10267,7 +10291,12 @@ class Checker {
                 at
             ),
             .Match(x, arms, at) => this.matchOf(x.value, arms, expected, false, at),
-            .Instance(callee, written, at) => this.genericValue(callee.value, written, at),
+            .Instance(callee, written, at) => this.genericValue(
+                callee.value,
+                written,
+                expected,
+                at
+            ),
             .Is(x, written, at) => {
                 let v = this.expr(x.value, null);
                 let t = typeOf(v);
@@ -10295,7 +10324,7 @@ class Checker {
             }
             .List(items, at) => this.listLiteral(items, expected, at),
             .Map(_, at) => this.notYet("a map literal", "S7d (maps and sets)", at),
-            .StructInit(name, fields, at) => this.init(name, fields, expected, at),
+            .StructInit(name, targs, fields, at) => this.init(name, targs, fields, expected, at),
             .With(target, fields, at) => this.withOf(target.value, fields, at),
             .If(cond, then, otherwise, at) => this.ifExpr(
                 cond.value,
@@ -12446,7 +12475,7 @@ class Checker {
             // its `Cancelled` made here, for the yield it parked at to throw (rule 9)
             "close" => TExpr.CoClose(
                 boxE(receiver),
-                boxE(this.expr(Expr.StructInit("Cancelled", [], at), null))
+                boxE(this.expr(Expr.StructInit("Cancelled", [], [], at), null))
             ),
             _ => {
                 this.error(
@@ -13404,7 +13433,13 @@ class Checker {
         return this.typeNamed(m + "." + typeName, at) ?? -2;
     }
 
-    mut fn init(name: string, fields: FieldInit[], expected: ?Ty, at: Span): TExpr {
+    mut fn init(
+        name: string,
+        targs: TypeExpr[],
+        fields: FieldInit[],
+        expected: ?Ty,
+        at: Span
+    ): TExpr {
         let index = this.typeNamed(name, at);
         if (index == null) {
             if (!name.contains(".")) {
@@ -13422,6 +13457,42 @@ class Checker {
             );
             return TExpr.Unknown;
         }
+        if (targs.length() > 0) {
+            // `Pair<int, _> { … }`: what is written binds first, a placeholder is filled by the
+            // position or the fields (Lyric 5 03 §9.3 rules 1–2; S7c6d)
+            if (targs.length() != info.typeParams.length()) {
+                this.error(
+                    "LYS-SEM0026",
+                    f"'{name}' takes {info.typeParams.length()} type arguments, not {targs.length()}",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            let written = List<?Ty>.new();
+            var whole = true;
+            for (x in targs) {
+                let t = this.writtenType(x);
+                if (isHole(t)) {
+                    written.push(null);
+                    whole = false;
+                } else {
+                    written.push(t);
+                }
+            }
+            if (whole) {
+                let tys = List<Ty>.new();
+                for (w in written) {
+                    tys.push(w ?? Ty.Unknown);
+                }
+                return this.genericInit(
+                    index,
+                    fields,
+                    Ty.Named(this.typeInstance(index, tys.toArray())),
+                    at
+                );
+            }
+            return this.genericInit(index, fields, expected, at, written.toArray());
+        }
         if (info.typeParams.length() > 0) {
             return this.genericInit(index, fields, expected, at);
         }
@@ -13430,7 +13501,13 @@ class Checker {
 
     /// `Pair { first = 1, second = "a" }`: the instance the position expects, or the one the
     /// fields' values bind (03 §9.2).
-    mut fn genericInit(index: int, fields: FieldInit[], expected: ?Ty, at: Span): TExpr {
+    mut fn genericInit(
+        index: int,
+        fields: FieldInit[],
+        expected: ?Ty,
+        at: Span,
+        written: (?Ty)[] = []
+    ): TExpr {
         let tmpl = this.types[index];
         var inst = -1;
         if (expected != null) {
@@ -13462,8 +13539,11 @@ class Checker {
             return TExpr.New(inst, this.fieldValues(info.name, decls.toArray(), fields, at));
         }
         let binds = List<?Ty>.new();
+        var j0 = 0;
         for (_ in tmpl.typeParams) {
-            binds.push(null);
+            // what is written, a placeholder left open (S7c6d)
+            binds.push(if (j0 < written.length()) written[j0] else null);
+            j0 += 1;
         }
         let checked = List<?TExpr>.new();
         for (_ in tmpl.fields) {
@@ -13473,7 +13553,9 @@ class Checker {
             var k = 0;
             for (d in tmpl.fields) {
                 if (d.name == f.name && checked[k] == null) {
-                    let v = this.expr(f.value, if (hasParam(d.ty)) null else d.ty);
+                    // as much of the field's type as is known
+                    let known = this.substOpen(d.ty, binds.toArray());
+                    let v = this.expr(f.value, if (hasParam(known)) null else known);
                     this.bind(d.ty, typeOf(v), binds);
                     checked[k] = v;
                 }
@@ -14258,7 +14340,7 @@ class Checker {
             .Instance(inner, targs, iat) => {
                 let tys = List<Ty>.new();
                 for (x in targs) {
-                    tys.push(this.resolveType(x));
+                    tys.push(this.writtenType(x));
                 }
                 match (inner.value) {
                     .Name(name, _) => {
@@ -14986,7 +15068,7 @@ class Checker {
     }
 
     /// `id<int>` without a call: the generic function as a value at the written arguments.
-    mut fn genericValue(callee: Expr, written: TypeExpr[], at: Span): TExpr {
+    mut fn genericValue(callee: Expr, written: TypeExpr[], expected: ?Ty, at: Span): TExpr {
         let name = match (callee) {
             .Name(n, _) => n,
             _ => "",
@@ -15010,9 +15092,40 @@ class Checker {
             this.error("LYS-SEM0026", f"no '{name}' takes {written.length()} type arguments", at);
             return TExpr.Unknown;
         }
-        let targs = List<Ty>.new();
+        let binds = List<?Ty>.new();
+        var holes = false;
         for (w in written) {
-            targs.push(this.resolveType(w));
+            let t = this.writtenType(w);
+            holes = holes || isHole(t);
+            binds.push(if (isHole(t)) null else t);
+        }
+        // a placeholder: the position's function type fills it (Lyric 5 03 §9.4; S7c6d)
+        if (holes) {
+            let f = this.functions[pick];
+            if (let want = expectedFn(expected)) {
+                if (want.params.length() == f.params.length()) {
+                    var k = 0;
+                    for (p in f.params) {
+                        this.bind(p.ty, want.params[k], binds);
+                        k += 1;
+                    }
+                    this.bind(f.returns, want.result.value, binds);
+                }
+            }
+        }
+        let targs = List<Ty>.new();
+        var j = 0;
+        for (b in binds) {
+            if (b == null) {
+                this.error(
+                    "LYS-SEM0060",
+                    f"nothing here says what '{this.functions[pick].typeParams[j].name}' of '{name}' is: write it",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+            targs.push(b);
+            j += 1;
         }
         return this.genericValueOf(pick, targs.toArray(), at);
     }
@@ -16279,7 +16392,8 @@ class Checker {
         if (this.presetBinds.length() <= typeParams.length()) {
             var j = 0;
             for (x in this.presetBinds) {
-                binds[j] = x;
+                // a placeholder written, `f<_, int>(x)`: the inference fills it (S7c6d)
+                binds[j] = if (isHole(x)) null else x;
                 j += 1;
             }
             preset = j;
@@ -16310,7 +16424,7 @@ class Checker {
             } else {
                 var j = 0;
                 for (x in filled) {
-                    binds[preset + j] = x;
+                    binds[preset + j] = if (isHole(x)) null else x;
                     j += 1;
                 }
             }
@@ -16587,6 +16701,14 @@ class Checker {
         let v = this.expr(args[0].value, null);
         return TExpr.Native(native, [this.stringOf(v, spanOf(args[0].value))], Ty.Void);
     }
+}
+
+/// Whether `t` is the placeholder `_` written among type arguments (S7c6d): the inference fills it.
+fn isHole(t: Ty): bool {
+    return match (t) {
+        .Param(k) => k == -1,
+        _ => false,
+    };
 }
 
 fn boxE(e: TExpr): Box<TExpr> {
@@ -17535,7 +17657,7 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool, deep: bo
             }
             found
         }
-        .StructInit(_, fields, _) => {
+        .StructInit(_, _, fields, _) => {
             var found = false;
             for (f in fields) {
                 found = found || exprAny(f.value, onStmt, onExpr, deep);
@@ -17639,7 +17761,7 @@ fn spanOf(e: Expr): Span {
         .Member(_, _, _, at) => at,
         .List(_, at) => at,
         .Map(_, at) => at,
-        .StructInit(_, _, at) => at,
+        .StructInit(_, _, _, at) => at,
         .With(_, _, at) => at,
         .If(_, _, _, at) => at,
         .Block(_, at) => at,

@@ -2463,10 +2463,11 @@ class Checker {
     /// the target names; a call binds it to the receiver. Its conformances are read once every
     /// interface is declared (`blanketConformance`, S7c4c3a).
     mut fn declareBlanket(x: ExtendDecl, at: int): void {
+        // Lyric 5 §13 gives a blanket block members and conformances, no constant
         if (x.statics.length() > 0) {
-            this.notYet(
-                "a constant of a blanket block",
-                "S7c4c3b (blocks on one instance)",
+            this.error(
+                "LYS-SEM0124",
+                "a blanket block holds no constant: it adds members to every type its constraints admit",
                 x.span
             );
             return;
@@ -3189,10 +3190,11 @@ class Checker {
             plain = named == x.typeParams[k].name;
             k += 1;
         }
+        // Lyric 5 §13 rule 1: the type at the block's parameters, in its order, or one instance
         if (!plain) {
-            this.notYet(
-                "an extend block on a target other than its type at the block's parameters",
-                "S3i (generic extends)",
+            this.error(
+                "LYS-SEM0124",
+                "a generic block's target is its type at the block's parameters, in their order",
                 x.span
             );
             return;
@@ -9298,7 +9300,7 @@ class Checker {
                 "fromStringLiteral",
                 expected
             ),
-            .Bytes(_, at) => this.notYet("a byte string", "S7 (Bytes)", at),
+            .Bytes(_, at) => this.notYet("a byte string", "S7f (Bytes)", at),
             .Interpolated(segments, at) => this.interpolated(segments, at),
             .Null(_) => {
                 let t = expected ?? Ty.NullLit;
@@ -9355,7 +9357,7 @@ class Checker {
             .Unary(op, x, at) => this.unary(op, x.value, at),
             .Binary(l, op, r, at) => this.binary(l.value, op, r.value, at),
             .Assign(target, op, value, at) => this.assign(target.value, op, value.value, at),
-            .Range(_, _, _, at) => this.notYet("a range as a value", "S3", at),
+            .Range(_, _, _, at) => this.notYet("a range as a value", "S7c6 (std.iter, Range)", at),
             .Cast(x, written, at) => this.cast(x.value, written, at),
             .Call(callee, args, at) => this.call(callee.value, args, expected, at),
             .Implicit(name, at) => this.implicit(name, expected, at),
@@ -9391,7 +9393,7 @@ class Checker {
             }
             .Member(x, name, optional, at) => this.member(x.value, name, optional, at),
             .List(items, at) => this.listLiteral(items, expected, at),
-            .Map(_, at) => this.notYet("a map literal", "S7 (the core collections)", at),
+            .Map(_, at) => this.notYet("a map literal", "S7d (maps and sets)", at),
             .StructInit(name, fields, at) => this.init(name, fields, expected, at),
             .With(target, fields, at) => this.withOf(target.value, fields, at),
             .If(cond, then, otherwise, at) => this.ifExpr(
@@ -10891,7 +10893,7 @@ class Checker {
                     .Str | .Map(_, _) => {
                         return this.notYet(
                             f"indexing a {this.tyName(typeOf(lv))}",
-                            "S7 (the core collections)",
+                            laterClock(typeOf(lv)),
                             indexAt
                         );
                     }
@@ -11020,9 +11022,6 @@ class Checker {
             _ => false,
         };
         if (!fits) {
-            if (op == .Coalesce) {
-                return this.notYet("'??='", "S3 (optionals)", at);
-            }
             this.error(
                 "LYS-SEM0003",
                 f"'{binaryText(op)}=' does not take {this.tyName(tc)} and {this.tyName(tv)}",
@@ -11084,8 +11083,13 @@ class Checker {
                 this.error("LYS-SEM0012", f"'{this.types[i].name}' has no field '{field}'", at);
                 return null;
             }
-            .Str | .List(_) | .Map(_, _) => {
-                this.notYet(f"the members of {this.tyName(t)}", "S7 (the core library)", at);
+            // a list has methods and no fields
+            .List(_) => {
+                this.error("LYS-SEM0012", f"'{this.tyName(t)}' has no field '{field}'", at);
+                return null;
+            }
+            .Str | .Map(_, _) => {
+                this.notYet(f"the members of {this.tyName(t)}", laterClock(t), at);
                 return null;
             }
             _ => { }
@@ -11559,12 +11563,15 @@ class Checker {
             }
             return TExpr.ListOp(ListOp.Lit, xs.toArray(), Ty.List(boxTy(e)));
         }
+        // nothing gives the element type: the binding's first use would, elsewhere it is written
+        // (Lyric 5 §9.2 rule 3, 03 Leer)
         if (items.length() == 0) {
-            return this.notYet(
-                "an empty list no place gives a type",
-                "S7b2 (the first use fixes it)",
+            this.error(
+                "LYS-SEM0060",
+                "nothing here says what the empty list holds: write its type, `let xs: int[] = []`",
                 at
             );
+            return TExpr.Unknown;
         }
         let checked = List<TExpr>.new();
         for (item in items) {
@@ -12783,7 +12790,7 @@ class Checker {
                 }
                 .Hole(x, spec) => {
                     if (spec != null) {
-                        parts.push(this.notYet("a format spec", "S7 (std.fmt)", at));
+                        parts.push(this.notYet("a format spec", "S7e (std.fmt)", at));
                     } else {
                         parts.push(this.stringOf(this.expr(x, null), spanOf(x)));
                     }
@@ -12905,7 +12912,7 @@ class Checker {
             .List(_) => if (hasParam(t)) this.listDebugInline(v, t, at)
                 else TExpr.Call(this.listDebugFnOf(t, at), [v], Ty.Str),
             _ => if (this.quietDebug) TExpr.Str(f"<{this.tyName(t)}>")
-                else this.notYet(f"text of a {this.tyName(t)}", "S7 (the core collections)", at),
+                else this.notYet(f"text of a {this.tyName(t)}", laterClock(t), at),
         };
     }
 
@@ -14467,11 +14474,7 @@ class Checker {
                     }
                     _ => { }
                 }
-                return this.notYet(
-                    f"the methods of {this.tyName(t)}",
-                    "S7 (the core library)",
-                    memberAt
-                );
+                return this.notYet(f"the methods of {this.tyName(t)}", laterClock(t), memberAt);
             }
         }
     }
@@ -15634,6 +15637,16 @@ fn operatorOf(op: BinaryOp): (string, string) {
         .Shl => ("Shl", "shl"),
         .Shr => ("Shr", "shr"),
         _ => ("", ""),
+    };
+}
+
+/// The slice that builds what a built-in type still lacks — a string's methods and indexing, a
+/// number's, a map's (plan 14).
+fn laterClock(t: Ty): string {
+    return match (t) {
+        .Int | .Float => "S7f (numbers)",
+        .Map(_, _) => "S7d (maps and sets)",
+        _ => "S7e (strings and formats)",
     };
 }
 

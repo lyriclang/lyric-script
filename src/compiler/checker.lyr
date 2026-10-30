@@ -5851,7 +5851,13 @@ class Checker {
             }
             .DebugParam(x, k, t) => {
                 let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
-                if (src != null || k >= a.length()) {
+                // an argument still open — an associated type of an instance only a signature
+                // names, `FlatMapIter<I, B, B.Iter>` (S7c6b) — has no form of its own here
+                let open = k < a.length() && match (a[k]) {
+                    .Assoc(_, _, _) => true,
+                    _ => false,
+                };
+                if (src != null || k >= a.length() || open) {
                     // a shared copy: the value's own form, through its table
                     TExpr.CallIface(this.debugSlotOf(), [this.specExpr(x.value, a)], t)
                 } else {

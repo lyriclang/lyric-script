@@ -461,7 +461,7 @@ fn aScopesCancelReachesItsTasks(): void {
 fn scopesAreChecked(): void {
     assertEq(errs("let scope = TaskScope.new(1)"), ["LYS-SEM0014"]);
     assertEq(errs("let scope = TaskScope.new()\nscope.join()"), ["LYS-SEM0012"]);
-    assertEq(errs("let x: Closeable = TaskScope.new()"), ["LYS-SEM0001"]);
+    assertEq(errs("let x: Closeable = TaskScope.new()"), []);
 }
 
 // A task's status with its values (S6c3).

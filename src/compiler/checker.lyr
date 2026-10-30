@@ -1029,6 +1029,12 @@ class Checker {
                 .Stmt(_) => { }
             }
         }
+        // the values the VM holds without a descriptor: boxed as interface values (S7c4b)
+        for (held in ["Task", "Coroutine", "TaskScope", "Channel", "Semaphore"]) {
+            if (let k = this.typeIndex.get(held)) {
+                this.types[k].vmHeld = true;
+            }
+        }
         // which interfaces are a constraint only (05 §7 rule 3), before a type is resolved
         this.classifyInterfaces(module);
         // then what they hold, and the functions' signatures
@@ -2321,6 +2327,7 @@ class Checker {
     mut fn boxed(t: Ty): bool {
         let list = match (t) {
             .List(_) => true,
+            .Named(i) => this.types[i].vmHeld,
             _ => false,
         };
         return t == .Str || list || isScalar(t, this.types.toArray());
@@ -3400,7 +3407,7 @@ class Checker {
             .Named(ii) => {
                 if (this.types[ii].kind == .Interface
                     && this.conformsTo(actual, ii)
-                    && !this.heldWithoutDescriptor(actual)) {
+                    && (!this.heldWithoutDescriptor(actual) || this.boxed(actual))) {
                     // a scalar or a string goes into a box; a reference is its own
                     if (this.boxed(actual)) {
                         return TExpr.BoxOf(boxE(e), this.entryOf(actual), target);
@@ -3709,8 +3716,9 @@ class Checker {
     /// Whether a value of `t` is an object of the VM: such type arguments share one copy.
     mut fn sharedShape(t: Ty): bool {
         return match (t) {
+            // a value the VM holds has no descriptor of its own: a copy for its type (S7c4b)
             .Named(i) => this.types[i].kind == .Struct
-                || this.types[i].kind == .Class
+                || (this.types[i].kind == .Class && !this.types[i].vmHeld)
                 || this.types[i].kind == .Interface
                 || (this.types[i].kind == .Enum && this.types[i].payload),
             .Fn(_) => true,
@@ -4524,6 +4532,7 @@ class Checker {
         let info = this.types[index];
         info.template = ti;
         info.args = args;
+        info.vmHeld = tmpl.vmHeld;
         if (tmpl.kind == .Interface) {
             // an instance of a generic interface (S7c1): the template's slots and its kind
             info.slotOf = tmpl.slotOf;
@@ -10307,6 +10316,18 @@ class Checker {
             "__sleep" => TExpr.Sleep(boxE(one)),
             "__readLine" => TExpr.ReadLine,
             "__listChanges" => TExpr.ListOp(ListOp.Changes, [one], Ty.Int),
+            // a coroutine's and a scope's methods a table reaches (S7c4b): as their calls
+            "__coNext" | "__coClose" => match (typeOf(one)) {
+                .Named(i) => this.coroutineMethod(
+                    one,
+                    i,
+                    if (name == "__coNext") "next" else "close",
+                    [],
+                    at
+                ) ?? TExpr.Unknown,
+                _ => TExpr.Unknown,
+            },
+            "__scopeClose" => TExpr.ScopeClose(boxE(one)),
             "__boundsPanic" => TExpr.Panic(boxE(one), 3),
             "__listTruncate" | "__listCheck" => {
                 let two = args.length() == 2;
@@ -11116,6 +11137,10 @@ class Checker {
             }
             .Named(i) => {
                 let info = this.types[i];
+                if (info.vmHeld) {
+                    // a value the VM holds: its type alone (S7c4b)
+                    return TExpr.Str(f"<{this.tyName(t)}>");
+                }
                 if (info.kind == .Interface) {
                     // the held value's form, through its table (S3i)
                     TExpr.CallIface(this.debugSlotOf(), [v], Ty.Str)
@@ -11166,10 +11191,9 @@ class Checker {
             let instance = info.template >= 0 && info.template != i;
             // the lists' entry holds no list; each instance of it, its element's list (S7c3)
             let lists = info.kind == .Builtin && info.name == "List";
-            if (info.kind == .Builtin && instance) {
+            if ((info.kind == .Builtin && instance) || info.vmHeld) {
                 info.witness.insert(this.debugSlot, this.debugBoxOf(i));
-            }
-            if (info.kind != .Interface && !instance && !lists) {
+            } else if (info.kind != .Interface && !instance && !lists) {
                 let f = if (info.kind == .Builtin
                     || (info.kind == .Enum && !info.payload)) this.debugBoxOf(i)
                     else this.debugFnOf(i, nowhereSpan);
@@ -13490,6 +13514,7 @@ fn isIntrinsic(name: string): bool {
     return match (name) {
         "__chanReady" | "__chanWatch" | "__parkWatched" | "__sleep" | "__readLine" => true,
         "__timerAfter" | "__listTruncate" | "__listChanges" | "__listCheck" | "__boundsPanic" => true,
+        "__coNext" | "__coClose" | "__scopeClose" => true,
         _ => false,
     };
 }

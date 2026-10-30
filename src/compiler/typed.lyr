@@ -177,6 +177,9 @@ class TypeInfo {
     // an interface whose members name `Self` beyond the receiver or are static: they are generic
     // over `Self`, its type parameter 0 (S3i); one that is a constraint only, and why
     var selfParam: bool = false,
+    // a type whose values the VM holds without a descriptor — a task, a coroutine, a scope, a
+    // channel, a semaphore: an interface value of it is a box (S7c4b)
+    var vmHeld: bool = false,
     var constraintOnly: bool = false,
     var onlyWhy: string = "",
     // a constraint only whatever is fixed: a member names `Self` itself, or is static or generic

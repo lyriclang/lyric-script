@@ -60,8 +60,11 @@ enum TaskStatus<T> {
     Cancelled,
     Panicked(PanicInfo),
 }
-class Coroutine<Y, R> :: [Identity, Closeable] {
+class Coroutine<Y, R> :: [Identity, Closeable, Iterator] {
+    type Item = Y
+    fn next(): ?Y = __coNext(this)
     fn close() {
+        __coClose(this)
     }
 }
 class Cancelled :: Error {
@@ -69,6 +72,7 @@ class Cancelled :: Error {
 }
 class TaskScope :: Closeable {
     fn close() {
+        __scopeClose(this)
     }
 }
 class ChannelClosed :: Error {

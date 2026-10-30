@@ -173,11 +173,12 @@ struct Placement {
         var bi = 0;
         for (t in p.types) {
             // a built-in's or an enum's without payloads: its box, which the type's table rides on
-            let isBoxed = t.kind == .Builtin || (t.kind == .Enum && !t.payload);
+            let isBoxed = t.kind == .Builtin || (t.kind == .Enum && !t.payload) || t.vmHeld;
             if (isBoxed) {
-                // a string's and a list's value is a reference (S7c3: the lists' entries)
-                let isRef = t.kind == .Builtin
-                    && (t.name == "string" || t.name == "List" || t.name.startsWith("List<"));
+                // a string's, a list's (S7c3) and a value the VM holds (S7c4b) is a reference
+                let isRef = t.vmHeld
+                    || (t.kind == .Builtin
+                        && (t.name == "string" || t.name == "List" || t.name.startsWith("List<")));
                 let d = TypeDesc {
                     name = f"<box {t.name}>",
                     scalarFields = if (isRef) [] else ["v"],
@@ -336,9 +337,9 @@ struct Placement {
         var anyDesc = -1;
         var di = 0;
         for (t in p.types) {
-            if (t.kind == .Struct || t.kind == .Class) {
+            if ((t.kind == .Struct || t.kind == .Class) && !t.vmHeld) {
                 typeDescOf.push(moduleType[di]);
-            } else if (t.kind == .Builtin || (t.kind == .Enum && !t.payload)) {
+            } else if (t.kind == .Builtin || (t.kind == .Enum && !t.payload) || t.vmHeld) {
                 typeDescOf.push(boxType[di]);
                 if (t.kind == .Builtin) {
                     builtinDesc.insert(t.name, boxType[di]);

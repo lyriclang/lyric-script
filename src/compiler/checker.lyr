@@ -1562,7 +1562,7 @@ class Checker {
             }
             var declared = false;
             for (a in this.ancestry(ii)) {
-                for (n in this.types[a].assocNames) {
+                for (n in this.assocNamesOf(a)) {
                     declared = declared || n == item;
                 }
             }
@@ -1590,7 +1590,7 @@ class Checker {
             return Ty.Unknown;
         }
         for (a in this.ancestry(ii)) {
-            for (n in this.types[a].assocNames) {
+            for (n in this.assocNamesOf(a)) {
                 if (!fixed.containsKey(n)) {
                     this.error(
                         "LYS-SEM0126",
@@ -1640,7 +1640,7 @@ class Checker {
 
     /// The bounds of associated type `name` of interface `ii`.
     mut fn boundsOf(ii: int, name: string): int[] {
-        return this.assocBounds.get(f"{ii}.{name}") ?? [];
+        return this.assocBounds.get(f"{this.ifaceBase(ii)}.{name}") ?? [];
     }
 
     /// The associated type `item` of `base`: through a type parameter the constraint that
@@ -1659,9 +1659,9 @@ class Checker {
                     }
                     for (c in infos[k].constraints) {
                         for (x in this.ancestry(c)) {
-                            for (n in this.types[x].assocNames) {
+                            for (n in this.assocNamesOf(x)) {
                                 if (n == item) {
-                                    return Ty.Assoc(boxTy(base), x, item);
+                                    return Ty.Assoc(boxTy(base), this.ifaceBase(x), item);
                                 }
                             }
                         }
@@ -1681,9 +1681,9 @@ class Checker {
             .Assoc(_, ii, n) => {
                 for (b in this.boundsOf(ii, n)) {
                     for (x in this.ancestry(b)) {
-                        for (m in this.types[x].assocNames) {
+                        for (m in this.assocNamesOf(x)) {
                             if (m == item) {
-                                return Ty.Assoc(boxTy(base), x, item);
+                                return Ty.Assoc(boxTy(base), this.ifaceBase(x), item);
                             }
                         }
                     }
@@ -1804,7 +1804,7 @@ class Checker {
         for (a in answers) {
             var asked = false;
             for (ii in this.types[index].ifaces) {
-                for (n in this.types[ii].assocNames) {
+                for (n in this.assocNamesOf(ii)) {
                     asked = asked || n == a.name;
                 }
             }
@@ -2011,6 +2011,12 @@ class Checker {
             out.push(x);
         }
         return out.toArray();
+    }
+
+    /// The associated types interface `x` declares: an instance of a generic interface its
+    /// template's (S7c2).
+    mut fn assocNamesOf(x: int): string[] {
+        return this.types[this.ifaceBase(x)].assocNames;
     }
 
     /// The interface whose members, slots and associated types `ii` has: the template of an
@@ -2465,7 +2471,7 @@ class Checker {
             // its associated types: answered by the type, or by the default (05 §8 rule 3)
             for (n in iface.assocNames) {
                 if (!info.answers.containsKey(n)) {
-                    let d = this.assocDefaults.get(f"{ii}.{n}");
+                    let d = this.assocDefaults.get(f"{this.ifaceBase(ii)}.{n}");
                     if (d != null) {
                         let saved = this.selfTyIs;
                         this.selfTyIs = self;
@@ -3803,7 +3809,7 @@ class Checker {
         }
         for (c in tps[k].constraints) {
             for (x in this.ancestry(c)) {
-                if (this.types[x].assocNames.length() > 0) {
+                if (this.assocNamesOf(x).length() > 0) {
                     return true;
                 }
             }
@@ -4328,9 +4334,9 @@ class Checker {
                 let nb = this.subst(b.value, a);
                 match (nb) {
                     // through a type parameter: what a constraint fixes, else still open
-                    .Param(k) => this.fixedOf(k, n) ?? Ty.Assoc(boxTy(nb), ii, n),
+                    .Param(k) => this.fixedOf(k, n) ?? Ty.Assoc(boxTy(nb), this.ifaceBase(ii), n),
                     // still open: an associated type of one
-                    .Unknown | .Assoc(_, _, _) => Ty.Assoc(boxTy(nb), ii, n),
+                    .Unknown | .Assoc(_, _, _) => Ty.Assoc(boxTy(nb), this.ifaceBase(ii), n),
                     _ => this.answerOf(nb, n) ?? Ty.Unknown,
                 }
             }
@@ -4635,7 +4641,7 @@ class Checker {
                 for (fx in c.fixed) {
                     var declaring = -1;
                     for (x in this.ancestry(ii)) {
-                        for (n in this.types[x].assocNames) {
+                        for (n in this.assocNamesOf(x)) {
                             if (n == fx.name && declaring < 0) {
                                 declaring = x;
                             }

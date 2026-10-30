@@ -1179,6 +1179,7 @@ fünf Teile, jeder braucht den vorigen.
 | **S7c3 Werte ohne Deskriptor** | eine Liste als Interfacewert (Deskriptor `T[]`, Tabelle des `List`-Eintrags je Element, `is int[]`, Debug über `Any`), Konformanzen `extend<T> T[] :: [I]`; Tasks, Koroutinen, Kanäle als Interfacewerte (Uhr aus S6) | Konformanzfälle |
 | **S7c4 Iteratoren** | (aus S7c3: Tasks, Koroutinen, Kanäle und Listen eines Typparameters als Interfacewerte) `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator<T>`, `collect()`; `for` über jedes Iterable, `Closeable`-Iteratoren geschlossen (05 E7); `T[] :: Iterable` mit der Änderungspanik; `Coroutine :: Iterator` | Konformanzfälle |
 | **S7c5 Vergleiche und Operatoren** | (05 D6, ohne Uhr seit S3 — P19) `Equatable`, `Ordered` (`?Ordering`), `TotalOrder` als Prelude-Interfaces, synthetisiert für Structs, Enums und Tupel, deren Felder es sind (03 Eq; `float :: TotalOrder`), `==`/`<` … über sie, die vergleichenden Listen-Methoden über einen Typparameter; Operator-Interfaces `Add<Rhs = Self> { type Out = Self }` …, `Neg`, `Contains<T>` (`in`, `!in`), `+=` abgeleitet, `++`/`--` als Ausdrücke; gemischte Arithmetik über eingebaute Konformanzen (03 Mix) | Konformanzfälle |
+| **S7c5d Mehrere Instanzen** | (aus S7c5c, 05 Regel 13) mehrere Instanzen eines generischen Interfaces an einem Typ (Lyric 5 05 §3 Regeln 4–5: Mitglieder je Block, `SEM0122`; nebeneinander je Instanz), Antworten je Konformanz-Instanz (§8 Regel 3), die eingebauten gemischten Konformanzen (`int :: Add<float>`, 03 Mix) | Konformanzfälle |
 | **S7c6 `std.iter`** | die Adapter von Lyric 5s `iter` in Script, die Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …), `sort` nativ über `TotalOrder` mit Kostenregel; der Platzhalter `_` unter Typargumenten (Lyric 5 §9.2 Regeln 4–5, §9.3 Regel 2) | Konformanzfälle; Kostenregel für `sort` |
 
 **S7c1, geteilt (2026-10-30).** **S7c1a** generische Interfaces ohne `Self` und ohne Defaults;
@@ -1424,3 +1425,18 @@ lexikographisch, ein Enum zuerst nach der Variantenposition; seine Teile werden 
 sobald alle Konformanzen stehen (`SEM0020`, einmal je Typ). Spec 05 Regel 16; drei Fälle, alle
 rot gegen S7c5a. Sechs Mutanten in vier Läufen, die Fälle wie vorhergesagt; im ersten Lauf deckte ein Mutant (der `compare`-Weg für `<`) auch den Zweig über Typparameter ab und überdeckte damit den Native-Mutanten — der lief allein nach und scheiterte wie vorhergesagt.
 Fälle 419 → 422.
+
+**S7c5c, geschnitten (2026-10-30). Lücke ohne Uhr (P20):** Standardwerte für Typparameter
+(Lyric 5 03 §9.1 Regel 5, T18: `interface Add<Rhs = Self>`, `class Map<K, V, H =
+DefaultHasher>`) sind im Script-Design 03 („Generics: … Default-Typargumente, `_`“) übernommen,
+die Spec zog nur §9.1 Regeln 1–3 nach, keine Zeile nannte sie; `interface Add<Rhs = Self>` ist
+heute `PAR0004`. Und ein Typ hält in Script einen Namen einmal (05 Regel 13): zwei `mul` — eines
+für `Mul`, eines für `Mul<float>` — und zwei Antworten `Out` gibt es erst mit Lyric 5 §3 Regeln
+4–5 und §8 Regel 3 (05 Regel 13 nannte nur „S7“). Darum: **S7c5c1** Standard-Typargumente;
+**S7c5c2** die Operator-Interfaces (`Add<Rhs = Self> { type Out = Self }` …, `Neg`, die
+Bit-Operatoren, `Shl<Rhs = int>`), die Operatoren eigener Typen über sie nach dem statischen Typ
+des rechten Operanden — eine Instanz je Operator-Interface und Typ —, `+=` abgeleitet, Generika
+über `T :: [Add<Out = T>]`, die Skalare in Prelude-Blöcken; **S7c5c3** `++`/`--` als Ausdrücke,
+`Contains<T>` für `in`; **S7c5d** mehrere Instanzen eines generischen Interfaces an einem Typ
+(Mitglieder je Block, `SEM0122`; nebeneinander je Instanz), Antworten je Konformanz-Instanz, die
+eingebauten gemischten Konformanzen (`int :: Add<float>`, 03 Mix).

@@ -266,8 +266,8 @@ VM's call path, S7k measurement point 3.
   checked against the open `T` (since S3g).
 - **S7c5b done** — `Ordered`, `TotalOrder`, `Ordering`: `<` … through `compare`, over a type
   parameter too, the synthesized order of a type that lists it, `float` totally ordered (Fl).
-- Next: **S7c5c** — the operator interfaces (`Add` …), `++`/`--`, `+=` derived, `Contains`,
-  mixed arithmetic through built-in conformances; then S7c6 `std.iter`.
+- Next: **S7c5c1** — default type arguments (P20); then S7c5c2 the operator interfaces, S7c5c3
+  `++`/`--` and `Contains`, S7c5d several instances of a generic interface, S7c6 `std.iter`.
 
 ## Working mode
 
@@ -321,4 +321,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P17 | `spawn`, `yieldNow`, `sequence`, `Task`, `TaskStatus`, `Coroutine` and `Cancelled` stand in the prelude (S6a–S6b3), and so do `TaskScope`, `PanicInfo`, `Channel`, `ChannelClosed`, `Semaphore`, `Select`, `Selection`, `Duration`, `sleep`, `Timer`, `TimedOut` and `withTimeout` (S6c–S6d); Lyric 5 has them in `std.task`, `std.sync` and `std.time` (10 §2), `sequence` in `std.core`, and 07 V3 I8 lists the prelude without them. Keep them in the prelude — a script starts tasks without an import — or move them to `std.task` with the std core (S7), as Lyric 5 does? | S6a |
 | P18 | Generic interfaces (`interface I<T>`, Lyric 5 §5) were never built and had no clock: 03 adopts Lyric 5's generics, the parser refuses `interface Maker<T>`, and no plan line names them (found in S7b2b, needed by `FromArrayLiteral<T>`, `FromIterator<T>`, `Contains<T>`). Clocked now to S7c, where `FromIterator` needs them, with `FromArrayLiteral` and a list as an interface value. Say if they should be an earlier slice of their own, or if Script keeps associated types (`type Element`) instead — a deviation that would need deciding. | S7b2b |
 | P19 | The operator interfaces of 05 D6 (`Add<Rhs = Self> { type Out = Self }` …, `Neg`), `++`/`--` as expressions, `+=` derived, `Equatable`/`Ordered`/`TotalOrder`/`Contains` as interfaces and conversion through `From`/`Into` had no clock: the S3f note sent the operators "with S3h", S3h did not take them, no plan line names them (found while cutting S7c4c3: `i++` is PAR0001, `:: Add` SEM0078). Clocked now: comparisons and operators to S7c5, before `std.iter` (now S7c6), whose `sort` needs `TotalOrder`; `From`/`Into` with 05 §13 rule 9 to S7f. Say if they should come elsewhere. | S7c4c2 |
+| P20 | Default type arguments (Lyric 5 03 §9.1 rule 5, T18: `interface Add<Rhs = Self>`) had no clock: the Script design adopts them (03 "Generics … Default-Typargumente"), the spec took §9.1 rules 1–3 alone, no plan line names them (found while cutting S7c5c — `Add<Rhs = Self>` is PAR0004). Clocked now to S7c5c1, before the operator interfaces that need them. Several instances of one generic interface at a type (Lyric 5 05 §3 rules 4–5, answers per instance §8 rule 3), which 05 rule 13 gave only "S7", are clocked to S7c5d. | S7c5b |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

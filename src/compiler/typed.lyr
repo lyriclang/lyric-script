@@ -369,7 +369,7 @@ fn typeOf(e: TExpr): Ty {
         .Upcast(_, t) => t,
         .BoxOf(_, _, t) => t,
         .BoxOfD(_, _, t) => t,
-        .GenericEq(_, _, _) => Ty.Bool,
+        .GenericCompare(_, _, _) => Ty.Bool,
         .Unbox(_, t) => t,
         .IsType(_, _, _) | .IsIface(_, _, _) | .SameRef(_, _) => Ty.Bool,
         .CallGeneric(_, _, _, t) => t,
@@ -506,9 +506,9 @@ enum TExpr :: [Debug] {
     BoxOf(Box<TExpr>, int, Ty),
     // a list of a type parameter in a box whose descriptor the copy makes at run time (S7c4c3b)
     BoxOfD(Box<TExpr>, Box<TExpr>, Ty),
-    // `a == b` (or `!=`) of a type that names a type parameter: compared in the copy, where the
-    // type is known (S7c5a)
-    GenericEq(Box<TExpr>, BinaryOp, Box<TExpr>),
+    // `a == b`, `a < b` … of a type that names a type parameter: compared in the copy, where the
+    // type is known (S7c5a, S7c5b)
+    GenericCompare(Box<TExpr>, BinaryOp, Box<TExpr>),
     /// The value a box holds.
     Unbox(Box<TExpr>, Ty),
     /// Whether an interface value holds a value of the program's type `k`; the type tested.
@@ -690,7 +690,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         .IsType(x, _, _) | .IsIface(x, _, _) | .IsParam(x, _, _) | .DescOfValue(x, _) => [x.value],
         .DescArg(x, _, _) | .DescVariant(x, _, _) | .DebugParam(x, _, _) => [x.value],
         .TextParam(x, _, _) | .Throw(x) | .Block(_, x, _) | .Panic(x, _) => [x.value],
-        .GenericEq(x, _, y) => [x.value, y.value],
+        .GenericCompare(x, _, y) => [x.value, y.value],
         .Binary(x, _, y, _) | .Coalesce(x, y, _) | .SameRef(x, y) | .IsDesc(x, y) | .BoxOfD(x, y, _) => [
             x.value,
             y.value,

@@ -1944,7 +1944,7 @@ class FnGen {
             }
             .Unit => { }
             // a comparison every copy resolves: one left is the compiler's fault, as below
-            .GenericEq(_, _, _) => {
+            .GenericCompare(_, _, _) => {
                 let message = this.temp(Ty.Str).r;
                 this.emit(
                     Op.LoadStr,

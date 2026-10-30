@@ -2991,6 +2991,13 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         }
                     }
                     .FsExists => s[x] = truth(exists(textOf(r[y]))),
+                    // the sign bit set: the other bits turned over, so the integers' order is the
+                    // total order (S7c5b)
+                    .FloatOrderKey => {
+                        let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
+                        let b = s[x];
+                        s[x] = if ((b >> 63) != 0) b ^ mask else b;
+                    }
                 }
                 pc += 1;
             }

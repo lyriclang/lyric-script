@@ -28,6 +28,9 @@ enum NativeFn :: [Equatable] {
     OsEnv,
     /// `std.fs.exists(path)`: whether something is at the path.
     FsExists,
+    /// A `float`'s place in IEEE 754's total order as an `int` (S7c5b): -NaN, -infinity, …, -0.0,
+    /// 0.0, …, infinity, NaN, compared as integers.
+    FloatOrderKey,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -41,7 +44,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 12;
+let nativeCount: int = 13;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -57,7 +60,8 @@ fn nativeOf(n: int): NativeFn {
         8 => NativeFn.StrCmp,
         9 => NativeFn.TraceText,
         10 => NativeFn.OsEnv,
-        _ => NativeFn.FsExists,
+        11 => NativeFn.FsExists,
+        _ => NativeFn.FloatOrderKey,
     };
 }
 
@@ -76,6 +80,7 @@ fn nativeNumber(n: NativeFn): int {
         .TraceText => 9,
         .OsEnv => 10,
         .FsExists => 11,
+        .FloatOrderKey => 12,
     };
 }
 
@@ -93,6 +98,7 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .TraceText => sig("error.trace", 0, 1, false, true),
         .OsEnv => sig("os.env", 0, 1, false, true),
         .FsExists => sig("fs.exists", 0, 1, true, false),
+        .FloatOrderKey => sig("float.orderKey", 1, 0, true, false),
     };
 }
 

@@ -388,6 +388,10 @@ class Checker {
     var listDebugFns: Map<string, int> = Map<string, int>.new(),
     // the prelude's `Equatable` (S7c5a); each type's comparison a copy made, by the type's key
     var equatableIndex: int = -1,
+    // the prelude's `Ordered`, `TotalOrder` and `Ordering` (S7c5b)
+    var orderedIndex: int = -1,
+    var totalOrderIndex: int = -1,
+    var orderingIndex: int = -1,
     var genericEqFns: Map<string, int> = Map<string, int>.new(),
     // the type parameters in scope by name, and the generic they are of
     var typeParams: Map<string, int> = Map<string, int>.new(),
@@ -1056,6 +1060,9 @@ class Checker {
         }
         // what `==` asks of a type parameter (S7c5a)
         this.equatableIndex = this.typeIndex.get("Equatable") ?? -1;
+        this.orderedIndex = this.typeIndex.get("Ordered") ?? -1;
+        this.totalOrderIndex = this.typeIndex.get("TotalOrder") ?? -1;
+        this.orderingIndex = this.typeIndex.get("Ordering") ?? -1;
         // the values the VM holds without a descriptor: boxed as interface values (S7c4b)
         for (held in ["Task", "Coroutine", "TaskScope", "Channel", "Semaphore"]) {
             if (let k = this.typeIndex.get(held)) {
@@ -1173,6 +1180,8 @@ class Checker {
         }
         // what the blanket blocks that conform give the types they reach (05 §13 rule 8)
         this.conformBlankets();
+        // what a synthesized `equals` or `compare` asks of the parts (Lyric 5 05 §14; S7c5b)
+        this.checkSynthesized();
         // a type's member that hides a blanket block's (05 §13 rule 7; S7c4c2)
         if (this.blanketFns.length() > 0) {
             for (item in module.items) {
@@ -2783,6 +2792,77 @@ class Checker {
         return this.selfAnswers.get(name);
     }
 
+    /// The parts of every struct, class and enum that lists `Equatable`, `Ordered` or
+    /// `TotalOrder` without the member: each one comparing so (`LYS-SEM0020`, at the conformance;
+    /// S7c5b).
+    mut fn checkSynthesized(): void {
+        let n = this.types.length();
+        var i = 0;
+        while (i < n) {
+            let info = this.types[i];
+            let plain = (info.kind == .Struct || info.kind == .Class || info.kind == .Enum)
+                && (info.template < 0 || info.template == i);
+            if (plain) {
+                // the child first: a `TotalOrder` is said once, at its own conformance
+                var said = false;
+                for (ii in [this.totalOrderIndex, this.orderedIndex]) {
+                    let name = if (ii == this.totalOrderIndex) "totalCompare" else "compare";
+                    if (!said
+                        && ii >= 0
+                        && this.listsItself(i, ii)
+                        && this.methodOf(i, name) == null) {
+                        let missing = this.partNotOf(i, ii);
+                        if (missing != "") {
+                            let shown = this.types[ii].name;
+                            let at = this.conformedAt.get(f"{i}:{shown}")
+                                ?? this.conformedAt.get(f"{i}:TotalOrder")
+                                ?? nowhereSpan;
+                            this.error(
+                                "LYS-SEM0020",
+                                f"'{info.name}' does not implement '{shown}.{name}': {missing} is no {shown}",
+                                at
+                            );
+                            said = true;
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
+    /// Whether type `i` lists interface `ii` (or a child of it) in its own conformances.
+    mut fn listsItself(i: int, ii: int): bool {
+        for (x in this.types[i].ifaces) {
+            for (a in this.ancestry(x)) {
+                if (a == ii) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// The first field or payload of type `i` that is no `ii`, named; "" where every one is.
+    mut fn partNotOf(i: int, ii: int): string {
+        let info = this.types[i];
+        for (f in info.fields) {
+            if (!this.conformsTo(f.ty, ii)) {
+                return f"its field '{f.name}'";
+            }
+        }
+        var v = 0;
+        for (vf in info.variantFields) {
+            for (f in vf) {
+                if (!this.conformsTo(f.ty, ii)) {
+                    return f"a payload of '{info.variants[v]}'";
+                }
+            }
+            v += 1;
+        }
+        return "";
+    }
+
     /// What the blanket blocks that conform give the types they reach (05 §13 rule 8; S7c4c3a):
     /// the interfaces, their answers, the block's members in the type's table — copied for the
     /// type, for a generic one per instance. A type that conforms to one of the chain itself is
@@ -3443,7 +3523,7 @@ class Checker {
                     }
                     defaults.insert(member, declared);
                     info.witness.insert(slot, declared);
-                } else if (declared >= 0 && this.functions[declared].owner == this.equatableIndex) {
+                } else if (declared >= 0 && this.synthesizable(this.functions[declared].owner)) {
                     // `equals` synthesized field by field where `==` asks for it (Lyric 5 05 §14;
                     // S7c5a): no table holds it, `Equatable` is a constraint only
                 } else {
@@ -5249,7 +5329,7 @@ class Checker {
                 this.specBox(d, a),
                 this.subst(t, a)
             ),
-            .GenericEq(x, op, y) => {
+            .GenericCompare(x, op, y) => {
                 let l = this.specExpr(x.value, a);
                 let r = this.specExpr(y.value, a);
                 let t = typeOf(l);
@@ -5259,6 +5339,13 @@ class Checker {
                     || t == .Char
                     || t == .Str
                     || this.isScalarEnum(t);
+                if (op != .Eq && op != .Ne) {
+                    // `<` …: the scalars natively, another through its `compare` (S7c5b)
+                    if (let n = this.nativeOrder(l, op, r, nowhereSpan)) {
+                        return n;
+                    }
+                    return this.ordered(l, op, r, nowhereSpan);
+                }
                 let eq = if (native) this.equality(l, BinaryOp.Eq, r, nowhereSpan)
                     else TExpr.Call(this.genericEqFnOf(t, nowhereSpan), [l, r], Ty.Bool);
                 if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool)
@@ -5455,6 +5542,18 @@ class Checker {
         // `Equatable.equals` of a type that compares without one of its own (S7c5a)
         if (this.functions[fi].owner == this.equatableIndex && this.functions[fi].abstract) {
             return TExpr.Call(this.genericEqFnOf(concrete, nowhereSpan), all, rt);
+        }
+        let owner = this.functions[fi].owner;
+        if ((owner == this.orderedIndex || owner == this.totalOrderIndex)
+            && owner >= 0
+            && this.functions[fi].abstract) {
+            return this.compareCall(
+                concrete,
+                all[0],
+                all[1],
+                owner == this.totalOrderIndex,
+                nowhereSpan
+            );
         }
         // an abstract member has no body for a copy: the type left unresolved is the compiler's
         // fault, said where it runs (S7c4c3a: the copy of an abstract `next` looped forever)
@@ -9472,12 +9571,24 @@ class Checker {
                         Ty.Bool
                     );
                 }
-                if (ta == .Char && tb == .Char) {
-                    return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
+                if (let native = this.nativeOrder(a, op, b, at)) {
+                    return native;
                 }
-                if (ta == .Str && tb == .Str) {
-                    let cmp = TExpr.Native(Native.StrCmp, [a, b], Ty.Int);
-                    return TExpr.Binary(boxE(cmp), op, boxE(TExpr.Int(0)), Ty.Bool);
+                // an `Ordered` through its `compare` (Lyric 5 05 §12 rule 6; S7c5b)
+                if (ta == tb && this.orderedIndex >= 0) {
+                    if (this.anyParamIn(ta)) {
+                        if (this.conformsTo(ta, this.orderedIndex)) {
+                            return TExpr.GenericCompare(boxE(a), op, boxE(b));
+                        }
+                    } else if (this.conformsTo(ta, this.orderedIndex)) {
+                        return this.ordered(a, op, b, at);
+                    }
+                    this.error(
+                        "LYS-SEM0003",
+                        f"'{binaryText(op)}' does not take {this.tyName(ta)} and {this.tyName(tb)}: {this.tyName(ta)} is no Ordered",
+                        at
+                    );
+                    return TExpr.Unknown;
                 }
             }
             .Eq | .Ne => {
@@ -9491,6 +9602,198 @@ class Checker {
             at
         );
         return TExpr.Unknown;
+    }
+
+    /// `a < b` … of two scalars the VM orders itself: numbers widened, `char`s, strings by bytes;
+    /// null for another pair.
+    mut fn nativeOrder(a: TExpr, op: BinaryOp, b: TExpr, at: Span): ?TExpr {
+        let ta = typeOf(a);
+        let tb = typeOf(b);
+        if ((ta == .Int || ta == .Float) && (tb == .Int || tb == .Float)) {
+            let wide = if (ta == .Float || tb == .Float) Ty.Float else Ty.Int;
+            return TExpr.Binary(
+                boxE(this.coerce(a, wide, at)),
+                op,
+                boxE(this.coerce(b, wide, at)),
+                Ty.Bool
+            );
+        }
+        if (ta == .Char && tb == .Char) {
+            return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
+        }
+        if (ta == .Str && tb == .Str) {
+            let cmp = TExpr.Native(Native.StrCmp, [a, b], Ty.Int);
+            return TExpr.Binary(boxE(cmp), op, boxE(TExpr.Int(0)), Ty.Bool);
+        }
+        return null;
+    }
+
+    /// `a < b` … of an `Ordered` type: what its `compare` gives, read by the prelude's `__less`
+    /// and its kin (Lyric 5 05 §12 rule 6; S7c5b) — `null` makes all four false.
+    mut fn ordered(a: TExpr, op: BinaryOp, b: TExpr, at: Span): TExpr {
+        let verdict = match (op) {
+            .Lt => "__less",
+            .Le => "__lessOrEqual",
+            .Gt => "__greater",
+            _ => "__greaterOrEqual",
+        };
+        var fi = -1;
+        if (let fs = this.fnByName.get(verdict)) {
+            if (fs.length() > 0) {
+                fi = fs[0];
+            }
+        }
+        let cmp = this.compareCall(typeOf(a), a, b, false, at);
+        return TExpr.Call(fi, [cmp], Ty.Bool);
+    }
+
+    /// `a.compare(b)` — `a.totalCompare(b)` where `total` — of two values of `t`: the type's own,
+    /// else the one synthesized from its parts (Lyric 5 05 §14; S7c5b).
+    mut fn compareCall(t: Ty, a: TExpr, b: TExpr, total: bool, at: Span): TExpr {
+        let name = if (total) "totalCompare" else "compare";
+        let ordering = Ty.Named(this.orderingIndex);
+        let returns = if (total) ordering else Ty.Optional(boxTy(ordering));
+        let entry = this.entryOf(t);
+        if (entry >= 0) {
+            if (let own = this.methodOf(entry, name)) {
+                if (!this.functions[own].isStatic && this.functions[own].params.length() == 1) {
+                    return TExpr.Call(own, [a, b], returns);
+                }
+            }
+        }
+        return TExpr.Call(this.cmpFnOf(t, total, at), [a, b], returns);
+    }
+
+    /// The function ordering two values of `t`, a struct, class or enum that lists `Ordered` or
+    /// `TotalOrder` without the member (Lyric 5 05 §14 rules 2–3; S7c5b): lexicographic, the
+    /// first part not `.Equal` deciding — an enum's variant first —, a `compare` meeting `null`
+    /// giving `null`.
+    mut fn cmpFnOf(t: Ty, total: bool, at: Span): int {
+        let key = (if (total) "total " else "compare ") + tyKey(t);
+        let known = this.genericEqFns.get(key);
+        if (known != null) {
+            return known;
+        }
+        let ordering = Ty.Named(this.orderingIndex);
+        let returns = if (total) ordering else Ty.Optional(boxTy(ordering));
+        let (index, saved) = this.beginSynth(
+            if (total) "#totalCompare" else "#compare",
+            [
+                ParamInfo { name = "a", ty = t, default = null },
+                ParamInfo { name = "b", ty = t, default = null },
+            ],
+            returns,
+            at
+        );
+        this.genericEqFns.insert(key, index);
+        let a = TExpr.Local(0, t);
+        let b = TExpr.Local(1, t);
+        let body = List<TStmt>.new();
+        let info = match (t) {
+            .Named(i) => this.types[i],
+            _ => this.types[this.anyIndex],
+        };
+        if (this.isScalarEnum(t)) {
+            this.cmpBefore(body, a, b, total, at);
+        } else if (info.kind == .Enum) {
+            let i = match (t) {
+                .Named(j) => j,
+                _ => -1,
+            };
+            let ta = TExpr.Tag(boxE(a));
+            let tb = TExpr.Tag(boxE(b));
+            this.cmpBefore(body, ta, tb, total, at);
+            var v = 0;
+            while (v < info.variantFields.length()) {
+                let vf = info.variantFields[v];
+                if (vf.length() > 0) {
+                    // this variant's parts, where both are it
+                    let inner = List<TStmt>.new();
+                    var k = 0;
+                    while (k < vf.length()) {
+                        this.cmpPart(
+                            inner,
+                            TExpr.Payload(boxE(a), i, v, k, vf[k].ty),
+                            TExpr.Payload(boxE(b), i, v, k, vf[k].ty),
+                            vf[k].ty,
+                            total,
+                            at
+                        );
+                        k += 1;
+                    }
+                    body.push(
+                        TStmt.If(
+                            TExpr.Binary(boxE(ta), BinaryOp.Eq, boxE(TExpr.Int(v)), Ty.Bool),
+                            inner.toArray(),
+                            [],
+                            at.line
+                        )
+                    );
+                }
+                v += 1;
+            }
+        } else {
+            var k = 0;
+            for (f in info.fields) {
+                this.cmpPart(
+                    body,
+                    TExpr.Field(boxE(a), k, f.ty),
+                    TExpr.Field(boxE(b), k, f.ty),
+                    f.ty,
+                    total,
+                    at
+                );
+                k += 1;
+            }
+        }
+        body.push(TStmt.Return(this.orderValue(1, total), at.line));
+        this.endSynth(index, body.toArray(), saved);
+        return index;
+    }
+
+    /// `Ordering`'s variant `k` as a `compare` gives it — wrapped in its optional — or a
+    /// `totalCompare`.
+    mut fn orderValue(k: int, total: bool): TExpr {
+        let v = TExpr.Variant(this.orderingIndex, k);
+        let ordering = Ty.Named(this.orderingIndex);
+        return if (total) v else TExpr.Wrap(boxE(v), Ty.Optional(boxTy(ordering)));
+    }
+
+    /// Into `body`: `.Less` returned where `x < y`, `.Greater` where `x > y` — two integers, an
+    /// enum's variant positions.
+    mut fn cmpBefore(body: List<TStmt>, x: TExpr, y: TExpr, total: bool, at: Span): void {
+        body.push(
+            TStmt.If(
+                TExpr.Binary(boxE(x), BinaryOp.Lt, boxE(y), Ty.Bool),
+                [TStmt.Return(this.orderValue(0, total), at.line)],
+                [],
+                at.line
+            )
+        );
+        body.push(
+            TStmt.If(
+                TExpr.Binary(boxE(x), BinaryOp.Gt, boxE(y), Ty.Bool),
+                [TStmt.Return(this.orderValue(2, total), at.line)],
+                [],
+                at.line
+            )
+        );
+    }
+
+    /// Into `body`: the order of one part, `x` against `y` of type `pt`, returned where it is
+    /// not `.Equal`.
+    mut fn cmpPart(body: List<TStmt>, x: TExpr, y: TExpr, pt: Ty, total: bool, at: Span): void {
+        let ordering = Ty.Named(this.orderingIndex);
+        let returns = if (total) ordering else Ty.Optional(boxTy(ordering));
+        let c = this.hidden(returns, at);
+        body.push(TStmt.SetLocal(c, this.compareCall(pt, x, y, total, at), at.line));
+        let differs = this.equality(
+            TExpr.Local(c, returns),
+            BinaryOp.Ne,
+            this.orderValue(1, total),
+            at
+        );
+        body.push(TStmt.If(differs, [TStmt.Return(TExpr.Local(c, returns), at.line)], [], at.line));
     }
 
     /// `a == b` and `a != b` of two checked operands: numbers widened, `bool`, `char`, an enum's
@@ -9531,7 +9834,7 @@ class Checker {
             if (ta == tb) {
                 let missing = this.notEquatable(ta, List<int>.new());
                 if (missing == null) {
-                    return TExpr.GenericEq(boxE(a), op, boxE(b));
+                    return TExpr.GenericCompare(boxE(a), op, boxE(b));
                 }
                 this.error(
                     "LYS-SEM0059",
@@ -9602,6 +9905,28 @@ class Checker {
             at
         );
         return TExpr.Unknown;
+    }
+
+    /// Whether interface `ii`'s member is synthesized where a type lists it without one: the
+    /// comparing family, `Equatable`, `Ordered`, `TotalOrder` (Lyric 5 05 §14; S7c5a, S7c5b).
+    fn synthesizable(ii: int): bool {
+        return ii >= 0
+            && (ii == this.equatableIndex || ii == this.orderedIndex || ii == this.totalOrderIndex);
+    }
+
+    /// `x.compare(y)` and `x.totalCompare(y)` of an `Ordered` or `TotalOrder` without its own
+    /// (S7c5b); null for another call.
+    mut fn synthCompare(t: Ty, receiver: TExpr, method: string, args: Arg[], at: Span): ?TExpr {
+        let total = method == "totalCompare";
+        if ((method != "compare" && !total) || args.length() != 1 || this.orderedIndex < 0) {
+            return null;
+        }
+        let ii = if (total) this.totalOrderIndex else this.orderedIndex;
+        if (!this.conformsTo(t, ii)) {
+            return null;
+        }
+        let other = this.coerce(this.expr(args[0].value, t), t, spanOf(args[0].value));
+        return this.compareCall(t, receiver, other, total, at);
     }
 
     /// `x.equals(y)` of a type that compares without an `equals` of its own (Lyric 5 05 §14;
@@ -13680,6 +14005,9 @@ class Checker {
                     }
                     if (let eq = this.synthEquals(t, receiver, method, args, at)) {
                         return eq;
+                    }
+                    if (let cmp = this.synthCompare(t, receiver, method, args, at)) {
+                        return cmp;
                     }
                     if (let call = this.blanketCall(
                         t,

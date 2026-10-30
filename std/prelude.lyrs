@@ -368,6 +368,50 @@ fn __listSlice<T>(xs: T[], from: int, to: int): T[] {
 interface Equatable {
     fn equals(o: Self): bool
 }
+// the order of two values (Lyric 5 05 §12 rule 6; S7c5b): `<` … read `compare`, `null` where the
+// two are not ordered; `TotalOrder` is what sorting asks — `float` is one in IEEE 754's order
+enum Ordering {
+    Less,
+    Equal,
+    Greater,
+}
+interface Ordered :: Equatable {
+    fn compare(o: Self): ?Ordering
+}
+interface TotalOrder :: Ordered {
+    fn totalCompare(o: Self): Ordering
+}
+extend int :: [Ordered, TotalOrder] {
+    fn compare(o: int): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: int): Ordering = if (this < o) Ordering.Less
+        else if (this > o) Ordering.Greater
+        else Ordering.Equal
+}
+extend char :: [Ordered, TotalOrder] {
+    fn compare(o: char): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: char): Ordering = if (this < o) Ordering.Less
+        else if (this > o) Ordering.Greater
+        else Ordering.Equal
+}
+extend string :: [Ordered, TotalOrder] {
+    fn compare(o: string): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: string): Ordering = if (this < o) Ordering.Less
+        else if (this > o) Ordering.Greater
+        else Ordering.Equal
+}
+extend float :: [Ordered, TotalOrder] {
+    fn compare(o: float): ?Ordering = if (this < o) Ordering.Less
+        else if (this > o) Ordering.Greater
+        else if (this == o) Ordering.Equal
+        else null
+    fn totalCompare(o: float): Ordering = __floatKey(this).totalCompare(__floatKey(o))
+}
+fn __floatKey(x: float): int = __float_orderKey(x)
+// what `<`, `<=`, `>` and `>=` make of a `compare`
+fn __less(c: ?Ordering): bool = c == Ordering.Less
+fn __lessOrEqual(c: ?Ordering): bool = c == Ordering.Less || c == Ordering.Equal
+fn __greater(c: ?Ordering): bool = c == Ordering.Greater
+fn __greaterOrEqual(c: ?Ordering): bool = c == Ordering.Greater || c == Ordering.Equal
 // the comparing methods of every list whose elements compare (S7c5a; S7b2a synthesized them)
 extend<T :: [Equatable]> T[] {
     fn contains(x: T): bool = this.indexOf(x) != null

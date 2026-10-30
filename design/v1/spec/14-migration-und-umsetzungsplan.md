@@ -1582,3 +1582,17 @@ die Tabelle, die keins hält: `LYS-ICE0001`; (2) `memberCallOn` rief das Block-M
 ohne ihr Element (die Lücke, die S7c5c3 in `operatorMember` schloss). Spec 05 Regel 19, 12 Regel 3;
 sechs Fälle, alle rot gegen S7c6b2. Mutanten: zwei Läufe, 465 und 466 von 469 — wie vorhergesagt.
 Fälle 463 → 469.
+
+**S7c6c2, Ergebnis (2026-10-30).** Die übrigen Glieder von Lyric 5s Array und `List` an `T[]`:
+`sortBy`, `sortByKey`, `sort`, `sortUnstable` (eine stabile Merge-Sortierung in Script über einen
+Puffer der Länge, `O(n log n)` Vergleiche; Listen aus `int`, `char`, `float` und `string` sortiert
+die VM selbst — drei Natives, Format 25), `binarySearch`, `partitionPoint`, `join`,
+`List<T>.new/of/from/withCapacity` (statische Aufrufe an `List<T>` gingen vorher gar nicht,
+`SEM0013`), `sorted`/`sortedBy` der Iteratoren. **Kostenregel gemessen** (Debug-Bau, warmer
+Cache, 100 000 `int`): die VM sortiert in ~40 ms; über ein Lambda in Script ~18 s — ~10 µs je
+Vergleich, drei VM-Aufrufe (P26, Hebel ist S7j). Vom Vollauf vor dem Abschluss gefangen: ein
+`join` im Listen-Block der Prelude schrieb `{x}` über `T` und belegte damit schon beim Prüfen der
+Prelude den Debug-Slot — jedes Programm baute die Debug-Formen aller Typen (und stieß an die
+NYI-Uhr der Form von `TaskStatus<void>`); `join` einer Liste entsteht jetzt am Aufruf. Spec 03
+Regel 16, 12 Regel 4; sieben Fälle, alle rot gegen S7c6c1. Mutanten: zwei Läufe, 472 und 473 von 476 — wie vorhergesagt.
+Fälle 469 → 476.

@@ -8644,7 +8644,7 @@ class Checker {
                         if (hasParam(e.value)) {
                             return this.notYet(
                                 f"'{binaryText(op)}' over a {this.tyName(typeOf(hay))}",
-                                "S7d (Equatable as an interface)",
+                                "S7c5 (Equatable as an interface)",
                                 at
                             );
                         }
@@ -8866,7 +8866,7 @@ class Checker {
             if (hasParam(elem)) {
                 return this.notYet(
                     f"'{binaryText(op)}' on a {this.tyName(ta)}",
-                    "S7d (Equatable as an interface)",
+                    "S7c5 (Equatable as an interface)",
                     at
                 );
             }
@@ -10384,7 +10384,7 @@ class Checker {
             if (hasParam(elem)) {
                 return this.notYet(
                     f"'{method}' on a {this.tyName(t)}",
-                    "S7d (Equatable as an interface)",
+                    "S7c5 (Equatable as an interface)",
                     at
                 );
             }

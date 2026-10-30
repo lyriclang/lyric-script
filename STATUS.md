@@ -253,8 +253,9 @@ VM's call path, S7k measurement point 3.
   has it, blanket blocks with members, Lyric 5 §9.2 rules 2 and 4 (the position binds; type
   arguments at a method). Found: instance keys were the shown names (`Pair<B, A>` and
   `Pair<A, A>` one instance — since S3).
-- Next: **S7c4c3** — blanket conformances (05 §13 rules 8–9), static members of blanket blocks,
-  a block on one instance, a list of a type parameter as an interface value.
+- Next: **S7c4c3** — blanket conformances (05 §13 rule 8), static members of blanket blocks, a
+  block on one instance, a list of a type parameter as an interface value. Then S7c5 comparisons
+  and operators (P19), S7c6 `std.iter`.
 
 ## Working mode
 
@@ -307,4 +308,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P16 | A frame of an imported module's function names its file below the root, `at f (util/deep.lyrs:2)`; the entry's frames keep `(line n)` (S5a2), so a single script's report reads as before. Lyric 5 names the file in every frame. Keep the mixed form, or name the entry's file too? | S5a2 |
 | P17 | `spawn`, `yieldNow`, `sequence`, `Task`, `TaskStatus`, `Coroutine` and `Cancelled` stand in the prelude (S6a–S6b3), and so do `TaskScope`, `PanicInfo`, `Channel`, `ChannelClosed`, `Semaphore`, `Select`, `Selection`, `Duration`, `sleep`, `Timer`, `TimedOut` and `withTimeout` (S6c–S6d); Lyric 5 has them in `std.task`, `std.sync` and `std.time` (10 §2), `sequence` in `std.core`, and 07 V3 I8 lists the prelude without them. Keep them in the prelude — a script starts tasks without an import — or move them to `std.task` with the std core (S7), as Lyric 5 does? | S6a |
 | P18 | Generic interfaces (`interface I<T>`, Lyric 5 §5) were never built and had no clock: 03 adopts Lyric 5's generics, the parser refuses `interface Maker<T>`, and no plan line names them (found in S7b2b, needed by `FromArrayLiteral<T>`, `FromIterator<T>`, `Contains<T>`). Clocked now to S7c, where `FromIterator` needs them, with `FromArrayLiteral` and a list as an interface value. Say if they should be an earlier slice of their own, or if Script keeps associated types (`type Element`) instead — a deviation that would need deciding. | S7b2b |
+| P19 | The operator interfaces of 05 D6 (`Add<Rhs = Self> { type Out = Self }` …, `Neg`), `++`/`--` as expressions, `+=` derived, `Equatable`/`Ordered`/`TotalOrder`/`Contains` as interfaces and conversion through `From`/`Into` had no clock: the S3f note sent the operators "with S3h", S3h did not take them, no plan line names them (found while cutting S7c4c3: `i++` is PAR0001, `:: Add` SEM0078). Clocked now: comparisons and operators to S7c5, before `std.iter` (now S7c6), whose `sort` needs `TotalOrder`; `From`/`Into` with 05 §13 rule 9 to S7f. Say if they should come elsewhere. | S7c4c2 |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

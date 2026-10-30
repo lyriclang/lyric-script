@@ -18,6 +18,7 @@
 import std.collections { List };
 import std.core { arrayOf };
 import std.fs { exists };
+import std.hash { DefaultHasher };
 import std.io { print, println, stdin };
 import std.os { env };
 import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
@@ -325,6 +326,8 @@ class RunShared {
     // the tasks ready to run, from `head` on; every task spawned, in order (S6a)
     queue: List<TaskState>,
     var head: int = 0,
+    // the objects numbered so far, for a hash by identity (01 S8; S7d1)
+    var objects: int = 0,
     tasks: List<ScriptTask>,
     // the first task to end with an error or a panic: what the top level's end gives (07 End;
     // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
@@ -2997,6 +3000,34 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
                         let b = s[x];
                         s[x] = if ((b >> 63) != 0) b ^ mask else b;
+                    }
+                    // a hash's mixing (S7d1): SipHash-1-3 under the process's key, a word or a
+                    // string's bytes into the state
+                    .HashMixInt => {
+                        var h = DefaultHasher.new();
+                        h.writeUint(s[x]);
+                        h.writeUint(s[x + 1]);
+                        s[x] = h.finish();
+                    }
+                    .HashMixStr => {
+                        var h = DefaultHasher.new();
+                        h.writeUint(s[x]);
+                        textOf(r[y]).hash(&h);
+                        s[x] = h.finish();
+                    }
+                    // an object's number for a hash by identity, given at its first (01 S8); a
+                    // value the VM holds otherwise has none of its own
+                    .ObjectNumber => {
+                        let o = r[y];
+                        if (o is ScriptObject) {
+                            if (o.number == 0) {
+                                shared.objects += 1;
+                                o.number = shared.objects;
+                            }
+                            s[x] = o.number as uint64;
+                        } else {
+                            s[x] = 0;
+                        }
                     }
                     // a list sorted in place (S7c6c2): its length unchanged, a walk goes on
                     .ListSortInts => {

@@ -329,6 +329,8 @@ enum FnState :: [Equatable] {
 class Synthesized {
     var cloneIx: int = -1,
     var defaultIx: int = -1,
+    var hashableIx: int = -1,
+    var hasherIx: int = -1,
     fns: Map<string, int> = Map<string, int>.new(),
 }
 
@@ -1099,6 +1101,8 @@ class Checker {
         this.equatableIndex = this.typeIndex.get("Equatable") ?? -1;
         this.synth.cloneIx = this.typeIndex.get("Clone") ?? -1;
         this.synth.defaultIx = this.typeIndex.get("Default") ?? -1;
+        this.synth.hashableIx = this.typeIndex.get("Hashable") ?? -1;
+        this.synth.hasherIx = this.typeIndex.get("Hasher") ?? -1;
         this.orderedIndex = this.typeIndex.get("Ordered") ?? -1;
         this.totalOrderIndex = this.typeIndex.get("TotalOrder") ?? -1;
         this.orderingIndex = this.typeIndex.get("Ordering") ?? -1;
@@ -3331,6 +3335,221 @@ class Checker {
         return null;
     }
 
+    /// What keeps a value of `t` from hashing, `null` where nothing does (S7d1; 03 Eq, 05 Fl): a
+    /// float, a list, a map, a function, an interface value; a class that is no `Identity` and
+    /// does not list `Hashable`; a part of a struct, an enum or a tuple that does not hash.
+    mut fn notHashable(t: Ty, seen: List<int>): ?string {
+        return match (t) {
+            .Int | .Char | .Bool | .Str | .Unknown | .NullLit => null,
+            .Param(_) | .Assoc(_, _, _) => if (this.genericFn < 0
+                || this.conformsDirect(t, this.synth.hashableIx)) null
+                else f"{this.tyName(t)} is no Hashable",
+            .Optional(inner) => this.notHashable(inner.value, seen),
+            .Tuple(tt) => {
+                var why: ?string = null;
+                for (x in tt.elements) {
+                    why = why ?? this.notHashable(x, seen);
+                }
+                why
+            }
+            .Named(i) => {
+                let info = this.types[i];
+                if (this.methodOf(i, "hash") != null) {
+                    return null;
+                }
+                if (info.kind == .Class || info.vmHeld) {
+                    if (this.saysItself(i, this.identityIndex)) {
+                        return null;
+                    }
+                    if (!this.saysItself(i, this.synth.hashableIx)) {
+                        return f"{this.tyName(t)} is no Hashable: a class hashes by its identity or through ':: Hashable'";
+                    }
+                } else if (info.kind != .Struct && info.kind != .Enum) {
+                    return f"{this.tyName(t)} is no Hashable";
+                }
+                for (s in seen) {
+                    if (s == i) {
+                        return null;
+                    }
+                }
+                seen.push(i);
+                for (f in info.fields) {
+                    if (let why = this.notHashable(f.ty, seen)) {
+                        return f"its field '{f.name}': {why}";
+                    }
+                }
+                var v = 0;
+                for (vf in info.variantFields) {
+                    for (f in vf) {
+                        if (let why = this.notHashable(f.ty, seen)) {
+                            return f"a payload of '{info.variants[v]}': {why}";
+                        }
+                    }
+                    v += 1;
+                }
+                null
+            }
+            _ => f"{this.tyName(t)} is no Hashable",
+        };
+    }
+
+    /// `x.hash(h)` of a type that hashes without a `hash` of its own (S7d1): its synthesized
+    /// function — over a type parameter the copy's; null for another call.
+    mut fn synthHash(t: Ty, receiver: TExpr, method: string, args: Arg[]): ?TExpr {
+        if (method != "hash"
+            || args.length() != 1
+            || this.synth.hashableIx < 0
+            || this.synth.hasherIx < 0
+            || !this.conformsDirect(t, this.synth.hashableIx)) {
+            return null;
+        }
+        let hasher = Ty.Named(this.synth.hasherIx);
+        let h = this.coerce(this.expr(args[0].value, hasher), hasher, spanOf(args[0].value));
+        if (this.anyParamIn(t)) {
+            return TExpr.CallBound(
+                t,
+                this.synth.hashableIx,
+                "hash",
+                this.slotIn(this.synth.hashableIx, "hash"),
+                [receiver, h],
+                Ty.Void
+            );
+        }
+        return TExpr.Call(this.hashFnOf(t), [receiver, h], Ty.Void);
+    }
+
+    /// What writes `e`, of type `t`, into hasher `h` in a synthesized function (S7d1): a part's
+    /// own `hash`; an optional a mark and its value, a tuple its elements.
+    mut fn hashInto(e: TExpr, t: Ty, h: TExpr, body: List<TStmt>): void {
+        match (t) {
+            .Optional(inner) => {
+                let k = this.hidden(t, nowhereSpan);
+                let l = TExpr.Local(k, t);
+                let some = List<TStmt>.new();
+                some.push(this.hasherCall("writeByte", h, TExpr.Int(1)));
+                this.hashInto(TExpr.Narrow(boxE(l), inner.value), inner.value, h, some);
+                body.push(TStmt.SetLocal(k, e, 1));
+                body.push(
+                    TStmt.If(
+                        TExpr.IsNull(boxE(l)),
+                        [this.hasherCall("writeByte", h, TExpr.Int(0))],
+                        some.toArray(),
+                        1
+                    )
+                );
+            }
+            .Tuple(tt) => {
+                let k = this.hidden(t, nowhereSpan);
+                let l = TExpr.Local(k, t);
+                body.push(TStmt.SetLocal(k, e, 1));
+                var j = 0;
+                for (x in tt.elements) {
+                    this.hashInto(TExpr.Elem(boxE(l), j, x), x, h, body);
+                    j += 1;
+                }
+            }
+            _ => {
+                body.push(
+                    TStmt.Expr(
+                        this.memberCallOn(
+                            t,
+                            this.synth.hashableIx,
+                            "hash",
+                            this.slotIn(this.synth.hashableIx, "hash"),
+                            [e, h],
+                            Ty.Void
+                        ),
+                        1
+                    )
+                );
+            }
+        }
+    }
+
+    /// `h.writeByte(v)` or `h.writeInt(v)` in a synthesized function.
+    mut fn hasherCall(method: string, h: TExpr, v: TExpr): TStmt {
+        let fi = this.methodOf(this.synth.hasherIx, method) ?? -1;
+        return TStmt.Expr(TExpr.Call(fi, [h, v], Ty.Void), 1);
+    }
+
+    /// The function hashing a value of `t`, a type a copy knows (S7d1): an object of an
+    /// `Identity` class by its number, a struct's and a class's fields in order, an enum's
+    /// variant's position and then its payload.
+    mut fn hashFnOf(t: Ty): int {
+        let key = "hash:" + tyKey(t);
+        if (let known = this.synth.fns.get(key)) {
+            return known;
+        }
+        let hasher = Ty.Named(this.synth.hasherIx);
+        let (index, saved) = this.beginSynth(
+            "#hash",
+            [
+                ParamInfo { name = "x", ty = t, default = null },
+                ParamInfo { name = "h", ty = hasher, default = null },
+            ],
+            Ty.Void,
+            nowhereSpan
+        );
+        this.synth.fns.insert(key, index);
+        let x = TExpr.Local(0, t);
+        let h = TExpr.Local(1, hasher);
+        let body = List<TStmt>.new();
+        match (t) {
+            .Named(i) => {
+                let info = this.types[i];
+                if ((info.kind == .Class || info.vmHeld)
+                    && this.saysItself(i, this.identityIndex)) {
+                    if (let n = nativeNamed("object.number")) {
+                        let number = TExpr.Native(Native.Std(nativeNumber(n)), [x], Ty.Int);
+                        body.push(this.hasherCall("writeInt", h, number));
+                    }
+                } else if (info.kind == .Enum) {
+                    body.push(this.hasherCall("writeInt", h, TExpr.Tag(boxE(x))));
+                    var v = 0;
+                    while (v < info.variantFields.length()) {
+                        let vf = info.variantFields[v];
+                        if (vf.length() > 0) {
+                            let parts = List<TStmt>.new();
+                            var k = 0;
+                            while (k < vf.length()) {
+                                this.hashInto(
+                                    TExpr.Payload(boxE(x), i, v, k, vf[k].ty),
+                                    vf[k].ty,
+                                    h,
+                                    parts
+                                );
+                                k += 1;
+                            }
+                            body.push(
+                                TStmt.If(
+                                    TExpr.Binary(
+                                        boxE(TExpr.Tag(boxE(x))),
+                                        BinaryOp.Eq,
+                                        boxE(TExpr.Int(v)),
+                                        Ty.Bool
+                                    ),
+                                    parts.toArray(),
+                                    [],
+                                    1
+                                )
+                            );
+                        }
+                        v += 1;
+                    }
+                } else {
+                    var k = 0;
+                    for (f in info.fields) {
+                        this.hashInto(TExpr.Field(boxE(x), k, f.ty), f.ty, h, body);
+                        k += 1;
+                    }
+                }
+            }
+            _ => this.hashInto(x, t, h, body),
+        }
+        this.endSynth(index, body.toArray(), saved);
+        return index;
+    }
+
     /// Whether member `member` of interface `ii` is one the compiler synthesizes where a type does
     /// not write it — `equals`, `compare`, `totalCompare`, `clone`, `default` (S7c6c1).
     mut fn synthesizedMember(ii: int, member: string): bool {
@@ -3490,7 +3709,8 @@ class Checker {
                     }
                 }
             }
-            _ => { }
+            // a tuple's and an optional's parts (S7d1)
+            _ => body.push(TStmt.Return(this.cloneOf(x, t), 1)),
         }
         body.push(TStmt.Return(x, 1));
         this.endSynth(index, body.toArray(), saved);
@@ -4560,6 +4780,15 @@ class Checker {
                     return (if (ii == this.synth.cloneIx) this.notCloneable(t, List<int>.new())
                         else this.notDefaultable(t, List<int>.new()))
                         == null;
+                }
+            }
+        }
+        // `Hashable`: a value whose parts hash (03 Eq; S7d1)
+        if (ii == this.synth.hashableIx && ii >= 0) {
+            match (t) {
+                .Param(_) | .Assoc(_, _, _) => { }
+                _ => {
+                    return this.notHashable(t, List<int>.new()) == null;
                 }
             }
         }
@@ -5829,6 +6058,7 @@ class Checker {
                     || (x == this.equatableIndex && x >= 0)
                     || (x == this.synth.cloneIx && x >= 0)
                     || (x == this.synth.defaultIx && x >= 0)
+                    || (x == this.synth.hashableIx && x >= 0)
                     || this.instanceOverParams(x)) {
                     return true;
                 }
@@ -6483,6 +6713,10 @@ class Checker {
         // `Clone.clone` of a type that clones without one of its own (S7c6c1)
         if (this.functions[fi].owner == this.synth.cloneIx && this.functions[fi].abstract) {
             return TExpr.Call(this.cloneFnOf(concrete), all, rt);
+        }
+        // `Hashable.hash` of a type that hashes without one of its own (S7d1)
+        if (this.functions[fi].owner == this.synth.hashableIx && this.functions[fi].abstract) {
+            return TExpr.Call(this.hashFnOf(concrete), all, rt);
         }
         let owner = this.functions[fi].owner;
         if ((owner == this.orderedIndex || owner == this.totalOrderIndex)
@@ -11193,7 +11427,8 @@ class Checker {
                 || ii == this.orderedIndex
                 || ii == this.totalOrderIndex
                 || ii == this.synth.cloneIx
-                || ii == this.synth.defaultIx);
+                || ii == this.synth.defaultIx
+                || ii == this.synth.hashableIx);
     }
 
     /// `x.compare(y)` and `x.totalCompare(y)` of an `Ordered` or `TotalOrder` without its own
@@ -15638,6 +15873,9 @@ class Checker {
                     if (let copy = this.synthClone(t, receiver, method, args)) {
                         return copy;
                     }
+                    if (let hashed = this.synthHash(t, receiver, method, args)) {
+                        return hashed;
+                    }
                     if (let call = this.blanketCall(
                         t,
                         receiver,
@@ -15772,6 +16010,13 @@ class Checker {
                 }
                 if (let eq = this.synthEquals(t, receiver, method, args, at)) {
                     return eq;
+                }
+                // a tuple's and an optional's `hash(h)` and `clone()` (S7d1)
+                if (let hashed = this.synthHash(t, receiver, method, args)) {
+                    return hashed;
+                }
+                if (let copy = this.synthClone(t, receiver, method, args)) {
+                    return copy;
                 }
                 if (let call = this.blanketCall(t, receiver, method, args, at, posTy, writtenTys)) {
                     return call;

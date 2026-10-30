@@ -565,6 +565,46 @@ extend float :: [Add, Sub, Mul, Div, Rem, Neg] {
 extend string :: Add {
     fn add(rhs: string): string = this + rhs
 }
+// what a hash is written into (Lyric 5 12 §Hashing; S7d1): one hasher, SipHash-1-3 under a key
+// the process draws, its mixing the VM's — an int's arithmetic panics where it overflows
+class Hasher {
+    var state: int = 0
+    fn writeByte(b: int) {
+        this.state = __mixInt(this.state, b & 255)
+    }
+    fn writeInt(v: int) {
+        this.state = __mixInt(this.state, v)
+    }
+    fn finish(): int = this.state
+}
+fn __mixInt(a: int, b: int): int = __hash_mixInt(a, b)
+fn __mixStr(a: int, s: string): int = __hash_mixStr(a, s)
+// a value that hashes (Lyric 5 05 §14; Script 03 Eq): it writes its parts into the hasher, equal
+// values the same; a struct, an enum and a tuple of hashable parts by themselves, a class by its
+// identity or through `:: Hashable`; a float none (05 Fl)
+interface Hashable :: Equatable {
+    fn hash(h: Hasher)
+}
+extend int :: Hashable {
+    fn hash(h: Hasher) {
+        h.writeInt(this)
+    }
+}
+extend char :: Hashable {
+    fn hash(h: Hasher) {
+        h.writeInt(this as int)
+    }
+}
+extend bool :: Hashable {
+    fn hash(h: Hasher) {
+        h.writeByte(if (this) 1 else 0)
+    }
+}
+extend string :: Hashable {
+    fn hash(h: Hasher) {
+        h.state = __mixStr(h.state, this)
+    }
+}
 // a value's own copy, and a type's value where nothing is given (Lyric 5 05 §14; S7c6c1):
 // synthesized where a struct, a class or an enum lists them without the member — `clone` copies
 // the value fields and clones the reference fields, `default` takes each field's initializer or

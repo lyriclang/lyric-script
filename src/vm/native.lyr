@@ -36,6 +36,12 @@ enum NativeFn :: [Equatable] {
     ListSortInts,
     ListSortFloats,
     ListSortStrings,
+    /// A hash's state and a word mixed (S7d1): SipHash-1-3 under the process's key.
+    HashMixInt,
+    /// A hash's state and a string's bytes mixed.
+    HashMixStr,
+    /// An object's number, given the first time it is asked (01 S8).
+    ObjectNumber,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -49,7 +55,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 16;
+let nativeCount: int = 19;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -69,7 +75,10 @@ fn nativeOf(n: int): NativeFn {
         12 => NativeFn.FloatOrderKey,
         13 => NativeFn.ListSortInts,
         14 => NativeFn.ListSortFloats,
-        _ => NativeFn.ListSortStrings,
+        15 => NativeFn.ListSortStrings,
+        16 => NativeFn.HashMixInt,
+        17 => NativeFn.HashMixStr,
+        _ => NativeFn.ObjectNumber,
     };
 }
 
@@ -92,6 +101,9 @@ fn nativeNumber(n: NativeFn): int {
         .ListSortInts => 13,
         .ListSortFloats => 14,
         .ListSortStrings => 15,
+        .HashMixInt => 16,
+        .HashMixStr => 17,
+        .ObjectNumber => 18,
     };
 }
 
@@ -113,6 +125,9 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .ListSortInts => sig("list.sortInts", 0, 1, false, false),
         .ListSortFloats => sig("list.sortFloats", 0, 1, false, false),
         .ListSortStrings => sig("list.sortStrings", 0, 1, false, false),
+        .HashMixInt => sig("hash.mixInt", 2, 0, true, false),
+        .HashMixStr => sig("hash.mixStr", 1, 1, true, false),
+        .ObjectNumber => sig("object.number", 0, 1, true, false),
     };
 }
 

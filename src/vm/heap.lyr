@@ -110,6 +110,9 @@ pub class ScriptObject :: [HeapRef] {
     pub var owner: int = 0,
     /// The version of its type the object was built for (01 S7a); set from S9.
     pub var version: int = 0,
+    /// Its number, given the first time it is hashed by its identity (01 S8: no addresses; S7d1);
+    /// 0 before.
+    pub var number: int = 0,
 
     pub fn desc(): ?TypeDesc {
         return this.typeDesc;

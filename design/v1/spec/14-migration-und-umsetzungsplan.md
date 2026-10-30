@@ -1569,3 +1569,16 @@ Listen-Iterator und die Bereichs-Iteratoren klonen ihren Lauf, nicht die Liste; 
 `withCapacity`. `map`, `filter` und `retain`, die die Planzeile von S7c nannte, hat Lyric 5s
 Array nicht — `xs.iter().map(f)` und `removeWhere` sind es; ein zweiter Weg wäre ein zweiter
 Mechanismus für dasselbe.
+
+**S7c6c1, Ergebnis (2026-10-30).** `Clone` und `Default` in der Prelude, synthetisiert wie
+`Equatable`: `clone` kopiert die Wertteile und klont die Referenzteile (Objekt, Liste, darin
+Optional und Tupel, Enum-Variante neu gebaut), `default` nimmt Initialisierer oder Typ-Default;
+bedingt bei generischen Typen; `SEM0020`, `SEM0135`. `cycle()` über einen `Clone`-Iterator; der
+Listen- und die Bereichs-Iteratoren klonen ihren Lauf. Die vier neuen Felder des Checkers stehen
+in einer Klasse: Lyric 5s synthetisierte Debug-Form der Klasse mit 97 Feldern schachtelte über
+ihre 192 Ebenen (`LYR-SEM0105`). **Gefunden:** (1) **seit S7c5a** ging ein synthetisiertes
+Mitglied über eine Einschränkung auf einem Objekt — `a.equals(b)` von `T :: [Equatable]` — über
+die Tabelle, die keins hält: `LYS-ICE0001`; (2) `memberCallOn` rief das Block-Mitglied einer Liste
+ohne ihr Element (die Lücke, die S7c5c3 in `operatorMember` schloss). Spec 05 Regel 19, 12 Regel 3;
+sechs Fälle, alle rot gegen S7c6b2. Mutanten: zwei Läufe, 465 und 466 von 469 — wie vorhergesagt.
+Fälle 463 → 469.

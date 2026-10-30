@@ -175,7 +175,9 @@ struct Placement {
             // a built-in's or an enum's without payloads: its box, which the type's table rides on
             let isBoxed = t.kind == .Builtin || (t.kind == .Enum && !t.payload);
             if (isBoxed) {
-                let isRef = t.kind == .Builtin && t.name == "string";
+                // a string's and a list's value is a reference (S7c3: the lists' entries)
+                let isRef = t.kind == .Builtin
+                    && (t.name == "string" || t.name == "List" || t.name.startsWith("List<"));
                 let d = TypeDesc {
                     name = f"<box {t.name}>",
                     scalarFields = if (isRef) [] else ["v"],

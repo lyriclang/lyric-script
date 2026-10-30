@@ -1093,6 +1093,14 @@ class Checker {
                                     this.conform(name, x.conforms);
                                     this.blockCond = [];
                                 }
+                                // `extend<T> T[] :: [I]`: every list's (S7c3)
+                                .List(_, _) => {
+                                    this.blockCond = if (x.typeParams.length()
+                                        > 0) this.typeParamsOf(x.typeParams)
+                                        else [];
+                                    this.conform("List", x.conforms);
+                                    this.blockCond = [];
+                                }
                                 _ => { }
                             }
                         }
@@ -2280,6 +2288,10 @@ class Checker {
             // `this` in an extend block of `T[]` (S7b2a): a list of the block's parameter
             return Ty.List(boxTy(Ty.Param(0)));
         }
+        if (info.kind == .Builtin && info.template >= 0 && info.template != owner) {
+            // an instance of the lists' entry (S7c3): a list of its element
+            return Ty.List(boxTy(info.args[0]));
+        }
         return if (info.kind == .Builtin) builtinTy(info.name) else Ty.Named(owner);
     }
 
@@ -2287,13 +2299,20 @@ class Checker {
     mut fn entryOf(t: Ty): int {
         return match (t) {
             .Named(i) => i,
+            // a list's type: an entry for its element type, its box's type and its table (S7c3)
+            .List(e) => if (hasParam(t)) this.builtinOf(t)
+                else this.typeInstance(this.builtinOf(t), [e.value]),
             _ => this.builtinOf(t),
         };
     }
 
     /// Whether a value of `t` goes into a box to be an interface value: a scalar or a string.
     mut fn boxed(t: Ty): bool {
-        return t == .Str || isScalar(t, this.types.toArray());
+        let list = match (t) {
+            .List(_) => true,
+            _ => false,
+        };
+        return t == .Str || list || isScalar(t, this.types.toArray());
     }
 
     /// The function a box of a `t` runs for method `m`: it takes the box first and calls `m` on
@@ -2332,12 +2351,31 @@ class Checker {
             flags.push(false);
         }
         info.boxed = flags.toArray();
-        let call = TExpr.Call(m, args.toArray(), method.returns);
+        // the method of a generic entry (a list's, S7c3): the unboxer is generic as it is
+        info.typeParams = method.typeParams;
+        let own = List<Ty>.new();
+        var j = 0;
+        for (_ in method.typeParams) {
+            own.push(Ty.Param(j));
+            j += 1;
+        }
+        let call = if (method.typeParams.length() > 0) TExpr.CallGeneric(
+            m,
+            own.toArray(),
+            args.toArray(),
+            method.returns
+        )
+            else TExpr.Call(m, args.toArray(), method.returns);
         info.body = if (method.returns == .Void) [
             TStmt.Expr(call, method.line),
             TStmt.Return(null, method.line),
         ]
             else [TStmt.Return(call, method.line)];
+        if (method.typeParams.length() > 0) {
+            // a generic function's body is its template, which each copy takes (as debugFnOf's)
+            info.template = info.body;
+            info.body = [];
+        }
         this.unboxers.insert(m, index);
         return index;
     }
@@ -2724,7 +2762,7 @@ class Checker {
         // every struct, class, enum and built-in value is an `Any`, an interface value too
         if (ii == this.anyIndex) {
             return match (t) {
-                .Int | .Float | .Bool | .Char | .Str | .Named(_) => true,
+                .Int | .Float | .Bool | .Char | .Str | .Named(_) | .List(_) => true,
                 _ => false,
             };
         }
@@ -2734,6 +2772,19 @@ class Checker {
                 var found = false;
                 for (x in this.types[i].ifaces) {
                     found = found || x == ii;
+                }
+                found
+            }
+            // a list: what `extend<T> T[] :: [I]` gives, where its element meets the block (S7c3)
+            .List(e) => {
+                let i = this.builtinOf(t);
+                var found = false;
+                for (x in this.types[i].ifaces) {
+                    found = found || this.isOf(x, ii);
+                }
+                let cond = this.types[i].condIfaces.get(ii);
+                if (found && cond != null) {
+                    found = this.meetsBlock([e.value], cond);
                 }
                 found
             }
@@ -3292,15 +3343,15 @@ class Checker {
         if (fitted != null) {
             return fitted;
         }
-        // a list as an interface value needs its descriptor (S7b2)
+        // a list of a type parameter as an interface value needs its descriptor made at run time
         match (actual) {
             .List(_) => {
                 match (target) {
                     .Named(ii) => {
-                        if (this.types[ii].kind == .Interface) {
+                        if (this.types[ii].kind == .Interface && hasParam(actual)) {
                             return this.notYet(
                                 f"a {this.tyName(actual)} as a {this.tyName(target)}",
-                                "S7b2 (a list's descriptor)",
+                                "S7c4 (a list of a type parameter as an interface value)",
                                 at
                             );
                         }
@@ -4296,6 +4347,21 @@ class Checker {
         let entry = this.entryOf(concrete);
         let own = if (entry >= 0) this.types[entry].methods.get(member) else null;
         if (own != null) {
+            // a generic entry's method (a list's, S7c3): its copy at the entry's arguments
+            let info = this.types[entry];
+            if (this.functions[own].typeParams.length() > 0
+                && info.template >= 0
+                && info.template != entry) {
+                let b = info.args;
+                let xs = List<TExpr>.new();
+                for (x in all) {
+                    xs.push(x);
+                }
+                for (k in this.hiddenOf(own, b)) {
+                    xs.push(this.descExpr(b[k], []));
+                }
+                return TExpr.Call(this.instanceOf(own, b), xs.toArray(), rt);
+            }
             return TExpr.Call(own, all, rt);
         }
         let found = this.ifaceMember(ii, member);
@@ -6551,6 +6617,13 @@ class Checker {
                 this.builtinOf(target),
                 target
             ),
+            // a list of a known element (S7c3)
+            .List(_) => if (hasParam(target)) this.notYet(
+                f"'is' {this.tyName(target)}",
+                "S7c4 (a list of a type parameter as an interface value)",
+                at
+            )
+                else TExpr.IsType(boxE(x), this.entryOf(target), target),
             // a type parameter: the argument's type, tested in each copy (S3i)
             .Param(k) => TExpr.IsParam(boxE(x), k, Ty.Bool),
             .Unknown => null,
@@ -10971,8 +11044,11 @@ class Checker {
         while (i < n) {
             let info = this.types[i];
             let instance = info.template >= 0 && info.template != i;
-            // the lists' entry: no interface value holds a list before S7b2b
+            // the lists' entry holds no list; each instance of it, its element's list (S7c3)
             let lists = info.kind == .Builtin && info.name == "List";
+            if (info.kind == .Builtin && instance) {
+                info.witness.insert(this.debugSlot, this.debugBoxOf(i));
+            }
             if (info.kind != .Interface && !instance && !lists) {
                 let f = if (info.kind == .Builtin
                     || (info.kind == .Enum && !info.payload)) this.debugBoxOf(i)

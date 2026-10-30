@@ -363,6 +363,47 @@ fn __listSlice<T>(xs: T[], from: int, to: int): T[] {
     }
     return out
 }
+// what `==` asks of a type parameter (Lyric 5 05 §12 rule 5): a struct, an enum, a tuple, a list
+// and an optional are one where their parts are, a class through `:: Equatable` or `:: Identity`
+interface Equatable {
+    fn equals(o: Self): bool
+}
+// the comparing methods of every list whose elements compare (S7c5a; S7b2a synthesized them)
+extend<T :: [Equatable]> T[] {
+    fn contains(x: T): bool = this.indexOf(x) != null
+    fn indexOf(x: T): ?int {
+        var k = 0
+        while (k < this.length()) {
+            if (this[k] == x) {
+                return k
+            }
+            k += 1
+        }
+        return null
+    }
+    fn remove(x: T): bool {
+        if (let k = this.indexOf(x)) {
+            this.removeAt(k)
+            return true
+        }
+        return false
+    }
+    fn dedup() {
+        if (this.length() < 2) {
+            return
+        }
+        var kept = 1
+        var k = 1
+        while (k < this.length()) {
+            if (this[k] != this[kept - 1]) {
+                this[kept] = this[k]
+                kept += 1
+            }
+            k += 1
+        }
+        this.truncate(kept)
+    }
+}
 interface Index<K> {
     type Output
     fn index(k: K): Self.Output

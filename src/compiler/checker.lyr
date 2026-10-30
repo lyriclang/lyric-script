@@ -386,6 +386,9 @@ class Checker {
     debugFns: Map<int, int>,
     // the Debug form of each list type printed, by the type's key (S7b1)
     var listDebugFns: Map<string, int> = Map<string, int>.new(),
+    // the prelude's `Equatable` (S7c5a); each type's comparison a copy made, by the type's key
+    var equatableIndex: int = -1,
+    var genericEqFns: Map<string, int> = Map<string, int>.new(),
     // the type parameters in scope by name, and the generic they are of
     var typeParams: Map<string, int> = Map<string, int>.new(),
     var genericFn: int = -1,
@@ -1051,6 +1054,8 @@ class Checker {
                 .Stmt(_) => { }
             }
         }
+        // what `==` asks of a type parameter (S7c5a)
+        this.equatableIndex = this.typeIndex.get("Equatable") ?? -1;
         // the values the VM holds without a descriptor: boxed as interface values (S7c4b)
         for (held in ["Task", "Coroutine", "TaskScope", "Channel", "Semaphore"]) {
             if (let k = this.typeIndex.get(held)) {
@@ -3438,6 +3443,9 @@ class Checker {
                     }
                     defaults.insert(member, declared);
                     info.witness.insert(slot, declared);
+                } else if (declared >= 0 && this.functions[declared].owner == this.equatableIndex) {
+                    // `equals` synthesized field by field where `==` asks for it (Lyric 5 05 §14;
+                    // S7c5a): no table holds it, `Equatable` is a constraint only
                 } else {
                     this.error(
                         "LYS-SEM0020",
@@ -3666,6 +3674,16 @@ class Checker {
 
     /// `conformsTo` without the blanket blocks.
     mut fn conformsDirect(t: Ty, ii: int): bool {
+        // `Equatable`: a value whose parts compare (03 Eq; S7c5a) — a type parameter through its
+        // constraints, below
+        if (ii == this.equatableIndex && ii >= 0) {
+            match (t) {
+                .Param(_) | .Assoc(_, _, _) => { }
+                _ => {
+                    return this.notEquatable(t, List<int>.new()) == null;
+                }
+            }
+        }
         // a value form: the interface, its fixed associated types answered alike (05 §8 rule 6)
         let target = this.types[ii];
         // (an instance of a generic interface is asked as an interface of its own, S7c1)
@@ -4637,6 +4655,7 @@ class Checker {
         dropIntKeyed(this.debugFns, n);
         dropIntKeyed(this.unboxers, n);
         dropTextKeyed(this.listDebugFns, n);
+        dropTextKeyed(this.genericEqFns, n);
         // `instances` keeps the instances of types too, keyed `type …`: their values are types'
         dropCopies(this.instances, n);
         dropTextKeyed(this.descThunks, n);
@@ -4854,7 +4873,9 @@ class Checker {
             for (x in this.ancestry(c)) {
                 // or a member generic of its own, which no table holds for every call (S7c4c2:
                 // `C.fromIter(it)` of `C :: [FromIterator<T>]`)
-                if (this.assocNamesOf(x).length() > 0 || this.hasOwnGeneric(x)) {
+                if (this.assocNamesOf(x).length() > 0
+                    || this.hasOwnGeneric(x)
+                    || (x == this.equatableIndex && x >= 0)) {
                     return true;
                 }
             }
@@ -5228,6 +5249,20 @@ class Checker {
                 this.specBox(d, a),
                 this.subst(t, a)
             ),
+            .GenericEq(x, op, y) => {
+                let l = this.specExpr(x.value, a);
+                let r = this.specExpr(y.value, a);
+                let t = typeOf(l);
+                let native = t == .Int
+                    || t == .Float
+                    || t == .Bool
+                    || t == .Char
+                    || t == .Str
+                    || this.isScalarEnum(t);
+                let eq = if (native) this.equality(l, BinaryOp.Eq, r, nowhereSpan)
+                    else TExpr.Call(this.genericEqFnOf(t, nowhereSpan), [l, r], Ty.Bool);
+                if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool)
+            }
             .Unbox(x, t) => TExpr.Unbox(this.specBox(x, a), this.subst(t, a)),
             .IsType(x, k, t) => if (this.dynamic(Ty.Named(k))) TExpr.IsDesc(
                 this.specBox(x, a),
@@ -5417,6 +5452,10 @@ class Checker {
             return TExpr.Unknown;
         }
         let (fi, _) = found;
+        // `Equatable.equals` of a type that compares without one of its own (S7c5a)
+        if (this.functions[fi].owner == this.equatableIndex && this.functions[fi].abstract) {
+            return TExpr.Call(this.genericEqFnOf(concrete, nowhereSpan), all, rt);
+        }
         // an abstract member has no body for a copy: the type left unresolved is the compiler's
         // fault, said where it runs (S7c4c3a: the copy of an abstract `next` looped forever)
         if (this.functions[fi].abstract) {
@@ -9298,10 +9337,11 @@ class Checker {
                 // `x in xs` (S7b2a): whether an element equals `x`; over other types with them
                 let hay = this.expr(r, null);
                 match (typeOf(hay)) {
+                    // the list's `contains` (S7c5a: the prelude's, over `T :: [Equatable]`)
                     .List(e) => {
-                        let needle = this.coerce(this.expr(l, e.value), e.value, spanOf(l));
                         let missing = this.notEquatable(e.value, List<int>.new());
                         if (missing != null) {
+                            this.expr(l, e.value);
                             this.error(
                                 "LYS-SEM0059",
                                 f"'{binaryText(op)}' does not compare {this.tyName(e.value)}: {missing}",
@@ -9309,19 +9349,12 @@ class Checker {
                             );
                             return TExpr.Unknown;
                         }
-                        if (hasParam(e.value)) {
-                            return this.notYet(
-                                f"'{binaryText(op)}' over a {this.tyName(typeOf(hay))}",
-                                "S7c5 (Equatable as an interface)",
-                                at
-                            );
-                        }
-                        let found = this.listIndexOf(hay, needle, e.value, at);
-                        let has = TExpr.Binary(
-                            boxE(found),
-                            BinaryOp.Ge,
-                            boxE(TExpr.Int(0)),
-                            Ty.Bool
+                        let has = this.methodCall(
+                            hay,
+                            "contains",
+                            [Arg { name = null, value = l }],
+                            at,
+                            at
                         );
                         return if (op == .In) has else TExpr.Unary(UnaryOp.Not, boxE(has), Ty.Bool);
                     }
@@ -9493,6 +9526,21 @@ class Checker {
             }
             _ => { }
         }
+        // a type that names a type parameter: compared where its copy knows it (S7c5a)
+        if (this.anyParamIn(ta) || this.anyParamIn(tb)) {
+            if (ta == tb) {
+                let missing = this.notEquatable(ta, List<int>.new());
+                if (missing == null) {
+                    return TExpr.GenericEq(boxE(a), op, boxE(b));
+                }
+                this.error(
+                    "LYS-SEM0059",
+                    f"'{binaryText(op)}' does not compare {this.tyName(ta)}: {missing}",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+        }
         if (ta == tb && (ta == .Bool || ta == .Char || this.isScalarEnum(ta))) {
             return TExpr.Binary(boxE(a), op, boxE(b), Ty.Bool);
         }
@@ -9531,13 +9579,6 @@ class Checker {
                 );
                 return TExpr.Unknown;
             }
-            if (hasParam(elem)) {
-                return this.notYet(
-                    f"'{binaryText(op)}' on a {this.tyName(ta)}",
-                    "S7c5 (Equatable as an interface)",
-                    at
-                );
-            }
             let eq = TExpr.Call(this.listEqFnOf(ta, at), [a, b], Ty.Bool);
             return if (op == .Eq) eq else TExpr.Unary(UnaryOp.Not, boxE(eq), Ty.Bool);
         }
@@ -9563,11 +9604,110 @@ class Checker {
         return TExpr.Unknown;
     }
 
+    /// `x.equals(y)` of a type that compares without an `equals` of its own (Lyric 5 05 §14;
+    /// S7c5a): the comparison `==` makes; null for another call.
+    mut fn synthEquals(t: Ty, receiver: TExpr, method: string, args: Arg[], at: Span): ?TExpr {
+        if (method != "equals"
+            || args.length() != 1
+            || this.equatableIndex < 0
+            || !this.conformsDirect(t, this.equatableIndex)) {
+            return null;
+        }
+        let other = this.coerce(this.expr(args[0].value, t), t, spanOf(args[0].value));
+        return this.equality(receiver, BinaryOp.Eq, other, at);
+    }
+
+    /// Whether type `i` (or its template) conforms to `Equatable` itself: a class that asks for
+    /// `==` by its fields or its own `equals` (S7c5a).
+    mut fn saysEquatable(i: int): bool {
+        if (this.equatableIndex < 0) {
+            return false;
+        }
+        let t = if (this.types[i].template >= 0) this.types[i].template else i;
+        for (x in this.types[t].ifaces) {
+            for (a in this.ancestry(x)) {
+                if (a == this.equatableIndex) {
+                    return true;
+                }
+            }
+        }
+        for (x in this.types[i].instIfaces) {
+            for (a in this.ancestry(x)) {
+                if (a == this.equatableIndex) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Whether `t` names a type parameter anywhere — in an instance's arguments too.
+    mut fn anyParamIn(t: Ty): bool {
+        return match (t) {
+            .Param(_) | .Assoc(_, _, _) => true,
+            .Optional(inner) | .List(inner) | .Cell(inner) => this.anyParamIn(inner.value),
+            .Map(k, v) => this.anyParamIn(k.value) || this.anyParamIn(v.value),
+            .Tuple(tt) => {
+                var found = false;
+                for (x in tt.elements) {
+                    found = found || this.anyParamIn(x);
+                }
+                found
+            }
+            .Fn(ft) => {
+                var found = this.anyParamIn(ft.result.value);
+                for (x in ft.params) {
+                    found = found || this.anyParamIn(x);
+                }
+                found
+            }
+            // a generic type at its own parameters is its template itself
+            .Named(i) => {
+                let info = this.types[i];
+                var found = info.template == i && info.typeParams.length() > 0;
+                if (info.template >= 0 && info.template != i) {
+                    for (x in info.args) {
+                        found = found || this.anyParamIn(x);
+                    }
+                }
+                found
+            }
+            _ => false,
+        };
+    }
+
+    /// The function comparing two values of `t`, a type a copy knows (S7c5a): a comparison over a
+    /// type parameter, made where the copy is.
+    mut fn genericEqFnOf(t: Ty, at: Span): int {
+        let key = tyKey(t);
+        let known = this.genericEqFns.get(key);
+        if (known != null) {
+            return known;
+        }
+        let (index, saved) = this.beginSynth(
+            "#equals",
+            [
+                ParamInfo { name = "a", ty = t, default = null },
+                ParamInfo { name = "b", ty = t, default = null },
+            ],
+            Ty.Bool,
+            at
+        );
+        this.genericEqFns.insert(key, index);
+        let eq = this.equality(TExpr.Local(0, t), BinaryOp.Eq, TExpr.Local(1, t), at);
+        this.endSynth(index, [TStmt.Return(eq, at.line)], saved);
+        return index;
+    }
+
     /// What keeps values of `t` from being compared, `null` where nothing does: a class that is
     /// no `Identity`, a function, an interface value — in a field, a payload, an element.
     mut fn notEquatable(t: Ty, seen: List<int>): ?string {
         return match (t) {
             .Int | .Float | .Bool | .Char | .Str | .Unknown | .NullLit => null,
+            // a type parameter through its constraints (S7c5a)
+            .Param(_) | .Assoc(_, _, _) => if (this.equatableIndex >= 0
+                && this.conformsDirect(t, this.equatableIndex)) null
+                else f"{this.tyName(t)} is no Equatable",
             .Optional(inner) => this.notEquatable(inner.value, seen),
             .List(e) => this.notEquatable(e.value, seen),
             .Tuple(tt) => {
@@ -9589,8 +9729,9 @@ class Checker {
                 seen.push(i);
                 match (info.kind) {
                     .Class => {
-                        return if (this.conformsTo(t, this.identityIndex)) null
-                            else f"the class {info.name} is no Identity";
+                        return if (this.conformsTo(t, this.identityIndex)
+                            || this.saysEquatable(i)) null
+                            else f"the class {info.name} is no Identity and no Equatable";
                     }
                     .Interface | .Builtin => {
                         return f"{info.name} values are not compared";
@@ -9644,7 +9785,14 @@ class Checker {
                 );
             }
             .Named(i) => {
-                if (this.types[i].kind == .Class) {
+                // a type's own `equals(o: Self): bool` is what `==` asks (S7c5a)
+                let own = this.methodOf(i, "equals");
+                if (own != null
+                    && !this.functions[own].isStatic
+                    && this.functions[own].params.length() == 1) {
+                    return TExpr.Call(own, [a, b], Ty.Bool);
+                }
+                if (this.types[i].kind == .Class && !this.saysEquatable(i)) {
                     return TExpr.SameRef(boxE(a), boxE(b));
                 }
                 return TExpr.Call(this.eqFnOf(i, at), [a, b], Ty.Bool);
@@ -9685,7 +9833,7 @@ class Checker {
         this.declareLocal("a", t, false, at);
         this.declareLocal("b", t, false, at);
         var body = TExpr.Bool(true);
-        if (info.kind == .Struct) {
+        if (info.kind == .Struct || info.kind == .Class) {
             var k = info.fields.length() - 1;
             while (k >= 0) {
                 let f = info.fields[k];
@@ -11019,8 +11167,8 @@ class Checker {
     /// others come with S7b2.
     mut fn listMethod(receiver: TExpr, elem: Ty, method: string, args: Arg[], at: Span): ?TExpr {
         let arity = match (method) {
-            "length" | "pop" | "dedup" => 0,
-            "push" | "contains" | "indexOf" | "remove" => 1,
+            "length" | "pop" => 0,
+            "push" => 1,
             _ => -1,
         };
         if (arity < 0) {
@@ -11033,80 +11181,6 @@ class Checker {
                 at
             );
             return TExpr.Unknown;
-        }
-        let compares = method == "contains"
-            || method == "indexOf"
-            || method == "remove"
-            || method == "dedup";
-        if (compares) {
-            let t = Ty.List(boxTy(elem));
-            let missing = this.notEquatable(elem, List<int>.new());
-            if (missing != null) {
-                this.error(
-                    "LYS-SEM0134",
-                    f"'{this.tyName(t)}' has no method '{method}': its elements are not compared ({missing})",
-                    at
-                );
-                return TExpr.Unknown;
-            }
-            if (hasParam(elem)) {
-                return this.notYet(
-                    f"'{method}' on a {this.tyName(t)}",
-                    "S7c5 (Equatable as an interface)",
-                    at
-                );
-            }
-            if (method == "dedup") {
-                return TExpr.Call(this.listDedupFnOf(t, at), [receiver], Ty.Void);
-            }
-            let x = this.coerce(this.expr(args[0].value, elem), elem, spanOf(args[0].value));
-            // the list held once: `remove` reads it twice
-            let h = this.hidden(t, at);
-            let list = TExpr.Local(h, t);
-            let k = this.hidden(Ty.Int, at);
-            let found = TExpr.Local(k, Ty.Int);
-            let some = TExpr.Binary(boxE(found), BinaryOp.Ge, boxE(TExpr.Int(0)), Ty.Bool);
-            let head = [
-                TStmt.SetLocal(h, receiver, at.line),
-                TStmt.SetLocal(k, this.listIndexOf(list, x, elem, at), at.line),
-            ];
-            return match (method) {
-                "contains" => TExpr.Block(head, boxE(some), Ty.Bool),
-                "indexOf" => TExpr.Block(
-                    head,
-                    boxE(
-                        TExpr.If(
-                            boxE(some),
-                            boxE(TExpr.Wrap(boxE(found), Ty.Optional(boxTy(Ty.Int)))),
-                            boxE(TExpr.Null(Ty.Optional(boxTy(Ty.Int)))),
-                            Ty.Optional(boxTy(Ty.Int))
-                        )
-                    ),
-                    Ty.Optional(boxTy(Ty.Int))
-                ),
-                _ => {
-                    let removeAt = this.listMethodFn("removeAt");
-                    TExpr.Block(
-                        [
-                            head[0],
-                            head[1],
-                            TStmt.If(
-                                some,
-                                [
-                                    TStmt.Expr(
-                                        TExpr.CallGeneric(removeAt, [elem], [list, found], elem),
-                                        at.line
-                                    ),
-                                ],
-                                [],
-                                at.line
-                            ),
-                        ],
-                        boxE(some),
-                        Ty.Bool
-                    )
-                }
-            };
         }
         return match (method) {
             "length" => TExpr.ListOp(ListOp.Len, [receiver], Ty.Int),
@@ -11243,12 +11317,6 @@ class Checker {
         return this.types[i].methods.get(name) ?? -1;
     }
 
-    /// The index of the first element of `list` equal to `x`, -1 for none: the function of its
-    /// list type the checker writes (S7b2a).
-    mut fn listIndexOf(list: TExpr, x: TExpr, elem: Ty, at: Span): TExpr {
-        return TExpr.Call(this.listIndexFnOf(Ty.List(boxTy(elem)), at), [list, x], Ty.Int);
-    }
-
     /// A function the checker writes (S7b2a): its entry, its parameters its first locals; the
     /// body comes with `endSynth`.
     mut fn beginSynth(name: string, params: ParamInfo[], returns: Ty, at: Span): (int, FnCtx) {
@@ -11327,120 +11395,6 @@ class Checker {
                 at.line
             ),
             TStmt.Return(TExpr.Bool(true), at.line),
-        ];
-        this.endSynth(index, body, saved);
-        return index;
-    }
-
-    /// The index of the first element equal to `x` in a list of `t`, -1 for none (S7b2a).
-    mut fn listIndexFnOf(t: Ty, at: Span): int {
-        let key = "index " + t.debug();
-        let known = this.listDebugFns.get(key);
-        if (known != null) {
-            return known;
-        }
-        let elem = match (t) {
-            .List(e) => e.value,
-            _ => Ty.Unknown,
-        };
-        let (index, saved) = this.beginSynth(
-            "#indexOf",
-            [
-                ParamInfo { name = "xs", ty = t, default = null },
-                ParamInfo { name = "x", ty = elem, default = null },
-            ],
-            Ty.Int,
-            at
-        );
-        this.listDebugFns.insert(key, index);
-        let xs = TExpr.Local(0, t);
-        let x = TExpr.Local(1, elem);
-        let i = this.hidden(Ty.Int, at);
-        let k = TExpr.Local(i, Ty.Int);
-        let eq = this.equality(TExpr.ListOp(ListOp.Get, [xs, k], elem), BinaryOp.Eq, x, at);
-        let body = [
-            TStmt.ForRange(
-                i,
-                TExpr.Int(0),
-                TExpr.ListOp(ListOp.Len, [xs], Ty.Int),
-                false,
-                [TStmt.If(eq, [TStmt.Return(k, at.line)], [], at.line)],
-                at.line
-            ),
-            TStmt.Return(TExpr.Int(-1), at.line),
-        ];
-        this.endSynth(index, body, saved);
-        return index;
-    }
-
-    /// `xs.dedup()` of a list of `t` (S7b2a): of each run of equal elements the first kept.
-    mut fn listDedupFnOf(t: Ty, at: Span): int {
-        let key = "dedup " + t.debug();
-        let known = this.listDebugFns.get(key);
-        if (known != null) {
-            return known;
-        }
-        let elem = match (t) {
-            .List(e) => e.value,
-            _ => Ty.Unknown,
-        };
-        let (index, saved) = this.beginSynth(
-            "#dedup",
-            [ParamInfo { name = "xs", ty = t, default = null }],
-            Ty.Void,
-            at
-        );
-        this.listDebugFns.insert(key, index);
-        let xs = TExpr.Local(0, t);
-        let i = this.hidden(Ty.Int, at);
-        let j = this.hidden(Ty.Int, at);
-        let k = TExpr.Local(i, Ty.Int);
-        let kept = TExpr.Local(j, Ty.Int);
-        let last = TExpr.Binary(boxE(kept), BinaryOp.Sub, boxE(TExpr.Int(1)), Ty.Int);
-        let ne = this.equality(
-            TExpr.ListOp(ListOp.Get, [xs, k], elem),
-            BinaryOp.Ne,
-            TExpr.ListOp(ListOp.Get, [xs, last], elem),
-            at
-        );
-        let keep = [
-            TStmt.Expr(
-                TExpr.Assign(
-                    Place.Item(boxE(xs), boxE(kept)),
-                    null,
-                    boxE(TExpr.ListOp(ListOp.Get, [xs, k], elem)),
-                    elem
-                ),
-                at.line
-            ),
-            TStmt.SetLocal(
-                j,
-                TExpr.Binary(boxE(kept), BinaryOp.Add, boxE(TExpr.Int(1)), Ty.Int),
-                at.line
-            ),
-        ];
-        let body = [
-            TStmt.If(
-                TExpr.Binary(
-                    boxE(TExpr.ListOp(ListOp.Len, [xs], Ty.Int)),
-                    BinaryOp.Lt,
-                    boxE(TExpr.Int(2)),
-                    Ty.Bool
-                ),
-                [TStmt.Return(null, at.line)],
-                [],
-                at.line
-            ),
-            TStmt.SetLocal(j, TExpr.Int(1), at.line),
-            TStmt.ForRange(
-                i,
-                TExpr.Int(1),
-                TExpr.ListOp(ListOp.Len, [xs], Ty.Int),
-                false,
-                [TStmt.If(ne, keep, [], at.line)],
-                at.line
-            ),
-            TStmt.Expr(TExpr.ListOp(ListOp.Trunc, [xs, kept], Ty.Void), at.line),
         ];
         this.endSynth(index, body, saved);
         return index;
@@ -13724,6 +13678,9 @@ class Checker {
                         }
                         k += 1;
                     }
+                    if (let eq = this.synthEquals(t, receiver, method, args, at)) {
+                        return eq;
+                    }
                     if (let call = this.blanketCall(
                         t,
                         receiver,
@@ -13844,6 +13801,9 @@ class Checker {
                             }
                         }
                     }
+                }
+                if (let eq = this.synthEquals(t, receiver, method, args, at)) {
+                    return eq;
                 }
                 if (let call = this.blanketCall(t, receiver, method, args, at, posTy, writtenTys)) {
                     return call;
@@ -14189,7 +14149,9 @@ class Checker {
                 continue;
             }
             let want = this.substOpen(params[k].ty, binds.toArray());
-            let v = this.expr(a.value, if (hasParam(want)) null else want);
+            // a position still naming a parameter gives no type: `Box { v = 1 }` at a `Box<T>` binds
+            // `T` from its field (S7c5a; since S3g it was checked against the open `T`)
+            let v = this.expr(a.value, if (this.anyParamIn(want)) null else want);
             this.bind(params[k].ty, typeOf(v), binds);
             given[k] = v;
         }

@@ -1943,6 +1943,17 @@ class FnGen {
                 this.emit(Op.Panic, message, 0, 0);
             }
             .Unit => { }
+            // a comparison every copy resolves: one left is the compiler's fault, as below
+            .GenericEq(_, _, _) => {
+                let message = this.temp(Ty.Str).r;
+                this.emit(
+                    Op.LoadStr,
+                    message,
+                    this.stringConst("LYS-ICE0001: a comparison left to a copy that never came"),
+                    0
+                );
+                this.emit(Op.Panic, message, 0, 0);
+            }
             // what the checker left unresolved in a program it passed: the compiler's fault, said
             // where it runs, not a register's stale value (S7c4c3a: an unanswered `C.Iter` looped)
             .Unknown => {

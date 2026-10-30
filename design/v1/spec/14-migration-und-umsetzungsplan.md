@@ -1605,3 +1605,19 @@ geschriebenen Typargumenten (`Pair<int, string> { … }`, §9.3 Regel 1) parste 
 Scripts Spec nannte ihn nicht — mit dem Platzhalter, der in ihm steht, aufgenommen. Spec 03
 Regel 12; drei Fälle, alle rot gegen S7c6c2. Mutanten: drei Läufe, 476, 476 und 477 von 479; zwei trafen auch den Ablehnungsfall, dessen `none<_>()` an denselben Stellen hängt.
 Fälle 476 → 479.
+
+**S7d, geschnitten (2026-10-30).** `Map` und `Set` nativ in der VM (12 Src), in
+Einfügereihenfolge — ohne Rückrufe aus der VM in Script: die VM läuft in einer Schleife, ein
+`hash` oder `equals` des Programms mitten in einer nativen Operation bräuchte einen geschachtelten
+Lauf, den ein `yield` darin sprengt. **Entschieden nach Empfehlung (P27):** die VM hält die
+Einträge in Einfügereihenfolge und eine Hash-Tabelle über sie, gibt zu einem Hash die Plätze der
+Einträge mit diesem Hash; den Hash rechnet Script (synthetisiert oder eigen), die Gleichheit der
+Kandidaten auch — Schlüssel aus `int`, `char`, `bool` und `string` vergleicht und hasht die VM
+selbst, auf dem heißen Pfad ohne Aufruf. **S7d1** `Hashable` und `Hasher` in der Prelude (Lyric 5
+12 §Hashing ohne `&`: der `Hasher` ist eine Klasse), automatisch für Structs, Enums und Tupel aus
+hashbaren Teilen (03 Eq), `float` keins, Klassen über `Identity` mit einer Objektnummer (01 S8: keine
+Adressen); **S7d2** `Map<K, V>` (die Tabelle in der VM, `m[k]` → `?V`, `m[k] = v`, `m[k] = null`,
+das Map-Literal `["a": 1]` und `[:]` über `FromMapLiteral`, die Methoden von Lyric 5s `Map`, ihre
+Iteratoren, `in`, Debug `{"a": 1}`, Gleichheit); **S7d3** `Set<T>` über die Schlüssel einer Map,
+seine Methoden, `groupBy`/`toMap`/`toSet` von `std.iter`; **S7d4** `Deque` und `Heap` in Script
+(12 Container).

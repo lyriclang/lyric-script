@@ -84,6 +84,9 @@ class Loaded {
     // `--offline`: nothing is fetched (S5c)
     var offline: bool = false,
     var how: LoadOptions = LoadOptions { },
+    // whether a module names a map or writes a map literal: std.collections is added, its names the
+    // prelude's (S7d2)
+    var collections: bool = false,
     // the lock as read, its manifest index, and what this build read from git (S5c2)
     var lockOld: LockEntry[] = [],
     var lockDoc: int = -1,
@@ -322,7 +325,52 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
         state.push(0);
     }
     visit(0, edges, edgeAt, state, List<int>.new(), l);
+    l.collections = namesCollections(l);
     return l;
+}
+
+/// Whether a module loaded names `Map` as a word or writes a map literal — a `[` whose bracket
+/// holds a `:` of its own, `["a": 1]`, `[:]` (S7d2). Too many is a cost, none too few.
+fn namesCollections(l: Loaded): bool {
+    for (text in l.texts) {
+        let cs = text.chars().toArray();
+        let n = cs.length();
+        var k = 0;
+        while (k < n) {
+            let c = cs[k];
+            if (c == 'M'
+                && k + 3 <= n
+                && cs[k + 1] == 'a'
+                && cs[k + 2] == 'p'
+                && (k == 0 || !isWordChar(cs[k - 1]))
+                && (k + 3 == n || !isWordChar(cs[k + 3]))) {
+                return true;
+            }
+            if (c == '[') {
+                var depth = 0;
+                var j = k + 1;
+                while (j < n && depth >= 0) {
+                    let d = cs[j];
+                    if (d == '[' || d == '(' || d == '{') {
+                        depth += 1;
+                    } else if (d == ']' || d == ')' || d == '}') {
+                        depth -= 1;
+                    } else if (d == ':' && depth == 0) {
+                        return true;
+                    } else if (d == '\n' && depth == 0) {
+                        j = n;
+                    }
+                    j += 1;
+                }
+            }
+            k += 1;
+        }
+    }
+    return false;
+}
+
+fn isWordChar(c: char): bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
 /// Whether a module loaded names a member of std.iter's blocks over every iterator (S7c6b): `.map`,

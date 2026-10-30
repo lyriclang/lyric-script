@@ -1400,6 +1400,39 @@ class Parser {
     mut fn parseFor(): Stmt throws SyntaxError {
         let first = this.advance();
         try this.expect(.LParen, "LYS-PAR0019", "'(' after 'for'");
+        // `for ((k, v) in m)`: a pattern takes the item apart, where it cannot fail (Lyric 5 07 §2
+        // rule 2; S7d2) — the loop over a name of its own, the pattern bound from it each turn
+        if (!(this.current().kind == .Ident && this.isWord(this.peek(1), "in"))) {
+            let pattern = try this.parsePattern();
+            if (!this.atWord("in")) {
+                let t = this.current();
+                throw this.failure(
+                    "LYS-PAR0021",
+                    f"a for loop without 'in': found {this.shown(t)}",
+                    t
+                );
+            }
+            this.advance();
+            let iterable = try this.parseExpr();
+            try this.expect(.RParen, "LYS-PAR0008", "')' after the iterable");
+            this.skipNewlines();
+            let label = this.takeLabel();
+            let body = try this.loopBody(label);
+            let span = this.since(first);
+            let held = f"$for{span.start}";
+            let stmts = List<Stmt>.new();
+            stmts.push(Stmt.Destructure(false, pattern, Expr.Name(held, span), null, span));
+            for (s in body.stmts) {
+                stmts.push(s);
+            }
+            return Stmt.For(
+                held,
+                iterable,
+                Block { stmts = stmts.toArray(), span = body.span },
+                label,
+                span
+            );
+        }
         let name = this.current();
         if (name.kind != .Ident) {
             throw this.failure(

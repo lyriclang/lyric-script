@@ -29,6 +29,7 @@ import lyric_script.compiler.ast {
     ImportDecl,
     Item,
     LambdaParam,
+    MapEntry,
     MatchArm,
     Module,
     Pattern,
@@ -48,7 +49,7 @@ import lyric_script.compiler.ast {
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { parse };
 import lyric_script.compiler.throws { ThrowSets, Thrown };
-import lyric_script.stdsrc { preludeText, stdPackage };
+import lyric_script.stdsrc { collectionsText, preludeText, stdPackage };
 import lyric_script.vm.native { nativeNamed, nativeNumber };
 import lyric_script.compiler.typed {
     FieldInfo,
@@ -98,12 +99,18 @@ struct ProgramUnit {
 
 /// Checks a program: its entry, file 0, with the modules it imports, given in the order their
 /// imports need — each module before the modules that import it (07 V5).
-fn checkModule(parsed: Module, imported: ProgramUnit[] = []): Checked {
+fn checkModule(parsed: Module, imported: ProgramUnit[] = [], collections: bool = false): Checked {
     let c = Checker.new();
     // the prelude's declarations before the program's, parsed as no file of it; the entry's last
     let items = List<Item>.new();
     for (item in parse(preludeText(), -1).module.items) {
         items.push(item);
+    }
+    // std.collections where the program names a map: its names the prelude's (S7d2)
+    if (collections) {
+        for (item in parse(collectionsText(), -1).module.items) {
+            items.push(item);
+        }
     }
     for (u in imported) {
         c.modNames.insert(u.file, u.name);
@@ -5428,9 +5435,6 @@ class Checker {
             "List" => {
                 return Ty.List(boxTy(this.resolveType(args[0])));
             }
-            "Map" => {
-                return Ty.Map(boxTy(this.resolveType(args[0])), boxTy(this.resolveType(args[1])));
-            }
             _ => { }
         }
         if (isWidthType(name)) {
@@ -7371,9 +7375,13 @@ class Checker {
                 if (inferring && !this.ctx.fixing) {
                     info.returns = typeOf(value);
                 }
-                body.push(
-                    TStmt.Return(if (typeOf(value) == .Void) null else value, decl.span.line)
-                );
+                // a value of no type is run, then nothing returned (S7d2: it was dropped since S2d)
+                if (typeOf(value) == .Void) {
+                    body.push(TStmt.Expr(value, decl.span.line));
+                    body.push(TStmt.Return(null, decl.span.line));
+                } else {
+                    body.push(TStmt.Return(value, decl.span.line));
+                }
             }
             // an interface's abstract member: never run, its conformer's runs
             .None => { }
@@ -8381,15 +8389,39 @@ class Checker {
             }
             .Ignore(_) => { }
             .Literal(_, at) | .Range(_, _, _, at) | .Variant(_, _, _, at) | .VariantFields(_, _, _, at) | .Fields(_, _, at) | .Or(_, at) | .Typed(_, _, at) | .List(_, _, _, at) => {
+                // one that matches every value of the type cannot fail: its names bound from it,
+                // `let P { x, y } = p` (09 rule 2; S7d2: refused since S3, and `for` takes it)
+                let found = List<Bound>.new();
+                if (this.patternTest(p, source, found, seen) == null) {
+                    for (b in found) {
+                        let bt = typeOf(b.value);
+                        if (this.atTop()) {
+                            out.push(
+                                TStmt.SetGlobal(
+                                    this.declareGlobal(b.name, bt, isVar, b.at),
+                                    b.value,
+                                    line
+                                )
+                            );
+                        } else {
+                            out.push(
+                                TStmt.SetLocal(
+                                    this.declareLocal(b.name, bt, isVar, b.at),
+                                    b.value,
+                                    line
+                                )
+                            );
+                        }
+                    }
+                    return;
+                }
                 this.error(
                     "LYS-SEM0098",
                     "a pattern that can fail needs a way out: 'let P = e else { … }', or a 'match'",
                     at
                 );
                 // its names are bound all the same, of no known type
-                let bound = List<Bound>.new();
-                this.patternTest(p, TExpr.Unknown, bound, seen);
-                for (b in bound) {
+                for (b in found) {
                     this.bindPattern(
                         isVar,
                         Pattern.Name(b.name, b.at),
@@ -10557,7 +10589,7 @@ class Checker {
                 this.member(x.value, name, optional, at)
             }
             .List(items, at) => this.listLiteral(items, expected, at),
-            .Map(_, at) => this.notYet("a map literal", "S7d (maps and sets)", at),
+            .Map(entries, at) => this.mapLiteral(entries, expected, at),
             .StructInit(name, targs, fields, at) => this.init(name, targs, fields, expected, at),
             .With(target, fields, at) => this.withOf(target.value, fields, at),
             .If(cond, then, otherwise, at) => this.ifExpr(
@@ -11467,6 +11499,15 @@ class Checker {
         }
         let t = if (this.types[i].template >= 0) this.types[i].template else i;
         for (x in this.types[t].ifaces) {
+            // a conditional conformance where the instance's arguments meet its condition (S7d2:
+            // `Map<int, C>` of a class `C` no Equatable compared `C`s in its copy)
+            if (t != i) {
+                if (let cond = this.types[t].condIfaces.get(x)) {
+                    if (!this.meetsBlock(this.types[i].args, cond)) {
+                        continue;
+                    }
+                }
+            }
             for (a in this.ancestry(x)) {
                 if (a == this.equatableIndex) {
                     return true;
@@ -11632,6 +11673,10 @@ class Checker {
                 if (own != null
                     && !this.functions[own].isStatic
                     && this.functions[own].params.length() == 1) {
+                    // a generic type's, copied for the instance's arguments (S7d2: a map's)
+                    if (this.functions[own].typeParams.length() > 0) {
+                        return TExpr.CallGeneric(own, this.types[i].args, [a, b], Ty.Bool);
+                    }
                     return TExpr.Call(own, [a, b], Ty.Bool);
                 }
                 if (this.types[i].kind == .Class && !this.saysEquatable(i)) {
@@ -13039,6 +13084,65 @@ class Checker {
         return -1;
     }
 
+    /// `["a": 1, "b": 2]` and `[:]` (Script 02 K4, 03 Lit; S7d2): the entries, each a key and a
+    /// value, given to `fromMapLiteral` of the place's type where it is a `FromMapLiteral<K, V>`,
+    /// else of a `Map` of the first entry's types.
+    mut fn mapLiteral(entries: MapEntry[], expected: ?Ty, at: Span): TExpr {
+        var target: ?Ty = null;
+        if (let e = expected) {
+            target = match (e) {
+                .Optional(inner) => inner.value,
+                _ => e,
+            };
+        }
+        var fi = -1;
+        if (let t = target) {
+            fi = this.instanceFor(t, "FromMapLiteral");
+        }
+        var k = Ty.Unknown;
+        var v = Ty.Unknown;
+        if (fi >= 0) {
+            k = this.types[fi].args[0];
+            v = this.types[fi].args[1];
+        } else if (entries.length() > 0) {
+            k = typeOf(this.expr(entries[0].key, null));
+            v = typeOf(this.expr(entries[0].value, null));
+        }
+        let mi = this.typeIndex.get("Map") ?? -1;
+        if (fi < 0 && (mi < 0 || entries.length() == 0)) {
+            if (entries.length() == 0) {
+                this.error(
+                    "LYS-SEM0060",
+                    "nothing here says what the empty map holds: write its type, `let m: Map<string, int> = [:]`",
+                    at
+                );
+            }
+            return TExpr.Unknown;
+        }
+        let pair = Ty.Tuple(TupleTy { elements = [k, v], labels = ["", ""] });
+        let items = List<TExpr>.new();
+        for (e in entries) {
+            let key = this.coerce(this.expr(e.key, k), k, spanOf(e.key));
+            let value = this.coerce(this.expr(e.value, v), v, spanOf(e.value));
+            items.push(TExpr.Tuple([key, value], pair));
+        }
+        let list = TExpr.ListOp(ListOp.Lit, items.toArray(), Ty.List(boxTy(pair)));
+        let made = if (fi >= 0) target ?? Ty.Unknown else Ty.Named(this.typeInstance(mi, [k, v]));
+        match (made) {
+            .Named(i) => {
+                let tmpl = if (this.types[i].template >= 0) this.types[i].template else i;
+                if (let own = this.types[tmpl].methods.get("fromMapLiteral")) {
+                    if (this.functions[own].typeParams.length() > 0) {
+                        return TExpr.CallGeneric(own, this.types[i].args, [list], made);
+                    }
+                    return TExpr.Call(own, [list], made);
+                }
+            }
+            _ => { }
+        }
+        return TExpr.Unknown;
+    }
+
     /// `[a, b]` where the place's type conforms to `FromArrayLiteral<T>` (03 Lit, S7c2): a list of
     /// `T` given to its `fromArrayLiteral`; `null` where the place takes no such type.
     mut fn arrayLiteralBuilt(items: Expr[], expected: Ty, at: Span): ?TExpr {
@@ -13456,6 +13560,10 @@ class Checker {
             },
             "__scopeClose" => TExpr.ScopeClose(boxE(one)),
             "__boundsPanic" => TExpr.Panic(boxE(one), 3),
+            // a collection changed while it was walked (S7d2): Lyric 5's `LYR-RT0016`
+            "__changedPanic" => TExpr.Panic(boxE(one), 16),
+            // a value's Debug form, where a type writes its own (S7d2: a map's entries)
+            "__debugOf" => this.debugText(one, typeOf(one), at),
             "__listTruncate" | "__listCheck" => {
                 let two = args.length() == 2;
                 let xs = if (two) this.expr(args[0].value, null) else TExpr.Unknown;
@@ -14473,7 +14581,34 @@ class Checker {
         let x = TExpr.Local(0, t);
         let name = declaredName(info.name);
         var body = TExpr.Str(name);
-        if (info.kind == .Struct || info.kind == .Class) {
+        // a type of the prelude's that writes its own `debug()` (S7d2: a map, `{"a": 1}`); a
+        // program's type writes its form through `Debug`, which comes with S7e
+        let origin = if (info.template >= 0) this.types[info.template].mod else info.mod;
+        let ownDebug = if (origin < 0) this.methodOf(i, "debug") ?? -1 else -1;
+        if (ownDebug >= 0
+            && this.functions[ownDebug].params.length() == 0
+            && !this.functions[ownDebug].isStatic) {
+            // an instance's arguments, a template's own parameters
+            let ps = List<Ty>.new();
+            if (info.template >= 0) {
+                for (a in info.args) {
+                    ps.push(a);
+                }
+            } else {
+                var k = 0;
+                for (_ in info.typeParams) {
+                    ps.push(Ty.Param(k));
+                    k += 1;
+                }
+            }
+            body = if (this.functions[ownDebug].typeParams.length() > 0) TExpr.CallGeneric(
+                ownDebug,
+                ps.toArray(),
+                [x],
+                Ty.Str
+            )
+                else TExpr.Call(ownDebug, [x], Ty.Str);
+        } else if (info.kind == .Struct || info.kind == .Class) {
             body = concatAll(
                 this.fieldsText(
                     name,
@@ -14734,6 +14869,7 @@ class Checker {
                 let index = this.typeIndex.get(this.q(name));
                 if (index != null) {
                     // `Point(1, 2)` is `Point.new(1, 2)` (05 D11)
+                    this.callExpected = expected;
                     return this.staticCall(index, "new", args, at);
                 }
                 return this.name(name, null, nameAt);
@@ -14769,12 +14905,14 @@ class Checker {
                                 if (s != null) {
                                     let si = this.entryOf(s);
                                     if (si >= 0) {
+                                        this.callExpected = expected;
                                         return this.staticCall(si, method, args, at);
                                     }
                                 }
                             }
                             let index = this.typeIndex.get(this.q(typeName));
                             if (index != null) {
+                                this.callExpected = expected;
                                 return this.staticCall(index, method, args, at);
                             }
                         }
@@ -14788,6 +14926,7 @@ class Checker {
                                 let entry = this.typeNamed("List");
                                 if (entry >= 0) {
                                     this.presetBinds = [this.resolveType(targs[0])];
+                                    this.callExpected = expected;
                                     let call = this.staticCall(entry, method, args, at);
                                     this.presetBinds = [];
                                     return call;
@@ -14801,12 +14940,18 @@ class Checker {
                                     for (x in targs) {
                                         tys.push(this.resolveType(x));
                                     }
-                                    return this.staticCall(
+                                    // the written arguments bind the type's parameters of its
+                                    // static, `Map<string, int>.withCapacity(4)` (S7d2: dropped)
+                                    this.presetBinds = tys.toArray();
+                                    this.callExpected = expected;
+                                    let call = this.staticCall(
                                         this.typeInstance(index, tys.toArray()),
                                         method,
                                         args,
                                         at
                                     );
+                                    this.presetBinds = [];
+                                    return call;
                                 }
                             }
                             _ => { }
@@ -14816,6 +14961,7 @@ class Checker {
                     .Member(inner, typeName, false, _) => {
                         let index = this.moduleType(inner.value, typeName, at);
                         if (index >= 0) {
+                            this.callExpected = expected;
                             return this.staticCall(index, method, args, at);
                         }
                         if (index == -2) {
@@ -16148,6 +16294,10 @@ class Checker {
     }
 
     mut fn staticCall(typeIndex: int, method: string, args: Arg[], at: Span): TExpr {
+        // the position's type, for this call's, not an argument's: what the arguments leave open
+        // of a generic type's parameters it binds (Lyric 5 03 §9.2 rule 6; S7d2: `Map.new()`)
+        let posTy = this.callExpected;
+        this.callExpected = null;
         let info = this.types[typeIndex];
         // `Channel<T>.new(capacity)`, `Semaphore.new(n)` (Lyric 5 10 §6 rule 1, §10 rule 7): the VM's
         let made = this.syncNew(typeIndex, method, args, at);
@@ -16208,7 +16358,7 @@ class Checker {
             return TExpr.Unknown;
         }
         this.preChecked = checkedArgs;
-        return this.callAmong(method, [m], null, args, at);
+        return this.callExpecting(posTy, [], method, [m], null, args, at);
     }
 
     /// The member of `name` a call with `args` reaches on type `i` where it has several (S7c5d2):
@@ -17454,6 +17604,7 @@ fn isIntrinsic(name: string): bool {
     return match (name) {
         "__chanReady" | "__chanWatch" | "__parkWatched" | "__sleep" | "__readLine" => true,
         "__timerAfter" | "__listTruncate" | "__listChanges" | "__listCheck" | "__boundsPanic" => true,
+        "__changedPanic" | "__debugOf" => true,
         "__coNext" | "__coClose" | "__scopeClose" => true,
         _ => false,
     };

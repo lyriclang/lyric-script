@@ -42,6 +42,14 @@ enum NativeFn :: [Equatable] {
     HashMixStr,
     /// An object's number, given the first time it is asked (01 S8).
     ObjectNumber,
+    /// A map's index (S7d2): a new one; a place under a hash; the first place under a hash, or -1;
+    /// the next after a place, or -1; a place taken out; every place taken out.
+    IndexNew,
+    IndexAdd,
+    IndexFirst,
+    IndexNext,
+    IndexRemove,
+    IndexClear,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -55,7 +63,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 19;
+let nativeCount: int = 25;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -78,7 +86,13 @@ fn nativeOf(n: int): NativeFn {
         15 => NativeFn.ListSortStrings,
         16 => NativeFn.HashMixInt,
         17 => NativeFn.HashMixStr,
-        _ => NativeFn.ObjectNumber,
+        18 => NativeFn.ObjectNumber,
+        19 => NativeFn.IndexNew,
+        20 => NativeFn.IndexAdd,
+        21 => NativeFn.IndexFirst,
+        22 => NativeFn.IndexNext,
+        23 => NativeFn.IndexRemove,
+        _ => NativeFn.IndexClear,
     };
 }
 
@@ -104,6 +118,12 @@ fn nativeNumber(n: NativeFn): int {
         .HashMixInt => 16,
         .HashMixStr => 17,
         .ObjectNumber => 18,
+        .IndexNew => 19,
+        .IndexAdd => 20,
+        .IndexFirst => 21,
+        .IndexNext => 22,
+        .IndexRemove => 23,
+        .IndexClear => 24,
     };
 }
 
@@ -128,6 +148,12 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .HashMixInt => sig("hash.mixInt", 2, 0, true, false),
         .HashMixStr => sig("hash.mixStr", 1, 1, true, false),
         .ObjectNumber => sig("object.number", 0, 1, true, false),
+        .IndexNew => sig("index.new", 0, 0, false, true),
+        .IndexAdd => sig("index.add", 2, 1, false, false),
+        .IndexFirst => sig("index.first", 1, 1, true, false),
+        .IndexNext => sig("index.next", 2, 1, true, false),
+        .IndexRemove => sig("index.remove", 2, 1, false, false),
+        .IndexClear => sig("index.clear", 0, 1, false, false),
     };
 }
 

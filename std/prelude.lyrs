@@ -746,6 +746,10 @@ interface Index<K> {
 interface IndexSet<K> :: Index<K> {
     fn setIndex(k: K, v: Self.Output)
 }
+// a map literal where the place's type is one, `["a": 1]` (Script 02 K4, 03 Lit; S7d2)
+interface FromMapLiteral<K, V> {
+    static fn fromMapLiteral(entries: (K, V)[]): Self
+}
 interface FromArrayLiteral<T> {
     static fn fromArrayLiteral(items: T[]): Self
 }

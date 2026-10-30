@@ -37,6 +37,12 @@ fn stdBelow(name: string): string[] {
     return out.toArray();
 }
 
+/// std.collections' text (S7d2): the maps, whose names are the prelude's, added where a
+/// program names one.
+fn collectionsText(): string {
+    return string.fromUtf8Lossy(comptime embed("../std/collections.lyrs"));
+}
+
 /// The prelude's text (07 V3 I8): what every module names without an import.
 fn preludeText(): string {
     return string.fromUtf8Lossy(comptime embed("../std/prelude.lyrs"));

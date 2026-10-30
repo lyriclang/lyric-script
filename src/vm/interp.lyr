@@ -15,7 +15,7 @@
 //! leaves every frame is reported: the VM calls its `message()` and its `cause()` in the same
 //! run, each call returning to a frame of function `-1`, and the run ends with `Outcome.Error`,
 //! the record's frames its trace.
-import std.collections { List };
+import std.collections { List, Map };
 import std.core { arrayOf };
 import std.fs { exists };
 import std.hash { DefaultHasher };
@@ -27,6 +27,7 @@ import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
     ScriptArray,
+    ScriptIndex,
     ErrorRecord,
     HeapRef,
     Nil,
@@ -3027,6 +3028,76 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                             s[x] = o.number as uint64;
                         } else {
                             s[x] = 0;
+                        }
+                    }
+                    // a map's index (S7d2): where each hash is, the places in the order they came
+                    .IndexNew => {
+                        r[y] = ScriptIndex { table = Map<uint64, List<int>>.new() };
+                    }
+                    .IndexAdd => {
+                        let o = r[y];
+                        if (o is ScriptIndex) {
+                            if (let places = o.table.get(s[x])) {
+                                places.push(s[x + 1] as int);
+                            } else {
+                                let places = List<int>.new();
+                                places.push(s[x + 1] as int);
+                                o.table.insert(s[x], places);
+                            }
+                        }
+                    }
+                    .IndexFirst => {
+                        let o = r[y];
+                        var found = -1;
+                        if (o is ScriptIndex) {
+                            if (let places = o.table.get(s[x])) {
+                                if (places.length() > 0) {
+                                    found = places[0];
+                                }
+                            }
+                        }
+                        s[x] = found as uint64;
+                    }
+                    .IndexNext => {
+                        let o = r[y];
+                        var found = -1;
+                        if (o is ScriptIndex) {
+                            if (let places = o.table.get(s[x])) {
+                                let at = s[x + 1] as int;
+                                var k = 0;
+                                while (k < places.length() - 1 && found < 0) {
+                                    if (places[k] == at) {
+                                        found = places[k + 1];
+                                    }
+                                    k += 1;
+                                }
+                            }
+                        }
+                        s[x] = found as uint64;
+                    }
+                    .IndexRemove => {
+                        let o = r[y];
+                        if (o is ScriptIndex) {
+                            if (let places = o.table.get(s[x])) {
+                                let at = s[x + 1] as int;
+                                let kept = List<int>.new();
+                                for (p in places) {
+                                    if (p != at) {
+                                        kept.push(p);
+                                    }
+                                }
+                                if (kept.length() == 0) {
+                                    o.table.remove(s[x]);
+                                } else {
+                                    o.table.insert(s[x], kept);
+                                }
+                            }
+                        }
+                    }
+                    .IndexClear => {
+                        let o = r[y];
+                        if (o is ScriptIndex) {
+                            o.table.clear();
                         }
                     }
                     // a list sorted in place (S7c6c2): its length unchanged, a walk goes on

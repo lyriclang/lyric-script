@@ -839,7 +839,7 @@ summary = "`==` and `!=` compare two values of one type; `== null` asks an optio
 title = "a type argument nothing gives"
 severity = "error"
 area = "03-types"
-summary = "A type parameter that occurs in no argument and not in the expected type is not inferred: write it. Lyric 5's LYR-SEM0060."
+summary = "A type parameter that occurs in no argument and not in the expected type is not inferred: write it — so too an empty `[]` or `[:]` no position gives a type, `let m: Map<string, int> = [:]`. Lyric 5's LYR-SEM0060."
 
 [LYS-SEM0064]
 title = "a type alias that expands to itself"
@@ -905,7 +905,7 @@ summary = "One pattern binds a name once: `let (a, a) = …` is refused. Lyric 5
 title = "a pattern that can fail where nothing takes the miss"
 severity = "error"
 area = "09-patterns"
-summary = "A `let` takes apart only what cannot fail; a pattern that tests goes in a `match`. Lyric 5's LYR-SEM0098."
+summary = "A `let` and a `for` take apart only what cannot fail — a name, `_`, a tuple or a field pattern over a struct of such; a pattern that tests goes in a `match`, an `if let` or a `let … else`. Lyric 5's LYR-SEM0098."
 
 [LYS-SEM0101]
 title = "a jump to a label no loop around carries"

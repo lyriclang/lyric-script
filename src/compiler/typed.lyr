@@ -164,6 +164,8 @@ class TypeInfo {
     // their slots runs on it
     var ifaces: int[] = [],
     var witness: Map<int, int> = Map<int, int>.new(),
+    // a conformer's: the arguments of the instance of a generic interface each slot is of (S7c1b)
+    var slotArgs: Map<int, Ty[]> = Map<int, Ty[]>.new(),
     // a generic type's parameters; an instance's template and arguments — the template is the
     // instance with its own parameters
     var typeParams: TypeParamInfo[] = [],

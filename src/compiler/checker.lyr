@@ -1859,13 +1859,6 @@ class Checker {
             this.declaringParams = info.typeParams;
             info.template = index;
             info.args = own.toArray();
-            if (info.selfParam) {
-                this.notYet(
-                    "'Self' in a generic interface",
-                    "S7c1 (generic interfaces, step 2)",
-                    i.span
-                );
-            }
         }
         let parents = List<int>.new();
         for (p in i.parents) {
@@ -1884,6 +1877,17 @@ class Checker {
             }
         }
         info.parents = parents.toArray();
+        // a member of an interface generic over `Self` takes `Self` first, the interface's own
+        // parameters after it (S7c1b)
+        if (info.selfParam && i.typeParams.length() > 0) {
+            let shifted = Map<string, int>.new();
+            var j = 0;
+            for (tp in i.typeParams) {
+                shifted.insert(tp.name, j + 1);
+                j += 1;
+            }
+            this.typeParams = shifted;
+        }
         let names = List<string>.new();
         for (m in i.members) {
             if (info.methods.containsKey(m.name)) {
@@ -1895,15 +1899,8 @@ class Checker {
                 .None => {
                     this.functions[fi].abstract = true;
                 }
-                _ => {
-                    if (i.typeParams.length() > 0) {
-                        this.notYet(
-                            "a default member of a generic interface",
-                            "S7c1 (generic interfaces, step 2)",
-                            m.span
-                        );
-                    }
-                }
+                // a default member of a generic interface is copied for each instance (S7c1b)
+                _ => { }
             }
             if (i.typeParams.length() > 0) {
                 this.functions[fi].typeParams = info.typeParams;
@@ -1916,10 +1913,9 @@ class Checker {
                         m.span
                     );
                 }
-                // generic over `Self`, the conformer, bound by the receiver or the type
-                this.functions[fi].typeParams = [
-                    TypeParamInfo { name = "Self", constraints = [index] },
-                ];
+                // generic over `Self`, the conformer, bound by the receiver or the type; then over
+                // the interface's parameters (S7c1b)
+                this.functions[fi].typeParams = this.selfFirst(index, info.typeParams);
             }
             info.methods.insert(m.name, fi);
             info.slotOf.insert(m.name, this.slotCount);
@@ -1952,7 +1948,7 @@ class Checker {
             let f = this.functions[fi];
             f.returns = ty;
             f.abstract = true;
-            f.typeParams = [TypeParamInfo { name = "Self", constraints = [index] }];
+            f.typeParams = this.selfFirst(index, info.typeParams);
             info.methods.insert(sl.name, fi);
             info.slotOf.insert(sl.name, this.slotCount);
             this.slotCount += 1;
@@ -1990,6 +1986,31 @@ class Checker {
             tys.push(this.resolveType(x));
         }
         return this.typeInstance(ii, tys.toArray());
+    }
+
+    /// `Self` of interface `index`, then its own parameters: what a member generic over `Self` is
+    /// generic over (S7c1b).
+    fn selfFirst(index: int, params: TypeParamInfo[]): TypeParamInfo[] {
+        let out = List<TypeParamInfo>.new();
+        out.push(TypeParamInfo { name = "Self", constraints = [index] });
+        for (p in params) {
+            out.push(p);
+        }
+        return out.toArray();
+    }
+
+    /// The type arguments a call of member `fi` of interface `ii` binds (S7c1b): `self`, the
+    /// receiver's type, where the member is generic over `Self`, then the arguments of the instance
+    /// of a generic interface that declares it.
+    mut fn bindsOf(fi: int, ii: int, self: Ty): Ty[] {
+        let out = List<Ty>.new();
+        if (this.selfGeneric(fi)) {
+            out.push(self);
+        }
+        for (x in this.memberBinds(ii, this.functions[fi].name)) {
+            out.push(x);
+        }
+        return out.toArray();
     }
 
     /// The interface whose members, slots and associated types `ii` has: the template of an
@@ -2473,10 +2494,12 @@ class Checker {
             }
             for (member in iface.memberNames) {
                 let slot = iface.slotOf.get(member) ?? -1;
+                info.slotArgs.insert(slot, instanceArgs);
                 let declared = iface.methods.get(member) ?? -1;
                 let own = info.methods.get(member);
                 if (own != null) {
-                    let selfArgs: Ty[] = if (iface.selfParam) [self] else instanceArgs;
+                    let selfArgs: Ty[] = if (iface.selfParam) withSelfTy(self, instanceArgs)
+                        else instanceArgs;
                     if (!this.sameSignatureAs(own, declared, selfArgs)
                         || this.functions[own].isStatic != this.functions[declared].isStatic) {
                         this.error(
@@ -2524,6 +2547,33 @@ class Checker {
         }
         info.ifaces = all.toArray();
         this.typeParams = savedScope;
+    }
+
+    /// Whether interface `x` is `ii`, or an instance of `ii` where `ii` is a generic interface's
+    /// template — what a member generic over `Self` asks of `Self` (S7c1b).
+    mut fn isOf(x: int, ii: int): bool {
+        if (x == ii) {
+            return true;
+        }
+        let target = this.types[ii];
+        return target.kind == .Interface
+            && target.typeParams.length() > 0
+            && target.template == ii
+            && this.ifaceBase(x) == ii;
+    }
+
+    /// The interfaces type `i` conforms to: an instance of a generic type its template's, each at
+    /// the instance's arguments (S7c1b).
+    mut fn ifacesOf(i: int): int[] {
+        let info = this.types[i];
+        if (info.template < 0 || info.template == i) {
+            return info.ifaces;
+        }
+        let out = List<int>.new();
+        for (x in this.types[info.template].ifaces) {
+            out.push(this.ifaceAt(x, info.args));
+        }
+        return out.toArray();
     }
 
     /// Interface `x` of a generic type's template read at an instance's arguments: `Store<T>` of
@@ -2689,7 +2739,7 @@ class Checker {
                 for (x in kinds) {
                     // a generic interface of a generic type: at the instance's arguments (S7c1)
                     found = found
-                        || x == ii
+                        || this.isOf(x, ii)
                         || (i != j
                             && this.types[i].kind != .Interface
                             && this.ifaceAt(x, this.types[j].args) == ii);
@@ -2718,7 +2768,7 @@ class Checker {
                 if (g >= 0 && k < this.functions[g].typeParams.length()) {
                     for (c in this.functions[g].typeParams[k].constraints) {
                         for (x in this.ancestry(c)) {
-                            found = found || x == ii;
+                            found = found || this.isOf(x, ii);
                         }
                     }
                 }
@@ -4133,7 +4183,7 @@ class Checker {
                     return TExpr.Unknown;
                 }
                 let (fi, _) = found;
-                TExpr.Call(this.selfCopy(fi, concrete), all, rt)
+                TExpr.Call(this.selfCopyIn(fi, this.bindsOf(fi, ii, concrete)), all, rt)
             }
             .CallStaticD(slot, d, xs, t) => TExpr.CallStaticD(
                 slot,
@@ -4247,9 +4297,10 @@ class Checker {
             return TExpr.Unknown;
         }
         let (fi, _) = found;
-        if (this.selfGeneric(fi)) {
-            // a default generic over `Self`: its copy for the type, the receiver as it is
-            return TExpr.Call(this.selfCopy(fi, concrete), all, rt);
+        if (this.ifaceGeneric(fi)) {
+            // a default generic over `Self` or over a generic interface's parameters: its copy for
+            // the type and the instance, the receiver as it is
+            return TExpr.Call(this.selfCopyIn(fi, this.bindsOf(fi, ii, concrete)), all, rt);
         }
         let iface = Ty.Named(this.functions[fi].owner);
         let rest = List<TExpr>.new();
@@ -4459,11 +4510,42 @@ class Checker {
         var slot = 0;
         while (slot < this.slotCount) {
             let fi = info.witness.get(slot) ?? -1;
-            if (fi >= 0 && this.selfGeneric(fi)) {
-                info.witness.insert(slot, this.selfCopy(fi, this.selfTy(i)));
+            if (fi >= 0 && this.ifaceGeneric(fi)) {
+                let binds = List<Ty>.new();
+                if (this.selfGeneric(fi)) {
+                    binds.push(this.selfTy(i));
+                }
+                for (x in info.slotArgs.get(slot) ?? []) {
+                    binds.push(x);
+                }
+                if (binds.length() == this.functions[fi].typeParams.length()) {
+                    info.witness.insert(slot, this.selfCopyIn(fi, binds.toArray()));
+                }
             }
             slot += 1;
         }
+    }
+
+    /// Whether `fi` is a member of an interface generic over `Self` or over its own parameters:
+    /// a table holds its copy for the conformer (S7c1b).
+    mut fn ifaceGeneric(fi: int): bool {
+        let f = this.functions[fi];
+        return f.owner >= 0 && this.types[f.owner].kind == .Interface && f.typeParams.length() > 0;
+    }
+
+    /// What the copy of interface member `fi` in the table of instance `i` of a generic type binds:
+    /// `Self` the instance, then the slot's arguments as the template wrote them, at the
+    /// instance's arguments (S7c1b).
+    mut fn tableBinds(fi: int, i: int, slot: int): Ty[] {
+        let info = this.types[i];
+        let out = List<Ty>.new();
+        if (this.selfGeneric(fi)) {
+            out.push(Ty.Named(i));
+        }
+        for (x in this.types[info.template].slotArgs.get(slot) ?? []) {
+            out.push(this.subst(x, info.args));
+        }
+        return out.toArray();
     }
 
     /// Whether `fi` is a member of an interface generic over `Self`.
@@ -4478,12 +4560,18 @@ class Checker {
     /// The copy of `fi`, generic over `Self`, for the type `self`: a static one a copy of its
     /// own, since a call through a descriptor hands it no `Self`.
     mut fn selfCopy(fi: int, self: Ty): int {
+        return this.selfCopyIn(fi, [self]);
+    }
+
+    /// The copy of interface member `fi` at `binds` — `Self`, then a generic interface's arguments
+    /// (S7c1b); a static one a copy of its own.
+    mut fn selfCopyIn(fi: int, binds: Ty[]): int {
         if (!this.functions[fi].isStatic) {
-            return this.instanceOf(fi, [self]);
+            return this.instanceOf(fi, binds);
         }
         let saved = this.copyExact;
         this.copyExact = true;
-        let k = this.instanceOf(fi, [self]);
+        let k = this.instanceOf(fi, binds);
         this.copyExact = saved;
         return k;
     }
@@ -4503,7 +4591,7 @@ class Checker {
             if (fi >= 0) {
                 info.witness.insert(
                     slot,
-                    if (this.selfGeneric(fi)) this.selfCopy(fi, Ty.Named(i))
+                    if (this.ifaceGeneric(fi)) this.selfCopyIn(fi, this.tableBinds(fi, i, slot))
                         else if (this.functions[fi].typeParams.length() > 0) this.instanceOf(
                             fi,
                             info.args
@@ -11809,9 +11897,7 @@ class Checker {
                     let found = this.ifaceMember(b, method);
                     if (found != null) {
                         let (fi, slot) = found;
-                        if (this.selfGeneric(fi)) {
-                            this.presetBinds = [t];
-                        }
+                        this.presetBinds = this.bindsOf(fi, b, t);
                         let call = this.callAmong(method, [fi], receiver, args, at);
                         this.presetBinds = [];
                         return match (call) {
@@ -11853,12 +11939,7 @@ class Checker {
                             }
                             // `Self` is the receiver's type; a generic interface's member takes its
                             // instance's arguments (S7c1)
-                            let binds = this.memberBinds(ii, method);
-                            if (binds.length() > 0) {
-                                this.presetBinds = binds;
-                            } else if (this.selfGeneric(fi)) {
-                                this.presetBinds = [t];
-                            }
+                            this.presetBinds = this.bindsOf(fi, ii, t);
                             let call = this.callAmong(method, [fi], receiver, args, at);
                             this.presetBinds = [];
                             return match (call) {
@@ -11925,12 +12006,7 @@ class Checker {
                     let (fi, slot) = found;
                     // through a value form `Self.Item` reads the fixed type (05 §8 rule 6); a generic
                     // interface's member takes its instance's arguments (S7c1)
-                    let binds = this.memberBinds(i, method);
-                    if (binds.length() > 0) {
-                        this.presetBinds = binds;
-                    } else if (this.selfGeneric(fi)) {
-                        this.presetBinds = [t];
-                    }
+                    this.presetBinds = this.bindsOf(fi, i, t);
                     let call = this.callAmong(method, [fi], receiver, args, at);
                     this.presetBinds = [];
                     return match (call) {
@@ -11959,20 +12035,26 @@ class Checker {
                     this.presetBinds = [];
                     return call;
                 }
-                // a default of a conformance, called on the conformer
+                // a default of a conformance, called on the conformer — an instance of a generic
+                // type's at its arguments, its table perhaps not made yet (S7c1b)
                 if (m == null) {
-                    for (ii in this.types[i].ifaces) {
+                    for (ii in this.ifacesOf(i)) {
                         let found = this.ifaceMember(ii, method);
                         if (found != null && m == null) {
                             let (fi, _) = found;
                             if (!this.functions[fi].abstract && this.selfGeneric(fi)) {
-                                this.presetBinds = [t];
+                                this.presetBinds = this.bindsOf(fi, ii, t);
                                 let call = this.callAmong(method, [fi], receiver, args, at);
                                 this.presetBinds = [];
                                 return call;
                             }
                             if (!this.functions[fi].abstract) {
-                                let owner = this.functions[fi].owner;
+                                // a generic interface's default: at its instance's arguments,
+                                // the receiver a value of the instance (S7c1b)
+                                let binds = this.bindsOf(fi, ii, t);
+                                let owner = if (binds.length() > 0) ii
+                                    else this.functions[fi].owner;
+                                this.presetBinds = binds;
                                 let up = if (this.boxed(t)) TExpr.BoxOf(
                                     boxE(receiver),
                                     i,
@@ -12055,7 +12137,12 @@ class Checker {
                         if (found != null) {
                             let (fi, _) = found;
                             if (!this.functions[fi].abstract) {
-                                let owner = this.functions[fi].owner;
+                                // a generic interface's default: at its instance's arguments,
+                                // the receiver a value of the instance (S7c1b)
+                                let binds = this.bindsOf(fi, ii, t);
+                                let owner = if (binds.length() > 0) ii
+                                    else this.functions[fi].owner;
+                                this.presetBinds = binds;
                                 let up = TExpr.BoxOf(boxE(receiver), i, Ty.Named(owner));
                                 return this.callAmong(method, [fi], up, args, at);
                             }
@@ -12113,9 +12200,7 @@ class Checker {
             rest.push(args[k]);
             k += 1;
         }
-        if (this.selfGeneric(fi)) {
-            this.presetBinds = [t];
-        }
+        this.presetBinds = this.bindsOf(fi, ii, t);
         let call = this.callAmong(method, [fi], recv, rest.toArray(), at);
         this.presetBinds = [];
         let parts = match (call) {
@@ -12153,9 +12238,7 @@ class Checker {
                         );
                         return TExpr.Unknown;
                     }
-                    if (this.selfGeneric(fi)) {
-                        this.presetBinds = [t];
-                    }
+                    this.presetBinds = this.bindsOf(fi, ii, t);
                     let call = this.callAmong(method, [fi], null, args, at);
                     this.presetBinds = [];
                     return match (call) {
@@ -12709,6 +12792,16 @@ fn isNullVar(s: Stmt): bool {
         _ => { }
     }
     return false;
+}
+
+/// `x`, then `xs` (S7c1b): `Self`, then a generic interface's arguments.
+fn withSelfTy(x: Ty, xs: Ty[]): Ty[] {
+    let out = List<Ty>.new();
+    out.push(x);
+    for (y in xs) {
+        out.push(y);
+    }
+    return out.toArray();
 }
 
 /// The entries of `m` whose function is `n` or later: gone.

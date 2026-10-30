@@ -1199,3 +1199,16 @@ Funktion wurden an einer zweiten Stelle nur über den Namen aufgelöst; `Source<
 generischen Funktion fällt über die Abkürzung „eigene Parameter“ auf die Vorlage zurück — die
 Vorlage steht darum für sich selbst an ihren Parametern. Spec 05 Regel 15, fünf Fälle, alle rot
 gegen S7b. Vier Mutanten in zwei Läufen, alle wie vorhergesagt. Fälle 370 → 375.
+
+**S7c1b, Ergebnis (2026-10-30).** Ein Mitglied eines Interfaces, das über `Self` generisch ist,
+nimmt `Self` zuerst und die Parameter des Interfaces danach (`selfFirst`) — so bleiben `Self =
+Param(0)` und alle Stellen, die es so belegen, gültig; ein Aufruf belegt `[Self] ++ Argumente
+der Instanz` (`bindsOf`), an allen acht Stellen, die vorher nur `[t]` kannten. Ein Default über
+`T` wird je Konformer an den Argumenten seiner Instanz kopiert: `conform()` merkt sich je Slot
+die Argumente (`slotArgs`), `tableSelf`/`tableInstance` kopieren damit (`selfCopyIn`), auch für
+die Instanzen eines generischen Konformers; auf dem Konformer selbst liest eine Instanz die
+Interfaces ihrer Vorlage an ihren Argumenten (`ifacesOf`). Der `Self`-Constraint eines Mitglieds
+nennt die Vorlage: eine Instanz zählt als Konformanz zu ihr (`isOf`). Gefunden: ein Anker, dessen
+Ersatz anderswo schon stand, hätte das Patch-Skript als erledigt übersprungen — der Trockenlauf
+fing es. Spec 05 Regel 15 ergänzt, zwei Fälle, beide rot gegen S7c1a. Drei Mutanten in zwei
+Läufen, alle wie vorhergesagt. Fälle 375 → 377. **S7c1 fertig** (P18 gebaut).

@@ -235,7 +235,9 @@ VM's call path, S7k measurement point 3.
   their parameters (P18, the first half). S7c cut in plan 14: c1 generic interfaces, c2
   `Index<K>` and `FromArrayLiteral<T>`, c3 values without descriptors as interface values, c4
   iterators, c5 `std.iter`.
-- Next: **S7c1b** — `Self` and default members in a generic interface.
+- **S7c1b done** — `Self` and default members in a generic interface; each conformer's table holds
+  the default's copy at its instance's arguments. **S7c1 complete** (P18 built).
+- Next: **S7c2** — `Index<K>`/`IndexSet<K>` for one's own types, `FromArrayLiteral<T>`.
 
 ## Working mode
 

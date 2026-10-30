@@ -256,9 +256,12 @@ VM's call path, S7k measurement point 3.
 - **S7c4c3a done** (S7c4c3 split in two) — blanket conformances (05 §13 rule 8: every iterator
   an `Iterable`), static members of blanket blocks. Found: an answer's bound was asked before the
   rest of its list stood (since S3i); codegen passed an unresolved expression silently.
-- Next: **S7c4c3b** — a block on one instance, a list of a type parameter as an interface value,
-  values of a blanket interface from a list or a VM-held or conditionally reached generic. Then
-  S7c5 comparisons and operators (P19), S7c6 `std.iter`.
+- **S7c4c3b done**, and with it **S7c4** — blocks on one instance, a list of a type parameter as
+  an interface value, every type a blanket block reaches with its table. Found: a forward
+  `Box<int>` was SEM0026 (since S3g); `fn f<T>(xs: T[]): Any` crashed at run time, silently
+  compiled; a conditional conformance held at run time for every instance (since S3i).
+- Next: **S7c5** — comparisons as interfaces (`Equatable`, `Ordered`, `TotalOrder`) and the
+  operator interfaces (P19); then S7c6 `std.iter`.
 
 ## Working mode
 

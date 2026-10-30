@@ -1370,3 +1370,22 @@ jetzt bekommt jeder erreichte Typ die Antworten, und ein unaufgelöster Ausdruck
 Tabelle ohne den Eintrag (ICE) — jetzt `NYI0001` mit Uhr S7c4c3b, wie ein solcher Wert. Spec 05
 Regel 12, 07 Regel 7; fünf Fälle, alle rot gegen S7c4c2. Sechs Mutanten in drei Läufen: einer wie vorhergesagt; drei Fehlgriffe — ein Default lief über die Box-Tabelle des materialisierten Typs statt über die Blöcke; ein Ablehnungsfall prüft nur, dass seine Codes vorkommen, ein zusätzliches `SEM0160` bleibt dort unsichtbar; und die offene Antwort führte nicht zu `TExpr.Unknown`, sondern zur Kopie des **abstrakten** `next` — die Schleife hing weiter. Seitdem gibt `memberCallOn` für ein abstraktes Mitglied `TExpr.Unknown` (die laute Panik); die Wiederholung paniert wie vorhergesagt.
 Fälle 404 → 409.
+
+**S7c4c3b, Ergebnis (2026-10-30).** Ein Block auf einer Instanz (`extend Box<int> { … }`,
+`extend int[] { … }`) gibt seine Mitglieder und Konformanzen dieser Instanz allein, am
+Instanztyp geprüft (`ownMethods`, `instIfaces`; `SEM0012` anderswo, `SEM0133` neben einer
+Konformanz der Vorlage). Eine Liste eines Typparameters ist ein Interfacewert: die Kopie legt
+sie in die Box ihres Elements, eine geteilte Kopie macht den Deskriptor zur Laufzeit (`inst.t`
+über `List<Any>`, `new.d`); `x is T[]` prüft gegen ihn. Ein Blanket-Block gibt seine
+Konformanz mit Tabelle auch einer Liste, einem VM-gehaltenen generischen Typ und einem nur
+bedingt erreichten (dort unter der Bedingung) — die NYI-Sperren von S7c4c3a sind weg.
+**Gefunden beim Bauen:** (1) ein Block auf einer Instanz landete auf der Vorlage und wurde
+gegen `T` geprüft (die Instanzen teilen die Methodentabelle); (2) **seit S3g:** ein generischer
+Typ, mit Argumenten vor seiner Deklaration genannt, war `SEM0026` — ein Aritätsvorlauf wie für
+Interfaces; (3) `fn f<T>(xs: T[]): Any = xs` kompilierte **still** zur Box des Vorlageneintrags
+und stürzte zur Laufzeit ab — die NYI-Sperre in `coerce` war tot, `fit` boxte vorher; der
+Deskriptor eines Listentyps war im Codegenerator immer `Any`; (4) ein Listeneintrag, den erst
+eine Kopie machte, hatte keine Debug-Form; (5) **seit S3i:** der Laufzeit-Deskriptor einer
+Instanz führte die bedingten Konformanzen der Vorlage ohne Bedingung — `Cond<int> is Named` war
+`true`. Spec 03 Regeln 12, 16; 05 Regel 12; sechs Fälle, alle rot gegen S7c4c3a. Sieben Mutanten in vier Läufen, die Fälle alle wie vorhergesagt; bei einem (der Listendeskriptor wieder `Any`) stimmte der Mechanismus nicht — statt `false` paniert der Lauf, `inst.t` über einen Deskriptor ohne Argumente.
+Fälle 409 → 415. Damit ist **S7c4** fertig.

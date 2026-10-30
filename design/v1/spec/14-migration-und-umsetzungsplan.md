@@ -1344,3 +1344,29 @@ Blocks, Antworten aus der Fixierung der Konformanz, `extend<I :: [Iterator]> I :
 [Iterable<Iter = I>]` wie in Lyric 5; die Ausschlüsse `SEM0133`), statische Mitglieder eines
 Blanket-Blocks, ein Block auf einer Instanz (`extend Box<int> { … }`, Regeln 1–2), Listen eines
 Typparameters als Interfacewerte.
+
+**S7c4c3, geteilt (2026-10-30).** **S7c4c3a** Blanket-Konformanzen und statische Mitglieder
+eines Blanket-Blocks; **S7c4c3b** ein Block auf einer Instanz — die Instanzen teilen heute die
+Methodentabelle der Vorlage, `extend Box<int> { … }` landet still auf jedem `Box<T>` —, Listen
+eines Typparameters als Interfacewerte und die Werte eines Interfaces, das ein Blanket-Block
+einer Liste, einem VM-gehaltenen generischen Typ oder einem nur bedingt erreichten gibt.
+
+**S7c4c3a, Ergebnis (2026-10-30).** Ein Blanket-Block darf konformieren: er gibt das Interface
+und seine Kette jedem Typ, den seine Constraints zulassen, die Signaturen am Ziel geprüft
+(`SEM0042`, `SEM0020`), die assoziierten Typen im Rumpf oder per Fixierung in der Liste
+beantwortet (`SEM0128`, `SEM0129`); `conformsTo` fragt die Blöcke, eine exakte Kopie ruft das
+Mitglied des Blocks für den Typ, und jeder erreichte Typ bekommt das Interface, die Antworten und
+die Mitglieder des Blocks in seine Tabelle — kopiert erst nach der Prüfung, in `tableSelf` bzw.
+je Instanz in `tableInstance`. Ein Typ, der selbst zu einem Glied der Kette konformiert, und ein
+zweiter Block für eine Kette sind `SEM0133`. Statische Mitglieder über den Typ und über einen
+Typparameter. Die Prelude gibt jedem Iterator `Iterable<Iter = I>` wie Lyric 5. **Gefunden beim
+Bauen:** (1) **seit S3i:** die Schranke einer Antwort wurde gefragt, bevor die übrigen
+Konformanzen derselben Liste standen — `type Iter = Both` eines `Both :: [Iterator, Iterable]`
+war `SEM0160`; (2) eine Tabellenkopie bei der Deklaration war leer (Rümpfe noch ungeprüft); (3)
+ein VM-gehaltener generischer Typ ohne Tabelle hatte keine Antwort `Iter`, `C.Iter` blieb in
+der Kopie offen, und der Codegenerator überging `TExpr.Unknown` still — die Schleife lief ewig;
+jetzt bekommt jeder erreichte Typ die Antworten, und ein unaufgelöster Ausdruck paniert mit
+`LYS-ICE0001`; (4) eine geteilte Kopie über einen nur bedingt erreichten Typ rief über eine
+Tabelle ohne den Eintrag (ICE) — jetzt `NYI0001` mit Uhr S7c4c3b, wie ein solcher Wert. Spec 05
+Regel 12, 07 Regel 7; fünf Fälle, alle rot gegen S7c4c2. Sechs Mutanten in drei Läufen: einer wie vorhergesagt; drei Fehlgriffe — ein Default lief über die Box-Tabelle des materialisierten Typs statt über die Blöcke; ein Ablehnungsfall prüft nur, dass seine Codes vorkommen, ein zusätzliches `SEM0160` bleibt dort unsichtbar; und die offene Antwort führte nicht zu `TExpr.Unknown`, sondern zur Kopie des **abstrakten** `next` — die Schleife hing weiter. Seitdem gibt `memberCallOn` für ein abstraktes Mitglied `TExpr.Unknown` (die laute Panik); die Wiederholung paniert wie vorhergesagt.
+Fälle 404 → 409.

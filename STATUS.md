@@ -253,9 +253,12 @@ VM's call path, S7k measurement point 3.
   has it, blanket blocks with members, Lyric 5 §9.2 rules 2 and 4 (the position binds; type
   arguments at a method). Found: instance keys were the shown names (`Pair<B, A>` and
   `Pair<A, A>` one instance — since S3).
-- Next: **S7c4c3** — blanket conformances (05 §13 rule 8), static members of blanket blocks, a
-  block on one instance, a list of a type parameter as an interface value. Then S7c5 comparisons
-  and operators (P19), S7c6 `std.iter`.
+- **S7c4c3a done** (S7c4c3 split in two) — blanket conformances (05 §13 rule 8: every iterator
+  an `Iterable`), static members of blanket blocks. Found: an answer's bound was asked before the
+  rest of its list stood (since S3i); codegen passed an unresolved expression silently.
+- Next: **S7c4c3b** — a block on one instance, a list of a type parameter as an interface value,
+  values of a blanket interface from a list or a VM-held or conditionally reached generic. Then
+  S7c5 comparisons and operators (P19), S7c6 `std.iter`.
 
 ## Working mode
 

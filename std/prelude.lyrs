@@ -392,6 +392,9 @@ extend<T> T[] :: FromIterator<T> {
 extend<I :: [Iterator]> I {
     fn collect<C :: [FromIterator<I.Item>]>(): C = C.fromIter(this)
 }
+extend<I :: [Iterator]> I :: Iterable<Iter = I> {
+    fn iter(): I = this
+}
 interface Iterable {
     type Iter :: [Iterator]
     fn iter(): Self.Iter

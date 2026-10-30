@@ -401,6 +401,16 @@ class Checker {
     blankets: Map<string, List<int>> = Map<string, List<int>>.new(),
     // the same, in the order they are declared
     blanketFns: List<int> = List<int>.new(),
+    // the blanket blocks that conform (05 §13 rule 8; S7c4c3a), their entries in order; each
+    // entry by its block's place; the entries a conformance question is asking now
+    blanketConfs: List<int> = List<int>.new(),
+    blanketIndex: Map<string, int> = Map<string, int>.new(),
+    blanketVisiting: List<int> = List<int>.new(),
+    // where a type's conformance to an interface stands, by `type:interface name`
+    conformedAt: Map<string, Span> = Map<string, Span>.new(),
+    // while a blanket block's signatures are checked: its target, and the answers it gives
+    var selfAnswersAt: int = -1,
+    var selfAnswers: Map<string, Ty> = Map<string, Ty>.new(),
     // while a copy is made: where each type parameter's descriptor comes from at run time, null
     // where the copy knows its argument (S3i)
     var specDescs: (?TExpr)[] = [],
@@ -1114,6 +1124,7 @@ class Checker {
                         .Enum(e) => this.conform(e.name, e.conforms),
                         .Extend(x) => {
                             if (blanketTarget(x) >= 0) {
+                                this.blanketConformance(x);
                                 continue;
                             }
                             match (x.target) {
@@ -1141,6 +1152,8 @@ class Checker {
                 .Stmt(_) => { }
             }
         }
+        // what the blanket blocks that conform give the types they reach (05 §13 rule 8)
+        this.conformBlankets();
         // a type's member that hides a blanket block's (05 §13 rule 7; S7c4c2)
         if (this.blanketFns.length() > 0) {
             for (item in module.items) {
@@ -1849,7 +1862,11 @@ class Checker {
                     .Type(t) => this.answersAsked(t.name, t.answers),
                     .Enum(e) => this.answersAsked(e.name, e.answers),
                     .Extend(x) => match (x.target) {
-                        .Named(name, _, _) => this.answersAsked(name, x.answers),
+                        .Named(name, _, _) => {
+                            if (blanketTarget(x) < 0) {
+                                this.answersAsked(name, x.answers);
+                            }
+                        }
                         _ => { }
                     },
                     _ => { }
@@ -2251,12 +2268,13 @@ class Checker {
 
     /// `extend<I :: [Iterator]> I { … }`: members of every type its constraints admit (05 §13
     /// rule 7; S7c4c2) — an entry of its own, generic over the block's parameters, `this` the one
-    /// the target names; a call binds it to the receiver. Its conformances come with S7c4c3.
+    /// the target names; a call binds it to the receiver. Its conformances are read once every
+    /// interface is declared (`blanketConformance`, S7c4c3a).
     mut fn declareBlanket(x: ExtendDecl, at: int): void {
-        if (x.conforms.length() > 0 || x.answers.length() > 0 || x.statics.length() > 0) {
+        if (x.statics.length() > 0) {
             this.notYet(
-                "a blanket block that conforms, answers or holds a constant",
-                "S7c4c3 (blanket conformances)",
+                "a constant of a blanket block",
+                "S7c4c3b (blocks on one instance)",
                 x.span
             );
             return;
@@ -2272,9 +2290,11 @@ class Checker {
         );
         let info = this.types[index];
         info.blanketAt = at;
+        this.blanketIndex.insert(f"{x.span.file}:{x.span.start}", index);
         let savedScope = this.typeParams;
         let savedDeclaring = this.declaringParams;
         this.enterGenericType(index, x.typeParams);
+        this.declareAnswers(index, x.answers);
         // a parameter neither the target nor a fixation names: the block reaches no type
         var k = 0;
         for (tp in x.typeParams) {
@@ -2296,14 +2316,6 @@ class Checker {
         for (m in x.methods) {
             if (info.methods.containsKey(m.name)) {
                 this.error("LYS-SEM0121", f"the block has a second member '{m.name}'", m.span);
-                continue;
-            }
-            if (m.isStatic) {
-                this.notYet(
-                    "a static member of a blanket block",
-                    "S7c4c3 (blanket conformances)",
-                    m.span
-                );
                 continue;
             }
             let fi = this.declareFn(m, index);
@@ -2412,9 +2424,56 @@ class Checker {
         if (fns == null) {
             return null;
         }
+        let found = this.blanketPick(fns, t, method, false, at);
+        if (found == null) {
+            return null;
+        }
+        let (pick, binds) = found;
+        if (pick < 0) {
+            return TExpr.Unknown;
+        }
+        this.presetBinds = binds;
+        let call = this.callExpecting(posTy, writtenTys, method, [pick], receiver, args, at);
+        this.presetBinds = [];
+        return call;
+    }
+
+    /// Blanket static member `method` through type `t` — `Cat.describe()`, `T.describe()` (05
+    /// §13 rule 7; S7c4c3a): null where no block gives it to `t`.
+    mut fn blanketStatic(t: Ty, method: string, args: Arg[], at: Span): ?TExpr {
+        let fns = this.blankets.get(method);
+        if (fns == null) {
+            return null;
+        }
+        let found = this.blanketPick(fns, t, method, true, at);
+        if (found == null) {
+            return null;
+        }
+        let (pick, binds) = found;
+        if (pick < 0) {
+            return TExpr.Unknown;
+        }
+        this.presetBinds = binds;
+        let call = this.callAmong(method, [pick], null, args, at);
+        this.presetBinds = [];
+        return call;
+    }
+
+    /// The one blanket member of `fns`, static or not, that reaches `t`, with the block's
+    /// parameters; null for none, -1 after the error that two do (`LYS-SEM0121`).
+    mut fn blanketPick(
+        fns: List<int>,
+        t: Ty,
+        method: string,
+        statics: bool,
+        at: Span
+    ): ?(int, Ty[]) {
         var pick = -1;
         var binds: Ty[] = [];
         for (fi in fns) {
+            if (this.functions[fi].isStatic != statics) {
+                continue;
+            }
             if (let b = this.blanketBinds(fi, t)) {
                 if (pick >= 0) {
                     this.error(
@@ -2422,7 +2481,7 @@ class Checker {
                         f"two blanket blocks give {this.tyName(t)} a member '{method}'",
                         at
                     );
-                    return TExpr.Unknown;
+                    return (-1, binds);
                 }
                 pick = fi;
                 binds = b;
@@ -2431,16 +2490,19 @@ class Checker {
         if (pick < 0) {
             return null;
         }
-        this.presetBinds = binds;
-        let call = this.callExpecting(posTy, writtenTys, method, [pick], receiver, args, at);
-        this.presetBinds = [];
-        return call;
+        return (pick, binds);
     }
 
     /// The parameters of blanket member `fi`'s block for a receiver of type `t`: the target `t`,
     /// another what a fixation names; null where `t` does not meet the constraints.
     mut fn blanketBinds(fi: int, t: Ty): ?Ty[] {
-        let entry = this.types[this.functions[fi].owner];
+        return this.blanketBindsAt(this.functions[fi].owner, t);
+    }
+
+    /// The parameters of blanket block `e` for a receiver of type `t`; null where `t` does not
+    /// meet its constraints.
+    mut fn blanketBindsAt(e: int, t: Ty): ?Ty[] {
+        let entry = this.types[e];
         let params = entry.typeParams;
         let binds = List<?Ty>.new();
         for (_ in params) {
@@ -2481,6 +2543,359 @@ class Checker {
             k += 1;
         }
         return bound;
+    }
+
+    /// A blanket block's conformances (05 §13 rule 8; S7c4c3a), once every interface is declared:
+    /// the interfaces, the answers a fixation in the list gives (05 §8 rule 3), the block
+    /// implementing each one's chain as declared at the target (`LYS-SEM0042`, `LYS-SEM0020`,
+    /// `LYS-SEM0128`), no other blanket block giving one of it (`LYS-SEM0133`).
+    mut fn blanketConformance(x: ExtendDecl): void {
+        let e = this.blanketIndex.get(f"{x.span.file}:{x.span.start}") ?? -1;
+        if (e < 0 || x.conforms.length() == 0) {
+            return;
+        }
+        let entry = this.types[e];
+        let self = Ty.Param(entry.blanketAt);
+        let savedScope = this.typeParams;
+        let savedDeclaring = this.declaringParams;
+        let savedSelf = this.selfTyIs;
+        let scope = Map<string, int>.new();
+        var k = 0;
+        for (tp in x.typeParams) {
+            scope.insert(tp.name, k);
+            k += 1;
+        }
+        this.typeParams = scope;
+        this.declaringParams = entry.typeParams;
+        this.selfTyIs = self;
+        let added = List<int>.new();
+        for (c in x.conforms) {
+            let ii = this.ifaceOf(c);
+            if (ii < 0) {
+                continue;
+            }
+            for (fx in c.fixed) {
+                if (entry.answers.containsKey(fx.name)) {
+                    this.error("LYS-SEM0121", f"the block answers '{fx.name}' twice", fx.span);
+                    continue;
+                }
+                entry.answers.insert(fx.name, this.resolveType(fx.type));
+            }
+            added.push(ii);
+        }
+        entry.ifaces = added.toArray();
+        // one blanket block per interface of a chain, even where no type meets both (rule 8)
+        for (other in this.blanketConfs) {
+            for (a in this.chainOf(other)) {
+                for (b in this.chainOf(e)) {
+                    if (this.ifaceBase(a) == this.ifaceBase(b)) {
+                        this.error(
+                            "LYS-SEM0133",
+                            f"two blanket blocks give '{this.types[this.ifaceBase(b)].name}'",
+                            x.span
+                        );
+                        this.typeParams = savedScope;
+                        this.declaringParams = savedDeclaring;
+                        this.selfTyIs = savedSelf;
+                        return;
+                    }
+                }
+            }
+        }
+        // the block implements each chain: its members as the interface declares them at the
+        // target, the answers read where `Self.Iter` stands
+        this.selfAnswersAt = entry.blanketAt;
+        this.selfAnswers = entry.answers;
+        let asked = List<string>.new();
+        for (a in this.chainOf(e)) {
+            let iface = this.types[this.ifaceBase(a)];
+            let instanceArgs: Ty[] = if (this.ifaceBase(a) != a) this.types[a].args else [];
+            for (n in iface.assocNames) {
+                asked.push(n);
+                if (!entry.answers.containsKey(n)
+                    && !this.assocDefaults.containsKey(f"{this.ifaceBase(a)}.{n}")) {
+                    this.error(
+                        "LYS-SEM0128",
+                        f"the blanket block does not answer '{iface.name}.{n}'",
+                        x.span
+                    );
+                }
+            }
+            for (member in iface.memberNames) {
+                let declared = iface.methods.get(member) ?? -1;
+                let own = entry.methods.get(member);
+                if (own != null) {
+                    let selfArgs: Ty[] = if (iface.selfParam) withSelfTy(self, instanceArgs)
+                        else instanceArgs;
+                    if (!this.sameSignatureAs(own, declared, selfArgs)
+                        || this.functions[own].isStatic != this.functions[declared].isStatic) {
+                        this.error(
+                            "LYS-SEM0042",
+                            f"the blanket block's '{member}' does not take and give what '{iface.name}.{member}' declares",
+                            x.span
+                        );
+                    }
+                } else if (declared >= 0 && this.functions[declared].abstract) {
+                    this.error(
+                        "LYS-SEM0020",
+                        f"the blanket block does not implement '{iface.name}.{member}'",
+                        x.span
+                    );
+                }
+            }
+        }
+        this.selfAnswersAt = -1;
+        this.selfAnswers = Map<string, Ty>.new();
+        for (a in x.answers) {
+            var wanted = false;
+            for (n in asked) {
+                wanted = wanted || n == a.name;
+            }
+            if (!wanted) {
+                this.error(
+                    "LYS-SEM0129",
+                    f"no interface of the block asks for an associated type '{a.name}'",
+                    a.span
+                );
+            }
+        }
+        this.blanketConfs.push(e);
+        this.typeParams = savedScope;
+        this.declaringParams = savedDeclaring;
+        this.selfTyIs = savedSelf;
+    }
+
+    /// The interfaces blanket block `e` gives, each with its parents.
+    mut fn chainOf(e: int): int[] {
+        let out = List<int>.new();
+        for (j in this.types[e].ifaces) {
+            for (a in this.ancestry(j)) {
+                var seen = false;
+                for (x in out) {
+                    seen = seen || x == a;
+                }
+                if (!seen) {
+                    out.push(a);
+                }
+            }
+        }
+        return out.toArray();
+    }
+
+    /// `Self.Item` of a blanket block's target while its signatures are checked: the block's
+    /// answer (S7c4c3a).
+    fn selfAnswer(k: int, name: string): ?Ty {
+        if (k != this.selfAnswersAt) {
+            return null;
+        }
+        return this.selfAnswers.get(name);
+    }
+
+    /// What the blanket blocks that conform give the types they reach (05 §13 rule 8; S7c4c3a):
+    /// the interfaces, their answers, the block's members in the type's table — copied for the
+    /// type, for a generic one per instance. A type that conforms to one of the chain itself is
+    /// refused there (`LYS-SEM0133`). A list, and a generic type whose conformance the block
+    /// needs is conditional, come with S7c4c3b: a value of the interface from one is refused.
+    mut fn conformBlankets(): void {
+        if (this.blanketConfs.length() == 0) {
+            return;
+        }
+        for (name in ["int", "float", "bool", "char", "string"]) {
+            this.builtinOf(builtinTy(name));
+        }
+        let n = this.types.length();
+        for (e in this.blanketConfs) {
+            var i = 0;
+            while (i < n) {
+                let info = this.types[i];
+                let plain = (info.kind == .Struct
+                    || info.kind == .Class
+                    || info.kind == .Enum
+                    || (info.kind == .Builtin && info.blanketAt < 0 && info.name != "List"))
+                    && (info.template < 0 || info.template == i);
+                if (plain) {
+                    if (let b = this.blanketBindsAt(e, this.selfTy(i))) {
+                        // a generic type the VM holds, or whose conformance the block needs is
+                        // conditional: its answers alone, no table (S7c4c3b)
+                        if ((info.typeParams.length() > 0 && this.boxed(this.selfTy(i)))
+                            || this.conditionallyReached(i, e)) {
+                            this.blanketAnswers(i, e, b);
+                        } else {
+                            this.blanketConform(i, e, b);
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+
+    /// Whether generic type `i` meets blanket block `e`'s target constraints only through a
+    /// conformance a generic block gives on a condition (S7c4c3a: such a type waits for S7c4c3b).
+    mut fn conditionallyReached(i: int, e: int): bool {
+        let info = this.types[i];
+        if (info.typeParams.length() == 0) {
+            return false;
+        }
+        let entry = this.types[e];
+        for (c in entry.typeParams[entry.blanketAt].constraints) {
+            var plain = false;
+            var cond = false;
+            for (x in info.ifaces) {
+                for (a in this.ancestry(x)) {
+                    if (this.isOf(a, c) || this.ifaceBase(a) == this.ifaceBase(c)) {
+                        if (info.condIfaces.containsKey(x)) {
+                            cond = true;
+                        } else {
+                            plain = true;
+                        }
+                    }
+                }
+            }
+            if (cond && !plain) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Type `i` given blanket block `e`'s interfaces at the block's parameters `b`.
+    mut fn blanketConform(i: int, e: int, b: Ty[]): void {
+        let info = this.types[i];
+        let entry = this.types[e];
+        let chain = this.chainOf(e);
+        for (x in info.ifaces) {
+            for (a in this.ancestry(x)) {
+                for (c in chain) {
+                    if (this.ifaceBase(a) == this.ifaceBase(c)) {
+                        let shown = this.types[this.ifaceBase(x)].name;
+                        this.error(
+                            "LYS-SEM0133",
+                            f"'{info.name}' conforms to '{this.types[this.ifaceBase(c)].name}' itself, which a blanket block gives it too",
+                            this.conformedAt.get(f"{i}:{shown}") ?? this.blanketSpan(e)
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+        this.blanketAnswers(i, e, b);
+        let ifaces = List<int>.new();
+        for (x in info.ifaces) {
+            ifaces.push(x);
+        }
+        for (c in chain) {
+            let a = this.constraintAt(c, b);
+            ifaces.push(a);
+            let iface = this.types[this.ifaceBase(a)];
+            let instanceArgs: Ty[] = if (this.ifaceBase(a) != a) this.types[a].args else [];
+            for (member in iface.memberNames) {
+                let slot = iface.slotOf.get(member) ?? -1;
+                info.slotArgs.insert(slot, instanceArgs);
+                let declared = iface.methods.get(member) ?? -1;
+                let own = entry.methods.get(member);
+                if (own != null) {
+                    // copied once the bodies are checked: for the type in `tableSelf`, for each
+                    // instance of a generic one in `tableInstance`
+                    info.witness.insert(slot, own);
+                } else if (declared >= 0 && !this.functions[declared].abstract) {
+                    info.witness.insert(slot, declared);
+                }
+            }
+        }
+        info.ifaces = ifaces.toArray();
+    }
+
+    /// Type `i`'s answers to what blanket block `e`'s interfaces ask, where it has none of its
+    /// own: the block's at its parameters `b`, else the interface's default.
+    mut fn blanketAnswers(i: int, e: int, b: Ty[]): void {
+        let info = this.types[i];
+        let entry = this.types[e];
+        let self = this.selfTy(i);
+        for (c in this.chainOf(e)) {
+            let a = this.constraintAt(c, b);
+            for (n in this.types[this.ifaceBase(a)].assocNames) {
+                if (info.answers.containsKey(n)) {
+                    continue;
+                }
+                let given = entry.answers.get(n);
+                if (given != null) {
+                    info.answers.insert(n, this.subst(given, b));
+                    continue;
+                }
+                let d = this.assocDefaults.get(f"{this.ifaceBase(a)}.{n}");
+                if (d != null) {
+                    let saved = this.selfTyIs;
+                    this.selfTyIs = self;
+                    info.answers.insert(n, this.resolveType(d));
+                    this.selfTyIs = saved;
+                }
+            }
+        }
+    }
+
+    /// Where blanket block `e` stands: its first member's place, else nowhere.
+    mut fn blanketSpan(e: int): Span {
+        for (name in this.types[e].memberNames) {
+            if (let fi = this.types[e].methods.get(name)) {
+                if (let d = this.fnDecls[fi]) {
+                    return d.span;
+                }
+            }
+        }
+        for (fi in this.blanketFns) {
+            if (this.functions[fi].owner == e) {
+                if (let d = this.fnDecls[fi]) {
+                    return d.span;
+                }
+            }
+        }
+        return nowhereSpan;
+    }
+
+    /// Whether a value of `t` as one of interface `ii` would want a table the blanket block that
+    /// gives `ii` has not filled: a list, a generic type whose conformance is conditional or that
+    /// the VM holds (S7c4c3b).
+    mut fn unreachedByBlanket(t: Ty, ii: int): bool {
+        let held = match (t) {
+            .List(_) => true,
+            .Named(j) => this.types[j].kind != .Interface,
+            _ => false,
+        };
+        return held && !this.conformsDirect(t, ii) && this.blanketGives(t, ii) >= 0;
+    }
+
+    /// The blanket block that gives type `t` interface `ii` (05 §13 rule 8; S7c4c3a); -1 for
+    /// none. A block a question is asking already is not asked again.
+    mut fn blanketGives(t: Ty, ii: int): int {
+        if (this.blanketConfs.length() == 0 || t == .Unknown) {
+            return -1;
+        }
+        for (e in this.blanketConfs) {
+            var busy = false;
+            for (v in this.blanketVisiting) {
+                busy = busy || v == e;
+            }
+            var named = false;
+            for (a in this.chainOf(e)) {
+                named = named || this.ifaceBase(a) == this.ifaceBase(ii);
+            }
+            if (busy || !named) {
+                continue;
+            }
+            this.blanketVisiting.push(e);
+            let b = this.blanketBindsAt(e, t);
+            this.blanketVisiting.pop();
+            if (let bound = b) {
+                for (a in this.chainOf(e)) {
+                    let at = this.constraintAt(a, bound);
+                    if (this.isOf(at, ii) || at == ii || this.isOf(a, ii)) {
+                        return e;
+                    }
+                }
+            }
+        }
+        return -1;
     }
 
     /// Constraint `c` with the parameters it names at `binds`: an instance of a generic interface
@@ -2740,6 +3155,14 @@ class Checker {
     /// The conformances of type `name` (Lyric 5 05 §1 rule 2): every abstract member of each
     /// interface's chain implemented with its exact signature, or taken from a default.
     mut fn conform(name: string, conforms: Conformance[]): void {
+        // where each conformance stands: a blanket block that gives one too is refused there
+        // (05 §13 rule 8; S7c4c3a)
+        let named = this.typeNamed(name);
+        if (named >= 0) {
+            for (c in conforms) {
+                this.conformedAt.insert(f"{named}:{c.name}", c.span);
+            }
+        }
         if (conforms.length() == 0) {
             return;
         }
@@ -2830,6 +3253,8 @@ class Checker {
         }
         // the defaults the type takes, by member name (05 §3 rule 2)
         let defaults = Map<string, int>.new();
+        // the answers' bounds, asked once the conformances stand
+        let bounded = List<(Ty, int, string)>.new();
         // a generic block's: for the instances that meet its constraints (05 §13 rule 3)
         if (this.blockCond.length() > 0) {
             for (ii in added) {
@@ -2861,11 +3286,13 @@ class Checker {
                 let answer = info.answers.get(n);
                 if (answer != null) {
                     for (b in this.boundsOf(ii, n)) {
-                        if (answer != .Unknown && !this.conformsTo(answer, b)) {
-                            this.error(
-                                "LYS-SEM0160",
-                                f"'{info.name}' answers '{iface.name}.{n}' with {this.tyName(answer)}, which is no {this.types[b].name}",
-                                conforms[0].span
+                        if (answer != .Unknown) {
+                            bounded.push(
+                                (
+                                    answer,
+                                    b,
+                                    f"'{info.name}' answers '{iface.name}.{n}' with {this.tyName(answer)}, which is no {this.types[b].name}"
+                                )
                             );
                         }
                     }
@@ -2925,6 +3352,15 @@ class Checker {
             }
         }
         info.ifaces = all.toArray();
+        // an answer meets its bounds with every conformance of the list in place: `type Iter =
+        // Both` of a `Both :: [Iterator, Iterable]` (S7c4c3a; since S3i the bound was asked
+        // before the type's other conformances stood)
+        for (x in bounded) {
+            let (answer, bound, text) = x;
+            if (!this.conformsTo(answer, bound)) {
+                this.error("LYS-SEM0160", text, conforms[0].span);
+            }
+        }
         this.typeParams = savedScope;
     }
 
@@ -3120,8 +3556,14 @@ class Checker {
     }
 
     /// Whether a value of type `t` is a value of interface `ii`: its type conforms, or it is an
-    /// interface value of a child.
+    /// interface value of a child — or a blanket block gives it the interface (05 §13 rule 8;
+    /// S7c4c3a).
     mut fn conformsTo(t: Ty, ii: int): bool {
+        return this.conformsDirect(t, ii) || this.blanketGives(t, ii) >= 0;
+    }
+
+    /// `conformsTo` without the blanket blocks.
+    mut fn conformsDirect(t: Ty, ii: int): bool {
         // a value form: the interface, its fixed associated types answered alike (05 §8 rule 6)
         let target = this.types[ii];
         // (an instance of a generic interface is asked as an interface of its own, S7c1)
@@ -3765,6 +4207,19 @@ class Checker {
         let actual = typeOf(e);
         if (actual == target || actual == .Unknown || target == .Unknown || actual == .Never) {
             return e;
+        }
+        // a value of an interface a blanket block gives a type whose table it has not filled
+        match (target) {
+            .Named(ii) => {
+                if (this.types[ii].kind == .Interface && this.unreachedByBlanket(actual, ii)) {
+                    return this.notYet(
+                        f"a {this.tyName(actual)} as a {this.tyName(target)} a blanket block gives it",
+                        "S7c4c3b (blocks on one instance)",
+                        at
+                    );
+                }
+            }
+            _ => { }
         }
         let fitted = this.fit(e, target);
         if (fitted != null) {
@@ -4830,11 +5285,27 @@ class Checker {
             }
             return TExpr.Call(own, all, rt);
         }
+        // the member a blanket block gives the type with the interface (05 §13 rule 8): no own
+        // conformance stands beside it (`LYS-SEM0133`)
+        let e = this.blanketGives(concrete, ii);
+        if (e >= 0) {
+            let bfi = this.types[e].methods.get(member) ?? -1;
+            if (bfi >= 0) {
+                if (let b = this.blanketBindsAt(e, concrete)) {
+                    return TExpr.Call(this.selfCopyIn(bfi, b), all, rt);
+                }
+            }
+        }
         let found = this.ifaceMember(ii, member);
         if (found == null) {
             return TExpr.Unknown;
         }
         let (fi, _) = found;
+        // an abstract member has no body for a copy: the type left unresolved is the compiler's
+        // fault, said where it runs (S7c4c3a: the copy of an abstract `next` looped forever)
+        if (this.functions[fi].abstract) {
+            return TExpr.Unknown;
+        }
         if (this.ifaceGeneric(fi)) {
             // a default generic over `Self` or over a generic interface's parameters: its copy for
             // the type and the instance, the receiver as it is
@@ -4866,7 +5337,9 @@ class Checker {
                 let nb = this.subst(b.value, a);
                 match (nb) {
                     // through a type parameter: what a constraint fixes, else still open
-                    .Param(k) => this.fixedOf(k, n) ?? Ty.Assoc(boxTy(nb), this.ifaceBase(ii), n),
+                    .Param(k) => this.selfAnswer(k, n)
+                        ?? this.fixedOf(k, n)
+                        ?? Ty.Assoc(boxTy(nb), this.ifaceBase(ii), n),
                     // still open: an associated type of one
                     .Unknown | .Assoc(_, _, _) => Ty.Assoc(boxTy(nb), this.ifaceBase(ii), n),
                     _ => this.answerOf(nb, n) ?? Ty.Unknown,
@@ -5051,7 +5524,23 @@ class Checker {
         var slot = 0;
         while (slot < this.slotCount) {
             let fi = info.witness.get(slot) ?? -1;
-            if (fi >= 0 && this.ifaceGeneric(fi)) {
+            if (fi >= 0 && this.blanketOwned(fi)) {
+                // a blanket block's member: its copy for the type, through a box unboxed (S7c4c3a)
+                let self = this.selfTy(i);
+                let b = this.blanketBindsAt(this.functions[fi].owner, self);
+                if (b != null) {
+                    let copy = this.selfCopyIn(fi, b);
+                    info.witness.insert(
+                        slot,
+                        if (this.boxed(self) && !this.functions[fi].isStatic) this.unboxer(
+                            copy,
+                            self,
+                            Ty.Named(this.slotIface(i, slot))
+                        )
+                            else copy
+                    );
+                }
+            } else if (fi >= 0 && this.ifaceGeneric(fi)) {
                 let binds = List<Ty>.new();
                 if (this.selfGeneric(fi)) {
                     binds.push(this.selfTy(i));
@@ -5065,6 +5554,27 @@ class Checker {
             }
             slot += 1;
         }
+    }
+
+    /// Whether `fi` is a blanket block's member itself, not a copy of one (S7c4c3a).
+    mut fn blanketOwned(fi: int): bool {
+        let f = this.functions[fi];
+        return f.owner >= 0 && this.types[f.owner].blanketAt >= 0 && f.typeParams.length() > 0;
+    }
+
+    /// The interface of type `i` whose member has slot `slot`.
+    mut fn slotIface(i: int, slot: int): int {
+        for (x in this.types[i].ifaces) {
+            for (a in this.ancestry(x)) {
+                let base = this.types[this.ifaceBase(a)];
+                for (name in base.memberNames) {
+                    if (base.slotOf.get(name) == slot) {
+                        return a;
+                    }
+                }
+            }
+        }
+        return this.anyIndex;
     }
 
     /// Whether `fi` is a member of an interface generic over `Self` or over its own parameters:
@@ -5161,6 +5671,14 @@ class Checker {
             // the template stands in its slot, as in a plain type's (S7c4c2)
             if (fi >= 0 && this.ownTypeParams(fi) > 0) {
                 info.witness.insert(slot, fi);
+            } else if (fi >= 0 && this.blanketOwned(fi)) {
+                // a blanket block's member: its copy at what the instance binds (S7c4c3a)
+                let b = this.blanketBindsAt(this.functions[fi].owner, Ty.Named(i));
+                if (b != null) {
+                    info.witness.insert(slot, this.selfCopyIn(fi, b));
+                } else {
+                    info.witness.insert(slot, fi);
+                }
             } else if (fi >= 0) {
                 info.witness.insert(
                     slot,
@@ -13271,6 +13789,9 @@ class Checker {
                 }
             }
         }
+        if (let call = this.blanketStatic(t, method, args, at)) {
+            return call;
+        }
         this.error(
             "LYS-SEM0012",
             f"'{this.tyName(t)}' has no static member '{method}': its constraints give none",
@@ -13303,6 +13824,10 @@ class Checker {
         }
         let m = info.methods.get(method);
         if (m == null) {
+            // a blanket block's static member (05 §13 rule 7; S7c4c3a)
+            if (let call = this.blanketStatic(this.selfTy(typeIndex), method, args, at)) {
+                return call;
+            }
             if (method == "new") {
                 this.error(
                     "LYS-SEM0012",
@@ -13529,6 +14054,15 @@ class Checker {
                             this.error(
                                 "LYS-SEM0028",
                                 f"{this.tyName(b)} is no {this.types[ii].name}, which '{tp.name}' of '{name}' asks",
+                                at
+                            );
+                        } else if (this.sharedShape(b)
+                            && !this.assocConstrained(chosen, j)
+                            && this.unreachedByBlanket(b, ii)) {
+                            // a shared copy would call through a table the block has not filled
+                            this.notYet(
+                                f"a {this.tyName(b)} as the '{tp.name}' of '{name}', a {this.types[ii].name} through a blanket block",
+                                "S7c4c3b (blocks on one instance)",
                                 at
                             );
                         }

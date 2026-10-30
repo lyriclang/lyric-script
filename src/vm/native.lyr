@@ -31,6 +31,11 @@ enum NativeFn :: [Equatable] {
     /// A `float`'s place in IEEE 754's total order as an `int` (S7c5b): -NaN, -infinity, …, -0.0,
     /// 0.0, …, infinity, NaN, compared as integers.
     FloatOrderKey,
+    /// A list sorted in place (S7c6c2): ints and chars by value, floats by IEEE 754's total
+    /// order, strings by their bytes.
+    ListSortInts,
+    ListSortFloats,
+    ListSortStrings,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -44,7 +49,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 13;
+let nativeCount: int = 16;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -61,7 +66,10 @@ fn nativeOf(n: int): NativeFn {
         9 => NativeFn.TraceText,
         10 => NativeFn.OsEnv,
         11 => NativeFn.FsExists,
-        _ => NativeFn.FloatOrderKey,
+        12 => NativeFn.FloatOrderKey,
+        13 => NativeFn.ListSortInts,
+        14 => NativeFn.ListSortFloats,
+        _ => NativeFn.ListSortStrings,
     };
 }
 
@@ -81,6 +89,9 @@ fn nativeNumber(n: NativeFn): int {
         .OsEnv => 10,
         .FsExists => 11,
         .FloatOrderKey => 12,
+        .ListSortInts => 13,
+        .ListSortFloats => 14,
+        .ListSortStrings => 15,
     };
 }
 
@@ -99,6 +110,9 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .OsEnv => sig("os.env", 0, 1, false, true),
         .FsExists => sig("fs.exists", 0, 1, true, false),
         .FloatOrderKey => sig("float.orderKey", 1, 0, true, false),
+        .ListSortInts => sig("list.sortInts", 0, 1, false, false),
+        .ListSortFloats => sig("list.sortFloats", 0, 1, false, false),
+        .ListSortStrings => sig("list.sortStrings", 0, 1, false, false),
     };
 }
 

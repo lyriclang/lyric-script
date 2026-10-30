@@ -12819,6 +12819,19 @@ class Checker {
     /// A list's own methods (S7b1): `length()`, `push(v)`, `pop()`; `null` for another name — the
     /// others come with S7b2.
     mut fn listMethod(receiver: TExpr, elem: Ty, method: string, args: Arg[], at: Span): ?TExpr {
+        // `sort()` of a list of ints, chars, floats or strings: the VM's, in their own order
+        // (S7c6c2)
+        if (method == "sort" && args.length() == 0) {
+            let native = match (elem) {
+                .Int | .Char => "list.sortInts",
+                .Float => "list.sortFloats",
+                .Str => "list.sortStrings",
+                _ => "",
+            };
+            if (let n = nativeNamed(native)) {
+                return TExpr.Native(Native.Std(nativeNumber(n)), [receiver], Ty.Void);
+            }
+        }
         let arity = match (method) {
             "length" | "pop" => 0,
             "push" => 1,
@@ -14401,6 +14414,17 @@ class Checker {
                     // `Channel<int>.new(1)`: a static function of a type instance (S6d1)
                     .Instance(inner, targs, _) => {
                         match (inner.value) {
+                            // `List<int>.of(xs)`: a static of the lists' block, its element
+                            // written (S7c6c2; a `List<T>` is a `T[]`)
+                            .Name("List", _) if (targs.length() == 1) => {
+                                let entry = this.typeNamed("List");
+                                if (entry >= 0) {
+                                    this.presetBinds = [this.resolveType(targs[0])];
+                                    let call = this.staticCall(entry, method, args, at);
+                                    this.presetBinds = [];
+                                    return call;
+                                }
+                            }
                             .Name(typeName, _) => {
                                 let index = this.typeIndex.get(this.q(typeName));
                                 if (index != null

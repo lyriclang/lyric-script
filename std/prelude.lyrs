@@ -213,6 +213,100 @@ fn withTimeout<T>(d: Duration, body: fn() -> T): T {
     }
 }
 extend<T> T[] {
+    /// The elements in the order `cmp` gives, stably — equal ones keep their order (Lyric 5 C10;
+    /// S7c6c2): a merge sort through a buffer of the length, O(n log n) comparisons. Where `cmp`
+    /// throws, the list is as it was.
+    fn sortBy(cmp: fn(T, T) -> Ordering) {
+        let n = this.length()
+        if (n < 2) {
+            return
+        }
+        var a = this[..]
+        var b = this[..]
+        var width = 1
+        while (width < n) {
+            var lo = 0
+            while (lo < n) {
+                let mid = if (lo + width < n) lo + width else n
+                let hi = if (lo + 2 * width < n) lo + 2 * width else n
+                var i = lo
+                var j = mid
+                var k = lo
+                while (k < hi) {
+                    if (i < mid && (j >= hi || cmp(a[j], a[i]) != Ordering.Less)) {
+                        b[k] = a[i]
+                        i += 1
+                    } else {
+                        b[k] = a[j]
+                        j += 1
+                    }
+                    k += 1
+                }
+                lo = hi
+            }
+            let t = a
+            a = b
+            b = t
+            width *= 2
+        }
+        var k = 0
+        while (k < n) {
+            this[k] = a[k]
+            k += 1
+        }
+    }
+    /// The elements in the order of a `TotalOrder` key, stably.
+    fn sortByKey<K :: [TotalOrder]>(key: fn(T) -> K) {
+        this.sortBy((x, y) => key(x).totalCompare(key(y)))
+    }
+    /// The first index whose element fails `p`, for elements `p` partitions — every one it holds
+    /// for before every one it does not: a binary search.
+    fn partitionPoint(p: fn(T) -> bool): int {
+        var lo = 0
+        var hi = this.length()
+        while (lo < hi) {
+            let mid = lo + (hi - lo) / 2
+            if (p(this[mid])) {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return lo
+    }
+    /// The elements as `{x}` writes each, `sep` between each two — every value prints (03 Eq).
+    fn join(sep: string): string {
+        var s = ""
+        var k = 0
+        while (k < this.length()) {
+            if (k > 0) {
+                s += sep
+            }
+            s += f"{this[k]}"
+            k += 1
+        }
+        return s
+    }
+    /// An empty list (Lyric 5's `List.new`; a `List<T>` is a `T[]`).
+    static fn new(): T[] = []
+    /// A new list of the elements of `xs` (Lyric 5's `List.of`).
+    static fn of(xs: T[]): T[] = xs[..]
+    /// The values of an iterator, in order (Lyric 5's `List.from`).
+    static fn from<I :: [Iterator<Item = T>]>(it: I): T[] {
+        let out: T[] = []
+        while (let x = it.next()) {
+            out.push(x)
+        }
+        return out
+    }
+    /// An empty list (Lyric 5's `List.withCapacity`: the room is the VM's to keep); a negative
+    /// `n` panics.
+    static fn withCapacity(n: int): T[] {
+        if (n < 0) {
+            panic(f"a negative capacity: {n}")
+        }
+        return []
+    }
     /// Whether the list has no element.
     fn isEmpty(): bool = this.length() == 0
     /// The element at `i`, `null` outside the list.
@@ -542,6 +636,36 @@ extend float :: [Add<int>, Sub<int>, Mul<int>, Div<int>, Rem<int>] {
     fn mul(rhs: int): float = this * rhs
     fn div(rhs: int): float = this / rhs
     fn rem(rhs: int): float = this % rhs
+}
+// the sorts and the search of elements in a total order (Lyric 5 C10; S7c6c2): ascending,
+// stably; a list of ints, chars, floats or strings is sorted by the VM
+extend<T :: [TotalOrder]> T[] {
+    fn sort() {
+        this.sortBy((x, y) => x.totalCompare(y))
+    }
+    // Lyric 5's sorts in place without a buffer, equal elements in any order: a stable sort is
+    // one
+    fn sortUnstable() {
+        this.sort()
+    }
+    // the index of an element equal to `x` in sorted elements, any of several equal ones; `null`
+    // where there is none
+    fn binarySearch(x: T): ?int {
+        var lo = 0
+        var hi = this.length()
+        while (lo < hi) {
+            let mid = lo + (hi - lo) / 2
+            let c = this[mid].totalCompare(x)
+            if (c == Ordering.Less) {
+                lo = mid + 1
+            } else if (c == Ordering.Greater) {
+                hi = mid
+            } else {
+                return mid
+            }
+        }
+        return null
+    }
 }
 // what `<`, `<=`, `>` and `>=` make of a `compare`
 fn __less(c: ?Ordering): bool = c == Ordering.Less

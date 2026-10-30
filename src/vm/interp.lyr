@@ -2998,6 +2998,65 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         let b = s[x];
                         s[x] = if ((b >> 63) != 0) b ^ mask else b;
                     }
+                    // a list sorted in place (S7c6c2): its length unchanged, a walk goes on
+                    .ListSortInts => {
+                        let o = r[y];
+                        if (o is ScriptArray) {
+                            let keys = List<int>.new();
+                            var k = 0;
+                            while (k < o.n) {
+                                keys.push(o.s[k] as int);
+                                k += 1;
+                            }
+                            let sorted = keys.toArray();
+                            sorted.sort();
+                            k = 0;
+                            while (k < o.n) {
+                                o.s[k] = sorted[k] as uint64;
+                                k += 1;
+                            }
+                        }
+                    }
+                    // a float's place in the total order as an int, and back
+                    .ListSortFloats => {
+                        let o = r[y];
+                        if (o is ScriptArray) {
+                            let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
+                            let keys = List<int>.new();
+                            var k = 0;
+                            while (k < o.n) {
+                                let b = o.s[k];
+                                keys.push((if ((b >> 63) != 0) b ^ mask else b) as int);
+                                k += 1;
+                            }
+                            let sorted = keys.toArray();
+                            sorted.sort();
+                            k = 0;
+                            while (k < o.n) {
+                                let key = sorted[k] as uint64;
+                                o.s[k] = if ((key >> 63) != 0) key ^ mask else key;
+                                k += 1;
+                            }
+                        }
+                    }
+                    .ListSortStrings => {
+                        let o = r[y];
+                        if (o is ScriptArray) {
+                            let items = List<HeapRef>.new();
+                            var k = 0;
+                            while (k < o.n) {
+                                items.push(o.r[k]);
+                                k += 1;
+                            }
+                            let sorted = items.toArray();
+                            sorted.sortByKey((h) => textOf(h));
+                            k = 0;
+                            while (k < o.n) {
+                                o.r[k] = sorted[k];
+                                k += 1;
+                            }
+                        }
+                    }
                 }
                 pc += 1;
             }

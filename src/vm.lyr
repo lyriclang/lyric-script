@@ -4,4 +4,4 @@
 /// The version of the internal bytecode format. It is part of the cache key and of the header
 /// that `loadTrusted` checks, so every change of the format raises it; nothing outside this
 /// toolchain reads it (11 Fmt).
-pub let bytecodeFormat: int = 24;
+pub let bytecodeFormat: int = 25;

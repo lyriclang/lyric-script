@@ -703,6 +703,22 @@ extend<I :: [Iterator]> I {
     }
 }
 
+// the values sorted in a list, stably (S7c6c2)
+extend<I :: [Iterator<Item = T>], T :: [TotalOrder]> I {
+    fn sorted(): T[] {
+        let xs: T[] = this.toArray()
+        xs.sort()
+        return xs
+    }
+}
+extend<I :: [Iterator]> I {
+    fn sortedBy(cmp: fn(I.Item, I.Item) -> Ordering): I.Item[] {
+        let xs = this.toArray()
+        xs.sortBy(cmp)
+        return xs
+    }
+}
+
 // the terminators of the numbers, Script's two (02 T1): zero and one where there is no value,
 // the average a `float`, `null` without a value
 extend<I :: [Iterator<Item = int>]> I {

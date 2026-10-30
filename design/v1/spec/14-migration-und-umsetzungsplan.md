@@ -1036,7 +1036,7 @@ jedes Iterable, Tasks/Koroutinen/Kanäle als Interfacewerte, `IoError` für `rea
 | **S7c Iteratoren** | generische Interfaces (`interface I<T>`, Lyric 5 §5 — seit S3 ohne Uhr, gefunden in S7b2b); `FromArrayLiteral<T>`; eine Liste als Interfacewert mit Deskriptor (`typeOf([1, 2])`); `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator`; `for` über jedes Iterable, auch eigene Typen, und `for` schließt `Closeable`-Iteratoren (05 E7); `Coroutine :: Iterator`; Tasks, Koroutinen und Kanäle als Interfacewerte mit Deskriptoren; `std.iter` in Script mit den Adaptern von Lyric 5s `iter` und den Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …); `sort` nativ | Konformanzfälle; Kostenregel für `sort` |
 | **S7d Map und Set** | `Map<K, V>` und `Set<T>` nativ, eine eigene Hash-Tabelle in Einfügereihenfolge (12 Src; 01 S8: keine Adress-Hashes), `string`-Schlüssel ohne Hülle (11 Gen); **Synthese** von `Equatable` und `Hashable` für Structs, Enums und Tupel, deren Felder es sind (03 Eq; `float` nicht `Hashable`), Klassen über `Identity` mit einer Objektnummer statt der Adresse; Map-Literal, `[:]` (`FromMapLiteral`), `m[k]` → `?V`, `m[k] = v`, `in`, die Methoden von Lyric 5s `Map`/`Set`; `Deque` und `Heap` in Script (12 Container) | Konformanzfälle; Reihenfolge mit mehr als einem Dutzend Einträgen |
 | **S7e Strings und Formate** | die String-Methoden von Lyric 5s `core`/`string` an `string` (03 Str: `length()` in Bytes, `s[i]` das Zeichen ab Byte `i`, `s[a..b]` neu, `chars()`, `lines()`, `split`, `trim…`, `lower`/`upper`, `replace`, `repeat`, `Pattern` …), Zahlen aus Text; `Display` und `Debug` als Prelude-Interfaces, jeder Wert druckbar — `{x}` fällt auf `Debug` zurück (03 Eq); `std.fmt` mit Formatangaben in f-Strings (`{n:>6}`, `{x:.2}`, `{x:?}`); `print`/`println` für jeden Wert | Konformanzfälle; Kostenregeln für `repeat`, `replace`, `split` |
-| **S7f Zahlen, `BigInt`, `Bytes`** | Konversion über `From`/`Into` (05 D6, P19) mit 05 §13 Regel 9; Typkonstanten am Typ (`int.max`, `float.epsilon`), `std.math` (Weltkonstanten, die Funktionen von Lyric 5s `math`), `checked*`/`saturating*`/`wrapping*` und `+% -% *%` (03 Überlauf); `BigInt` nativ (Lyric 5 hat keins: eine eigene Implementierung in der VM, 02 T1) mit Literalen über `FromIntLiteral`; `Bytes` mit `b"…"`, Index, kopierenden Slices, UTF-8 hin und zurück; `std.random` — geseedet ohne Recht, ungeseedet mit `os` (01 S8) | Konformanzfälle; Kostenregeln für `BigInt`-Multiplikation, -Division und -Text |
+| **S7f Zahlen, `BigInt`, `Bytes`** | Konversion über `From`/`Into` (05 D6, P19) mit 05 §13 Regel 9; die Zahl-Interfaces `Num`, `Signed`, `Integer`, `Float` von Lyric 5 (12 §Numbers, ohne Uhr — P25), `sum`/`product` von `std.iter` darauf; Typkonstanten am Typ (`int.max`, `float.epsilon`), `std.math` (Weltkonstanten, die Funktionen von Lyric 5s `math`), `checked*`/`saturating*`/`wrapping*` und `+% -% *%` (03 Überlauf); `BigInt` nativ (Lyric 5 hat keins: eine eigene Implementierung in der VM, 02 T1) mit Literalen über `FromIntLiteral`; `Bytes` mit `b"…"`, Index, kopierenden Slices, UTF-8 hin und zurück; `std.random` — geseedet ohne Recht, ungeseedet mit `os` (01 S8) | Konformanzfälle; Kostenregeln für `BigInt`-Multiplikation, -Division und -Text |
 | **S7g I/O und Dateien** | `std.io`: `Reader`/`Writer` über `Bytes` (Go-Form), `IoError { kind }`, stdin/stdout/stderr, die `print`-Familie, `readLine()` wirft `IoError`; `eprintln` in der Prelude (07 V3 I8); `std.fs` als Adapter über Lyric 5s `fs` (wartende Natives über Lyric-5-Tasks wie seit S6e), `fs.glob` und `std.path` in Script | Konformanzfälle mit Dateien im Fallordner |
 | **S7h Prozesse, Umgebung, Zeit** | `std.process` (`Command`-Struct, Lauf mit Ausgabe und Exit-Code), `std.os` (Umgebung; `signals` als Kanal mit dem Recht `os`), `args` und `exit` in der Prelude; `std.time` als Adapter über Lyric 5s `time` | Konformanzfälle |
 | **S7i Batterien** | in Script, je eine API (12 Um): `std.test` (`assert…` nach Lyric 5s `test`; `@Test`, Subtests, `@Bench` und `lyric-script test` mit S11), `std.cli` (Argumente, Flags, Optionen, `--help`), `std.log`, `std.csv` (RFC 4180) | Konformanzfälle |
@@ -1526,3 +1526,24 @@ wirkt in der Prelude nicht gegen das Programm — ihr `Step` heißt deshalb `__S
 nahm `T` von der ersten Grenze statt von der Stelle. Spec 07 Regel 8 mit Abweichung; fünf Fälle, alle rot gegen S7c5d.
 Mutanten: drei Läufe, 444, 445 und 444 von 447; einer traf zwei Fälle mehr als vorhergesagt (dasselbe `for` über Grenzen, die kein `int` sind, stand noch in zwei der neuen Fälle).
 Fälle 442 → 447.
+
+**S7c6b, geteilt (2026-10-30).** **S7c6b1** die Adapter und das Laden von `std.iter`, **S7c6b2**
+die Terminatoren — ihre Element-Arten brauchen Entscheidungen (`join` über `Display`, das mit S7e
+kommt; `sum`/`product` über ein `Num`, das Script nicht hat).
+
+**S7c6b1, Ergebnis (2026-10-30).** `std/iter.lyrs` mit den Adaptern von Lyric 5s `std.iter` als
+Klassen (`map` … `rev`, ohne `cycle`), Blanket-Blöcke über jeden Iterator, `close()`
+weitergereicht. Der Lader fügt das Modul dem Programm hinzu, wo ein Modul ein Mitglied dieser
+Blöcke nennt (die Namen aus dem Modultext gelesen): immer geladen kostete es jedes Programm
+(kaltes `hello` im Debug-Bau ~190 → ~330 ms), so nur die, die es erreichen können (P21).
+**Gefunden:** (1) **seit S3g** nahm ein Initialisierer eines generischen Typs an einer Stelle, die
+die Instanz nennt, keinen Feld-Default (`let h: Holder<int> = Holder { }` war `SEM0106`); (2) ein
+unbekannter Name mit Typargumenten meldete `SEM0026` „takes 0 type arguments“ statt `SEM0011`;
+(3) eine Instanz über einem Typparameter teilen alle Generics, die einen nennen — `I.Item` im
+Feldtyp eines Adapters blieb offen, wo die Einschränkung des geprüften Generics es festlegt
+(`settle`); (4) über einen Mutanten (jedes Programm lädt `std.iter`): ein Programm, das einen
+Adapter nennt und über eine Tabelle druckt, baute die Debug-Form der Instanz, die die Signatur von
+`flatMap` nennt — ihr Feld `?T.Iter` hatte keine (NYI); ein offenes Argument nimmt in der Kopie
+die Form über die Tabelle. Spec 12 Regel 3 mit Abweichung; acht Fälle, sieben rot gegen S7c6a,
+der achte gegen den WIP-Stand vor (4). Mutanten: vier Läufe, 449, 448, 440 und 441 von 454, dazu eine Wiederholung (453 von 455); Abweichungen von der Vorhersage: ein überlebender Mutant (`collect` hält beim ersten `null`, der Fall zog nie nach einem gescheiterten `takeWhile` — ergänzt), der Fund (4) und eine größere Reichweite, weil Teilnamen wie `.dedup` und `.reverse` das Modul in bestehende Fälle laden.
+Fälle 447 → 455.

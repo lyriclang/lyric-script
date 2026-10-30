@@ -407,6 +407,83 @@ extend float :: [Ordered, TotalOrder] {
     fn totalCompare(o: float): Ordering = __floatKey(this).totalCompare(__floatKey(o))
 }
 fn __floatKey(x: float): int = __float_orderKey(x)
+// the operators of a type of the program (Lyric 5 05 §12 rules 1–4; S7c5c2): `a + b` is
+// `a.add(b)` through the conformance the right operand's type picks, `-a` is `a.neg()`; the
+// result is the conformance's `Out`, `Self` unless it answers otherwise
+interface Add<Rhs = Self> {
+    type Out = Self
+    fn add(rhs: Rhs): Self.Out
+}
+interface Sub<Rhs = Self> {
+    type Out = Self
+    fn sub(rhs: Rhs): Self.Out
+}
+interface Mul<Rhs = Self> {
+    type Out = Self
+    fn mul(rhs: Rhs): Self.Out
+}
+interface Div<Rhs = Self> {
+    type Out = Self
+    fn div(rhs: Rhs): Self.Out
+}
+interface Rem<Rhs = Self> {
+    type Out = Self
+    fn rem(rhs: Rhs): Self.Out
+}
+interface BitAnd<Rhs = Self> {
+    type Out = Self
+    fn bitAnd(rhs: Rhs): Self.Out
+}
+interface BitOr<Rhs = Self> {
+    type Out = Self
+    fn bitOr(rhs: Rhs): Self.Out
+}
+interface BitXor<Rhs = Self> {
+    type Out = Self
+    fn bitXor(rhs: Rhs): Self.Out
+}
+interface Shl<Rhs = int> {
+    type Out = Self
+    fn shl(rhs: Rhs): Self.Out
+}
+interface Shr<Rhs = int> {
+    type Out = Self
+    fn shr(rhs: Rhs): Self.Out
+}
+interface Neg {
+    type Out = Self
+    fn neg(): Self.Out
+}
+interface BitNot {
+    type Out = Self
+    fn bitNot(): Self.Out
+}
+// the scalars keep their own arithmetic and conform besides, for a constraint to take them
+extend int :: [Add, Sub, Mul, Div, Rem, Neg, BitAnd, BitOr, BitXor, BitNot, Shl, Shr] {
+    fn add(rhs: int): int = this + rhs
+    fn sub(rhs: int): int = this - rhs
+    fn mul(rhs: int): int = this * rhs
+    fn div(rhs: int): int = this / rhs
+    fn rem(rhs: int): int = this % rhs
+    fn neg(): int = -this
+    fn bitAnd(rhs: int): int = this & rhs
+    fn bitOr(rhs: int): int = this | rhs
+    fn bitXor(rhs: int): int = this ^ rhs
+    fn bitNot(): int = ~this
+    fn shl(rhs: int): int = this << rhs
+    fn shr(rhs: int): int = this >> rhs
+}
+extend float :: [Add, Sub, Mul, Div, Rem, Neg] {
+    fn add(rhs: float): float = this + rhs
+    fn sub(rhs: float): float = this - rhs
+    fn mul(rhs: float): float = this * rhs
+    fn div(rhs: float): float = this / rhs
+    fn rem(rhs: float): float = this % rhs
+    fn neg(): float = -this
+}
+extend string :: Add {
+    fn add(rhs: string): string = this + rhs
+}
 // what `<`, `<=`, `>` and `>=` make of a `compare`
 fn __less(c: ?Ordering): bool = c == Ordering.Less
 fn __lessOrEqual(c: ?Ordering): bool = c == Ordering.Less || c == Ordering.Equal

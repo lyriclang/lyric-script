@@ -9547,6 +9547,9 @@ class Checker {
             .BitNot => t == .Int,
         };
         if (!fits) {
+            if (let call = this.unaryOperator(v, op, at)) {
+                return call;
+            }
             this.error("LYS-SEM0003", f"'{unaryText(op)}' does not take {this.tyName(t)}", at);
             return TExpr.Unknown;
         }
@@ -9722,12 +9725,130 @@ class Checker {
             }
             _ => { }
         }
+        // a type of the program: its conformance to the operator's interface (S7c5c2)
+        if (let call = this.operatorCall(a, op, b, at)) {
+            return call;
+        }
+        let ii = operatorOf(op).0;
+        let why = if (ii != ""
+            && !this.nativeOperand(ta)) f": {this.tyName(ta)} is no {ii}<{this.tyName(tb)}>"
+            else "";
         this.error(
             "LYS-SEM0003",
-            f"'{binaryText(op)}' does not take {this.tyName(ta)} and {this.tyName(tb)}",
+            f"'{binaryText(op)}' does not take {this.tyName(ta)} and {this.tyName(tb)}{why}",
             at
         );
         return TExpr.Unknown;
+    }
+
+    /// Whether `t` is a type the VM computes with itself — a number, a `bool`, a `char`, a
+    /// string, a list.
+    fn nativeOperand(t: Ty): bool {
+        return match (t) {
+            .Int | .Float | .Bool | .Char | .Str | .List(_) | .Unknown => true,
+            _ => false,
+        };
+    }
+
+    /// `a op b` of a type of the program: `a.add(b)` through `Add<B>` where `b` is a `B` — the
+    /// right operand's static type picks the conformance, an `int` literal adapting to a
+    /// `float` (Lyric 5 05 §12 rules 1–2; S7c5c2); null where the type has no such conformance.
+    mut fn operatorCall(a: TExpr, op: BinaryOp, b: TExpr, at: Span): ?TExpr {
+        let (name, member) = operatorOf(op);
+        let ta = typeOf(a);
+        if (name == "" || this.nativeOperand(ta)) {
+            return null;
+        }
+        let base = this.typeIndex.get(name) ?? -1;
+        if (base < 0) {
+            return null;
+        }
+        var rhs = b;
+        var ii = this.exactIface(base, [typeOf(b)]);
+        if (!this.conformsTo(ta, ii)) {
+            let adapts = match (b) {
+                .Int(_) => true,
+                _ => false,
+            };
+            let wide = this.exactIface(base, [Ty.Float]);
+            if (!adapts || !this.conformsTo(ta, wide)) {
+                return null;
+            }
+            rhs = this.coerce(b, Ty.Float, at);
+            ii = wide;
+        }
+        return this.operatorMember(a, [rhs], ii, member, at);
+    }
+
+    /// The interface `base` at `args`, an instance even where they read as its own parameters.
+    mut fn exactIface(base: int, args: Ty[]): int {
+        this.exactInstance = true;
+        let i = this.typeInstance(base, args);
+        this.exactInstance = false;
+        return i;
+    }
+
+    /// `a.member(args)` of interface `ii` that `a`'s type conforms to: the type's own member,
+    /// through a constraint where `a` is a type parameter, through a bound where it is an
+    /// associated type (S7c5c2).
+    mut fn operatorMember(a: TExpr, args: TExpr[], ii: int, member: string, at: Span): TExpr {
+        let found = this.ifaceMember(ii, member);
+        if (found == null) {
+            return TExpr.Unknown;
+        }
+        let (fi, slot) = found;
+        let ta = typeOf(a);
+        let binds = this.bindsOf(fi, ii, ta);
+        let rt = this.subst(this.returnsOf(fi, at), binds);
+        let all = List<TExpr>.new();
+        all.push(a);
+        var k = 0;
+        for (x in args) {
+            let pt = if (k < this.functions[fi].params.length()) this.subst(
+                this.functions[fi].params[k].ty,
+                binds
+            )
+                else typeOf(x);
+            all.push(this.coerce(x, pt, at));
+            k += 1;
+        }
+        return match (ta) {
+            .Param(p) => TExpr.CallConstraint(p, ii, member, slot, all.toArray(), rt),
+            .Assoc(_, _, _) => TExpr.CallBound(ta, ii, member, slot, all.toArray(), rt),
+            _ => {
+                let entry = this.entryOf(ta);
+                let own = if (entry >= 0) this.methodOf(entry, member) else null;
+                if (own == null) {
+                    return this.memberCallOn(ta, ii, member, slot, all.toArray(), rt);
+                }
+                let info = this.types[entry];
+                if (this.functions[own].typeParams.length() > 0
+                    && info.template >= 0
+                    && info.template != entry) {
+                    return TExpr.CallGeneric(own, info.args, all.toArray(), rt);
+                }
+                return TExpr.Call(own, all.toArray(), rt);
+            }
+        };
+    }
+
+    /// `-a`, `~a` of a type of the program: through `Neg`, `BitNot` (S7c5c2); null where it
+    /// has no such conformance.
+    mut fn unaryOperator(v: TExpr, op: UnaryOp, at: Span): ?TExpr {
+        let (name, member) = match (op) {
+            .Neg => ("Neg", "neg"),
+            .BitNot => ("BitNot", "bitNot"),
+            _ => ("", ""),
+        };
+        let t = typeOf(v);
+        if (name == "" || this.nativeOperand(t)) {
+            return null;
+        }
+        let ii = this.typeIndex.get(name) ?? -1;
+        if (ii < 0 || !this.conformsTo(t, ii)) {
+            return null;
+        }
+        return this.operatorMember(v, [], ii, member, at);
     }
 
     /// `a < b` … of two scalars the VM orders itself: numbers widened, `char`s, strings by bytes;
@@ -10808,6 +10929,13 @@ class Checker {
                 }
             }
         }
+        if (let o = op) {
+            // a type of the program: `x = x op v` through its operator's interface, what leads
+            // to the place held once (S7c5c2)
+            if (!this.nativeOperand(t) && operatorOf(o).0 != "") {
+                return this.operatorAssign(place, current, o, this.expr(value, null), t, at);
+            }
+        }
         if (op != null) {
             // `x op= v` is `x = x op v`, with the place evaluated once
             let combined = this.binaryChecked(current, op, this.expr(value, t), at);
@@ -10820,6 +10948,62 @@ class Checker {
 
     /// The right side of `x op= v` as the operation gives it: only its value's type is kept, the
     /// generator applies `op` to the place it reads once.
+    /// `x op= v` of a type of the program (Lyric 5 05 §12 rule 4; S7c5c2): `x = x op v` — the
+    /// receiver of a field, a list and its index held once —, `op`'s `Out` the place's type.
+    mut fn operatorAssign(
+        place: Place,
+        current: TExpr,
+        op: BinaryOp,
+        v: TExpr,
+        t: Ty,
+        at: Span
+    ): TExpr {
+        let held = List<TStmt>.new();
+        var where = place;
+        var now = current;
+        match (place) {
+            .Field(o, k) => {
+                let h = this.hidden(typeOf(o.value), at);
+                held.push(TStmt.SetLocal(h, o.value, at.line));
+                let ho = TExpr.Local(h, typeOf(o.value));
+                where = Place.Field(boxE(ho), k);
+                now = TExpr.Field(boxE(ho), k, t);
+            }
+            .Item(l, i) => {
+                let hl = this.hidden(typeOf(l.value), at);
+                let hi = this.hidden(Ty.Int, at);
+                held.push(TStmt.SetLocal(hl, l.value, at.line));
+                held.push(TStmt.SetLocal(hi, i.value, at.line));
+                let lv = TExpr.Local(hl, typeOf(l.value));
+                let iv = TExpr.Local(hi, Ty.Int);
+                where = Place.Item(boxE(lv), boxE(iv));
+                now = TExpr.ListOp(ListOp.Get, [lv, iv], t);
+            }
+            _ => { }
+        }
+        let combined = this.operatorCall(now, op, v, at);
+        if (combined == null) {
+            this.error(
+                "LYS-SEM0003",
+                f"'{binaryText(op)}=' does not take {this.tyName(t)} and {this.tyName(typeOf(v))}: {this.tyName(t)} is no {operatorOf(op).0}<{this.tyName(typeOf(v))}>",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let result = combined;
+        let rt = typeOf(result);
+        if (rt != t && rt != .Unknown && !this.anyParamIn(rt)) {
+            this.error(
+                "LYS-SEM0001",
+                f"'{binaryText(op)}=' gives a {this.tyName(rt)}, the place holds a {this.tyName(t)}",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let assign = TExpr.Assign(where, null, boxE(this.coerce(result, t, at)), t);
+        return if (held.length() == 0) assign else TExpr.Block(held.toArray(), boxE(assign), t);
+    }
+
     mut fn binaryChecked(current: TExpr, op: BinaryOp, v: TExpr, at: Span): TExpr {
         let tc = typeOf(current);
         let tv = typeOf(v);
@@ -15433,6 +15617,24 @@ fn mergeConds(a: TypeParamInfo[], b: TypeParamInfo[]): TypeParamInfo[] {
         k += 1;
     }
     return out.toArray();
+}
+
+/// The operator interface of a binary operator, and its member (Lyric 5 05 §12 rule 1); ("",
+/// "") for one no interface carries.
+fn operatorOf(op: BinaryOp): (string, string) {
+    return match (op) {
+        .Add => ("Add", "add"),
+        .Sub => ("Sub", "sub"),
+        .Mul => ("Mul", "mul"),
+        .Div => ("Div", "div"),
+        .Rem => ("Rem", "rem"),
+        .BitAnd => ("BitAnd", "bitAnd"),
+        .BitOr => ("BitOr", "bitOr"),
+        .BitXor => ("BitXor", "bitXor"),
+        .Shl => ("Shl", "shl"),
+        .Shr => ("Shr", "shr"),
+        _ => ("", ""),
+    };
 }
 
 fn sameOrUnknown(a: Ty, b: Ty): bool {

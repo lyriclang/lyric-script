@@ -1263,3 +1263,15 @@ die Debug-Form eines `T[]`-Felds in einem generischen Typ war NYI — jetzt eine
 Spec 03 Regel 16, 07 Regel 7; fünf Fälle, alle rot gegen S7c3. Vier Mutanten in einem Lauf, alle
 gefangen; einer traf drei Fälle mehr als vorhergesagt (die S3i-Fälle schreiben ihr eigenes
 `Iterator`, wie die Unit-Tests). Fälle 383 → 388.
+
+**S7c4b, Ergebnis (2026-10-30).** `Coroutine<Y, R> :: Iterator` mit `type Item = Y`; ihre Methoden,
+die eine Tabelle erreicht, sind jetzt Funktionen der Prelude über Intrinsics (`__coNext`,
+`__coClose`, `__scopeClose` — dieselben Ops wie der statische Aufruf). Tasks, Koroutinen,
+Scopes, Kanäle und Semaphore sind Interfacewerte: die VM hält sie ohne Deskriptor, also trägt
+ihn eine Box wie bei Listen (S7c3; Kennung `vmHeld`, Box mit Referenzslot); `x is Task<int>`,
+die Debug-Form `<Task>`. Damit die Tabelle des rohen VM-Objekts nie gefragt wird, sind solche
+Typen keine geteilte Form: jede Instanz bekommt ihre Kopie. Die Pins aus S6 („kein
+Interfacewert“) retirieren mit ihrer Regel: zwei Unit-Zusicherungen erwarten jetzt keinen
+Fehler, ein Konformanzfall entfällt. Spec 10 Regeln 8 und 19, die Abweichung zurückgezogen;
+zwei Fälle, beide rot gegen S7c4a. Vier Mutanten in drei Läufen, alle wie vorhergesagt.
+Fälle 388 → 389.

@@ -245,7 +245,10 @@ VM's call path, S7k measurement point 3.
 - **S7c4a done** (S7c4 split in three) — `Iterator`, `Iterable`, `for` over any of them (a
   Closeable one closed), `T[] :: Iterable`. Found: a script's own `Iterator` broke the prelude
   (interfaces classified in the wrong module, since S3i).
-- Next: **S7c4b** — `Coroutine :: Iterator`; tasks, coroutines, channels as interface values.
+- **S7c4b done** — `Coroutine :: Iterator`; tasks, coroutines, scopes, channels, semaphores as
+  interface values in a box; the S6 pins retired with their rule.
+- Next: **S7c4c** — `FromIterator<T>` and `collect()`, the blanket blocks, a list of a type
+  parameter as an interface value.
 
 ## Working mode
 

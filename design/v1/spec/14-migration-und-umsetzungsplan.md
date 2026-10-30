@@ -1547,3 +1547,14 @@ Adapter nennt und über eine Tabelle druckt, baute die Debug-Form der Instanz, d
 die Form über die Tabelle. Spec 12 Regel 3 mit Abweichung; acht Fälle, sieben rot gegen S7c6a,
 der achte gegen den WIP-Stand vor (4). Mutanten: vier Läufe, 449, 448, 440 und 441 von 454, dazu eine Wiederholung (453 von 455); Abweichungen von der Vorhersage: ein überlebender Mutant (`collect` hält beim ersten `null`, der Fall zog nie nach einem gescheiterten `takeWhile` — ergänzt), der Fund (4) und eine größere Reichweite, weil Teilnamen wie `.dedup` und `.reverse` das Modul in bestehende Fälle laden.
 Fälle 447 → 455.
+
+**S7c6b2, Ergebnis (2026-10-30).** Die Terminatoren von Lyric 5s `std.iter` in Script: `count`
+… `windows`, `join` über jedes Element, wie `{x}` es schreibt (Scripts `Display` kommt mit S7e,
+drucken kann jeder Wert schon), `sum`/`product`/`average` über `int` und `float` (P25: kein `Num`
+in Script), `min`/`max` über `Ordered`; `sorted`/`sortedBy` mit `sort` in S7c6c. Dazu der Text
+eines Werts vom offenen assoziierten Typ (`{x}` mit `x: I.Item`) in jeder Kopie: `TextOf`.
+**Gefunden: seit S3i** nahm der Text eines Optionals oder Tupels in einer Kopie
+(`fn show<T>(x: T) = f"{x}"` mit einem `?int`) eine Lokale des gerade geprüften Kontexts — der
+Code-Generator panikte; jetzt eine Funktion je Typ. Spec 12 Regel 4 mit Abweichung; acht Fälle,
+alle rot gegen S7c6b1. Mutanten: zwei Läufe, 460 und 458 von 463; einer traf zwei andere Fälle als vorhergesagt — der Fehler stürzt nur ab, wo die verirrte Lokale jenseits der Lokalen der Kopie liegt, darunter überschreibt er still einen ihrer Slots.
+Fälle 455 → 463.

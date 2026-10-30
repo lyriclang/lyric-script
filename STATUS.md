@@ -281,8 +281,10 @@ VM's call path, S7k measurement point 3.
   new iterator each time; `DoubleEnded`, `sizeHint`, a list's iterator from both ends.
 - **S7c6b1 done** — `std.iter` with the adapters, loaded where a program names one. Found: a
   generic type's initializer at a named position took no field default (since S3g).
-- Next: **S7c6b2** — the terminators; then S7c6c `Clone`/`Default`, the list methods and `sort`,
-  S7c6d the placeholder `_` (cut in plan 14).
+- **S7c6b2 done** — the terminators of every iterator. Found: a copy's text of an optional or a
+  tuple broke the code generator (since S3i).
+- Next: **S7c6c** — `Clone`/`Default` synthesis, `cycle()`, the list methods, `sort`; then S7c6d
+  the placeholder `_` (cut in plan 14).
 
 ## Working mode
 

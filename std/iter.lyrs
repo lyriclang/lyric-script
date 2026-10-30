@@ -1,0 +1,481 @@
+// std.iter (Lyric 5 12 §Iteration; S7c6b): the adapters of every iterator. Each is a class of its
+// own, lazy, one value at a time; an adapter over a Closeable iterator is Closeable itself and
+// passes close() on, so a loop that leaves early closes the coroutine behind `gen().map(f)`. The
+// prelude names this module: its blocks reach every iterator in every module — the loader adds it
+// to a program that names a member of them —, and a program imports a class where it writes the
+// type, `import std.iter { MapIter }`. The protocol, the ranges and the list's iterator are the
+// prelude's.
+
+// the values of an iterator, each passed through `f`; made by `it.map(f)`
+class MapIter<I :: [Iterator], U> :: Iterator {
+    type Item = U
+    var inner: I
+    f: fn(I.Item) -> U
+    fn next(): ?U {
+        if (let x = this.inner.next()) {
+            return this.f(x)
+        }
+        return null
+    }
+}
+
+// the values for which `p` holds; made by `it.filter(p)`
+class FilterIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    p: fn(I.Item) -> bool
+    fn next(): ?I.Item {
+        while (let x = this.inner.next()) {
+            if (this.p(x)) {
+                return x
+            }
+        }
+        return null
+    }
+}
+
+// the first `n` values, or all where there are fewer; made by `it.take(n)`
+class TakeIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    var left: int
+    fn next(): ?I.Item {
+        if (this.left <= 0) {
+            return null
+        }
+        this.left -= 1
+        return this.inner.next()
+    }
+}
+
+// the values after the first `n`; made by `it.skip(n)`
+class SkipIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    var n: int
+    fn next(): ?I.Item {
+        while (this.n > 0) {
+            this.n -= 1
+            if (this.inner.next() == null) {
+                return null
+            }
+        }
+        return this.inner.next()
+    }
+}
+
+// the values while `p` holds, ended for good where it fails once; made by `it.takeWhile(p)`
+class TakeWhileIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    p: fn(I.Item) -> bool
+    var done: bool = false
+    fn next(): ?I.Item {
+        if (this.done) {
+            return null
+        }
+        if (let x = this.inner.next()) {
+            if (this.p(x)) {
+                return x
+            }
+        }
+        this.done = true
+        return null
+    }
+}
+
+// the values from the first for which `p` fails; made by `it.skipWhile(p)`
+class SkipWhileIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    p: fn(I.Item) -> bool
+    var started: bool = false
+    fn next(): ?I.Item {
+        if (this.started) {
+            return this.inner.next()
+        }
+        this.started = true
+        while (let x = this.inner.next()) {
+            if (!this.p(x)) {
+                return x
+            }
+        }
+        return null
+    }
+}
+
+// the first value and then every `step`th; made by `it.stepBy(n)`
+class StepByIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    step: int
+    var first: bool = true
+    fn next(): ?I.Item {
+        if (this.first) {
+            this.first = false
+            return this.inner.next()
+        }
+        var gap = this.step - 1
+        while (gap > 0) {
+            gap -= 1
+            if (this.inner.next() == null) {
+                return null
+            }
+        }
+        return this.inner.next()
+    }
+}
+
+// each value with its position from 0; made by `it.enumerate()`
+class EnumerateIter<I :: [Iterator]> :: Iterator {
+    type Item = (int, I.Item)
+    var inner: I
+    var i: int = 0
+    fn next(): ?(int, I.Item) {
+        if (let x = this.inner.next()) {
+            this.i += 1
+            return (this.i - 1, x)
+        }
+        return null
+    }
+}
+
+// each value shown to `f` on its way through; made by `it.inspect(f)`
+class InspectIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    f: fn(I.Item) -> void
+    fn next(): ?I.Item {
+        if (let x = this.inner.next()) {
+            this.f(x)
+            return x
+        }
+        return null
+    }
+}
+
+// each value beside the other's, as long as both have one; made by `it.zip(other)`
+class ZipIter<A :: [Iterator], B :: [Iterator]> :: Iterator {
+    type Item = (A.Item, B.Item)
+    var a: A
+    var b: B
+    fn next(): ?(A.Item, B.Item) {
+        if (let x = this.a.next()) {
+            if (let y = this.b.next()) {
+                return (x, y)
+            }
+        }
+        return null
+    }
+}
+
+// the values and then the other's; made by `it.chain(other)`
+class ChainIter<A :: [Iterator], B :: [Iterator<Item = A.Item>]> :: Iterator {
+    type Item = A.Item
+    var a: A
+    var b: B
+    var second: bool = false
+    fn next(): ?A.Item {
+        if (!this.second) {
+            if (let x = this.a.next()) {
+                return x
+            }
+            this.second = true
+        }
+        return this.b.next()
+    }
+}
+
+// the values through `f`, its `null`s left out; made by `it.mapNotNull(f)`
+class MapNotNullIter<I :: [Iterator], U> :: Iterator {
+    type Item = U
+    var inner: I
+    f: fn(I.Item) -> ?U
+    fn next(): ?U {
+        while (let x = this.inner.next()) {
+            if (let y = this.f(x)) {
+                return y
+            }
+        }
+        return null
+    }
+}
+
+// the values of the Iterables `f` gives, one after the other; made by `it.flatMap(f)`
+class FlatMapIter<I :: [Iterator], B :: [Iterable<Iter = J>], J :: [Iterator]> :: Iterator {
+    type Item = J.Item
+    var inner: I
+    f: fn(I.Item) -> B
+    var current: ?J = null
+    fn next(): ?J.Item {
+        loop {
+            if (let part = this.current) {
+                if (let x = part.next()) {
+                    return x
+                }
+                this.current = null
+            }
+            if (let outer = this.inner.next()) {
+                this.current = this.f(outer).iter()
+            } else {
+                return null
+            }
+        }
+    }
+}
+
+// the values of an iterator of Iterables, one after the other; made by `it.flatten()`
+class FlattenIter<I :: [Iterator<Item = B>], B :: [Iterable<Iter = J>], J :: [Iterator]> ::
+    Iterator {
+    type Item = J.Item
+    var inner: I
+    var current: ?J = null
+    fn next(): ?J.Item {
+        loop {
+            if (let part = this.current) {
+                if (let x = part.next()) {
+                    return x
+                }
+                this.current = null
+            }
+            if (let outer = this.inner.next()) {
+                this.current = outer.iter()
+            } else {
+                return null
+            }
+        }
+    }
+}
+
+// a run of values `same` holds for given once; made by `it.dedupBy(same)` and `it.dedup()`
+class DedupIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    same: fn(I.Item, I.Item) -> bool
+    var last: ?I.Item = null
+    var started: bool = false
+    fn next(): ?I.Item {
+        while (let x = this.inner.next()) {
+            if (this.started) {
+                if (let previous = this.last) {
+                    if (this.same(previous, x)) {
+                        continue
+                    }
+                }
+            }
+            this.started = true
+            this.last = x
+            return x
+        }
+        return null
+    }
+}
+
+// `init` and then each running value `f` makes of the one before and a value; made by
+// `it.scan(init, f)`
+class ScanIter<I :: [Iterator], A> :: Iterator {
+    type Item = A
+    var inner: I
+    f: fn(A, I.Item) -> A
+    var acc: A
+    var started: bool = false
+    fn next(): ?A {
+        if (!this.started) {
+            this.started = true
+            return this.acc
+        }
+        if (let x = this.inner.next()) {
+            this.acc = this.f(this.acc, x)
+            return this.acc
+        }
+        return null
+    }
+}
+
+// an iterator whose `peek()` gives the next value without taking it; made by `it.peekable()`
+class PeekableIter<I :: [Iterator]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    var peeked: ?I.Item = null
+    var hasPeeked: bool = false
+    // the value the next `next()` gives, `null` at the end; pulled from the inner iterator once
+    fn peek(): ?I.Item {
+        if (!this.hasPeeked) {
+            this.peeked = this.inner.next()
+            this.hasPeeked = true
+        }
+        return this.peeked
+    }
+    fn next(): ?I.Item {
+        if (this.hasPeeked) {
+            this.hasPeeked = false
+            return this.peeked
+        }
+        return this.inner.next()
+    }
+}
+
+// the values of an iterator from both ends, from the back; made by `it.rev()` — no DoubleEnded
+// itself
+class RevIter<I :: [DoubleEnded]> :: Iterator {
+    type Item = I.Item
+    var inner: I
+    fn next(): ?I.Item = this.inner.nextBack()
+}
+
+// closing through an adapter: over a Closeable iterator an adapter is Closeable and passes
+// close() on; the two over two iterators close both
+extend<I :: [Iterator, Closeable], U> MapIter<I, U> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> FilterIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> TakeIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> SkipIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> TakeWhileIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> SkipWhileIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> StepByIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> EnumerateIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> InspectIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable], U> MapNotNullIter<I, U> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> DedupIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable], A> ScanIter<I, A> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable]> PeekableIter<I> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator, Closeable], B :: [Iterable<Iter = J>], J :: [Iterator]> FlatMapIter<I, B, J> ::
+    Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<I :: [Iterator<Item = B>, Closeable], B :: [Iterable<Iter = J>], J :: [Iterator]> FlattenIter<
+    I,
+    B,
+    J
+> :: Closeable {
+    fn close() {
+        this.inner.close()
+    }
+}
+extend<A :: [Iterator, Closeable], B :: [Iterator, Closeable]> ZipIter<A, B> :: Closeable {
+    fn close() {
+        defer {
+            this.b.close()
+        }
+        this.a.close()
+    }
+}
+extend<A :: [Iterator, Closeable], B :: [Iterator<Item = A.Item>, Closeable]> ChainIter<A, B> ::
+    Closeable {
+    fn close() {
+        defer {
+            this.b.close()
+        }
+        this.a.close()
+    }
+}
+
+// the adapters of every iterator
+extend<I :: [Iterator]> I {
+    fn map<U>(f: fn(I.Item) -> U): MapIter<I, U> = MapIter { inner = this, f = f }
+    fn filter(p: fn(I.Item) -> bool): FilterIter<I> = FilterIter { inner = this, p = p }
+    fn take(n: int): TakeIter<I> = TakeIter { inner = this, left = n }
+    fn skip(n: int): SkipIter<I> = SkipIter { inner = this, n = n }
+    fn takeWhile(p: fn(I.Item) -> bool): TakeWhileIter<I> = TakeWhileIter { inner = this, p = p }
+    fn skipWhile(p: fn(I.Item) -> bool): SkipWhileIter<I> = SkipWhileIter { inner = this, p = p }
+    // a step below 1 panics
+    fn stepBy(n: int): StepByIter<I> {
+        if (n < 1) {
+            panic(f"stepBy needs a step of at least 1, not {n}")
+        }
+        return StepByIter { inner = this, step = n }
+    }
+    fn enumerate(): EnumerateIter<I> = EnumerateIter { inner = this }
+    fn inspect(f: fn(I.Item) -> void): InspectIter<I> = InspectIter { inner = this, f = f }
+    fn zip<B :: [Iterable]>(other: B): ZipIter<I, B.Iter> = ZipIter { a = this, b = other.iter() }
+    fn chain<B :: [Iterator<Item = I.Item>]>(other: B): ChainIter<I, B> = ChainIter {
+        a = this,
+        b = other,
+    }
+    fn mapNotNull<U>(f: fn(I.Item) -> ?U): MapNotNullIter<I, U> = MapNotNullIter {
+        inner = this,
+        f = f,
+    }
+    fn flatMap<B :: [Iterable]>(f: fn(I.Item) -> B): FlatMapIter<I, B, B.Iter> = FlatMapIter {
+        inner = this,
+        f = f,
+    }
+    fn dedupBy(same: fn(I.Item, I.Item) -> bool): DedupIter<I> = DedupIter {
+        inner = this,
+        same = same,
+    }
+    fn scan<A>(init: A, f: fn(A, I.Item) -> A): ScanIter<I, A> = ScanIter {
+        inner = this,
+        f = f,
+        acc = init,
+    }
+    fn peekable(): PeekableIter<I> = PeekableIter { inner = this }
+}
+
+// an iterator of Iterables flattens
+extend<I :: [Iterator<Item = B>], B :: [Iterable]> I {
+    fn flatten(): FlattenIter<I, B, B.Iter> = FlattenIter { inner = this }
+}
+
+// an iterator of values that compare gives a run of equal ones once
+extend<I :: [Iterator<Item = T>], T :: [Equatable]> I {
+    fn dedup(): DedupIter<I> = DedupIter { inner = this, same = (a, b) => a == b }
+}
+
+// an iterator from both ends walks from the back
+extend<I :: [DoubleEnded]> I {
+    fn rev(): RevIter<I> = RevIter { inner = this }
+}

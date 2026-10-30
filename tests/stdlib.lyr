@@ -5,6 +5,7 @@ import std.test { assertEq, assertTrue };
 import lyric_script.compiler.checker { Checked, ProgramUnit, checkModule };
 import lyric_script.compiler.codegen { generate };
 import lyric_script.compiler.parser { parse };
+import lyric_script.loader { loadProgram };
 import lyric_script.stdsrc { stdBelow, stdModules, stdPackage, stdSource };
 
 /// The codes of a program whose entry is `entry` and which imports the module `name`, `text`, of
@@ -26,7 +27,7 @@ fn theStandardLibrarysModulesAreInTheBinary(): void {
     }
     assertEq(stdSource("std.nothere"), null);
     assertEq(stdSource("std"), null);
-    assertEq(stdBelow("std"), ["fs", "os"]);
+    assertEq(stdBelow("std"), ["fs", "iter", "os"]);
     assertEq(stdBelow("std.fs"), []);
 }
 
@@ -64,4 +65,28 @@ fn aModuleOfTheStandardLibraryKeepsItsInternalNames(): void {
     );
     // the same module in the program's own package shows it
     assertEq(codesWith("import t { helper }\nlet v = helper()", "t", text, 0), []);
+}
+
+@Test
+fn aProgramLoadsStdIterWhereItNamesAMemberOfItsBlocks(): void {
+    // std.iter's blocks reach every module; a program that names none of them does not pay for
+    // checking it (S7c6b, P21)
+    let plain = loadProgram("nowhere/plain.lyrs", "println(1)\n");
+    let mapped = loadProgram(
+        "nowhere/mapped.lyrs",
+        "let xs: int[] = [1].iter().map((v) => v).collect()\n"
+    );
+    let skipped = loadProgram("nowhere/skipped.lyrs", "fn f(it: ListIter<int>) = it.skip\n");
+    assertEq(loads(plain.names, "std.iter"), false);
+    assertEq(loads(mapped.names, "std.iter"), true);
+    assertEq(loads(skipped.names, "std.iter"), true);
+}
+
+fn loads(names: List<string>, name: string): bool {
+    for (n in names) {
+        if (n == name) {
+            return true;
+        }
+    }
+    return false;
 }

@@ -284,6 +284,35 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
             deps.push(j);
             at.push(where);
         }
+        // the prelude names std.iter: its blocks reach every module without an import (Lyric 5 04
+        // rule 5; S7c6b), so the entry depends on it — where a module names a member of them: a
+        // program that names none reaches none, and does not pay for checking the module (P21)
+        if (i == l.paths.length() - 1 && indexOf(l.names, "std.iter") < 0 && namesIter(l)) {
+            var j = indexOf(l.names, "std.iter");
+            if (j < 0) {
+                j = l.paths.length();
+                l.paths.push("<std.iter>");
+                l.texts.push(stdSource("std.iter") ?? "");
+                l.names.push("std.iter");
+                l.pkgOf.push(stdPackage);
+                l.subs.push(stdBelow("std.iter"));
+            }
+            let first = if (i == 0) deps else edges[0];
+            let firstAt = if (i == 0) at else edgeAt[0];
+            first.push(j);
+            firstAt.push(
+                Diagnostic {
+                    code = "LYS-RES0003",
+                    message = "",
+                    start = 0,
+                    end = 0,
+                    line = 1,
+                    column = 1,
+                    help = null,
+                    file = 0,
+                }
+            );
+        }
         edges.push(deps);
         edgeAt.push(at);
         i += 1;
@@ -294,6 +323,35 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
     }
     visit(0, edges, edgeAt, state, List<int>.new(), l);
     return l;
+}
+
+/// Whether a module loaded names a member of std.iter's blocks over every iterator (S7c6b): `.map`,
+/// `.filter` and the others, read off the module's text — a name of a function of a block
+/// `extend<I :: [...]> I` there.
+fn namesIter(l: Loaded): bool {
+    let members = List<string>.new();
+    var inBlock = false;
+    for (line in (stdSource("std.iter") ?? "").split("\n")) {
+        if (line.startsWith("extend<") && line.endsWith("> I {")) {
+            inBlock = true;
+        } else if (line == "}") {
+            inBlock = false;
+        } else if (inBlock && line.startsWith("    fn ")) {
+            var end = 7;
+            while (end < line.length() && line[end] != '(' && line[end] != '<') {
+                end += 1;
+            }
+            members.push("." + line[7..end].toString());
+        }
+    }
+    for (text in l.texts) {
+        for (m in members) {
+            if (text.contains(m)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /// A single script's frontmatter (07 Dep, 09 Hd): where it names dependencies, the script is

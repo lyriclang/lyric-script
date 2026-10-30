@@ -4698,11 +4698,15 @@ class Checker {
             _ => 0,
         };
         if (args.length() != arity) {
-            this.error(
-                "LYS-SEM0026",
-                f"'{name}' takes {arity} type arguments, not {args.length()}",
-                at
-            );
+            // what the name is, first: one that names no type says so, given arguments or not
+            // (S7c6b; it said "'Foo' takes 0 type arguments")
+            if (arity > 0 || this.resolveNamedType(name, [], at) != .Unknown) {
+                this.error(
+                    "LYS-SEM0026",
+                    f"'{name}' takes {arity} type arguments, not {args.length()}",
+                    at
+                );
+            }
             return Ty.Unknown;
         }
         match (name) {
@@ -4825,6 +4829,10 @@ class Checker {
         this.fixFrom(e, target);
         let actual = typeOf(e);
         if (actual == target || actual == .Unknown || target == .Unknown || actual == .Never) {
+            return e;
+        }
+        // an associated type a constraint of the generic in check fixes is that type (S7c6b)
+        if (this.settle(actual) == this.settle(target)) {
             return e;
         }
         let fitted = this.fit(e, target);
@@ -12857,10 +12865,21 @@ class Checker {
         }
         if (inst >= 0) {
             this.fillInstance(inst);
-            return TExpr.New(
-                inst,
-                this.fieldValues(this.types[inst].name, this.types[inst].fields, fields, at)
-            );
+            // the template's defaults at the instance's arguments (S7c6b: since S3g a position
+            // that named the instance took none — `let h: Holder<int> = Holder { }` was SEM0106)
+            let info = this.types[inst];
+            let decls = List<FieldInfo>.new();
+            var k = 0;
+            for (d in info.fields) {
+                let td = if (k < tmpl.fields.length()) tmpl.fields[k].default else null;
+                if (d.default == null && td != null) {
+                    decls.push(d with { default = this.specExpr(td, info.args) });
+                } else {
+                    decls.push(d);
+                }
+                k += 1;
+            }
+            return TExpr.New(inst, this.fieldValues(info.name, decls.toArray(), fields, at));
         }
         let binds = List<?Ty>.new();
         for (_ in tmpl.typeParams) {
@@ -13991,6 +14010,36 @@ class Checker {
 
     /// A lambda (Lyric 5 03 §8.2): its parameters' types written or from the function type the
     /// position expects; a trailing block without names takes `it`, or nothing.
+    /// `t` with each associated type of a type parameter that a constraint of the generic in
+    /// check fixes put in its place: an instance's field, read in the generic, names `I.Item`
+    /// where `I :: [Iterator<Item = T>]` makes it `T` (S7c6b) — an instance over a type parameter
+    /// is shared by every generic that names one there.
+    mut fn settle(t: Ty): Ty {
+        return match (t) {
+            .Assoc(b, ii, n) => match (b.value) {
+                .Param(k) => this.fixedAt(k, n, ii) ?? t,
+                _ => t,
+            },
+            .Optional(e) => Ty.Optional(boxTy(this.settle(e.value))),
+            .List(e) => Ty.List(boxTy(this.settle(e.value))),
+            .Fn(ft) => {
+                let ps = List<Ty>.new();
+                for (x in ft.params) {
+                    ps.push(this.settle(x));
+                }
+                Ty.Fn(FnTy { params = ps.toArray(), result = boxTy(this.settle(ft.result.value)) })
+            }
+            .Tuple(tt) => {
+                let es = List<Ty>.new();
+                for (x in tt.elements) {
+                    es.push(this.settle(x));
+                }
+                Ty.Tuple(TupleTy { elements = es.toArray(), labels = tt.labels })
+            }
+            _ => t,
+        };
+    }
+
     mut fn lambda(
         params: LambdaParam[],
         result: ?TypeExpr,
@@ -13999,7 +14048,12 @@ class Checker {
         expected: ?Ty,
         at: Span
     ): TExpr {
-        let want = expectedFn(expected);
+        // what the generic in check fixes stands in the position's type (S7c6b)
+        var settled: ?Ty = null;
+        if (let e = expected) {
+            settled = this.settle(e);
+        }
+        let want = expectedFn(settled);
         let names = List<string>.new();
         let tys = List<Ty>.new();
         if (implicit) {

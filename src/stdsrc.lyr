@@ -11,12 +11,13 @@ import std.core { embed };
 let stdPackage: int = -1;
 
 /// The modules of the standard library, by their names.
-let stdModules: string[] = ["std.fs", "std.os"];
+let stdModules: string[] = ["std.fs", "std.iter", "std.os"];
 
 /// The text of the standard library's module `name`, `null` where there is none of that name.
 fn stdSource(name: string): ?string {
     return match (name) {
         "std.fs" => string.fromUtf8Lossy(comptime embed("../std/fs.lyrs")),
+        "std.iter" => string.fromUtf8Lossy(comptime embed("../std/iter.lyrs")),
         "std.os" => string.fromUtf8Lossy(comptime embed("../std/os.lyrs")),
         _ => null,
     };

@@ -1449,3 +1449,13 @@ Constraint der Parameter (`V :: [Add]` ist `V :: [Add<V>]`); ein Extend-Block ni
 (`SEM0026`). `Coroutine<Y>` ist jetzt das `R = void` der Prelude — der fest eingebaute
 Sonderfall ist weg. **Gefunden über einen überlebenden Mutanten (seit S7c1):** `T :: [Combine<T>]` einer `fn f<T>` war die Vorlage selbst — `typeInstance` gibt sie für Argumente zurück, die wie ihre eigenen Parameter lauten —, und die erfüllt jede Instanz: ein `B :: Combine<int>` ging als `T` durch, der Aufruf las ein `B` als `int`; ein geschriebenes Interface ist jetzt immer eine Instanz. Spec 03 Regel 12; drei Fälle, alle rot gegen S7c5b. Drei Mutanten in drei Läufen: zwei wie vorhergesagt (der ohne Standardwerte traf alle 30 Fälle mit `Coroutine<X>` und 15 Tests); der dritte (das `Self` einer Konformanz) überlebte zuerst — wegen des Fehlers oben — und scheiterte nach dem Fix wie vorhergesagt.
 Fälle 422 → 425.
+
+**S7c5c2, Ergebnis (2026-10-30).** Die Prelude deklariert die Operator-Interfaces — `Add`, `Sub`,
+`Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor` mit `Rhs = Self`, `Shl`/`Shr` mit `Rhs = int`,
+`Neg`, `BitNot`, je `type Out = Self` — und gibt sie den Skalaren als Script-Blöcke. Ein
+Operator eines Typs des Programms ist der Aufruf über die Konformanz, die der statische Typ des
+rechten Operanden wählt (`v * 2.5` → `Mul<float>`, ein `int`-Literal passt sich an), über einen
+Typparameter durch den Constraint; `-a`, `~a` über `Neg`, `BitNot`; `a op= b` ist `a = a op b`,
+der Empfänger eines Felds, eine Liste samt Index einmal gehalten, `Out` der Typ des Orts. Spec 05
+Regel 17; vier Fälle, alle rot gegen S7c5c1. Vier Mutanten in zwei Läufen, alle wie vorhergesagt.
+Fälle 425 → 429.

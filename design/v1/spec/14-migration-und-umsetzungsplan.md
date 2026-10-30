@@ -1181,6 +1181,10 @@ fünf Teile, jeder braucht den vorigen.
 | **S7c5 Vergleiche und Operatoren** | (05 D6, ohne Uhr seit S3 — P19) `Equatable`, `Ordered` (`?Ordering`), `TotalOrder` als Prelude-Interfaces, synthetisiert für Structs, Enums und Tupel, deren Felder es sind (03 Eq; `float :: TotalOrder`), `==`/`<` … über sie, die vergleichenden Listen-Methoden über einen Typparameter; Operator-Interfaces `Add<Rhs = Self> { type Out = Self }` …, `Neg`, `Contains<T>` (`in`, `!in`), `+=` abgeleitet, `++`/`--` als Ausdrücke; gemischte Arithmetik über eingebaute Konformanzen (03 Mix) | Konformanzfälle |
 | **S7c5d Mehrere Instanzen** | (aus S7c5c, 05 Regel 13) mehrere Instanzen eines generischen Interfaces an einem Typ (Lyric 5 05 §3 Regeln 4–5: Mitglieder je Block, `SEM0122`; nebeneinander je Instanz), Antworten je Konformanz-Instanz (§8 Regel 3), die eingebauten gemischten Konformanzen (`int :: Add<float>`, 03 Mix) | Konformanzfälle |
 | **S7c6 `std.iter`** | `Range<T>` als Wert (`let r = 1..5`, `x in r`, `r.iter()` — die NYI-Uhr zeigte auf S3, gefunden in S7c5c3), die Adapter von Lyric 5s `iter` in Script, die Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …), `sort` nativ über `TotalOrder` mit Kostenregel; der Platzhalter `_` unter Typargumenten (Lyric 5 §9.2 Regeln 4–5, §9.3 Regel 2) | Konformanzfälle; Kostenregel für `sort` |
+| **S7c6a Bereiche als Werte** | `Range<T>` und `RangeInclusive<T>` über `int` und `char` in der Prelude (Lyric 5 12 Iteration: `Iterator` und `DoubleEnded`, `start`/`end` veränderlich, ein Bereich aus `char` ohne die Surrogate, kein Wert über die Grenze des Typs), `a..b` und `a..=b` als Ausdruck ein solcher Wert — `for` über das Literal bleibt die native Schleife —, `x in r` über `Contains<T>`, `r.iter()`; `DoubleEnded { fn nextBack(): ?Item }`, `Iterator.sizeHint()` mit dem Default `(0, null)`; `ListIter` von beiden Enden | Konformanzfälle |
+| **S7c6b Adapter und Terminatoren** | `std.iter` als Script-Modul (`std/iter.lyrs`), das der Lader mit der Prelude lädt (Lyric 5 04 Regel 5: seine Blöcke reichen jedes Modul, die Typen werden importiert, wo sie stehen); Blanket-Blöcke über `I :: [Iterator]` mit den Adaptern als Klassen unter Lyric 5s Namen (`MapIter`, `FilterIter`, `TakeIter` …, `enumerate`, `zip`, `chain`, `flatMap`, `flatten`, `scan`, `peekable`, `rev`, `stepBy`, `dedup` …) und den Terminatoren (`count`, `fold`, `reduce`, `first`, `last`, `nth`, `any`, `all`, `none`, `find`, `position`, `forEach`, `toArray`, `minBy`, `maxBy`; je Element-Art `sum`, `product`, `min`, `max`, `join`, `average`; `chunks`, `windows`, `partition`, `sorted`, `sortedBy`) — ohne `throws` (12 Src); was eine `Map` oder ein `Set` baut (`groupBy`, `toMap`, `toSet`), mit S7d | Konformanzfälle; Kaltstart gegen P21 gemessen |
+| **S7c6c `Clone`, `Default`, Listen-Methoden, `sort`** | Synthese von `Clone` und `Default` (Script 09 Syn, ohne Uhr — P23; `Clone` nur für Klassen sinnvoll, 05 D13), `cycle()` über einen `Clone`-Iterator; die Methoden von Lyric 5s Array und `List` an `T[]` (`map`, `filter`, `retain`, `sortedBy`, `reverse` …), `sort()`/`sortBy` nativ über `TotalOrder`, stabil | Konformanzfälle; Kostenregel für `sort` |
+| **S7c6d Platzhalter `_`** | `_` unter Typargumenten (Lyric 5 §9.2 Regeln 4–5, §9.3 Regel 2): `f<_, int>(x)`, `let xs: List<_> = …`, die Stelle bindet, was sie offen lässt | Konformanzfälle |
 
 **S7c1, geteilt (2026-10-30).** **S7c1a** generische Interfaces ohne `Self` und ohne Defaults;
 **S7c1b** `Self` in einem generischen Interface (seine Mitglieder generisch über die Parameter
@@ -1498,3 +1502,13 @@ Ein Block auf einer Instanz hält ein Mitglied je Namen (P22, Uhr S7f). Spec 05 
 und 17 verweisen darauf; sieben Fälle, sechs rot gegen S7c5c3 — der siebte hält eine Ablehnung
 fest, die schon galt. Mutanten: vier Läufe, 437, 437, 441 und 440 von 442; drei Abweichungen von der Vorhersage, alle erklärt (eine bestehende Prüfung von `5.add(3)` und eine von `G.Output` mehr getroffen als vorhergesagt; die Kopien über Klassen und Structs rufen über die Tabelle, nicht über `memberFor`).
 Fälle 435 → 442.
+
+**S7c6, geschnitten (2026-10-30).** Lyric 5s Iteration (12 §Iteration) in vier Teilen: **S7c6a**
+die Bereiche als Werte und die Protokoll-Ergänzungen (`DoubleEnded`, `sizeHint`), auf denen `rev`
+und `collect` stehen; **S7c6b** `std.iter`, die Adapter und Terminatoren in Script — ein Modul,
+das der Lader mit der Prelude lädt, weil Lyric 5s Blöcke jedes Iterators ohne Import reichen;
+jedes Programm prüft es dann mit, der Kaltstart wird gegen P21 gemessen (über der Ratsche: das
+Modul erst laden, wo ein Iterator ein Mitglied nicht findet); **S7c6c** die Synthese von `Clone`
+und `Default`, die keine Planzeile hatte (P23) und die `cycle()` braucht, dazu die Listen-Methoden
+und `sort` mit seiner Kostenregel; **S7c6d** der Platzhalter `_`. Was eine `Map` oder ein `Set`
+baut (`groupBy`, `toMap`, `toSet`), geht mit S7d.

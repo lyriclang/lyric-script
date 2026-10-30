@@ -1841,10 +1841,36 @@ class Checker {
             return;
         }
         info.sealed = i.sealed;
+        // a generic interface (S7c1; Lyric 5 §5): its parameters in scope for its parents and its
+        // members, which are generic over them as a generic type's methods are
+        let savedScope = this.typeParams;
+        let savedDeclaring = this.declaringParams;
+        if (i.typeParams.length() > 0) {
+            info.typeParams = this.typeParamsOf(i.typeParams);
+            let scope = Map<string, int>.new();
+            let own = List<Ty>.new();
+            var j = 0;
+            for (tp in i.typeParams) {
+                scope.insert(tp.name, j);
+                own.push(Ty.Param(j));
+                j += 1;
+            }
+            this.typeParams = scope;
+            this.declaringParams = info.typeParams;
+            info.template = index;
+            info.args = own.toArray();
+            if (info.selfParam) {
+                this.notYet(
+                    "'Self' in a generic interface",
+                    "S7c1 (generic interfaces, step 2)",
+                    i.span
+                );
+            }
+        }
         let parents = List<int>.new();
         for (p in i.parents) {
-            let pi = this.typeIndex.get(this.q(p.name));
-            if (pi == null || this.types[pi].kind != .Interface || pi == index) {
+            let named = this.typeIndex.get(this.q(p.name));
+            if (named == null || this.types[named].kind != .Interface || named == index) {
                 this.error(
                     "LYS-SEM0078",
                     f"'{p.name}' is no interface {i.name} can extend",
@@ -1852,7 +1878,10 @@ class Checker {
                 );
                 continue;
             }
-            parents.push(pi);
+            let pi = this.ifaceOf(p);
+            if (pi >= 0) {
+                parents.push(pi);
+            }
         }
         info.parents = parents.toArray();
         let names = List<string>.new();
@@ -1866,7 +1895,18 @@ class Checker {
                 .None => {
                     this.functions[fi].abstract = true;
                 }
-                _ => { }
+                _ => {
+                    if (i.typeParams.length() > 0) {
+                        this.notYet(
+                            "a default member of a generic interface",
+                            "S7c1 (generic interfaces, step 2)",
+                            m.span
+                        );
+                    }
+                }
+            }
+            if (i.typeParams.length() > 0) {
+                this.functions[fi].typeParams = info.typeParams;
             }
             if (info.selfParam) {
                 if (m.typeParams.length() > 0) {
@@ -1920,6 +1960,87 @@ class Checker {
         }
         this.selfTyIs = savedSelf;
         info.memberNames = names.toArray();
+        this.typeParams = savedScope;
+        this.declaringParams = savedDeclaring;
+    }
+
+    /// The interface a written conformance or constraint names (S7c1): the interface, or its
+    /// instance at the type arguments written, `I<int>`; -1 for none (`LYS-SEM0078`) or arguments
+    /// that do not fit (`LYS-SEM0026`).
+    mut fn ifaceOf(c: Conformance): int {
+        let ii = this.typeIndex.get(this.q(c.name));
+        if (ii == null || this.types[ii].kind != .Interface) {
+            this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
+            return -1;
+        }
+        let n = this.types[ii].typeParams.length();
+        if (c.args.length() != n) {
+            this.error(
+                "LYS-SEM0026",
+                f"'{c.name}' takes {n} type arguments, not {c.args.length()}",
+                c.span
+            );
+            return -1;
+        }
+        if (n == 0) {
+            return ii;
+        }
+        let tys = List<Ty>.new();
+        for (x in c.args) {
+            tys.push(this.resolveType(x));
+        }
+        return this.typeInstance(ii, tys.toArray());
+    }
+
+    /// The interface whose members, slots and associated types `ii` has: the template of an
+    /// instance of a generic interface, else `ii` (S7c1).
+    mut fn ifaceBase(ii: int): int {
+        let t = this.types[ii].template;
+        return if (t >= 0 && t != ii && this.types[t].typeParams.length() > 0) t else ii;
+    }
+
+    /// The type arguments a member `name` of interface `ii` is called with: those of the instance
+    /// of a generic interface that declares it, among `ii`'s ancestry; none for another (S7c1).
+    mut fn memberBinds(ii: int, name: string): Ty[] {
+        for (a in this.ancestry(ii)) {
+            let base = this.ifaceBase(a);
+            if (this.types[base].methods.containsKey(name)) {
+                // the template itself stands for its own parameters: `Source<T>` in a generic of
+                // `T` is the template at `T`
+                return if (this.types[base].typeParams.length() > 0) this.types[a].args else [];
+            }
+        }
+        return [];
+    }
+
+    /// The parents of interface `ii`: its own, or for an instance of a generic interface its
+    /// template's at the instance's arguments (S7c1) — made when asked, since an instance may be
+    /// made before its template's parents are read.
+    mut fn parentsOf(ii: int): int[] {
+        let base = this.ifaceBase(ii);
+        if (base == ii) {
+            return this.types[ii].parents;
+        }
+        let args = this.types[ii].args;
+        let out = List<int>.new();
+        for (p in this.types[base].parents) {
+            let pt = this.ifaceBase(p);
+            if (pt == p && this.types[p].typeParams.length() == 0) {
+                out.push(p);
+                continue;
+            }
+            let a = List<Ty>.new();
+            for (x in this.types[p].args) {
+                a.push(this.subst(x, args));
+            }
+            out.push(
+                this.typeInstance(
+                    if (this.types[p].template >= 0) this.types[p].template else p,
+                    a.toArray()
+                )
+            );
+        }
+        return out.toArray();
     }
 
     /// A type's constants (05 §7 rule 2): each a global the script sets where it begins, and a
@@ -2209,7 +2330,7 @@ class Checker {
                 continue;
             }
             out.push(next);
-            for (p in this.types[next].parents) {
+            for (p in this.parentsOf(next)) {
                 todo.push(p);
             }
         }
@@ -2233,9 +2354,8 @@ class Checker {
         // the interfaces a field answers for: each one's field (05 §5)
         let via = Map<int, int>.new();
         for (c in conforms) {
-            let ii = this.typeIndex.get(this.q(c.name));
-            if (ii == null || this.types[ii].kind != .Interface) {
-                this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
+            let ii = this.ifaceOf(c);
+            if (ii < 0) {
                 continue;
             }
             let by = c.by;
@@ -2307,7 +2427,9 @@ class Checker {
         }
         for (ii in added) {
             all.push(ii);
-            let iface = this.types[ii];
+            // an instance of a generic interface: the template's members at its arguments (S7c1)
+            let iface = this.types[this.ifaceBase(ii)];
+            let instanceArgs: Ty[] = if (this.ifaceBase(ii) != ii) this.types[ii].args else [];
             // its associated types: answered by the type, or by the default (05 §8 rule 3)
             for (n in iface.assocNames) {
                 if (!info.answers.containsKey(n)) {
@@ -2343,7 +2465,7 @@ class Checker {
                 let declared = iface.methods.get(member) ?? -1;
                 let own = info.methods.get(member);
                 if (own != null) {
-                    let selfArgs: Ty[] = if (iface.selfParam) [self] else [];
+                    let selfArgs: Ty[] = if (iface.selfParam) [self] else instanceArgs;
                     if (!this.sameSignatureAs(own, declared, selfArgs)
                         || this.functions[own].isStatic != this.functions[declared].isStatic) {
                         this.error(
@@ -2478,9 +2600,10 @@ class Checker {
     /// The member `name` of interface `ii` or of a parent: its function and its slot.
     mut fn ifaceMember(ii: int, name: string): ?(int, int) {
         for (a in this.ancestry(ii)) {
-            let fi = this.types[a].methods.get(name);
+            let base = this.types[this.ifaceBase(a)];
+            let fi = base.methods.get(name);
             if (fi != null) {
-                return (fi, this.types[a].slotOf.get(name) ?? -1);
+                return (fi, base.slotOf.get(name) ?? -1);
             }
         }
         return null;
@@ -2491,7 +2614,11 @@ class Checker {
     mut fn conformsTo(t: Ty, ii: int): bool {
         // a value form: the interface, its fixed associated types answered alike (05 §8 rule 6)
         let target = this.types[ii];
-        if (target.kind == .Interface && target.template >= 0 && target.template != ii) {
+        // (an instance of a generic interface is asked as an interface of its own, S7c1)
+        if (target.kind == .Interface
+            && target.template >= 0
+            && target.template != ii
+            && this.ifaceBase(ii) == ii) {
             match (t) {
                 .Named(j) => {
                     if (j == ii) {
@@ -2683,21 +2810,22 @@ class Checker {
             let scope = Map<string, int>.new();
             let tps = List<TypeParamInfo>.new();
             var k = 0;
+            // every parameter in scope first: a constraint may name one, `S :: [Source<T>]` (S7c1)
             for (tp in f.typeParams) {
                 scope.insert(tp.name, k);
-                let cs = List<int>.new();
-                for (c in tp.constraints) {
-                    let ii = this.typeIndex.get(this.q(c.name));
-                    if (ii == null || this.types[ii].kind != .Interface) {
-                        this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
-                        continue;
-                    }
-                    cs.push(ii);
-                }
-                tps.push(TypeParamInfo { name = tp.name, constraints = cs.toArray() });
                 k += 1;
             }
             this.typeParams = scope;
+            for (tp in f.typeParams) {
+                let cs = List<int>.new();
+                for (c in tp.constraints) {
+                    let ii = this.ifaceOf(c);
+                    if (ii >= 0) {
+                        cs.push(ii);
+                    }
+                }
+                tps.push(TypeParamInfo { name = tp.name, constraints = cs.toArray() });
+            }
             info.typeParams = this.withFixations(f.typeParams, tps.toArray());
             this.declaringParams = info.typeParams;
         }
@@ -2906,7 +3034,10 @@ class Checker {
             return this.assocPath(name, at);
         }
         let ifc = this.typeIndex.get(this.q(name));
-        if (ifc != null && this.types[ifc].kind == .Interface && args.length() > 0) {
+        if (ifc != null
+            && this.types[ifc].kind == .Interface
+            && args.length() > 0
+            && this.types[ifc].typeParams.length() == 0) {
             return this.fixedInterface(ifc, args, at);
         }
         let param = this.typeParams.get(name);
@@ -4228,6 +4359,12 @@ class Checker {
         let info = this.types[index];
         info.template = ti;
         info.args = args;
+        if (tmpl.kind == .Interface) {
+            // an instance of a generic interface (S7c1): the template's slots and its kind
+            info.slotOf = tmpl.slotOf;
+            info.selfParam = tmpl.selfParam;
+            info.sealed = tmpl.sealed;
+        }
         if (tmpl.filled) {
             this.fillInstance(index);
         }
@@ -4353,9 +4490,8 @@ class Checker {
         for (tp in params) {
             let cs = List<int>.new();
             for (c in tp.constraints) {
-                let ii = this.typeIndex.get(this.q(c.name));
-                if (ii == null || this.types[ii].kind != .Interface) {
-                    this.error("LYS-SEM0078", f"'{c.name}' is no interface", c.span);
+                let ii = this.ifaceOf(c);
+                if (ii < 0) {
                     continue;
                 }
                 cs.push(ii);
@@ -11684,8 +11820,12 @@ class Checker {
                                 );
                                 return TExpr.Unknown;
                             }
-                            // `Self` is the receiver's type
-                            if (this.selfGeneric(fi)) {
+                            // `Self` is the receiver's type; a generic interface's member takes its
+                            // instance's arguments (S7c1)
+                            let binds = this.memberBinds(ii, method);
+                            if (binds.length() > 0) {
+                                this.presetBinds = binds;
+                            } else if (this.selfGeneric(fi)) {
                                 this.presetBinds = [t];
                             }
                             let call = this.callAmong(method, [fi], receiver, args, at);
@@ -11752,8 +11892,12 @@ class Checker {
                         return TExpr.Unknown;
                     }
                     let (fi, slot) = found;
-                    // through a value form `Self.Item` reads the fixed type (05 §8 rule 6)
-                    if (this.selfGeneric(fi)) {
+                    // through a value form `Self.Item` reads the fixed type (05 §8 rule 6); a generic
+                    // interface's member takes its instance's arguments (S7c1)
+                    let binds = this.memberBinds(i, method);
+                    if (binds.length() > 0) {
+                        this.presetBinds = binds;
+                    } else if (this.selfGeneric(fi)) {
                         this.presetBinds = [t];
                     }
                     let call = this.callAmong(method, [fi], receiver, args, at);

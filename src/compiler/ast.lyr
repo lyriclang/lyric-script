@@ -290,6 +290,8 @@ struct Conformance :: [Debug] {
     span: Span,
     // `Iterator<Item = int>`: the associated types the constraint fixes (05 §8 rule 5)
     fixed: FixedAnswer[] = [],
+    // `I<int>`: a generic interface's type arguments (S7c1)
+    args: TypeExpr[] = [],
 }
 
 /// `Item = int` in a constraint: an associated type fixed.
@@ -302,6 +304,8 @@ struct FixedAnswer :: [Debug] {
 /// `interface I :: [Parents] { fn m(): T  fn d(): U { … } }`, `sealed` before it or not.
 struct InterfaceDecl :: [Debug] {
     name: string,
+    /// `interface I<T>` (S7c1; Lyric 5 §5): its type parameters.
+    typeParams: TypeParam[] = [],
     parents: Conformance[],
     members: FnDecl[],
     sealed: bool,

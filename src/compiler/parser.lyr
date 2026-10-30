@@ -778,11 +778,21 @@ class Parser {
                 }
                 by = this.text(try this.expect(.Ident, "LYS-PAR0026", "the field it delegates to"));
             }
-            // `Iterator<Item = int>`: associated types fixed (05 §8 rule 5)
+            // `Iterator<Item = int>`: associated types fixed (05 §8 rule 5); `I<int>`: a generic
+            // interface's type arguments (S7c1)
             let fixed = List<FixedAnswer>.new();
+            let targs = List<TypeExpr>.new();
             if (this.at(.Lt)) {
                 this.advance();
                 loop {
+                    if (!(this.at(.Ident) && this.peek(1).kind == .Assign)) {
+                        targs.push(try this.parseType());
+                        if (!this.at(.Comma)) {
+                            break;
+                        }
+                        this.advance();
+                        continue;
+                    }
                     let fname = try this.expect(
                         .Ident,
                         "LYS-PAR0026",
@@ -810,6 +820,7 @@ class Parser {
                     by = by,
                     span = this.since(first),
                     fixed = fixed.toArray(),
+                    args = targs.toArray(),
                 }
             );
             if (!bracketed || !this.at(.Comma)) {
@@ -854,6 +865,10 @@ class Parser {
         }
         this.advance();
         let name = try this.expect(.Ident, "LYS-PAR0026", "the interface's name");
+        var ifaceParams: TypeParam[] = [];
+        if (this.at(.Lt)) {
+            ifaceParams = try this.parseTypeParams();
+        }
         let parents = try this.parseConformances(false);
         this.skipNewlines();
         try this.expect(.LBrace, "LYS-PAR0017", "'{' before the interface's body");
@@ -917,6 +932,7 @@ class Parser {
         }
         try this.expect(.RBrace, "LYS-PAR0018", "'}' to close the interface's body");
         return InterfaceDecl {
+            typeParams = ifaceParams,
             assoc = assoc.toArray(),
             statics = ifaceStatics.toArray(),
             name = this.text(name),

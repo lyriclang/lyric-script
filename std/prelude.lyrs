@@ -489,8 +489,12 @@ fn __less(c: ?Ordering): bool = c == Ordering.Less
 fn __lessOrEqual(c: ?Ordering): bool = c == Ordering.Less || c == Ordering.Equal
 fn __greater(c: ?Ordering): bool = c == Ordering.Greater
 fn __greaterOrEqual(c: ?Ordering): bool = c == Ordering.Greater || c == Ordering.Equal
+// what `x in xs` asks of `xs` (Lyric 5 05 §12 rule 10; S7c5c3)
+interface Contains<T> {
+    fn contains(x: T): bool
+}
 // the comparing methods of every list whose elements compare (S7c5a; S7b2a synthesized them)
-extend<T :: [Equatable]> T[] {
+extend<T :: [Equatable]> T[] :: Contains<T> {
     fn contains(x: T): bool = this.indexOf(x) != null
     fn indexOf(x: T): ?int {
         var k = 0

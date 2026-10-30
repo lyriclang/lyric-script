@@ -363,6 +363,10 @@ fn showExpr(e: Expr): string {
             let word = if (op != null) binaryText(op) + "=" else "=";
             "(" + word + " " + showExpr(target.value) + " " + showExpr(value.value) + ")"
         }
+        .Step(target, up, prefix, _) => {
+            let word = (if (prefix) "pre" else "post") + (if (up) "++" else "--");
+            "(" + word + " " + showExpr(target.value) + ")"
+        }
         .Range(a, b, inclusive, _) => {
             let word = if (inclusive) "..=" else "..";
             "(" + word + " " + showExpr(a.value) + " " + showExpr(b.value) + ")"

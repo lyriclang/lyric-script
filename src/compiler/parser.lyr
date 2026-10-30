@@ -1619,6 +1619,16 @@ class Parser {
         if (t.kind == .Minus || t.kind == .Bang || t.kind == .Tilde) {
             return try this.prefixed(t);
         }
+        // `++x`, `--x`: the place stepped, the new value (Lyric 5 08 §6; S7c5c3)
+        if (t.kind == .PlusPlus || t.kind == .MinusMinus) {
+            this.advance();
+            try this.enter(t);
+            defer {
+                this.depth -= 1;
+            }
+            let operand = try this.parseUnary();
+            return Expr.Step(boxed(operand), t.kind == .PlusPlus, true, this.since(t));
+        }
         return try this.parsePostfix(this.parsePrimary(), t);
     }
 
@@ -1671,6 +1681,12 @@ class Parser {
                 e = Expr.Unwrap(boxed(e), this.since(first));
             } else if (this.at(.Dot) || this.at(.QuestionDot)) {
                 e = try this.memberAfter(e, first);
+            } else if (this.at(.PlusPlus) || this.at(.MinusMinus)) {
+                // `x++`: the place stepped, the old value (S7c5c3)
+                let up = this.at(.PlusPlus);
+                this.advance();
+                e = Expr.Step(boxed(e), up, false, this.since(first));
+                break;
             } else {
                 break;
             }

@@ -115,6 +115,8 @@ enum Expr :: [Debug] {
     Binary(Box<Expr>, BinaryOp, Box<Expr>, Span),
     /// `target = value`, or `target op= value` with the operator.
     Assign(Box<Expr>, ?BinaryOp, Box<Expr>, Span),
+    /// `x++` (up, after), `--x` (down, before): a number's place stepped (Lyric 5 08 §6; S7c5c3).
+    Step(Box<Expr>, bool, bool, Span),
     /// `a..b`, or `a..=b` when the flag is set.
     Range(Box<Expr>, Box<Expr>, bool, Span),
     Cast(Box<Expr>, TypeExpr, Span),

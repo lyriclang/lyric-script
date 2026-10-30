@@ -3908,8 +3908,14 @@ class Checker {
             .List(e) => {
                 let i = this.builtinOf(t);
                 var found = false;
+                // the block's condition is the matched interface's, `Contains<T>` for a `Contains<int>`
+                // (S7c5c3: it was looked up under the instance asked, so never found)
+                var matched = ii;
                 for (x in this.types[i].ifaces) {
-                    found = found || this.isOf(x, ii) || this.ifaceAt(x, [e.value]) == ii;
+                    if (!found && (this.isOf(x, ii) || this.ifaceAt(x, [e.value]) == ii)) {
+                        found = true;
+                        matched = x;
+                    }
                 }
                 // a block on this list type alone, `extend string[] :: Show` (S7c4c3b)
                 let inst = if (hasParam(t)) -1 else this.entryOf(t);
@@ -3920,7 +3926,7 @@ class Checker {
                         }
                     }
                 }
-                let cond = this.types[i].condIfaces.get(ii);
+                let cond = this.types[i].condIfaces.get(matched);
                 if (found && cond != null) {
                     found = this.meetsBlock([e.value], cond);
                 }
@@ -3931,16 +3937,21 @@ class Checker {
                 let kinds = if (this.types[i].kind == .Interface) this.ancestry(i)
                     else this.types[i].ifaces;
                 var found = false;
+                var matched = ii;
                 for (x in kinds) {
                     // a generic interface of a generic type: at the instance's arguments (S7c1)
-                    found = found
-                        || this.isOf(x, ii)
+                    let hit = this.isOf(x, ii)
                         || (i != j
                             && this.types[i].kind != .Interface
                             && this.ifaceAt(x, this.types[j].args) == ii);
+                    if (hit && !found) {
+                        found = true;
+                        matched = x;
+                    }
                 }
-                // given by a generic block: where the instance's arguments meet its constraints
-                let cond = this.types[i].condIfaces.get(ii);
+                // given by a generic block: where the instance's arguments meet its constraints —
+                // the matched interface's condition (S7c5c3)
+                let cond = this.types[i].condIfaces.get(matched);
                 if (found && cond != null && i != j) {
                     found = this.meetsBlock(this.types[j].args, cond);
                 }
@@ -6053,10 +6064,24 @@ class Checker {
             merged.push(x);
         }
         info.ifaces = merged.toArray();
+        // the slots of a conditional conformance the arguments do not meet: no copy, the instance
+        // is no value of it (S7c5c3: `List<Foo>`'s `contains` copied `==` over a class that has none)
+        let unmet = Set<int>.new();
+        for (x in tmpl.ifaces) {
+            let cond = tmpl.condIfaces.get(x);
+            if (cond != null && !this.meetsBlock(info.args, cond)) {
+                for (a in this.ancestry(x)) {
+                    let base = this.types[this.ifaceBase(a)];
+                    for (name in base.memberNames) {
+                        unmet.insert(base.slotOf.get(name) ?? -1);
+                    }
+                }
+            }
+        }
         // by slot: the instances are made in the same order in every run
         var slot = 0;
         while (slot < this.slotCount) {
-            let fi = tmpl.witness.get(slot) ?? -1;
+            let fi = if (unmet.contains(slot)) -1 else tmpl.witness.get(slot) ?? -1;
             // a member generic of its own is called on its type alone, never through the table:
             // the template stands in its slot, as in a plain type's (S7c4c2)
             if (fi >= 0 && this.ownTypeParams(fi) > 0) {
@@ -7149,6 +7174,7 @@ class Checker {
         };
         let effect = match (unmarked(e)) {
             .Call(_, _, _) | .Assign(_, _, _, _) | .Loop(_, _, _) | .Match(_, _, _) => true,
+            .Step(_, _, _, _) => true,
             .TryOpt(_, _) | .TryBang(_, _) | .TryCatch(_, _, _) => true,
             _ => false,
         };
@@ -9357,6 +9383,7 @@ class Checker {
             .Unary(op, x, at) => this.unary(op, x.value, at),
             .Binary(l, op, r, at) => this.binary(l.value, op, r.value, at),
             .Assign(target, op, value, at) => this.assign(target.value, op, value.value, at),
+            .Step(target, up, prefix, at) => this.step(target.value, up, prefix, at),
             .Range(_, _, _, at) => this.notYet("a range as a value", "S7c6 (std.iter, Range)", at),
             .Cast(x, written, at) => this.cast(x.value, written, at),
             .Call(callee, args, at) => this.call(callee.value, args, expected, at),
@@ -9564,41 +9591,7 @@ class Checker {
                 return this.coalesce(l, r, at);
             }
             .In | .NotIn => {
-                // `x in xs` (S7b2a): whether an element equals `x`; over other types with them
-                let hay = this.expr(r, null);
-                match (typeOf(hay)) {
-                    // the list's `contains` (S7c5a: the prelude's, over `T :: [Equatable]`)
-                    .List(e) => {
-                        let missing = this.notEquatable(e.value, List<int>.new());
-                        if (missing != null) {
-                            this.expr(l, e.value);
-                            this.error(
-                                "LYS-SEM0059",
-                                f"'{binaryText(op)}' does not compare {this.tyName(e.value)}: {missing}",
-                                at
-                            );
-                            return TExpr.Unknown;
-                        }
-                        let has = this.methodCall(
-                            hay,
-                            "contains",
-                            [Arg { name = null, value = l }],
-                            at,
-                            at
-                        );
-                        return if (op == .In) has else TExpr.Unary(UnaryOp.Not, boxE(has), Ty.Bool);
-                    }
-                    .Unknown => {
-                        return TExpr.Unknown;
-                    }
-                    _ => {
-                        return this.notYet(
-                            f"'{binaryText(op)}' over a {this.tyName(typeOf(hay))}",
-                            "S7 (the core collections)",
-                            at
-                        );
-                    }
-                }
+                return this.membership(l, op, r, at);
             }
             _ => { }
         }
@@ -9823,6 +9816,15 @@ class Checker {
                 if (own == null) {
                     return this.memberCallOn(ta, ii, member, slot, all.toArray(), rt);
                 }
+                // a list's block member: at its element, a type parameter's list too (S7c5c3)
+                match (ta) {
+                    .List(e) => {
+                        if (this.functions[own].typeParams.length() > 0) {
+                            return TExpr.CallGeneric(own, [e.value], all.toArray(), rt);
+                        }
+                    }
+                    _ => { }
+                }
                 let info = this.types[entry];
                 if (this.functions[own].typeParams.length() > 0
                     && info.template >= 0
@@ -9851,6 +9853,130 @@ class Checker {
             return null;
         }
         return this.operatorMember(v, [], ii, member, at);
+    }
+
+    /// `x in xs`, `x !in xs` (Lyric 5 05 §12 rule 10; S7c5c3): `xs.contains(x)` through the
+    /// `Contains<T>` of the right operand — a list's is the prelude's —, `x` adapting to its `T`;
+    /// `x` evaluated before `xs`, though the call is the container's.
+    mut fn membership(l: Expr, op: BinaryOp, r: Expr, at: Span): TExpr {
+        let hay = this.expr(r, null);
+        let ht = typeOf(hay);
+        let ci = match (ht) {
+            .Unknown => -2,
+            .Str | .Map(_, _) => -3,
+            // a list's, where its block admits the element
+            .List(e) => {
+                let c = this.exactIface(this.typeIndex.get("Contains") ?? -1, [e.value]);
+                if (this.conformsTo(ht, c)) c else -1
+            }
+            _ => this.instanceFor(ht, "Contains"),
+        };
+        if (ci == -2) {
+            this.expr(l, null);
+            return TExpr.Unknown;
+        }
+        if (ci == -3) {
+            this.expr(l, null);
+            return this.notYet(f"'{binaryText(op)}' over a {this.tyName(ht)}", laterClock(ht), at);
+        }
+        if (ci < 0) {
+            this.expr(l, null);
+            let why = match (ht) {
+                .List(e) => {
+                    let missing = this.notEquatable(e.value, List<int>.new()) ?? "";
+                    f"its elements do not compare: {missing}"
+                }
+                _ => f"{this.tyName(ht)} is no Contains",
+            };
+            this.error(
+                "LYS-SEM0059",
+                f"'{binaryText(op)}' asks the right operand's contains: {why}",
+                at
+            );
+            return TExpr.Unknown;
+        }
+        let elem = match (this.types[ci].args.length()) {
+            1 => this.types[ci].args[0],
+            _ => Ty.Unknown,
+        };
+        let needle = this.coerce(this.expr(l, elem), elem, spanOf(l));
+        // the needle first, then the container (rule 10)
+        let hx = this.hidden(typeOf(needle), at);
+        let hh = this.hidden(ht, at);
+        let has = this.operatorMember(
+            TExpr.Local(hh, ht),
+            [TExpr.Local(hx, typeOf(needle))],
+            ci,
+            "contains",
+            at
+        );
+        let value = if (op == .In) has else TExpr.Unary(UnaryOp.Not, boxE(has), Ty.Bool);
+        return TExpr.Block(
+            [TStmt.SetLocal(hx, needle, at.line), TStmt.SetLocal(hh, hay, at.line)],
+            boxE(value),
+            Ty.Bool
+        );
+    }
+
+    /// `x++`, `++x`, `x--`, `--x` (Lyric 5 08 §6; S7c5c3): one added to a number's place or taken
+    /// from it — a variable, a field, an element; what leads to it evaluated once —, worth the old
+    /// value after it, the new before it; the step is checked as `+` and `-` are.
+    mut fn step(target: Expr, up: bool, prefix: bool, at: Span): TExpr {
+        let held = List<TStmt>.new();
+        let place = match (target) {
+            .Name(_, _) => target,
+            .Member(obj, field, false, memberAt) => {
+                let o = this.expr(obj.value, null);
+                let h = this.hidden(typeOf(o), at);
+                held.push(TStmt.SetLocal(h, o, at.line));
+                Expr.Member(
+                    Box<Expr> { value = Expr.Name(this.ctx.localNames[h], at) },
+                    field,
+                    false,
+                    memberAt
+                )
+            }
+            .Index(x, i, indexAt) => {
+                let xv = this.expr(x.value, null);
+                let hx = this.hidden(typeOf(xv), at);
+                held.push(TStmt.SetLocal(hx, xv, at.line));
+                let iv = this.expr(i.value, null);
+                let hi = this.hidden(typeOf(iv), at);
+                held.push(TStmt.SetLocal(hi, iv, at.line));
+                Expr.Index(
+                    Box<Expr> { value = Expr.Name(this.ctx.localNames[hx], at) },
+                    Box<Expr> { value = Expr.Name(this.ctx.localNames[hi], at) },
+                    indexAt
+                )
+            }
+            _ => {
+                this.expr(target, null);
+                this.error(
+                    "LYS-SEM0019",
+                    "this cannot be stepped: a variable, a field or an element can",
+                    at
+                );
+                return TExpr.Unknown;
+            }
+        };
+        let old = this.expr(place, null);
+        let t = typeOf(old);
+        let word = if (up) "++" else "--";
+        if (t != .Int && t != .Float) {
+            if (t != .Unknown) {
+                this.error("LYS-SEM0003", f"'{word}' steps a number, not a {this.tyName(t)}", at);
+            }
+            return TExpr.Unknown;
+        }
+        let h = this.hidden(t, at);
+        held.push(TStmt.SetLocal(h, old, at.line));
+        let op = if (up) BinaryOp.Add else BinaryOp.Sub;
+        let one = if (t == .Int) Expr.Int(1, at) else Expr.Float(1.0, at);
+        held.push(TStmt.Expr(this.assign(place, op, one, at), at.line));
+        let oneV = if (t == .Int) TExpr.Int(1) else TExpr.Float(1.0);
+        let value = if (prefix) TExpr.Binary(boxE(TExpr.Local(h, t)), op, boxE(oneV), t)
+            else TExpr.Local(h, t);
+        return TExpr.Block(held.toArray(), boxE(value), t);
     }
 
     /// `a < b` … of two scalars the VM orders itself: numbers widened, `char`s, strings by bytes;
@@ -15150,7 +15276,7 @@ fn writesIn(stmts: Stmt[], from: int, name: string): bool {
 /// Whether `e` is an assignment to the name `name` itself.
 fn assigns(e: Expr, name: string): bool {
     return match (e) {
-        .Assign(target, _, _, _) => {
+        .Assign(target, _, _, _) | .Step(target, _, _, _) => {
             match (target.value) {
                 .Name(n, _) => n == name,
                 _ => false,
@@ -15934,6 +16060,7 @@ fn exprAny(e: Expr, onStmt: fn(Stmt) -> bool, onExpr: fn(Expr) -> bool, deep: bo
     return match (e) {
         .Assign(target, _, value, _) => exprAny(target.value, onStmt, onExpr, deep)
             || exprAny(value.value, onStmt, onExpr, deep),
+        .Step(target, _, _, _) => exprAny(target.value, onStmt, onExpr, deep),
         .Unary(_, x, _) => exprAny(x.value, onStmt, onExpr, deep),
         .Binary(l, _, r, _) => exprAny(l.value, onStmt, onExpr, deep)
             || exprAny(r.value, onStmt, onExpr, deep),
@@ -16062,6 +16189,7 @@ fn spanOf(e: Expr): Span {
         .Unary(_, _, at) => at,
         .Binary(_, _, _, at) => at,
         .Assign(_, _, _, at) => at,
+        .Step(_, _, _, at) => at,
         .Range(_, _, _, at) => at,
         .Cast(_, _, at) => at,
         .Call(_, _, at) => at,

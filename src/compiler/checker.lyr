@@ -3060,7 +3060,7 @@ class Checker {
             let iface = this.types[this.ifaceBase(a)];
             let instanceArgs: Ty[] = if (this.ifaceBase(a) != a) this.types[a].args else [];
             for (member in iface.memberNames) {
-                let slot = iface.slotOf.get(member) ?? -1;
+                let slot = this.slotIn(a, member);
                 info.slotArgs.insert(slot, instanceArgs);
                 let declared = iface.methods.get(member) ?? -1;
                 let own = entry.methods.get(member);
@@ -3576,7 +3576,7 @@ class Checker {
                 }
             }
             for (member in iface.memberNames) {
-                let slot = iface.slotOf.get(member) ?? -1;
+                let slot = this.slotIn(ii, member);
                 info.slotArgs.insert(slot, instanceArgs);
                 let declared = iface.methods.get(member) ?? -1;
                 let own = this.methodOf(index, member);
@@ -3836,10 +3836,67 @@ class Checker {
             let base = this.types[this.ifaceBase(a)];
             let fi = base.methods.get(name);
             if (fi != null) {
-                return (fi, base.slotOf.get(name) ?? -1);
+                return (fi, this.slotIn(a, name));
             }
         }
         return null;
+    }
+
+    /// The slot of member `member` of interface `ii` in a copy for `a`: an instance of a generic
+    /// interface at the copy's arguments has slots of its own (S7c5d1); `slot` where nothing moves.
+    mut fn slotAt(ii: int, member: string, a: Ty[], slot: int): int {
+        let info = this.types[ii];
+        if (info.template < 0 || info.template == ii || a.length() == 0) {
+            return slot;
+        }
+        if (let found = this.ifaceMember(this.constraintAt(ii, a), member)) {
+            let (_, s) = found;
+            return s;
+        }
+        return slot;
+    }
+
+    /// The slot a call through an interface value of type `t` takes for the member in `slot`: the
+    /// value's own instance's, where it is an instance of a generic interface (S7c5d1).
+    mut fn slotOfValue(t: Ty, slot: int): int {
+        let j = match (t) {
+            .Named(i) => i,
+            _ => -1,
+        };
+        if (j < 0 || this.types[j].kind != .Interface || this.ifaceBase(j) == j) {
+            return slot;
+        }
+        let fi = this.slotMember(slot);
+        if (fi < 0) {
+            return slot;
+        }
+        if (let found = this.ifaceMember(j, this.functions[fi].name)) {
+            let (_, s) = found;
+            return s;
+        }
+        return slot;
+    }
+
+    /// The slot of member `name` of interface `ii`: an instance of a generic interface has slots
+    /// of its own — a type's table keeps `From<int>`'s and `From<string>`'s apart (S7c5d1) —,
+    /// given out the first time one is asked; -1 where `ii`'s interface has no such member.
+    mut fn slotIn(ii: int, name: string): int {
+        let base = this.ifaceBase(ii);
+        let template = this.types[base];
+        if (base == ii) {
+            return template.slotOf.get(name) ?? -1;
+        }
+        if (!template.methods.containsKey(name)) {
+            return -1;
+        }
+        let info = this.types[ii];
+        if (let s = info.slotOf.get(name)) {
+            return s;
+        }
+        let s = this.slotCount;
+        this.slotCount += 1;
+        info.slotOf.insert(name, s);
+        return s;
     }
 
     /// Whether a value of type `t` is a value of interface `ii`: its type conforms, or it is an
@@ -5077,9 +5134,26 @@ class Checker {
                 // `C.fromIter(it)` of `C :: [FromIterator<T>]`)
                 if (this.assocNamesOf(x).length() > 0
                     || this.hasOwnGeneric(x)
-                    || (x == this.equatableIndex && x >= 0)) {
+                    || (x == this.equatableIndex && x >= 0)
+                    || this.instanceOverParams(x)) {
                     return true;
                 }
+            }
+        }
+        return false;
+    }
+
+    /// Whether `x` is an instance of a generic interface at arguments naming a type parameter,
+    /// `Combine<T>`: its slots are an instance's own, so a shared copy, not knowing `T`, knows no
+    /// slot — a copy per argument (S7c5d1).
+    mut fn instanceOverParams(x: int): bool {
+        let info = this.types[x];
+        if (info.template < 0 || info.template == x || this.ifaceBase(x) == x) {
+            return false;
+        }
+        for (t in info.args) {
+            if (this.anyParamIn(t)) {
+                return true;
             }
         }
         return false;
@@ -5444,7 +5518,11 @@ class Checker {
                     TExpr.Upcast(boxE(v), this.subst(t, a))
                 }
             }
-            .CallIface(slot, xs, t) => TExpr.CallIface(slot, this.specAll(xs, a), this.subst(t, a)),
+            .CallIface(slot, xs, t) => {
+                let all = this.specAll(xs, a);
+                let receiver = if (all.length() > 0) typeOf(all[0]) else Ty.Unknown;
+                TExpr.CallIface(this.slotOfValue(receiver, slot), all, this.subst(t, a))
+            }
             .BoxOf(x, k, t) => TExpr.BoxOf(this.specBox(x, a), k, this.subst(t, a)),
             .BoxOfD(x, d, t) => TExpr.BoxOfD(
                 this.specBox(x, a),
@@ -5502,8 +5580,9 @@ class Checker {
                 let rt = this.subst(t, a);
                 let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
                 if (src != null) {
-                    // a shared copy: the function in the slot of the argument's descriptor
-                    return TExpr.CallStaticD(slot, boxE(src), all, rt);
+                    // a shared copy: the function in the slot of the argument's descriptor — the
+                    // slot of the instance the copy's arguments make (S7c5d1)
+                    return TExpr.CallStaticD(this.slotAt(ii, member, a, slot), boxE(src), all, rt);
                 }
                 let concrete = if (k < a.length()) a[k] else Ty.Unknown;
                 let entry = this.entryOf(concrete);
@@ -5587,17 +5666,26 @@ class Checker {
             }
             .CallBound(bt, ii, member, slot, xs, t) => {
                 let concrete = this.subst(bt, a);
-                this.memberCallOn(concrete, ii, member, slot, this.specAll(xs, a), this.subst(t, a))
+                this.memberCallOn(
+                    concrete,
+                    ii,
+                    member,
+                    this.slotAt(ii, member, a, slot),
+                    this.specAll(xs, a),
+                    this.subst(t, a)
+                )
             }
             .CallConstraint(k, ii, member, slot, xs, t) => {
                 let all = this.specAll(xs, a);
                 let rt = this.subst(t, a);
                 let concrete = if (k < a.length()) a[k] else Ty.Unknown;
+                // the slot of the instance the copy's arguments make (S7c5d1)
+                let at = this.slotAt(ii, member, a, slot);
                 if (this.sharedShape(concrete)) {
                     // a shared copy: through the receiver's own table
-                    return TExpr.CallIface(slot, all, rt);
+                    return TExpr.CallIface(at, all, rt);
                 }
-                this.memberCallOn(concrete, ii, member, slot, all, rt)
+                this.memberCallOn(concrete, ii, member, at, all, rt)
             }
         };
     }
@@ -5834,8 +5922,9 @@ class Checker {
         info.args = args;
         info.vmHeld = tmpl.vmHeld;
         if (tmpl.kind == .Interface) {
-            // an instance of a generic interface (S7c1): the template's slots and its kind
-            info.slotOf = tmpl.slotOf;
+            // an instance of a generic interface (S7c1): the template's kind; slots of its own,
+            // given out as they are asked (`slotIn`, S7c5d1)
+            info.slotOf = Map<string, int>.new();
             info.selfParam = tmpl.selfParam;
             info.sealed = tmpl.sealed;
         }
@@ -5946,7 +6035,7 @@ class Checker {
             for (a in this.ancestry(x)) {
                 let base = this.types[this.ifaceBase(a)];
                 for (name in base.memberNames) {
-                    if (base.slotOf.get(name) == slot) {
+                    if (this.slotIn(a, name) == slot) {
                         return a;
                     }
                 }
@@ -6073,19 +6162,36 @@ class Checker {
                 for (a in this.ancestry(x)) {
                     let base = this.types[this.ifaceBase(a)];
                     for (name in base.memberNames) {
-                        unmet.insert(base.slotOf.get(name) ?? -1);
+                        unmet.insert(this.slotIn(a, name));
+                    }
+                }
+            }
+        }
+        // an interface at the template's parameters and the one at this instance's arguments have
+        // slots of their own: each member moves to the instance's (S7c5d1)
+        let moved = Map<int, int>.new();
+        for (x in tmpl.ifaces) {
+            let xi = this.ifaceAt(x, info.args);
+            if (xi != x) {
+                for (name in this.types[this.ifaceBase(x)].memberNames) {
+                    let from = this.slotIn(x, name);
+                    let to = this.slotIn(xi, name);
+                    if (from >= 0 && to >= 0 && from != to) {
+                        moved.insert(from, to);
                     }
                 }
             }
         }
         // by slot: the instances are made in the same order in every run
+        let slots = this.slotCount;
         var slot = 0;
-        while (slot < this.slotCount) {
+        while (slot < slots) {
             let fi = if (unmet.contains(slot)) -1 else tmpl.witness.get(slot) ?? -1;
+            let target = moved.get(slot) ?? slot;
             // a member generic of its own is called on its type alone, never through the table:
             // the template stands in its slot, as in a plain type's (S7c4c2)
             if (fi >= 0 && this.ownTypeParams(fi) > 0) {
-                info.witness.insert(slot, fi);
+                info.witness.insert(target, fi);
             } else if (fi >= 0 && this.blanketOwned(fi)) {
                 // a blanket block's member: its copy at what the instance binds (S7c4c3a), through
                 // the box of a list or of a value the VM holds unboxed (S7c4c3b)
@@ -6094,7 +6200,7 @@ class Checker {
                 if (b != null) {
                     let copy = this.selfCopyIn(fi, b);
                     info.witness.insert(
-                        slot,
+                        target,
                         if (this.boxed(self) && !this.functions[fi].isStatic) this.unboxer(
                             copy,
                             self,
@@ -6103,11 +6209,11 @@ class Checker {
                             else copy
                     );
                 } else {
-                    info.witness.insert(slot, fi);
+                    info.witness.insert(target, fi);
                 }
             } else if (fi >= 0) {
                 info.witness.insert(
-                    slot,
+                    target,
                     if (this.ifaceGeneric(fi)) this.selfCopyIn(fi, this.tableBinds(fi, i, slot))
                         else if (this.functions[fi].typeParams.length() > 0) this.instanceOf(
                             fi,

@@ -1631,3 +1631,27 @@ Enums, Tupel und Optionals aus hashbaren Teilen hashen von selbst (03 Eq), Klass
 die Haken der Synthese standen nur im Zweig der benannten Typen. Spec 05 Regel 20; fünf Fälle,
 alle rot gegen S7c6d. Mutanten: drei Läufe, 482, 481 und 483 von 484 — wie vorhergesagt.
 Fälle 479 → 484.
+
+**S7d2, Ergebnis (2026-10-30).** `std.collections` mit `class Map<K :: [Hashable], V>` in Script:
+die Einträge in Listen in Einfügereihenfolge (Schlüssel, Werte, Hashes, ein Lebend-Bit), die VM
+hält nur den Index — zu einem Hash die Plätze (`ScriptIndex`, sechs Natives, Format 27); tote
+Einträge werden verdichtet, wo es mehr als acht und mehr als lebende sind. Die Methoden von Lyric
+5s `Map`, `m[k]`, `m[k] = v` und `m[k] = null` über `IndexSet`, `k in m` über `Contains`, drei
+Iteratoren mit der Änderungspanik (`LYS-RT0016`), Gleichheit, `Clone`, `FromIterator`, das
+Literal `["a": 1]`/`[:]` über `FromMapLiteral`, die Debug-Form `{"a": 1}` (über ein eigenes
+`debug()`, das nur Typen der Prelude haben — `Debug` als Interface bringt S7e). Der Lader nimmt das
+Modul in ein Programm auf, das `Map` nennt oder ein Map-Literal schreibt; seine Namen sind die der
+Prelude. Dazu `for (P in e)` mit einem Muster, das nicht scheitern kann (Lyric 5 07 §2 Regel 2),
+und `Map.new()` über den Typ der Stelle (Lyric 5 03 §9.2 Regel 6). **Abweichung von P27:**
+Schlüssel aus `int`, `char`, `bool` und `string` gehen denselben Weg wie alle — Script hasht und
+vergleicht; ob der Weg allein durch die VM sich lohnt, misst P21 in S7k. **Gefunden, fünf Fehler
+früherer Slices, vier davon still:** (1) ein Ausdrucksrumpf ohne Wert, `fn say(s: string) =
+println(s)`, lief nie — Funktionen und Methoden, seit S2d; (2) `==` über das eigene `equals` eines
+generischen Typs rief es ohne die Typargumente der Instanz und antwortete falsch, seit S7c5a; (3)
+eine bedingte `Equatable`-Konformität galt auch, wo die Argumente die Bedingung nicht erfüllen —
+`Box<C> == Box<C>` lief —, seit S7c5a; (4) die geschriebenen Typargumente eines statischen
+Aufrufs, `Box<string>.none()`, fielen weg (`LYS-SEM0060`), seit S6d1; (5) `let P { x, y } = p`
+wurde als „kann scheitern“ abgelehnt, seit S3d. **Uhr:** `import std.collections { Map }` → S7d4
+(P28). Spec 12 Regel 5, 03 Regeln 4, 8, 12 und 14, 05 Regel 8, 07 Regel 9, 09 Regel 2; vierzehn
+Fälle, alle rot gegen S7d1. Mutanten: drei Läufe, 495, 494 und 495 von 498 — je genau die vorhergesagten Fälle; den Fall zweier Schlüssel eines Hashes gab es erst, als die Vorhersage zeigte, dass sonst kein Fall den zweiten Platz unter einem Hash erreicht.
+Fälle 484 → 498.

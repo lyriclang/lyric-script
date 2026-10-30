@@ -289,8 +289,9 @@ VM's call path, S7k measurement point 3.
   `partitionPoint`, `join`, `List<T>` statics, `sorted`/`sortedBy`.
 - **S7c6d done — S7c6 done** — the placeholder `_` among type arguments; an initializer's
   written type arguments, which did not parse.
-- Next: **S7d1** — `Hashable` and `Hasher`, the synthesis; then S7d2 `Map`, S7d3 `Set`, S7d4
-  `Deque`/`Heap` (cut in plan 14; P27).
+- **S7d1 done** — `Hashable` and `Hasher` (SipHash in the VM), synthesized; an `Identity` object
+  by its number.
+- Next: **S7d2** — `Map` (the table in the VM, P27); then S7d3 `Set`, S7d4 `Deque`/`Heap`.
 
 ## Working mode
 

@@ -1621,3 +1621,13 @@ das Map-Literal `["a": 1]` und `[:]` über `FromMapLiteral`, die Methoden von Ly
 Iteratoren, `in`, Debug `{"a": 1}`, Gleichheit); **S7d3** `Set<T>` über die Schlüssel einer Map,
 seine Methoden, `groupBy`/`toMap`/`toSet` von `std.iter`; **S7d4** `Deque` und `Heap` in Script
 (12 Container).
+
+**S7d1, Ergebnis (2026-10-30).** `Hashable :: Equatable { fn hash(h: Hasher) }` und die Klasse
+`Hasher` in der Prelude — ein Hasher, SipHash-1-3 unter dem Schlüssel des Prozesses, das Mischen
+nativ in der VM (Lyric 5s `DefaultHasher`; Script-`int` paniken beim Überlauf), Format 26. Structs,
+Enums, Tupel und Optionals aus hashbaren Teilen hashen von selbst (03 Eq), Klassen über
+`:: Hashable` oder als `Identity` über eine Objektnummer, die die VM beim ersten Hash vergibt (01 S8);
+`float` und Listen nicht. **Gefunden:** `clone()` und `hash(h)` direkt an einem Tupel waren NYI —
+die Haken der Synthese standen nur im Zweig der benannten Typen. Spec 05 Regel 20; fünf Fälle,
+alle rot gegen S7c6d. Mutanten: drei Läufe, 482, 481 und 483 von 484 — wie vorhergesagt.
+Fälle 479 → 484.

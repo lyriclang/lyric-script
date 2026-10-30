@@ -358,6 +358,8 @@ struct TypeParam :: [Debug] {
     name: string,
     constraints: Conformance[],
     span: Span,
+    // `Rhs = Self`: what a use that leaves the argument out takes (Lyric 5 03 §9.1 rule 5)
+    defaultType: ?TypeExpr = null,
 }
 
 struct FnDecl :: [Debug] {

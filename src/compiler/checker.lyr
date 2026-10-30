@@ -388,6 +388,11 @@ class Checker {
     var listDebugFns: Map<string, int> = Map<string, int>.new(),
     // the prelude's `Equatable` (S7c5a); each type's comparison a copy made, by the type's key
     var equatableIndex: int = -1,
+    // what `Self` is in a default type argument being read: the conformer, the parameter a
+    // constraint is of (S7c5c1)
+    var defaultSelf: ?Ty = null,
+    // while a written interface is made an instance: never its template (S7c5c1)
+    var exactInstance: bool = false,
     // the prelude's `Ordered`, `TotalOrder` and `Ordering` (S7c5b)
     var orderedIndex: int = -1,
     var totalOrderIndex: int = -1,
@@ -637,7 +642,13 @@ class Checker {
         if (n == 0 && args.length() == 0) {
             return Ty.Named(index);
         }
-        if (args.length() != n) {
+        let tys = List<Ty>.new();
+        for (x in args) {
+            tys.push(this.resolveType(x));
+        }
+        let all = if (args.length() <= n) this.withDefaults(t.typeParams, tys.toArray(), null)
+            else null;
+        if (all == null) {
             this.error(
                 "LYS-SEM0026",
                 f"'{shown}' takes {n} type arguments, not {args.length()}",
@@ -645,11 +656,7 @@ class Checker {
             );
             return Ty.Unknown;
         }
-        let tys = List<Ty>.new();
-        for (x in args) {
-            tys.push(this.resolveType(x));
-        }
-        return Ty.Named(this.typeInstance(index, tys.toArray()));
+        return Ty.Named(this.typeInstance(index, all));
     }
 
     /// Whether the current module may name member `member` of type `i` (Lyric 5 04 §3 rule 6):
@@ -1954,7 +1961,14 @@ class Checker {
         let own = List<Ty>.new();
         var j = 0;
         for (tp in params) {
-            ps.push(TypeParamInfo { name = tp.name, constraints = [] });
+            ps.push(
+                TypeParamInfo {
+                    name = tp.name,
+                    constraints = [],
+                    defaultType = tp.defaultType,
+                    defaultMod = this.mod,
+                }
+            );
             own.push(Ty.Param(j));
             j += 1;
         }
@@ -1976,7 +1990,14 @@ class Checker {
         let own = List<Ty>.new();
         var j = 0;
         for (tp in i.typeParams) {
-            ps.push(TypeParamInfo { name = tp.name, constraints = [] });
+            ps.push(
+                TypeParamInfo {
+                    name = tp.name,
+                    constraints = [],
+                    defaultType = tp.defaultType,
+                    defaultMod = this.mod,
+                }
+            );
             own.push(Ty.Param(j));
             j += 1;
         }
@@ -2119,7 +2140,21 @@ class Checker {
             return -1;
         }
         let n = this.types[ii].typeParams.length();
-        if (c.args.length() != n) {
+        if (n == 0 && c.args.length() == 0) {
+            return ii;
+        }
+        let tys = List<Ty>.new();
+        for (x in c.args) {
+            tys.push(this.resolveType(x));
+        }
+        // fewer arguments: the defaults of the trailing ones (S7c5c1)
+        let all = if (c.args.length() <= n) this.withDefaults(
+            this.types[ii].typeParams,
+            tys.toArray(),
+            this.defaultSelf ?? this.selfTyIs
+        )
+            else null;
+        if (all == null) {
             this.error(
                 "LYS-SEM0026",
                 f"'{c.name}' takes {n} type arguments, not {c.args.length()}",
@@ -2127,14 +2162,61 @@ class Checker {
             );
             return -1;
         }
-        if (n == 0) {
-            return ii;
+        this.exactInstance = true;
+        let inst = this.typeInstance(ii, all);
+        this.exactInstance = false;
+        return inst;
+    }
+
+    /// The arguments of a generic whose parameters are `params`, written as `given` — the trailing
+    /// ones left out taking their defaults (Lyric 5 03 §9.1 rule 5; S7c5c1): each read where the
+    /// generic is declared, its earlier parameters the arguments, `Self` the type `self` says;
+    /// null where one without a default is left out.
+    mut fn withDefaults(params: TypeParamInfo[], given: Ty[], self: ?Ty): ?Ty[] {
+        if (given.length() >= params.length()) {
+            return given;
         }
-        let tys = List<Ty>.new();
-        for (x in c.args) {
-            tys.push(this.resolveType(x));
+        let n = params.length();
+        let out = List<Ty>.new();
+        for (x in given) {
+            out.push(x);
         }
-        return this.typeInstance(ii, tys.toArray());
+        let scope = Map<string, int>.new();
+        var j = 0;
+        for (p in params) {
+            scope.insert(p.name, j);
+            j += 1;
+        }
+        var k = given.length();
+        while (k < n) {
+            let d = params[k].defaultType;
+            if (d == null) {
+                return null;
+            }
+            // read in the declaration's own terms — its parameters by position, `Self` one past
+            // them —, then put in place at once
+            let savedMod = this.mod;
+            let savedScope = this.typeParams;
+            let savedSelf = this.selfTyIs;
+            this.mod = params[k].defaultMod;
+            this.typeParams = scope;
+            this.selfTyIs = Ty.Param(n);
+            let written = this.resolveType(d);
+            this.mod = savedMod;
+            this.typeParams = savedScope;
+            this.selfTyIs = savedSelf;
+            let at = List<Ty>.new();
+            for (x in out) {
+                at.push(x);
+            }
+            while (at.length() < n) {
+                at.push(Ty.Unknown);
+            }
+            at.push(self ?? Ty.Unknown);
+            out.push(this.subst(written, at.toArray()));
+            k += 1;
+        }
+        return out.toArray();
     }
 
     /// `Self` of interface `index`, then its own parameters: what a member generic over `Self` is
@@ -2281,6 +2363,15 @@ class Checker {
     /// `extend T { … }`: methods added to a type of the program (on a built-in type with S3f's
     /// boxes); its conformances are checked with the others.
     mut fn declareExtend(x: ExtendDecl): void {
+        for (tp in x.typeParams) {
+            if (tp.defaultType != null) {
+                this.error(
+                    "LYS-SEM0026",
+                    f"'{tp.name}' of an extend block takes no default: the target binds it",
+                    tp.span
+                );
+            }
+        }
         let at = blanketTarget(x);
         if (at >= 0) {
             this.declareBlanket(x, at);
@@ -3353,6 +3444,9 @@ class Checker {
         let self = this.selfTy(index);
         let boxedSelf = this.boxed(self);
         let added = List<int>.new();
+        // `V :: [Add]` is `V :: [Add<V>]` (S7c5c1)
+        let savedDefaultSelf = this.defaultSelf;
+        this.defaultSelf = self;
         // the interfaces a field answers for: each one's field (05 §5)
         let via = Map<int, int>.new();
         // a generic type's parameters in scope: `class Cell<T> :: Store<T>` (S7c1)
@@ -3548,6 +3642,7 @@ class Checker {
                 this.error("LYS-SEM0160", text, conforms[0].span);
             }
         }
+        this.defaultSelf = savedDefaultSelf;
         this.typeParams = savedScope;
     }
 
@@ -4011,16 +4106,26 @@ class Checker {
                 k += 1;
             }
             this.typeParams = scope;
+            let savedSelf = this.defaultSelf;
             for (tp in f.typeParams) {
                 let cs = List<int>.new();
+                this.defaultSelf = Ty.Param(scope.get(tp.name) ?? 0);
                 for (c in tp.constraints) {
                     let ii = this.ifaceOf(c);
                     if (ii >= 0) {
                         cs.push(ii);
                     }
                 }
-                tps.push(TypeParamInfo { name = tp.name, constraints = cs.toArray() });
+                tps.push(
+                    TypeParamInfo {
+                        name = tp.name,
+                        constraints = cs.toArray(),
+                        defaultType = tp.defaultType,
+                        defaultMod = this.mod,
+                    }
+                );
             }
+            this.defaultSelf = savedSelf;
             let all = tps.toArray();
             let own = this.withFixations(f.typeParams, sliceOf(all, outer.length(), all.length()));
             let joined = List<TypeParamInfo>.new();
@@ -4270,11 +4375,19 @@ class Checker {
         let generic = this.typeIndex.get(this.q(name));
         if (generic != null && this.types[generic].typeParams.length() > 0) {
             let n = this.types[generic].typeParams.length();
-            // `Coroutine<Y>` is `Coroutine<Y, void>` (Lyric 5 10 §1 rule 1)
-            if (args.length() == 1 && generic == (this.typeIndex.get("Coroutine") ?? -1)) {
-                return Ty.Named(this.typeInstance(generic, [this.resolveType(args[0]), Ty.Void]));
+            let tys = List<Ty>.new();
+            for (x in args) {
+                tys.push(this.resolveType(x));
             }
-            if (args.length() != n) {
+            // fewer arguments: the trailing defaults — `Coroutine<Y>` is `Coroutine<Y, void>`
+            // (Lyric 5 10 §1 rule 1), its `R = void` the prelude's (S7c5c1)
+            let all = if (args.length() <= n) this.withDefaults(
+                this.types[generic].typeParams,
+                tys.toArray(),
+                null
+            )
+                else null;
+            if (all == null) {
                 this.error(
                     "LYS-SEM0026",
                     f"'{name}' takes {n} type arguments, not {args.length()}",
@@ -4282,11 +4395,7 @@ class Checker {
                 );
                 return Ty.Unknown;
             }
-            let tys = List<Ty>.new();
-            for (x in args) {
-                tys.push(this.resolveType(x));
-            }
-            return Ty.Named(this.typeInstance(generic, tys.toArray()));
+            return Ty.Named(this.typeInstance(generic, all));
         }
         let arity = match (name) {
             "List" => 1,
@@ -5676,7 +5785,9 @@ class Checker {
     /// fields and variants the template's with the arguments in place.
     mut fn typeInstance(ti: int, args: Ty[]): int {
         let tmpl = this.types[ti];
-        var own = args.length() == tmpl.typeParams.length();
+        // a written interface at parameters of its own spelling is an instance too: `T ::
+        // [Combine<T>]` of `fn f<T>` is no template, which any instance meets (S7c5c1)
+        var own = args.length() == tmpl.typeParams.length() && !this.exactInstance;
         var k = 0;
         for (x in args) {
             own = own && x == Ty.Param(k);
@@ -5985,8 +6096,12 @@ class Checker {
     /// The type parameters of declaration `params` in scope by name; their constraints read.
     mut fn typeParamsOf(params: TypeParam[]): TypeParamInfo[] {
         let out = List<TypeParamInfo>.new();
+        let savedSelf = this.defaultSelf;
+        var j = 0;
         for (tp in params) {
             let cs = List<int>.new();
+            // `T :: [Add]` is `T :: [Add<T>]` (S7c5c1)
+            this.defaultSelf = Ty.Param(j);
             for (c in tp.constraints) {
                 let ii = this.ifaceOf(c);
                 if (ii < 0) {
@@ -5994,8 +6109,17 @@ class Checker {
                 }
                 cs.push(ii);
             }
-            out.push(TypeParamInfo { name = tp.name, constraints = cs.toArray() });
+            out.push(
+                TypeParamInfo {
+                    name = tp.name,
+                    constraints = cs.toArray(),
+                    defaultType = tp.defaultType,
+                    defaultMod = this.mod,
+                }
+            );
+            j += 1;
         }
+        this.defaultSelf = savedSelf;
         return out.toArray();
     }
 
@@ -6043,6 +6167,8 @@ class Checker {
                     name = info.name,
                     constraints = info.constraints,
                     fixed = fixed.toArray(),
+                    defaultType = info.defaultType,
+                    defaultMod = info.defaultMod,
                 }
             );
             k += 1;
@@ -12815,9 +12941,18 @@ class Checker {
                         let candidates = this.fnByName.get(this.q(name));
                         if (candidates != null) {
                             let fitting = List<int>.new();
+                            var filled: Ty[] = tys.toArray();
                             for (c in candidates) {
-                                if (this.functions[c].typeParams.length() == tys.length()) {
-                                    fitting.push(c);
+                                // the trailing ones it leaves out, their defaults (S7c5c1)
+                                if (let all = this.withDefaults(
+                                    this.functions[c].typeParams,
+                                    tys.toArray(),
+                                    null
+                                )) {
+                                    if (all.length() == this.functions[c].typeParams.length()) {
+                                        fitting.push(c);
+                                        filled = all;
+                                    }
                                 }
                             }
                             if (fitting.length() == 0) {
@@ -12828,7 +12963,7 @@ class Checker {
                                 );
                                 return TExpr.Unknown;
                             }
-                            this.presetBinds = tys.toArray();
+                            this.presetBinds = filled;
                             let call = this.callAmong(name, fitting.toArray(), null, args, at);
                             this.presetBinds = [];
                             return call;
@@ -14403,7 +14538,14 @@ class Checker {
         if (writtenTys.length() > 0) {
             this.writtenTaken = true;
             let own = typeParams.length() - preset;
-            if (writtenTys.length() != own) {
+            let ownParams = sliceOf(typeParams, preset, typeParams.length());
+            let filled = if (writtenTys.length() <= own) this.withDefaults(
+                ownParams,
+                writtenTys,
+                null
+            )
+                else null;
+            if (filled == null) {
                 this.error(
                     "LYS-SEM0026",
                     f"'{name}' takes {own} type arguments, not {writtenTys.length()}",
@@ -14415,7 +14557,7 @@ class Checker {
                 return TExpr.Unknown;
             } else {
                 var j = 0;
-                for (x in writtenTys) {
+                for (x in filled) {
                     binds[preset + j] = x;
                     j += 1;
                 }
@@ -15279,7 +15421,15 @@ fn mergeConds(a: TypeParamInfo[], b: TypeParamInfo[]): TypeParamInfo[] {
                 cs.push(c);
             }
         }
-        out.push(TypeParamInfo { name = p.name, constraints = cs.toArray(), fixed = p.fixed });
+        out.push(
+            TypeParamInfo {
+                name = p.name,
+                constraints = cs.toArray(),
+                fixed = p.fixed,
+                defaultType = p.defaultType,
+                defaultMod = p.defaultMod,
+            }
+        );
         k += 1;
     }
     return out.toArray();

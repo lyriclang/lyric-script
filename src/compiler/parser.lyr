@@ -735,11 +735,18 @@ class Parser {
             let first = this.current();
             let name = try this.expect(.Ident, "LYS-PAR0026", "a type parameter's name");
             let constraints = try this.parseConformances(false);
+            // `= T`: its default (Lyric 5 03 §9.1 rule 5; S7c5c1)
+            var dflt: ?TypeExpr = null;
+            if (this.at(.Assign)) {
+                this.advance();
+                dflt = try this.parseType();
+            }
             out.push(
                 TypeParam {
                     name = this.text(name),
                     constraints = constraints,
                     span = this.since(first),
+                    defaultType = dflt,
                 }
             );
             if (!this.at(.Comma)) {

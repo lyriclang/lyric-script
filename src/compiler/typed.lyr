@@ -2,7 +2,7 @@
 //! to a local, a global, a field, a function or a native; every expression carries its type;
 //! every conversion the language makes on its own (`int` to `float`, 03 Mix) is written out.
 import std.collections { List, Map, Set };
-import lyric_script.compiler.ast { BinaryOp, UnaryOp };
+import lyric_script.compiler.ast { BinaryOp, TypeExpr, UnaryOp };
 
 /// A type as the checker knows it.
 enum Ty :: [Equatable, Debug] {
@@ -40,6 +40,9 @@ struct TypeParamInfo :: [Debug] {
     constraints: int[],
     // the associated types its constraints fix: `T :: [Iterator<Item = int>]` (S3i)
     fixed: FixedTy[] = [],
+    // its default, written where the generic is declared, and that module (S7c5c1)
+    defaultType: ?TypeExpr = null,
+    defaultMod: int = -1,
 }
 
 /// An associated type a constraint fixes: the interface that declares it, its name, its type.

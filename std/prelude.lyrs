@@ -60,7 +60,7 @@ enum TaskStatus<T> {
     Cancelled,
     Panicked(PanicInfo),
 }
-class Coroutine<Y, R> :: [Identity, Closeable, Iterator] {
+class Coroutine<Y, R = void> :: [Identity, Closeable, Iterator] {
     type Item = Y
     fn next(): ?Y = __coNext(this)
     fn close() {

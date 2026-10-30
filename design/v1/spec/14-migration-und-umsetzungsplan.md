@@ -1412,3 +1412,15 @@ ein Parameter unter `Equatable` wird dafür nie geteilt (wie unter assoziierten 
 eigenen Parametern zählte nicht als „nennt einen Parameter“. Spec 05 Regel 8, 03 Regel 16; vier
 Fälle, alle rot gegen S7c4. Sechs Mutanten in fünf Läufen: vier wie vorhergesagt; im ersten (kein `GenericEq`) wurde auch ein S7b-Fall rot — die Listen-Methoden der Prelude vergleichen selbst über `T`, das hatte die Vorhersage übersehen.
 Fälle 415 → 419.
+
+**S7c5b, Ergebnis (2026-10-30).** Die Prelude deklariert `Ordering`, `Ordered :: Equatable`
+und `TotalOrder :: Ordered` (reine Constraints) und gibt beide `int`, `char`, `string` und
+`float` als Script-Blöcke wie Lyric 5s `core` — `float` total geordnet (Fl) über den neuen
+Native `float.orderKey` (die Bits, bei gesetztem Vorzeichen die übrigen umgedreht; Format 24).
+`<`, `<=`, `>`, `>=` eines anderen Typs lesen sein `compare` (`null` macht alle vier falsch),
+über einen Typparameter in der Kopie (`GenericCompare`, das `GenericEq` von S7c5a). Ein Typ, der
+`Ordered` oder `TotalOrder` ohne das Mitglied aufführt, bekommt es synthetisiert,
+lexikographisch, ein Enum zuerst nach der Variantenposition; seine Teile werden geprüft,
+sobald alle Konformanzen stehen (`SEM0020`, einmal je Typ). Spec 05 Regel 16; drei Fälle, alle
+rot gegen S7c5a. Sechs Mutanten in vier Läufen, die Fälle wie vorhergesagt; im ersten Lauf deckte ein Mutant (der `compare`-Weg für `<`) auch den Zweig über Typparameter ab und überdeckte damit den Native-Mutanten — der lief allein nach und scheiterte wie vorhergesagt.
+Fälle 419 → 422.

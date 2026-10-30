@@ -264,8 +264,10 @@ VM's call path, S7k measurement point 3.
   a type's own `equals`, classes through `:: Equatable` or `:: Identity`, the comparing list
   methods in the prelude. Found: an initializer of a generic type at a `Box<T>` parameter was
   checked against the open `T` (since S3g).
-- Next: **S7c5b** — `Ordered`, `TotalOrder`, `Ordering`; then S7c5c the operator interfaces,
-  S7c6 `std.iter`.
+- **S7c5b done** — `Ordered`, `TotalOrder`, `Ordering`: `<` … through `compare`, over a type
+  parameter too, the synthesized order of a type that lists it, `float` totally ordered (Fl).
+- Next: **S7c5c** — the operator interfaces (`Add` …), `++`/`--`, `+=` derived, `Contains`,
+  mixed arithmetic through built-in conformances; then S7c6 `std.iter`.
 
 ## Working mode
 

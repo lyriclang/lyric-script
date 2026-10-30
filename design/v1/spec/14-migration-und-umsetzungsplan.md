@@ -1177,7 +1177,7 @@ fünf Teile, jeder braucht den vorigen.
 | **S7c1 Generische Interfaces** | `interface I<T> { … }` (Lyric 5 §5): Typparameter am Interface, Instanzen `I<int>` als eigene Interfaces mit eigener Tabelle, Konformanz `:: [I<int>]` am Typ und im Extend-Block, Constraints `T :: [I<int>]`, `I<int>` als Wert (Interfacewert), Defaults über `T`; Objektsicherheit wie für `Self` | Konformanzfälle |
 | **S7c2 Index und Literal** | `Index<K>`/`IndexSet<K>` in der Prelude: `x[k]`, `x[k] = v`, `x[k] op= v` auf eigenen Typen (03 Index), Objekt und Schlüssel einmal ausgewertet; `FromArrayLiteral<T>` mit `fromArrayLiteral` (Namensregel Spec 03 Regel 14) | Konformanzfälle |
 | **S7c3 Werte ohne Deskriptor** | eine Liste als Interfacewert (Deskriptor `T[]`, Tabelle des `List`-Eintrags je Element, `is int[]`, Debug über `Any`), Konformanzen `extend<T> T[] :: [I]`; Tasks, Koroutinen, Kanäle als Interfacewerte (Uhr aus S6) | Konformanzfälle |
-| **S7c4 Iteratoren** | `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator<T>`, `collect()`; `for` über jedes Iterable, `Closeable`-Iteratoren geschlossen (05 E7); `T[] :: Iterable` mit der Änderungspanik; `Coroutine :: Iterator` | Konformanzfälle |
+| **S7c4 Iteratoren** | (aus S7c3: Tasks, Koroutinen, Kanäle und Listen eines Typparameters als Interfacewerte) `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator<T>`, `collect()`; `for` über jedes Iterable, `Closeable`-Iteratoren geschlossen (05 E7); `T[] :: Iterable` mit der Änderungspanik; `Coroutine :: Iterator` | Konformanzfälle |
 | **S7c5 `std.iter`** | die Adapter von Lyric 5s `iter` in Script, die Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …), `sort` nativ mit Kostenregel | Konformanzfälle; Kostenregel für `sort` |
 
 **S7c1, geteilt (2026-10-30).** **S7c1a** generische Interfaces ohne `Self` und ohne Defaults;
@@ -1227,3 +1227,17 @@ in einem generischen Interface wurden an der Instanz gelesen (`assocNames`, Schr
 Defaults, das Interface eines `Ty.Assoc`) — jetzt an der Vorlage; erst damit trägt `Index<K>`
 sein `Output`. Spec 03 Regel 14, 08 Regel 4; vier Fälle, alle rot gegen S7c1b. Drei Mutanten
 in einem Lauf, alle wie vorhergesagt. Fälle 377 → 381.
+
+**S7c3, Ergebnis (2026-10-30).** Eine Liste ist ein Interfacewert in einer Box wie ein Skalar oder
+ein String; der Typ der Box ist ein Eintrag je Elementtyp, eine Instanz des `List`-Eintrags
+(`entryOf`), mit eigener Tabelle — `Any`, `x is int[]`, die Debug-Form über die Tabelle — und
+`extend<T> T[] :: [I]` macht jede Liste zu einem `I`, als Wert und über einen Constraint.
+**Gefunden beim Bauen:** die Box eines eingebauten Typs hatte nur für `string` einen
+Referenzslot (die Box einer Liste brachte die VM zum Absturz); ein generischer Unboxer hielt
+seinen Rumpf in `body` statt in `template` (seine Kopien waren leer); `memberCallOn` rief die
+generische Methode einer Liste ohne Kopie; Extend-Blöcke auf `T[]` meldeten ihre Konformanzen
+nie an. Eine Liste eines Typparameters als Interfacewert braucht ihren Deskriptor zur Laufzeit —
+mit **S7c4**, wohin auch Tasks, Koroutinen und Kanäle als Interfacewerte gehen: `Coroutine ::
+Iterator` zieht deren Methoden in die Prelude, erst dann tragen ihre Tabellen. Spec 03 Regel 16,
+05 Regel 12; zwei Fälle, beide rot gegen S7c2. Vier Mutanten in drei Läufen, alle wie
+vorhergesagt; ein fünfter (der Referenzslot der Box) zeigte sich beim Bauen. Fälle 381 → 383.

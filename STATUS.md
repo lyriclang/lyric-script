@@ -239,8 +239,11 @@ VM's call path, S7k measurement point 3.
   the default's copy at its instance's arguments. **S7c1 complete** (P18 built).
 - **S7c2 done** — `Index<K>`/`IndexSet<K>` for one's own types (`x[k]`, `x[k] = v`, `x[k] op= v`),
   `FromArrayLiteral<T>`; associated types in a generic interface read at its template.
-- Next: **S7c3** — values without descriptors as interface values: a list (`is int[]`, Debug
-  through `Any`, `extend<T> T[] :: [I]`), tasks, coroutines, channels.
+- **S7c3 done** — a list as an interface value (a box whose type is an entry for its element:
+  `Any`, `is int[]`, Debug through the table), `extend<T> T[] :: [I]`; tasks, coroutines,
+  channels moved to S7c4.
+- Next: **S7c4** — iterators: `Iterator`, `Iterable`, `for` over any iterable, `T[] ::
+  Iterable`, `Coroutine :: Iterator`, `FromIterator<T>`; tasks and kin as interface values.
 
 ## Working mode
 

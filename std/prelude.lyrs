@@ -377,6 +377,21 @@ interface Iterator {
     type Item
     fn next(): ?Self.Item
 }
+interface FromIterator<T> {
+    static fn fromIter<I :: [Iterator<Item = T>]>(it: I): Self
+}
+extend<T> T[] :: FromIterator<T> {
+    static fn fromIter<I :: [Iterator<Item = T>]>(it: I): T[] {
+        let out: T[] = []
+        while (let x = it.next()) {
+            out.push(x)
+        }
+        return out
+    }
+}
+extend<I :: [Iterator]> I {
+    fn collect<C :: [FromIterator<I.Item>]>(): C = C.fromIter(this)
+}
 interface Iterable {
     type Iter :: [Iterator]
     fn iter(): Self.Iter

@@ -180,6 +180,9 @@ class TypeInfo {
     // a type whose values the VM holds without a descriptor — a task, a coroutine, a scope, a
     // channel, a semaphore: an interface value of it is a box (S7c4b)
     var vmHeld: bool = false,
+    // a blanket block's entry (05 §13 rule 7; S7c4c2): which of its parameters the receiver is;
+    // -1 for any other type
+    var blanketAt: int = -1,
     var constraintOnly: bool = false,
     var onlyWhy: string = "",
     // a constraint only whatever is fixed: a member names `Self` itself, or is static or generic

@@ -1099,6 +1099,18 @@ severity = "error"
 area = "05-interfaces"
 summary = "A conforming type answers an associated type with a type that does not conform to the bound the interface declares for it, `type Iter :: [Iterator]` answered with `int`. Lyric 5's LYR-SEM0160."
 
+[LYS-SEM0168]
+title = "a type's member hides a blanket member"
+severity = "warning"
+area = "05-interfaces"
+summary = "A type has a member of its own — written, from another extend block, inherited as an interface's default or left to a field — of the name a blanket block `extend<T :: [I]> T { … }` gives it. A call on the type reaches the type's; generic code that reaches the name through the block's constraints calls the block's, for that type too. Lyric 5's LYR-SEM0168."
+
+[LYS-SEM0170]
+title = "an extend block's type parameter bound by nothing"
+severity = "error"
+area = "05-interfaces"
+summary = "A blanket block declares a type parameter that its target does not name and no constraint's fixation names, as `X` in `extend<I :: [Iterator], X> I`: the block reaches no type. Lyric 5's LYR-SEM0170."
+
 [LYS-SEM0176]
 title = "a name bound twice in one scope"
 severity = "error"

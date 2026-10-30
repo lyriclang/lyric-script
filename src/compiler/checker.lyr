@@ -392,6 +392,15 @@ class Checker {
     instances: Map<string, int>,
     // the type arguments a method's receiver binds before its call is checked
     var presetBinds: Ty[] = [],
+    // for the next call checked, not an argument's: the position's type and the type arguments
+    // written at a method (Lyric 5 §9.2 rules 2, 4; S7c4c2); whether a call took the written ones
+    var callExpected: ?Ty = null,
+    var writtenArgs: Ty[] = [],
+    var writtenTaken: bool = false,
+    // the members of blanket blocks, by name (05 §13 rule 7; S7c4c2)
+    blankets: Map<string, List<int>> = Map<string, List<int>>.new(),
+    // the same, in the order they are declared
+    blanketFns: List<int> = List<int>.new(),
     // while a copy is made: where each type parameter's descriptor comes from at run time, null
     // where the copy knows its argument (S3i)
     var specDescs: (?TExpr)[] = [],
@@ -1037,6 +1046,19 @@ class Checker {
         }
         // which interfaces are a constraint only (05 §7 rule 3), before a type is resolved
         this.classifyInterfaces(module);
+        // how many type arguments each interface takes, before any is declared: two may name each
+        // other (S7c4c2: `Iterator.collect` names `FromIterator<…>`, whose member names
+        // `Iterator`)
+        for (item in module.items) {
+            this.mod = itemFile(item);
+            match (item) {
+                .Decl(d) => match (d) {
+                    .Interface(i) => this.declareArity(i),
+                    _ => { }
+                },
+                .Stmt(_) => { }
+            }
+        }
         // then what they hold, and the functions' signatures
         for (item in module.items) {
             this.mod = itemFile(item);
@@ -1091,6 +1113,9 @@ class Checker {
                         .Type(t) => this.conform(t.name, t.conforms),
                         .Enum(e) => this.conform(e.name, e.conforms),
                         .Extend(x) => {
+                            if (blanketTarget(x) >= 0) {
+                                continue;
+                            }
                             match (x.target) {
                                 .Named(name, _, _) => {
                                     this.blockCond = if (x.typeParams.length()
@@ -1114,6 +1139,20 @@ class Checker {
                     }
                 }
                 .Stmt(_) => { }
+            }
+        }
+        // a type's member that hides a blanket block's (05 §13 rule 7; S7c4c2)
+        if (this.blanketFns.length() > 0) {
+            for (item in module.items) {
+                this.mod = itemFile(item);
+                match (item) {
+                    .Decl(d) => match (d) {
+                        .Type(t) => this.warnHiddenBlankets(t.name, t.methods, t.span),
+                        .Enum(e) => this.warnHiddenBlankets(e.name, e.methods, e.span),
+                        _ => { }
+                    },
+                    .Stmt(_) => { }
+                }
             }
         }
         this.checkAnswers(module);
@@ -1567,6 +1606,7 @@ class Checker {
         let base = this.types[ii];
         let fixed = Map<string, Ty>.new();
         let names = List<string>.new();
+        let keys = List<string>.new();
         for (x in args) {
             let item = match (x) {
                 .Named(n, inner, _) => if (n.startsWith("=")
@@ -1602,6 +1642,7 @@ class Checker {
             };
             fixed.insert(item, ty);
             names.push(f"{item} = {this.tyName(ty)}");
+            keys.push(f"{item}={tyKey(ty)}");
         }
         if (base.hardOnly) {
             this.error(
@@ -1623,7 +1664,7 @@ class Checker {
                 }
             }
         }
-        let key = f"{ii}<{names.toArray().join(", ")}>";
+        let key = f"{ii}<{keys.toArray().join(",")}>";
         let known = this.fixedForms.get(key);
         if (known != null) {
             return Ty.Named(known);
@@ -1851,6 +1892,31 @@ class Checker {
             return if (info.selfParam) Ty.Param(0) else null;
         }
         return this.selfTy(owner);
+    }
+
+    /// A generic interface's parameters by name, their constraints to come with its declaration,
+    /// and what an instance takes over from it (S7c4c2).
+    mut fn declareArity(i: InterfaceDecl): void {
+        let index = this.typeIndex.get(this.q(i.name));
+        if (index == null || i.typeParams.length() == 0) {
+            return;
+        }
+        let info = this.types[index];
+        if (info.kind != .Interface || info.name != i.name) {
+            return;
+        }
+        let ps = List<TypeParamInfo>.new();
+        let own = List<Ty>.new();
+        var j = 0;
+        for (tp in i.typeParams) {
+            ps.push(TypeParamInfo { name = tp.name, constraints = [] });
+            own.push(Ty.Param(j));
+            j += 1;
+        }
+        info.typeParams = ps.toArray();
+        info.template = index;
+        info.args = own.toArray();
+        info.sealed = i.sealed;
     }
 
     mut fn declareInterface(i: InterfaceDecl): void {
@@ -2148,6 +2214,11 @@ class Checker {
     /// `extend T { … }`: methods added to a type of the program (on a built-in type with S3f's
     /// boxes); its conformances are checked with the others.
     mut fn declareExtend(x: ExtendDecl): void {
+        let at = blanketTarget(x);
+        if (at >= 0) {
+            this.declareBlanket(x, at);
+            return;
+        }
         let name = match (x.target) {
             .Named(n, _, _) => n,
             .List(_, _) => "List",
@@ -2176,6 +2247,253 @@ class Checker {
             }
             info.methods.insert(m.name, this.declareFn(m, index));
         }
+    }
+
+    /// `extend<I :: [Iterator]> I { … }`: members of every type its constraints admit (05 §13
+    /// rule 7; S7c4c2) — an entry of its own, generic over the block's parameters, `this` the one
+    /// the target names; a call binds it to the receiver. Its conformances come with S7c4c3.
+    mut fn declareBlanket(x: ExtendDecl, at: int): void {
+        if (x.conforms.length() > 0 || x.answers.length() > 0 || x.statics.length() > 0) {
+            this.notYet(
+                "a blanket block that conforms, answers or holds a constant",
+                "S7c4c3 (blanket conformances)",
+                x.span
+            );
+            return;
+        }
+        let index = this.types.length();
+        this.types.push(
+            TypeInfo {
+                name = f"extend {x.typeParams[at].name}",
+                kind = TypeKind.Builtin,
+                methods = Map<string, int>.new(),
+                mod = this.mod,
+            }
+        );
+        let info = this.types[index];
+        info.blanketAt = at;
+        let savedScope = this.typeParams;
+        let savedDeclaring = this.declaringParams;
+        this.enterGenericType(index, x.typeParams);
+        // a parameter neither the target nor a fixation names: the block reaches no type
+        var k = 0;
+        for (tp in x.typeParams) {
+            var named = k == at;
+            for (other in info.typeParams) {
+                for (f in other.fixed) {
+                    named = named || this.namesParam(f.ty, k);
+                }
+            }
+            if (!named) {
+                this.error(
+                    "LYS-SEM0170",
+                    f"'{tp.name}' is bound by nothing: the block's target is its receiver, and no constraint fixes '{tp.name}'",
+                    x.span
+                );
+            }
+            k += 1;
+        }
+        for (m in x.methods) {
+            if (info.methods.containsKey(m.name)) {
+                this.error("LYS-SEM0121", f"the block has a second member '{m.name}'", m.span);
+                continue;
+            }
+            if (m.isStatic) {
+                this.notYet(
+                    "a static member of a blanket block",
+                    "S7c4c3 (blanket conformances)",
+                    m.span
+                );
+                continue;
+            }
+            let fi = this.declareFn(m, index);
+            this.blanketFns.push(fi);
+            info.methods.insert(m.name, fi);
+            let known = this.blankets.get(m.name);
+            if (known != null) {
+                known.push(fi);
+            } else {
+                let fns = List<int>.new();
+                fns.push(fi);
+                this.blankets.insert(m.name, fns);
+            }
+        }
+        this.typeParams = savedScope;
+        this.declaringParams = savedDeclaring;
+    }
+
+    /// Whether type parameter `k` occurs in `t`, at any depth.
+    mut fn namesParam(t: Ty, k: int): bool {
+        return match (t) {
+            .Param(j) => j == k,
+            .Optional(inner) | .List(inner) | .Cell(inner) => this.namesParam(inner.value, k),
+            .Map(a, b) => this.namesParam(a.value, k) || this.namesParam(b.value, k),
+            .Tuple(tt) => {
+                var found = false;
+                for (x in tt.elements) {
+                    found = found || this.namesParam(x, k);
+                }
+                found
+            }
+            .Fn(ft) => {
+                var found = this.namesParam(ft.result.value, k);
+                for (x in ft.params) {
+                    found = found || this.namesParam(x, k);
+                }
+                found
+            }
+            .Named(i) => {
+                var found = false;
+                if (this.types[i].template >= 0 && this.types[i].template != i) {
+                    for (x in this.types[i].args) {
+                        found = found || this.namesParam(x, k);
+                    }
+                }
+                found
+            }
+            .Assoc(b, _, _) => this.namesParam(b.value, k),
+            _ => false,
+        };
+    }
+
+    /// A type's member of a name a blanket block gives the type (05 §13 rule 7; S7c4c2): the
+    /// type's comes first, a call on the type reaches it, generic code the block's — warned about
+    /// where it stands, at the type for one it inherits or leaves to a field (`LYS-SEM0168`).
+    mut fn warnHiddenBlankets(name: string, methods: FnDecl[], at: Span): void {
+        let index = this.typeIndex.get(this.q(name));
+        if (index == null) {
+            return;
+        }
+        let info = this.types[index];
+        for (fi in this.blanketFns) {
+            let member = this.functions[fi].name;
+            if (this.blanketBinds(fi, Ty.Named(index)) == null) {
+                continue;
+            }
+            var where = at;
+            var has = false;
+            for (m in methods) {
+                if (m.name == member) {
+                    where = m.span;
+                    has = true;
+                }
+            }
+            has = has || info.methods.containsKey(member);
+            for (ii in this.ifacesOf(index)) {
+                let found = this.ifaceMember(ii, member);
+                if (found != null) {
+                    let (f, _) = found;
+                    has = has || !this.functions[f].abstract;
+                }
+            }
+            if (has) {
+                this.warn(
+                    "LYS-SEM0168",
+                    f"'{name}.{member}' hides the '{member}' a blanket block gives {name}: a call on a {name} reaches the type's, generic code through the block's constraints the block's",
+                    where
+                );
+            }
+        }
+    }
+
+    /// Blanket member `method` on a receiver of type `t`, where a block's constraints admit `t`
+    /// (05 §13 rule 7; S7c4c2): the receiver binds the block's parameter, a fixation the others;
+    /// null where no block gives `method` to `t`.
+    mut fn blanketCall(
+        t: Ty,
+        receiver: TExpr,
+        method: string,
+        args: Arg[],
+        at: Span,
+        posTy: ?Ty,
+        writtenTys: Ty[]
+    ): ?TExpr {
+        let fns = this.blankets.get(method);
+        if (fns == null) {
+            return null;
+        }
+        var pick = -1;
+        var binds: Ty[] = [];
+        for (fi in fns) {
+            if (let b = this.blanketBinds(fi, t)) {
+                if (pick >= 0) {
+                    this.error(
+                        "LYS-SEM0121",
+                        f"two blanket blocks give {this.tyName(t)} a member '{method}'",
+                        at
+                    );
+                    return TExpr.Unknown;
+                }
+                pick = fi;
+                binds = b;
+            }
+        }
+        if (pick < 0) {
+            return null;
+        }
+        this.presetBinds = binds;
+        let call = this.callExpecting(posTy, writtenTys, method, [pick], receiver, args, at);
+        this.presetBinds = [];
+        return call;
+    }
+
+    /// The parameters of blanket member `fi`'s block for a receiver of type `t`: the target `t`,
+    /// another what a fixation names; null where `t` does not meet the constraints.
+    mut fn blanketBinds(fi: int, t: Ty): ?Ty[] {
+        let entry = this.types[this.functions[fi].owner];
+        let params = entry.typeParams;
+        let binds = List<?Ty>.new();
+        for (_ in params) {
+            binds.push(null);
+        }
+        binds[entry.blanketAt] = t;
+        var k = 0;
+        for (tp in params) {
+            let b = binds[k];
+            if (b != null) {
+                for (f in tp.fixed) {
+                    this.bind(f.ty, this.answerThrough(b, f.name, nowhereSpan), binds);
+                }
+            }
+            k += 1;
+        }
+        let out = List<Ty>.new();
+        for (b in binds) {
+            if (b == null) {
+                return null;
+            }
+            out.push(b);
+        }
+        let bound = out.toArray();
+        k = 0;
+        for (tp in params) {
+            for (c in tp.constraints) {
+                if (!this.conformsTo(bound[k], this.constraintAt(c, bound))) {
+                    return null;
+                }
+            }
+            for (f in tp.fixed) {
+                let got = this.answerThrough(bound[k], f.name, nowhereSpan);
+                if (!sameOrUnknown(got, this.subst(f.ty, bound))) {
+                    return null;
+                }
+            }
+            k += 1;
+        }
+        return bound;
+    }
+
+    /// Constraint `c` with the parameters it names at `binds`: an instance of a generic interface
+    /// at them, any other as it is (S7c4c2: `C :: [FromIterator<I.Item>]`).
+    mut fn constraintAt(c: int, binds: Ty[]): int {
+        let info = this.types[c];
+        if (info.template < 0 || info.template == c) {
+            return c;
+        }
+        return match (this.subst(Ty.Named(c), binds)) {
+            .Named(x) => x,
+            _ => c,
+        };
     }
 
     /// `extend<T :: [Show]> Box<T> { … }`: members of every instance whose arguments meet the
@@ -2297,6 +2615,9 @@ class Checker {
     /// What `this` is in a method of type `owner`: the value of a built-in type, else the type.
     mut fn selfTy(owner: int): Ty {
         let info = this.types[owner];
+        if (info.blanketAt >= 0) {
+            return Ty.Param(info.blanketAt);
+        }
         if (info.kind == .Builtin && info.name == "List") {
             // `this` in an extend block of `T[]` (S7b2a): a list of the block's parameter
             return Ty.List(boxTy(Ty.Param(0)));
@@ -2701,18 +3022,73 @@ class Checker {
     mut fn sameSignatureAs(a: int, b: int, selfArgs: Ty[]): bool {
         let fa = this.functions[a];
         let fb = this.functions[b];
+        // a member generic of its own (S7c4c2: `fromIter<I>`): the conformer's own parameters
+        // stand for the interface's, as many, constrained by the same interfaces and fixations
+        let ownA = this.ownTypeParams(a);
+        let ownB = this.ownTypeParams(b);
+        if (ownA != ownB) {
+            return false;
+        }
+        let outerA = fa.typeParams.length() - ownA;
+        let outerB = fb.typeParams.length() - ownB;
+        let full = List<Ty>.new();
+        for (x in selfArgs) {
+            full.push(x);
+        }
+        while (full.length() < outerB) {
+            full.push(Ty.Unknown);
+        }
+        var j = 0;
+        while (j < ownA) {
+            full.push(Ty.Param(outerA + j));
+            j += 1;
+        }
+        let args = full.toArray();
+        j = 0;
+        while (j < ownA) {
+            let pa = fa.typeParams[outerA + j];
+            let pb = fb.typeParams[outerB + j];
+            if (pa.constraints.length() != pb.constraints.length()
+                || pa.fixed.length() != pb.fixed.length()) {
+                return false;
+            }
+            var c = 0;
+            while (c < pa.constraints.length()) {
+                if (this.ifaceBase(pa.constraints[c]) != this.ifaceBase(pb.constraints[c])) {
+                    return false;
+                }
+                c += 1;
+            }
+            c = 0;
+            while (c < pa.fixed.length()) {
+                if (pa.fixed[c].name != pb.fixed[c].name
+                    || !sameOrUnknown(pa.fixed[c].ty, this.subst(pb.fixed[c].ty, args))) {
+                    return false;
+                }
+                c += 1;
+            }
+            j += 1;
+        }
         if (fa.params.length() != fb.params.length()
-            || !sameOrUnknown(fa.returns, this.subst(fb.returns, selfArgs))) {
+            || !sameOrUnknown(fa.returns, this.subst(fb.returns, args))) {
             return false;
         }
         var k = 0;
         while (k < fa.params.length()) {
-            if (!sameOrUnknown(fa.params[k].ty, this.subst(fb.params[k].ty, selfArgs))) {
+            if (!sameOrUnknown(fa.params[k].ty, this.subst(fb.params[k].ty, args))) {
                 return false;
             }
             k += 1;
         }
         return true;
+    }
+
+    /// How many type parameters function `fi` declares itself, after its owner's (S7c4c2).
+    fn ownTypeParams(fi: int): int {
+        if (let d = this.fnDecls[fi]) {
+            return d.typeParams.length();
+        }
+        return 0;
     }
 
     mut fn sameSignature(a: int, b: int): bool {
@@ -2794,7 +3170,7 @@ class Checker {
                 let i = this.builtinOf(t);
                 var found = false;
                 for (x in this.types[i].ifaces) {
-                    found = found || this.isOf(x, ii);
+                    found = found || this.isOf(x, ii) || this.ifaceAt(x, [e.value]) == ii;
                 }
                 let cond = this.types[i].condIfaces.get(ii);
                 if (found && cond != null) {
@@ -3775,7 +4151,7 @@ class Checker {
                 keys.push("ref");
             } else {
                 shaped.push(a);
-                keys.push(this.tyName(a));
+                keys.push(tyKey(a));
             }
         }
         let key = f"{fi}<{keys.toArray().join(",")}>";
@@ -3922,7 +4298,8 @@ class Checker {
     }
 
     /// Whether type parameter `k` of `fi` is constrained by an interface with associated types:
-    /// a copy of its own for each argument, since an answer's slots differ by type (S3i).
+    /// a copy of its own for each argument, since an answer's slots differ by type (S3i) — or
+    /// with a member generic of its own, which a table does not hold (S7c4c2).
     mut fn assocConstrained(fi: int, k: int): bool {
         let tps = this.functions[fi].typeParams;
         if (k >= tps.length()) {
@@ -3930,9 +4307,23 @@ class Checker {
         }
         for (c in tps[k].constraints) {
             for (x in this.ancestry(c)) {
-                if (this.assocNamesOf(x).length() > 0) {
+                // or a member generic of its own, which no table holds for every call (S7c4c2:
+                // `C.fromIter(it)` of `C :: [FromIterator<T>]`)
+                if (this.assocNamesOf(x).length() > 0 || this.hasOwnGeneric(x)) {
                     return true;
                 }
+            }
+        }
+        return false;
+    }
+
+    /// Whether interface `ii` declares a member with type parameters of its own (S7c4c2).
+    mut fn hasOwnGeneric(ii: int): bool {
+        let base = this.types[this.ifaceBase(ii)];
+        for (name in base.memberNames) {
+            let fi = base.methods.get(name) ?? -1;
+            if (fi >= 0 && this.ownTypeParams(fi) > 0) {
+                return true;
             }
         }
         return false;
@@ -4303,14 +4694,19 @@ class Checker {
                 let entry = this.entryOf(concrete);
                 let own = if (entry >= 0) this.types[entry].methods.get(member) else null;
                 if (own != null && this.functions[own].isStatic) {
-                    return TExpr.Call(own, all, rt);
+                    // a static generic of its own (S7c4c2: `fromIter<I>`): its copy, its owner's
+                    // parameters the entry's arguments, its own the arguments' types
+                    let info = this.types[entry];
+                    let prefix: Ty[] = if (info.template >= 0 && info.template != entry) info.args
+                        else [];
+                    return TExpr.Call(this.inferredCopy(own, prefix, all), all, rt);
                 }
                 let found = this.ifaceMember(ii, member);
                 if (found == null) {
                     return TExpr.Unknown;
                 }
                 let (fi, _) = found;
-                TExpr.Call(this.selfCopyIn(fi, this.bindsOf(fi, ii, concrete)), all, rt)
+                TExpr.Call(this.inferredCopy(fi, this.bindsOf(fi, ii, concrete), all), all, rt)
             }
             .CallStaticD(slot, d, xs, t) => TExpr.CallStaticD(
                 slot,
@@ -4563,10 +4959,12 @@ class Checker {
             return ti;
         }
         let names = List<string>.new();
+        let keys = List<string>.new();
         for (x in args) {
             names.push(this.tyName(x));
+            keys.push(tyKey(x));
         }
-        let key = f"type {ti}<{names.toArray().join(",")}>";
+        let key = f"type {ti}<{keys.toArray().join(",")}>";
         let known = this.instances.get(key);
         if (known != null) {
             return known;
@@ -4706,6 +5104,35 @@ class Checker {
         return this.selfCopyIn(fi, [self]);
     }
 
+    /// The exact copy of `fi` for a call of arguments `all` (S7c4c2): its first parameters bound
+    /// by `prefix`, the rest inferred from the arguments' types; `fi` itself where it is generic
+    /// over nothing.
+    mut fn inferredCopy(fi: int, prefix: Ty[], all: TExpr[]): int {
+        let f = this.functions[fi];
+        let n = f.typeParams.length();
+        if (n == 0) {
+            return fi;
+        }
+        let binds = List<?Ty>.new();
+        var k = 0;
+        while (k < n) {
+            binds.push(if (k < prefix.length()) prefix[k] else null);
+            k += 1;
+        }
+        var j = 0;
+        for (p in f.params) {
+            if (j < all.length()) {
+                this.bind(p.ty, typeOf(all[j]), binds);
+            }
+            j += 1;
+        }
+        let out = List<Ty>.new();
+        for (b in binds) {
+            out.push(b ?? Ty.Unknown);
+        }
+        return this.selfCopyIn(fi, out.toArray());
+    }
+
     /// The copy of interface member `fi` at `binds` — `Self`, then a generic interface's arguments
     /// (S7c1b); a static one a copy of its own.
     mut fn selfCopyIn(fi: int, binds: Ty[]): int {
@@ -4730,7 +5157,11 @@ class Checker {
         var slot = 0;
         while (slot < this.slotCount) {
             let fi = tmpl.witness.get(slot) ?? -1;
-            if (fi >= 0) {
+            // a member generic of its own is called on its type alone, never through the table:
+            // the template stands in its slot, as in a plain type's (S7c4c2)
+            if (fi >= 0 && this.ownTypeParams(fi) > 0) {
+                info.witness.insert(slot, fi);
+            } else if (fi >= 0) {
                 info.witness.insert(
                     slot,
                     if (this.ifaceGeneric(fi)) this.selfCopyIn(fi, this.tableBinds(fi, i, slot))
@@ -9519,6 +9950,10 @@ class Checker {
         if (yr.length() != 2) {
             return null;
         }
+        // its others are its prelude class's and its interfaces' — `collect()` (S7c4c2)
+        if (method != "next" && method != "result" && method != "isDone" && method != "close") {
+            return null;
+        }
         if (args.length() > 0) {
             this.error("LYS-SEM0014", f"'{method}' takes no argument", at);
         }
@@ -11452,6 +11887,31 @@ class Checker {
                             return call;
                         }
                     }
+                    // `it.collect<int[]>()`: at a method of a value (Lyric 5 §9.2 rule 4)
+                    .Member(object, method, false, memberAt) => {
+                        let isValue = match (object.value) {
+                            .Name(n, _) => this.lookupLocal(n) != null
+                                || this.globalIndex.containsKey(this.q(n)),
+                            _ => true,
+                        };
+                        if (isValue) {
+                            let recv = this.expr(object.value, null);
+                            this.callExpected = expected;
+                            this.writtenArgs = tys.toArray();
+                            this.writtenTaken = false;
+                            let call = this.methodCall(recv, method, args, at, memberAt);
+                            if (!this.writtenTaken) {
+                                this.error(
+                                    "LYS-SEM0026",
+                                    f"'{method}' takes no type arguments",
+                                    iat
+                                );
+                            }
+                            this.writtenArgs = [];
+                            this.callExpected = null;
+                            return call;
+                        }
+                    }
                     _ => { }
                 }
                 this.error(
@@ -11510,6 +11970,7 @@ class Checker {
                 }
                 let candidates = this.fnByName.get(this.q(name));
                 if (candidates != null) {
+                    this.callExpected = expected;
                     return this.callAmong(name, candidates.toArray(), null, args, at);
                 }
                 if (name == "print" || name == "println") {
@@ -11629,7 +12090,9 @@ class Checker {
                     }
                     _ => { }
                 }
-                return this.methodCall(this.expr(object.value, null), method, args, at, memberAt);
+                let recv = this.expr(object.value, null);
+                this.callExpected = expected;
+                return this.methodCall(recv, method, args, at, memberAt);
             }
             _ => { }
         }
@@ -12303,6 +12766,12 @@ class Checker {
         at: Span,
         memberAt: Span
     ): TExpr {
+        // the position's type and the written type arguments: the method's call takes them,
+        // not a call in a list method's argument (S7c4c2)
+        let posTy = this.callExpected;
+        let writtenTys = this.writtenArgs;
+        this.callExpected = null;
+        this.writtenArgs = [];
         let t = typeOf(receiver);
         // a clause's binding tells where the error was first thrown, where its type has no
         // member of the name (06 §4 rule 4)
@@ -12341,7 +12810,15 @@ class Checker {
                     if (found != null) {
                         let (fi, slot) = found;
                         this.presetBinds = this.bindsOf(fi, b, t);
-                        let call = this.callAmong(method, [fi], receiver, args, at);
+                        let call = this.callExpecting(
+                            posTy,
+                            writtenTys,
+                            method,
+                            [fi],
+                            receiver,
+                            args,
+                            at
+                        );
                         this.presetBinds = [];
                         return match (call) {
                             .Call(_, all, rt) => TExpr.CallBound(t, b, method, slot, all, rt),
@@ -12356,6 +12833,9 @@ class Checker {
                             _ => call,
                         };
                     }
+                }
+                if (let call = this.blanketCall(t, receiver, method, args, at, posTy, writtenTys)) {
+                    return call;
                 }
                 this.error(
                     "LYS-SEM0027",
@@ -12383,7 +12863,15 @@ class Checker {
                             // `Self` is the receiver's type; a generic interface's member takes its
                             // instance's arguments (S7c1)
                             this.presetBinds = this.bindsOf(fi, ii, t);
-                            let call = this.callAmong(method, [fi], receiver, args, at);
+                            let call = this.callExpecting(
+                                posTy,
+                                writtenTys,
+                                method,
+                                [fi],
+                                receiver,
+                                args,
+                                at
+                            );
                             this.presetBinds = [];
                             return match (call) {
                                 .Call(_, all, rt) => TExpr.CallConstraint(
@@ -12406,6 +12894,9 @@ class Checker {
                             };
                         }
                     }
+                }
+                if (let call = this.blanketCall(t, receiver, method, args, at, posTy, writtenTys)) {
+                    return call;
                 }
                 this.error(
                     "LYS-SEM0012",
@@ -12439,6 +12930,17 @@ class Checker {
                     // through the interface value: the conformer's function in the slot
                     let found = this.ifaceMember(i, method);
                     if (found == null) {
+                        if (let call = this.blanketCall(
+                            t,
+                            receiver,
+                            method,
+                            args,
+                            at,
+                            posTy,
+                            writtenTys
+                        )) {
+                            return call;
+                        }
                         this.error(
                             "LYS-SEM0012",
                             f"'{this.types[i].name}' has no method '{method}'",
@@ -12450,7 +12952,15 @@ class Checker {
                     // through a value form `Self.Item` reads the fixed type (05 §8 rule 6); a generic
                     // interface's member takes its instance's arguments (S7c1)
                     this.presetBinds = this.bindsOf(fi, i, t);
-                    let call = this.callAmong(method, [fi], receiver, args, at);
+                    let call = this.callExpecting(
+                        posTy,
+                        writtenTys,
+                        method,
+                        [fi],
+                        receiver,
+                        args,
+                        at
+                    );
                     this.presetBinds = [];
                     return match (call) {
                         .Call(_, all, rt) => TExpr.CallIface(slot, all, rt),
@@ -12474,7 +12984,15 @@ class Checker {
                     && this.functions[m].typeParams.length() > 0
                     && this.types[i].args.length() > 0) {
                     this.presetBinds = this.types[i].args;
-                    let call = this.callAmong(method, [m], receiver, args, at);
+                    let call = this.callExpecting(
+                        posTy,
+                        writtenTys,
+                        method,
+                        [m],
+                        receiver,
+                        args,
+                        at
+                    );
                     this.presetBinds = [];
                     return call;
                 }
@@ -12487,7 +13005,15 @@ class Checker {
                             let (fi, _) = found;
                             if (!this.functions[fi].abstract && this.selfGeneric(fi)) {
                                 this.presetBinds = this.bindsOf(fi, ii, t);
-                                let call = this.callAmong(method, [fi], receiver, args, at);
+                                let call = this.callExpecting(
+                                    posTy,
+                                    writtenTys,
+                                    method,
+                                    [fi],
+                                    receiver,
+                                    args,
+                                    at
+                                );
                                 this.presetBinds = [];
                                 return call;
                             }
@@ -12504,7 +13030,15 @@ class Checker {
                                     Ty.Named(owner)
                                 )
                                     else TExpr.Upcast(boxE(receiver), Ty.Named(owner));
-                                return this.callAmong(method, [fi], up, args, at);
+                                return this.callExpecting(
+                                    posTy,
+                                    writtenTys,
+                                    method,
+                                    [fi],
+                                    up,
+                                    args,
+                                    at
+                                );
                             }
                         }
                     }
@@ -12522,6 +13056,17 @@ class Checker {
                         }
                         k += 1;
                     }
+                    if (let call = this.blanketCall(
+                        t,
+                        receiver,
+                        method,
+                        args,
+                        at,
+                        posTy,
+                        writtenTys
+                    )) {
+                        return call;
+                    }
                     this.error(
                         "LYS-SEM0012",
                         f"'{this.types[i].name}' has no method '{method}'",
@@ -12538,7 +13083,7 @@ class Checker {
                     return TExpr.Unknown;
                 }
                 this.mayName(i, method, memberAt);
-                return this.callAmong(method, [m], receiver, args, at);
+                return this.callExpecting(posTy, writtenTys, method, [m], receiver, args, at);
             }
             _ => {
                 // a list's own (S7b1)
@@ -12567,13 +13112,29 @@ class Checker {
                                     return TExpr.Unknown;
                                 }
                                 this.presetBinds = [e.value];
-                                let call = this.callAmong(method, [m], receiver, args, at);
+                                let call = this.callExpecting(
+                                    posTy,
+                                    writtenTys,
+                                    method,
+                                    [m],
+                                    receiver,
+                                    args,
+                                    at
+                                );
                                 this.presetBinds = [];
                                 return call;
                             }
                             _ => { }
                         }
-                        return this.callAmong(method, [m], receiver, args, at);
+                        return this.callExpecting(
+                            posTy,
+                            writtenTys,
+                            method,
+                            [m],
+                            receiver,
+                            args,
+                            at
+                        );
                     }
                     for (ii in this.types[i].ifaces) {
                         let found = this.ifaceMember(ii, method);
@@ -12587,10 +13148,21 @@ class Checker {
                                     else this.functions[fi].owner;
                                 this.presetBinds = binds;
                                 let up = TExpr.BoxOf(boxE(receiver), i, Ty.Named(owner));
-                                return this.callAmong(method, [fi], up, args, at);
+                                return this.callExpecting(
+                                    posTy,
+                                    writtenTys,
+                                    method,
+                                    [fi],
+                                    up,
+                                    args,
+                                    at
+                                );
                             }
                         }
                     }
+                }
+                if (let call = this.blanketCall(t, receiver, method, args, at, posTy, writtenTys)) {
+                    return call;
                 }
                 return this.notYet(
                     f"the methods of {this.tyName(t)}",
@@ -12752,6 +13324,22 @@ class Checker {
         return this.callAmong(method, [m], null, args, at);
     }
 
+    /// `callAmong` for a method's call, with the position's type and the type arguments written
+    /// at it (S7c4c2).
+    mut fn callExpecting(
+        posTy: ?Ty,
+        writtenTys: Ty[],
+        name: string,
+        candidates: int[],
+        receiver: ?TExpr,
+        args: Arg[],
+        at: Span
+    ): TExpr {
+        this.callExpected = posTy;
+        this.writtenArgs = writtenTys;
+        return this.callAmong(name, candidates, receiver, args, at);
+    }
+
     /// Picks the function of `candidates` that takes as many arguments as the call gives (Lyric 5
     /// §8.1.2) and checks the arguments against its parameters.
     mut fn callAmong(
@@ -12761,6 +13349,11 @@ class Checker {
         args: Arg[],
         at: Span
     ): TExpr {
+        // this call's alone: an argument's call checks without them
+        let posTy = this.callExpected;
+        let writtenTys = this.writtenArgs;
+        this.callExpected = null;
+        this.writtenArgs = [];
         var chosen = -1;
         for (c in candidates) {
             let params = this.functions[c].params;
@@ -12804,14 +13397,39 @@ class Checker {
         let deferred = List<int>.new();
         let deferredArgs = List<Expr>.new();
         // a method of an instance of a generic type: the instance's arguments bound already
+        var preset = 0;
         if (this.presetBinds.length() <= typeParams.length()) {
             var j = 0;
             for (x in this.presetBinds) {
                 binds[j] = x;
                 j += 1;
             }
+            preset = j;
         }
         this.presetBinds = [];
+        // type arguments written at a method: its own, after what its receiver binds (Lyric 5
+        // §9.2 rule 4; S7c4c2: `it.collect<int[]>()`)
+        if (writtenTys.length() > 0) {
+            this.writtenTaken = true;
+            let own = typeParams.length() - preset;
+            if (writtenTys.length() != own) {
+                this.error(
+                    "LYS-SEM0026",
+                    f"'{name}' takes {own} type arguments, not {writtenTys.length()}",
+                    at
+                );
+                for (a in args) {
+                    this.expr(a.value, null);
+                }
+                return TExpr.Unknown;
+            } else {
+                var j = 0;
+                for (x in writtenTys) {
+                    binds[preset + j] = x;
+                    j += 1;
+                }
+            }
+        }
         var position = 0;
         var named = false;
         for (a in args) {
@@ -12881,6 +13499,18 @@ class Checker {
                 given[k] = v;
                 d += 1;
             }
+            // what the arguments leave open, the position's type binds; it never overrides them
+            // (Lyric 5 §9.2 rule 2; S7c4c2: `let xs: int[] = it.collect()`)
+            if (posTy != null) {
+                this.bind(this.returnsOf(chosen, at), posTy, binds);
+            }
+            // a constraint naming another parameter, at its binding (S7c4c2: `C ::
+            // [FromIterator<Self.Item>]`)
+            let known = List<Ty>.new();
+            for (b in binds) {
+                known.push(b ?? Ty.Unknown);
+            }
+            let bindsNow = known.toArray();
             let args = List<Ty>.new();
             var j = 0;
             for (tp in typeParams) {
@@ -12893,7 +13523,8 @@ class Checker {
                     );
                     args.push(Ty.Unknown);
                 } else {
-                    for (ii in tp.constraints) {
+                    for (c in tp.constraints) {
+                        let ii = this.constraintAt(c, bindsNow);
                         if (b != .Unknown && !this.conformsTo(b, ii)) {
                             this.error(
                                 "LYS-SEM0028",
@@ -12908,7 +13539,8 @@ class Checker {
                             continue;
                         }
                         let got = this.answerThrough(b, f.name, at);
-                        if (got != .Unknown && f.ty != .Unknown && got != f.ty) {
+                        let asked = this.subst(f.ty, bindsNow);
+                        if (got != .Unknown && asked != .Unknown && got != asked) {
                             this.error(
                                 "LYS-SEM0028",
                                 f"{this.tyName(b)} answers '{f.name}' with {this.tyName(got)}, where '{tp.name}' of '{name}' asks for {this.tyName(f.ty)}",
@@ -13623,6 +14255,61 @@ struct WithUpdate {
 }
 
 /// Whether `a` is `b`, or one of them unknown after a fault reported already.
+/// `t` as the key of the copies and instances made for it: one string per type, which its shown
+/// name is not — two types of one name in two modules, two type parameters (S7c4c2: `Pair<B, A>`
+/// and `Pair<A, A>` of one generic were one instance). A tuple's labels are no part of it.
+fn tyKey(t: Ty): string {
+    return match (t) {
+        .Named(i) => f"#{i}",
+        .Param(k) => f"'{k}",
+        .List(e) => f"[{tyKey(e.value)}]",
+        .Map(k, v) => f"Map<{tyKey(k.value)},{tyKey(v.value)}>",
+        .Optional(e) => f"?{tyKey(e.value)}",
+        .Tuple(tt) => {
+            let parts = List<string>.new();
+            for (e in tt.elements) {
+                parts.push(tyKey(e));
+            }
+            "(" + parts.toArray().join(",") + ")"
+        }
+        .Fn(ft) => {
+            let parts = List<string>.new();
+            for (x in ft.params) {
+                parts.push(tyKey(x));
+            }
+            "fn(" + parts.toArray().join(",") + ")->" + tyKey(ft.result.value)
+        }
+        .Cell(inner) => tyKey(inner.value),
+        .Assoc(b, ii, n) => f"{tyKey(b.value)}.#{ii}.{n}",
+        .Int => "int",
+        .Float => "float",
+        .Bool => "bool",
+        .Char => "char",
+        .Str => "string",
+        .Void => "void",
+        .Never => "never",
+        .Unknown => "?",
+        .NullLit => "null",
+    };
+}
+
+/// Which of extend block `x`'s parameters its target is, where it is one alone, `extend<I ::
+/// [Iterator]> I` (05 §13 rule 7); -1 for any other target.
+fn blanketTarget(x: ExtendDecl): int {
+    let name = match (x.target) {
+        .Named(n, targs, _) => if (targs.length() == 0) n else "",
+        _ => "",
+    };
+    var k = 0;
+    for (tp in x.typeParams) {
+        if (tp.name == name) {
+            return k;
+        }
+        k += 1;
+    }
+    return -1;
+}
+
 fn sameOrUnknown(a: Ty, b: Ty): bool {
     return a == b || a == .Unknown || b == .Unknown;
 }

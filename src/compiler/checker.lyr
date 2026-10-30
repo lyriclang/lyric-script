@@ -9196,28 +9196,73 @@ class Checker {
 
     /// `for (x in a..b)`: over a range of ints; `for (x in c)` over a coroutine (S6b2); other
     /// iterables come with the collections (S7).
+    /// `a..b`, `a..=b` as a value, its first bound checked (Lyric 5 12 Iteration; S7c6a): the
+    /// prelude's `Range<T>` or `RangeInclusive<T>`, `T` the bounds' type the position names,
+    /// else the first bound's — `let f: Range<float> = 0..3` widens both.
+    mut fn rangeValue(checked: TExpr, to: Expr, inclusive: bool, want: ?Ty, at: Span): TExpr {
+        let t = want ?? typeOf(checked);
+        let first = this.coerce(checked, t, at);
+        let last = this.coerce(this.expr(to, t), t, spanOf(to));
+        let index = this.typeIndex.get(if (inclusive) "RangeInclusive" else "Range") ?? -1;
+        if (index < 0 || t == .Unknown) {
+            return TExpr.Unknown;
+        }
+        let inst = this.typeInstance(index, [t]);
+        this.fillInstance(inst);
+        return TExpr.New(inst, [first, last]);
+    }
+
+    /// The bounds' type a position that wants a range names: `T` of a `Range<T>` or a
+    /// `RangeInclusive<T>`.
+    fn rangeElement(expected: ?Ty): ?Ty {
+        if (let want = expected) {
+            match (want) {
+                .Named(i) => {
+                    let info = this.types[i];
+                    let base = info.template;
+                    if (base >= 0
+                        && info.args.length() == 1
+                        && (base == (this.typeIndex.get("Range") ?? -1)
+                            || base == (this.typeIndex.get("RangeInclusive") ?? -1))) {
+                        return info.args[0];
+                    }
+                }
+                _ => { }
+            }
+        }
+        return null;
+    }
+
     mut fn forStmt(name: string, iterable: Expr, body: Block, label: ?string, at: Span): TStmt {
+        // a range of another type than `int` — of characters —: a value walked as any iterable
+        // (S7c6a)
+        var ranged: ?TExpr = null;
         match (iterable) {
             .Range(from, to, inclusive, _) => {
-                let a = this.coerce(this.expr(from.value, Ty.Int), Ty.Int, spanOf(from.value));
-                let b = this.coerce(this.expr(to.value, Ty.Int), Ty.Int, spanOf(to.value));
-                let before = this.ctx.unassigned;
-                this.pushScope();
-                let id = this.declareLocal(name, Ty.Int, false, at);
-                this.pushLoop(LoopCtx { isLoop = false }, label, at);
-                let stmts = this.block(body);
-                this.popLoop();
-                this.popScope();
-                // the body may not run
-                this.ctx.unassigned = before;
-                return TStmt.ForRange(id, a, b, inclusive, stmts, at.line);
+                let first = this.expr(from.value, Ty.Int);
+                if (typeOf(first) != .Int && typeOf(first) != .Unknown) {
+                    ranged = this.rangeValue(first, to.value, inclusive, null, spanOf(from.value));
+                } else {
+                    let a = this.coerce(first, Ty.Int, spanOf(from.value));
+                    let b = this.coerce(this.expr(to.value, Ty.Int), Ty.Int, spanOf(to.value));
+                    let before = this.ctx.unassigned;
+                    this.pushScope();
+                    let id = this.declareLocal(name, Ty.Int, false, at);
+                    this.pushLoop(LoopCtx { isLoop = false }, label, at);
+                    let stmts = this.block(body);
+                    this.popLoop();
+                    this.popScope();
+                    // the body may not run
+                    this.ctx.unassigned = before;
+                    return TStmt.ForRange(id, a, b, inclusive, stmts, at.line);
+                }
             }
             _ => { }
         }
         // a coroutine (S6b2): its values, pulled one by one — `while (let x = c.next())` over the
         // coroutine, held once; other iterables come with the collections (S7)
         this.pushScope();
-        let it = this.expr(iterable, null);
+        let it = ranged ?? this.expr(iterable, null);
         let t = typeOf(it);
         let co = this.coroutineArgs(t);
         if (co.length() == 2) {
@@ -9724,7 +9769,11 @@ class Checker {
             .Binary(l, op, r, at) => this.binary(l.value, op, r.value, at),
             .Assign(target, op, value, at) => this.assign(target.value, op, value.value, at),
             .Step(target, up, prefix, at) => this.step(target.value, up, prefix, at),
-            .Range(_, _, _, at) => this.notYet("a range as a value", "S7c6 (std.iter, Range)", at),
+            .Range(from, to, inclusive, _) => {
+                let want = this.rangeElement(expected);
+                let first = this.expr(from.value, want);
+                this.rangeValue(first, to.value, inclusive, want, spanOf(from.value))
+            }
             .Cast(x, written, at) => this.cast(x.value, written, at),
             .Call(callee, args, at) => this.call(callee.value, args, expected, at),
             .Implicit(name, at) => this.implicit(name, expected, at),

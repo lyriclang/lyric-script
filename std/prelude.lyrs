@@ -558,6 +558,12 @@ interface FromArrayLiteral<T> {
 interface Iterator {
     type Item
     fn next(): ?Self.Item
+    // how many values are left, at least and at most where that is known (S7c6a)
+    fn sizeHint(): (int, ?int) = (0, null)
+}
+// an iterator from both ends: `nextBack()` gives the last value not yet given (S7c6a)
+interface DoubleEnded :: Iterator {
+    fn nextBack(): ?Self.Item
 }
 interface FromIterator<T> {
     static fn fromIter<I :: [Iterator<Item = T>]>(it: I): Self
@@ -581,22 +587,143 @@ interface Iterable {
     type Iter :: [Iterator]
     fn iter(): Self.Iter
 }
-class ListIter<T> :: Iterator {
+class ListIter<T> :: [Iterator, DoubleEnded] {
     type Item = T
     list: T[]
     var at: int = 0
+    var end: int
     changes: int
     fn next(): ?T {
         __listCheck(this.list, this.changes)
-        if (this.at >= this.list.length()) {
+        if (this.at >= this.end) {
             return null
         }
         let v = this.list[this.at]
         this.at += 1
         return v
     }
+    fn nextBack(): ?T {
+        __listCheck(this.list, this.changes)
+        if (this.at >= this.end) {
+            return null
+        }
+        this.end -= 1
+        return this.list[this.end]
+    }
+    fn sizeHint(): (int, ?int) = (this.end - this.at, this.end - this.at)
 }
 extend<T> T[] :: Iterable {
     type Iter = ListIter<T>
-    fn iter(): ListIter<T> = ListIter { list = this, changes = __listChanges(this) }
+    fn iter(): ListIter<T> = ListIter {
+        list = this,
+        end = this.length(),
+        changes = __listChanges(this),
+    }
+}
+// what a range walks by (Lyric 5 core's `Step`, internal there — the prelude's own, so `__`;
+// S7c6a): the value after and the value before, and the type's first and last — an `int`'s by
+// one, a `char`'s past the surrogates
+interface __Step :: TotalOrder {
+    static fn __first(): Self
+    static fn __last(): Self
+    fn __after(): Self
+    fn __before(): Self
+}
+extend int :: __Step {
+    static fn __first(): int = -9223372036854775807 - 1
+    static fn __last(): int = 9223372036854775807
+    fn __after(): int = this + 1
+    fn __before(): int = this - 1
+}
+extend char :: __Step {
+    static fn __first(): char = 0 as char
+    static fn __last(): char = 1114111 as char
+    fn __after(): char {
+        let n = (this as int) + 1
+        return (if (n == 55296) 57344 else n) as char
+    }
+    fn __before(): char {
+        let n = (this as int) - 1
+        return (if (n == 57343) 55295 else n) as char
+    }
+}
+// `a..b` and `a..=b` as values (Lyric 5 12 Iteration; S7c6a): a struct never changes (02 T7), so a
+// range is walked by the iterator `iter()` gives, a new one each time — `for` over a range twice
+// walks it twice, as Lyric 5's copy does
+struct Range<T> {
+    start: T,
+    end: T,
+}
+struct RangeInclusive<T> {
+    start: T,
+    end: T,
+}
+class RangeIter<T> {
+    var start: T
+    var end: T
+}
+class RangeInclusiveIter<T> {
+    var start: T
+    var end: T
+}
+extend<T :: [__Step]> RangeIter<T> :: [Iterator, DoubleEnded] {
+    type Item = T
+    fn next(): ?T {
+        if (this.start >= this.end) {
+            return null
+        }
+        let value = this.start
+        this.start = value.__after()
+        return value
+    }
+    fn nextBack(): ?T {
+        if (this.start >= this.end) {
+            return null
+        }
+        this.end = this.end.__before()
+        return this.end
+    }
+}
+// its last value leaves `start` past `end`, or `end` before `start` where that value is the type's
+// last (its first, from the back): no bound leaves the type
+extend<T :: [__Step]> RangeInclusiveIter<T> :: [Iterator, DoubleEnded] {
+    type Item = T
+    fn next(): ?T {
+        if (this.start > this.end) {
+            return null
+        }
+        let value = this.start
+        if (value == this.end && value == T.__last()) {
+            this.end = value.__before()
+        } else {
+            this.start = value.__after()
+        }
+        return value
+    }
+    fn nextBack(): ?T {
+        if (this.start > this.end) {
+            return null
+        }
+        let value = this.end
+        if (value == this.start && value == T.__first()) {
+            this.start = value.__after()
+        } else {
+            this.end = value.__before()
+        }
+        return value
+    }
+}
+extend<T :: [__Step]> Range<T> :: Iterable {
+    type Iter = RangeIter<T>
+    fn iter(): RangeIter<T> = RangeIter { start = this.start, end = this.end }
+}
+extend<T :: [__Step]> RangeInclusive<T> :: Iterable {
+    type Iter = RangeInclusiveIter<T>
+    fn iter(): RangeInclusiveIter<T> = RangeInclusiveIter { start = this.start, end = this.end }
+}
+extend<T :: [Ordered]> Range<T> :: Contains<T> {
+    fn contains(x: T): bool = this.start <= x && x < this.end
+}
+extend<T :: [Ordered]> RangeInclusive<T> :: Contains<T> {
+    fn contains(x: T): bool = this.start <= x && x <= this.end
 }

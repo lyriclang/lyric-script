@@ -329,22 +329,32 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
     return l;
 }
 
-/// Whether a module loaded names `Map` as a word or writes a map literal — a `[` whose bracket
-/// holds a `:` of its own, `["a": 1]`, `[:]` (S7d2). Too many is a cost, none too few.
+/// Whether a module loaded names one of std.collections' types or its iterators' members as a
+/// word — `Map`, `Set`, `groupBy`, `toMap`, `toSet` — or writes a map literal, a `[` whose bracket
+/// holds a `:` of its own, `["a": 1]`, `[:]` (S7d2, S7d3). Too many is a cost, none too few.
 fn namesCollections(l: Loaded): bool {
+    let words = List<char[]>.new();
+    for (w in ["Map", "Set", "groupBy", "toMap", "toSet"]) {
+        words.push(w.chars().toArray());
+    }
     for (text in l.texts) {
         let cs = text.chars().toArray();
         let n = cs.length();
         var k = 0;
         while (k < n) {
             let c = cs[k];
-            if (c == 'M'
-                && k + 3 <= n
-                && cs[k + 1] == 'a'
-                && cs[k + 2] == 'p'
-                && (k == 0 || !isWordChar(cs[k - 1]))
-                && (k + 3 == n || !isWordChar(cs[k + 3]))) {
-                return true;
+            if (isWordChar(c) && (k == 0 || !isWordChar(cs[k - 1]))) {
+                var end = k;
+                while (end < n && isWordChar(cs[end])) {
+                    end += 1;
+                }
+                for (w in words) {
+                    if (wordIs(cs, k, end, w)) {
+                        return true;
+                    }
+                }
+                k = end;
+                continue;
             }
             if (c == '[') {
                 var depth = 0;
@@ -367,6 +377,21 @@ fn namesCollections(l: Loaded): bool {
         }
     }
     return false;
+}
+
+/// Whether `cs[from..to]` is the word `w`.
+fn wordIs(cs: char[], from: int, to: int, w: char[]): bool {
+    if (to - from != w.length()) {
+        return false;
+    }
+    var i = 0;
+    while (i < w.length()) {
+        if (cs[from + i] != w[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
 }
 
 fn isWordChar(c: char): bool {

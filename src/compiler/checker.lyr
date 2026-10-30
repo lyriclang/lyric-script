@@ -11524,6 +11524,45 @@ class Checker {
         return false;
     }
 
+    /// Whether parameter type `t` of a callee names one of its type parameters `binds` leaves
+    /// unbound: a position that gives its argument no type. A parameter bound, to a type that
+    /// names the caller's own parameters too, gives it (S7d3: `b.or([])` of a `Box<T[]>` in a
+    /// generic body was LYS-SEM0060).
+    mut fn leavesOpen(t: Ty, binds: (?Ty)[]): bool {
+        return match (t) {
+            .Param(k) => k < 0 || k >= binds.length() || binds[k] == null,
+            .Assoc(base, _, _) => this.leavesOpen(base.value, binds),
+            .Optional(inner) | .List(inner) | .Cell(inner) => this.leavesOpen(inner.value, binds),
+            .Map(k, v) => this.leavesOpen(k.value, binds) || this.leavesOpen(v.value, binds),
+            .Tuple(tt) => {
+                var found = false;
+                for (x in tt.elements) {
+                    found = found || this.leavesOpen(x, binds);
+                }
+                found
+            }
+            .Fn(ft) => {
+                var found = this.leavesOpen(ft.result.value, binds);
+                for (x in ft.params) {
+                    found = found || this.leavesOpen(x, binds);
+                }
+                found
+            }
+            // a generic type at its own parameters is its template itself
+            .Named(i) => {
+                let info = this.types[i];
+                var found = info.template == i && info.typeParams.length() > 0;
+                if (info.template >= 0 && info.template != i) {
+                    for (x in info.args) {
+                        found = found || this.leavesOpen(x, binds);
+                    }
+                }
+                found
+            }
+            _ => false,
+        };
+    }
+
     /// Whether `t` names a type parameter anywhere — in an instance's arguments too.
     mut fn anyParamIn(t: Ty): bool {
         return match (t) {
@@ -13331,6 +13370,10 @@ class Checker {
     mut fn textInCopy(v: TExpr, t: Ty, debug: bool): TExpr {
         return match (t) {
             .Optional(_) | .Tuple(_) => TExpr.Call(this.textFnOf(t, debug), [v], Ty.Str),
+            // a list of a parameter still open, a copy inside another generic's body: the list's
+            // form through its table, as an open type's (S7d3: `Box<T[]>` in a generic `k` broke
+            // the code generator — its loop took a local of no context)
+            .List(_) if (hasParam(t)) => TExpr.CallIface(this.debugSlotOf(), [v], Ty.Str),
             _ => if (debug) this.debugText(v, t, nowhereSpan) else this.stringOf(v, nowhereSpan),
         };
     }
@@ -16885,7 +16928,10 @@ class Checker {
             // a position still naming a parameter gives no type: `Box { v = 1 }` at a `Box<T>` binds
             // `T` from its field (S7c5a; since S3g it was checked against the open `T`)
             let v = if (ai < pre.length()) pre[ai]
-                else this.expr(a.value, if (this.anyParamIn(want)) null else want);
+                else this.expr(
+                    a.value,
+                    if (this.leavesOpen(params[k].ty, binds.toArray())) null else want
+                );
             this.bind(params[k].ty, typeOf(v), binds);
             given[k] = v;
         }

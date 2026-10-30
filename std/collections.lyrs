@@ -207,10 +207,11 @@ class Map<K :: [Hashable], V> {
         }
         return s + "}"
     }
-    // the next live place from `p` on, -1 at the end; a change since `changes` panics
-    fn nextLive(p: int, changes: int): int {
+    // the next live place from `p` on, -1 at the end; a change since `changes` panics, the
+    // collection named `label` — a set walks its map's keys
+    fn nextLive(p: int, changes: int, label: string = "Map"): int {
         if (this.changes != changes) {
-            __changedPanic("Map: changed while it was walked")
+            __changedPanic(label + ": changed while it was walked")
         }
         var q = p
         while (q < this.ks.length()) {
@@ -243,8 +244,10 @@ class MapKeysIter<K :: [Hashable], V> :: Iterator {
     map: Map<K, V>
     var at: int = 0
     changes: int
+    // the collection a panic names: `"Set"` where a set walks its map
+    label: string = "Map"
     fn next(): ?K {
-        let p = this.map.nextLive(this.at, this.changes)
+        let p = this.map.nextLive(this.at, this.changes, this.label)
         if (p < 0) {
             return null
         }
@@ -327,4 +330,179 @@ extend<K :: [Hashable], V :: [Equatable]> Map<K, V> :: Equatable {
         }
         return true
     }
+}
+
+// a set of values, each once, in the order they came: a map's keys (Lyric 5 12 §Collections;
+// S7d3); its operations are methods that make a new set, or answer a question
+class Set<T :: [Hashable]> {
+    table: Map<T, bool> = Map { }
+
+    static fn new(): Set<T> = Set { }
+    // a set of the list's values, each once
+    static fn of(xs: T[]): Set<T> {
+        let out: Set<T> = Set { }
+        for (x in xs) {
+            out.insert(x)
+        }
+        return out
+    }
+    // an empty set; a negative `n` panics (the room is the VM's to keep)
+    static fn withCapacity(n: int): Set<T> {
+        if (n < 0) {
+            panic(f"a negative capacity: {n}")
+        }
+        return Set { }
+    }
+    fn length(): int = this.table.length()
+    fn isEmpty(): bool = this.table.isEmpty()
+    // adds `v`; whether it was not there
+    fn insert(v: T): bool = this.table.insert(v, true) == null
+    // takes `v` out; whether it was there
+    fn remove(v: T): bool = this.table.remove(v) != null
+    fn clear() {
+        this.table.clear()
+    }
+    // the values of either set: this one's, then the other's new ones
+    fn union(o: Set<T>): Set<T> {
+        let out: Set<T> = Set { }
+        for (x in this) {
+            out.insert(x)
+        }
+        for (x in o) {
+            out.insert(x)
+        }
+        return out
+    }
+    // the values of both sets, in this one's order
+    fn intersect(o: Set<T>): Set<T> {
+        let out: Set<T> = Set { }
+        for (x in this) {
+            if (o.contains(x)) {
+                out.insert(x)
+            }
+        }
+        return out
+    }
+    // the values of this set the other has not
+    fn difference(o: Set<T>): Set<T> {
+        let out: Set<T> = Set { }
+        for (x in this) {
+            if (!o.contains(x)) {
+                out.insert(x)
+            }
+        }
+        return out
+    }
+    // the values of exactly one of the two sets
+    fn symmetricDifference(o: Set<T>): Set<T> {
+        let out = this.difference(o)
+        for (x in o) {
+            if (!this.contains(x)) {
+                out.insert(x)
+            }
+        }
+        return out
+    }
+    // whether every value of this set is the other's; the empty set is of every set
+    fn isSubset(o: Set<T>): bool {
+        for (x in this) {
+            if (!o.contains(x)) {
+                return false
+            }
+        }
+        return true
+    }
+    fn isSuperset(o: Set<T>): bool = o.isSubset(this)
+    // whether the two sets have no value in common
+    fn isDisjoint(o: Set<T>): bool {
+        for (x in this) {
+            if (o.contains(x)) {
+                return false
+            }
+        }
+        return true
+    }
+    // `{1, 2}`: the values in their order, each in its Debug form
+    fn debug(): string {
+        var s = "{"
+        var first = true
+        for (x in this) {
+            if (!first) {
+                s += ", "
+            }
+            s += __debugOf(x)
+            first = false
+        }
+        return s + "}"
+    }
+}
+
+// walked over its values in their order; `x in s`; a list literal where a set is taken; equal
+// where it holds the same values, in any order
+extend<T :: [Hashable]> Set<T> :: Iterable {
+    type Iter = MapKeysIter<T, bool>
+    fn iter(): MapKeysIter<T, bool> = MapKeysIter {
+        map = this.table,
+        changes = this.table.changes,
+        label = "Set",
+    }
+}
+extend<T :: [Hashable]> Set<T> :: Contains<T> {
+    fn contains(v: T): bool = this.table.containsKey(v)
+}
+extend<T :: [Hashable]> Set<T> :: FromArrayLiteral<T> {
+    static fn fromArrayLiteral(items: T[]): Set<T> = Set<T>.of(items)
+}
+// `values.iter().collect()`: the values' set, each once
+extend<T :: [Hashable]> Set<T> :: FromIterator<T> {
+    static fn fromIter<I :: [Iterator<Item = T>]>(it: I): Set<T> {
+        let out: Set<T> = Set { }
+        while (let x = it.next()) {
+            out.insert(x)
+        }
+        return out
+    }
+}
+extend<T :: [Hashable]> Set<T> :: Equatable {
+    fn equals(o: Set<T>): bool {
+        if (this.length() != o.length()) {
+            return false
+        }
+        for (x in this) {
+            if (!o.contains(x)) {
+                return false
+            }
+        }
+        return true
+    }
+}
+// a new set of the values' clones, in their order
+extend<T :: [Hashable, Clone]> Set<T> :: Clone {
+    fn clone(): Set<T> {
+        let out: Set<T> = Set { }
+        for (x in this) {
+            out.insert(x.clone())
+        }
+        return out
+    }
+}
+
+// an iterator's values gathered (Lyric 5 12 §Collections, which holds them, not std.iter):
+// `groupBy(key)` a map from each key to its values, in their order; `toMap()` of pairs, a later
+// value of a key replacing the earlier one; `toSet()` of hashable values, each once
+extend<I :: [Iterator]> I {
+    fn groupBy<K :: [Hashable]>(key: fn(I.Item) -> K): Map<K, I.Item[]> {
+        let out: Map<K, I.Item[]> = Map { }
+        while (let x = this.next()) {
+            let group = out.getOrInsert(key(x), () => [])
+            group.push(x)
+        }
+        return out
+    }
+}
+extend<I :: [Iterator<Item = (K, V)>], K :: [Hashable], V> I {
+    fn toMap(): Map<K, V> = this.collect()
+}
+extend<I :: [Iterator<Item = T>], T :: [Hashable]> I {
+    fn toSet(): Set<T> = this.collect()
 }

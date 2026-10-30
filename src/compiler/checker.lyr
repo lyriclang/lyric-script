@@ -10324,7 +10324,8 @@ class Checker {
                     if (name == "__coNext") "next" else "close",
                     [],
                     at
-                ) ?? TExpr.Unknown,
+                )
+                    ?? TExpr.Unknown,
                 _ => TExpr.Unknown,
             },
             "__scopeClose" => TExpr.ScopeClose(boxE(one)),

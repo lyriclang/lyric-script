@@ -237,7 +237,10 @@ VM's call path, S7k measurement point 3.
   iterators, c5 `std.iter`.
 - **S7c1b done** — `Self` and default members in a generic interface; each conformer's table holds
   the default's copy at its instance's arguments. **S7c1 complete** (P18 built).
-- Next: **S7c2** — `Index<K>`/`IndexSet<K>` for one's own types, `FromArrayLiteral<T>`.
+- **S7c2 done** — `Index<K>`/`IndexSet<K>` for one's own types (`x[k]`, `x[k] = v`, `x[k] op= v`),
+  `FromArrayLiteral<T>`; associated types in a generic interface read at its template.
+- Next: **S7c3** — values without descriptors as interface values: a list (`is int[]`, Debug
+  through `Any`, `extend<T> T[] :: [I]`), tasks, coroutines, channels.
 
 ## Working mode
 

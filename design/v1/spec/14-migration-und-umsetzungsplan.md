@@ -1212,3 +1212,18 @@ nennt die Vorlage: eine Instanz zählt als Konformanz zu ihr (`isOf`). Gefunden:
 Ersatz anderswo schon stand, hätte das Patch-Skript als erledigt übersprungen — der Trockenlauf
 fing es. Spec 05 Regel 15 ergänzt, zwei Fälle, beide rot gegen S7c1a. Drei Mutanten in zwei
 Läufen, alle wie vorhergesagt. Fälle 375 → 377. **S7c1 fertig** (P18 gebaut).
+
+**S7c2, Ergebnis (2026-10-30).** Die Prelude deklariert `Index<K>` (`type Output`, `fn
+index(k: K): Self.Output`), `IndexSet<K> :: Index<K>` (`fn setIndex(k: K, v: Self.Output)`) und
+`FromArrayLiteral<T>` (`static fn fromArrayLiteral(items: T[]): Self`, das Mitglied nach der
+Namensregel von Spec 03 Regel 14). `x[k]` auf einem eigenen Typ ist ein Methodenaufruf
+`index` — damit gelten alle Wege: am Typ, über einen Constraint, über einen Interfacewert —,
+`x[k] = v` ist `setIndex`, `x[k] op= v` hält `x` und `k` in verborgenen Lokalen; was kein
+`Index` ist, `SEM0007` (Lyric 5s Nummer und Bedeutung, der Katalogeintrag erweitert), was kein
+`IndexSet`, `SEM0019`. Ein Listenliteral an einer Stelle, deren Typ `FromArrayLiteral<T>`
+ist, wird als Liste von `T` an dessen `fromArrayLiteral` gegeben; über einen Typparameter mit
+der Instanz aus seinen Constraints (`instanceFor`). **Gefunden beim Bauen:** assoziierte Typen
+in einem generischen Interface wurden an der Instanz gelesen (`assocNames`, Schranken,
+Defaults, das Interface eines `Ty.Assoc`) — jetzt an der Vorlage; erst damit trägt `Index<K>`
+sein `Output`. Spec 03 Regel 14, 08 Regel 4; vier Fälle, alle rot gegen S7c1b. Drei Mutanten
+in einem Lauf, alle wie vorhergesagt. Fälle 377 → 381.

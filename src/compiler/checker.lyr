@@ -1924,17 +1924,11 @@ class Checker {
                 // a default member of a generic interface is copied for each instance (S7c1b)
                 _ => { }
             }
-            if (i.typeParams.length() > 0) {
+            // a member of its own type parameters has its interface's before them (S7c4c1)
+            if (i.typeParams.length() > 0 && m.typeParams.length() == 0) {
                 this.functions[fi].typeParams = info.typeParams;
             }
-            if (info.selfParam) {
-                if (m.typeParams.length() > 0) {
-                    this.notYet(
-                        "a generic member of an interface generic over 'Self'",
-                        "S3i",
-                        m.span
-                    );
-                }
+            if (info.selfParam && m.typeParams.length() == 0) {
                 // generic over `Self`, the conformer, bound by the receiver or the type; then over
                 // the interface's parameters (S7c1b)
                 this.functions[fi].typeParams = this.selfFirst(index, info.typeParams);
@@ -2247,7 +2241,9 @@ class Checker {
                 continue;
             }
             let fi = this.declareFn(m, index);
-            this.functions[fi].typeParams = merged.toArray();
+            if (m.typeParams.length() == 0) {
+                this.functions[fi].typeParams = merged.toArray();
+            }
             this.functions[fi].blockParams = block;
             info.methods.insert(m.name, fi);
         }
@@ -2960,12 +2956,22 @@ class Checker {
         defer {
             this.selfTyIs = savedSelf;
         }
-        // its type parameters, in scope for its signature (03 §9.1)
+        // its type parameters, in scope for its signature (03 §9.1) — after its owner's, where it
+        // is a method of a generic owner (S7c4c1: `fn map<U>` of `Box<T>` is generic over `T, U`)
         let savedScope = this.typeParams;
+        let outer = this.outerParams(owner);
         if (f.typeParams.length() > 0) {
             let scope = Map<string, int>.new();
             let tps = List<TypeParamInfo>.new();
-            var k = 0;
+            for (o in outer) {
+                tps.push(o);
+            }
+            for (n in this.typeParams.keys()) {
+                if (outer.length() > 0) {
+                    scope.insert(n, this.typeParams.get(n) ?? 0);
+                }
+            }
+            var k = outer.length();
             // every parameter in scope first: a constraint may name one, `S :: [Source<T>]` (S7c1)
             for (tp in f.typeParams) {
                 scope.insert(tp.name, k);
@@ -2982,7 +2988,16 @@ class Checker {
                 }
                 tps.push(TypeParamInfo { name = tp.name, constraints = cs.toArray() });
             }
-            info.typeParams = this.withFixations(f.typeParams, tps.toArray());
+            let all = tps.toArray();
+            let own = this.withFixations(f.typeParams, sliceOf(all, outer.length(), all.length()));
+            let joined = List<TypeParamInfo>.new();
+            for (o in outer) {
+                joined.push(o);
+            }
+            for (o in own) {
+                joined.push(o);
+            }
+            info.typeParams = joined.toArray();
             this.declaringParams = info.typeParams;
         }
         let params = List<ParamInfo>.new();
@@ -3032,6 +3047,24 @@ class Checker {
             }
         }
         return index;
+    }
+
+    /// The type parameters a method of `owner` is generic over before its own (S7c4c1): a generic
+    /// type's, an interface's `Self` and its parameters, an extend block's — none for a function.
+    mut fn outerParams(owner: int): TypeParamInfo[] {
+        if (owner < 0) {
+            return [];
+        }
+        let info = this.types[owner];
+        if (info.kind == .Interface) {
+            return if (info.selfParam) this.selfFirst(owner, info.typeParams) else info.typeParams;
+        }
+        if (info.typeParams.length() == 0) {
+            return [];
+        }
+        // an extend block's own constraints where it is the one declaring
+        return if (this.declaringParams.length() == info.typeParams.length()) this.declaringParams
+            else info.typeParams;
     }
 
     mut fn checkFieldDefaults(t: TypeDecl): void {
@@ -3811,7 +3844,7 @@ class Checker {
                 }
             } else if (!this.sharedShape(x) || this.copyExact || this.assocConstrained(fi, k)) {
                 sources.push(null);
-            } else if (fromThis) {
+            } else if (fromThis && this.fromThisAt(fi, k)) {
                 let own = TExpr.DescOfValue(boxE(TExpr.Local(0, anyTy)), anyTy);
                 // Self is the receiver's type; a generic type's argument is in its descriptor
                 sources.push(
@@ -3857,17 +3890,35 @@ class Checker {
     /// parameters, in order: those it shares, where it does not read them from its receiver.
     mut fn hiddenOf(fi: int, bound: Ty[]): int[] {
         let out = List<int>.new();
-        if (this.functions[fi].templateOf >= 0 || this.descsFromThis(fi) || this.copyExact) {
+        if (this.functions[fi].templateOf >= 0 || this.copyExact) {
             return out.toArray();
         }
+        let fromThis = this.descsFromThis(fi);
         var k = 0;
         for (x in bound) {
-            if (this.sharedShape(x) && !this.assocConstrained(fi, k)) {
+            if (this.sharedShape(x)
+                && !this.assocConstrained(fi, k)
+                && !(fromThis && this.fromThisAt(fi, k))) {
                 out.push(k);
             }
             k += 1;
         }
         return out.toArray();
+    }
+
+    /// Whether a copy of method `fi` reads type parameter `k`'s descriptor from its receiver: a
+    /// generic type's own parameter from the receiver's descriptor, an interface's `Self` as the
+    /// receiver's; a method's own parameters, and a generic interface's, come hidden (S7c4c1).
+    mut fn fromThisAt(fi: int, k: int): bool {
+        let f = this.functions[fi];
+        if (f.owner < 0) {
+            return false;
+        }
+        let info = this.types[f.owner];
+        if (info.kind == .Interface) {
+            return info.selfParam && k == 0;
+        }
+        return k < info.typeParams.length();
     }
 
     /// Whether type parameter `k` of `fi` is constrained by an interface with associated types:
@@ -4658,9 +4709,8 @@ class Checker {
     /// The copy of interface member `fi` at `binds` — `Self`, then a generic interface's arguments
     /// (S7c1b); a static one a copy of its own.
     mut fn selfCopyIn(fi: int, binds: Ty[]): int {
-        if (!this.functions[fi].isStatic) {
-            return this.instanceOf(fi, binds);
-        }
+        // a copy of its own for the binds: a table's call hands it no hidden descriptor, and a
+        // method generic over `Self` reads `Self` alone from its receiver (S7c4c1)
         let saved = this.copyExact;
         this.copyExact = true;
         let k = this.instanceOf(fi, binds);
@@ -12754,7 +12804,7 @@ class Checker {
         let deferred = List<int>.new();
         let deferredArgs = List<Expr>.new();
         // a method of an instance of a generic type: the instance's arguments bound already
-        if (this.presetBinds.length() == typeParams.length()) {
+        if (this.presetBinds.length() <= typeParams.length()) {
             var j = 0;
             for (x in this.presetBinds) {
                 binds[j] = x;

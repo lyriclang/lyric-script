@@ -1608,6 +1608,7 @@ class FnGen {
             // resolved to instances before code is made
             .CallGeneric(_, _, _, _) | .CallConstraint(_, _, _, _, _, _) | .IsParam(_, _, _) => { }
             .DebugParam(_, _, _) | .TextParam(_, _, _) | .CallStatic(_, _, _, _, _, _) => { }
+            .TextOf(_, _, _) => { }
             .CallBound(_, _, _, _, _, _) | .GenericValue(_, _, _) => { }
             // the error leaves for the handler that takes it (S4a); nothing lands in `dst`
             .Throw(x) => {

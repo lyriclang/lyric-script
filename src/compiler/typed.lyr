@@ -403,6 +403,7 @@ fn typeOf(e: TExpr): Ty {
         .GenericValue(_, _, t) => t,
         .CallStaticD(_, _, _, t) => t,
         .TextParam(_, _, t) => t,
+        .TextOf(_, _, _) => Ty.Str,
         .Throw(_) | .Rethrow(_, _) | .Panic(_, _) => Ty.Never,
         .Unknown => Ty.Unknown,
     };
@@ -574,6 +575,9 @@ enum TExpr :: [Debug] {
     /// its text where it stands alone, `{x}` — a string's itself.
     DebugParam(Box<TExpr>, int, Ty),
     TextParam(Box<TExpr>, int, Ty),
+    /// The text of a value of an open type — an associated type of a type parameter, `I.Item` —,
+    /// its Debug form where `debug`: the type's own in each copy (S7c6b2).
+    TextOf(Box<TExpr>, Ty, bool),
     /// `throw e`: the error as a value of `Error`; of type `never` (06 §1 rule 3, S4a).
     Throw(Box<TExpr>),
     /// `throw e` of a clause's binding in its clause: the error it took goes on with its record,
@@ -705,6 +709,7 @@ fn exprsIn(e: TExpr): TExpr[] {
         .IsType(x, _, _) | .IsIface(x, _, _) | .IsParam(x, _, _) | .DescOfValue(x, _) => [x.value],
         .DescArg(x, _, _) | .DescVariant(x, _, _) | .DebugParam(x, _, _) => [x.value],
         .TextParam(x, _, _) | .Throw(x) | .Block(_, x, _) | .Panic(x, _) => [x.value],
+        .TextOf(x, _, _) => [x.value],
         .GenericCompare(x, _, y) => [x.value, y.value],
         .Binary(x, _, y, _) | .Coalesce(x, y, _) | .SameRef(x, y) | .IsDesc(x, y) | .BoxOfD(x, y, _) => [
             x.value,

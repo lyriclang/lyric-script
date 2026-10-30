@@ -436,6 +436,8 @@ class Checker {
     var preChecked: TExpr[] = [],
     // the type the position wants of a member read without a call (S7c5d2)
     var memberExpected: ?Ty = null,
+    // the functions that give a value's text in a copy, by "text:" or "debug:" and the type
+    textFns: Map<string, int> = Map<string, int>.new(),
     // a conformance block's answers, by "<the block's place>#<name>" (05 §8 rule 3; S7c5d3)
     siteAnswers: Map<string, Ty> = Map<string, Ty>.new(),
     // the type's answers a conformance block's stand in for while its signatures are read
@@ -5841,12 +5843,23 @@ class Checker {
                 this.specAll(xs, a),
                 this.subst(t, a)
             ),
+            .TextOf(x, open, debug) => {
+                // the type put in: its own text; still open, the value's form through its table
+                let v = this.specExpr(x.value, a);
+                let t = this.subst(open, a);
+                let still = match (t) {
+                    .Assoc(_, _, _) | .Param(_) | .Unknown => true,
+                    _ => false,
+                };
+                if (still) TExpr.CallIface(this.debugSlotOf(), [v], Ty.Str)
+                    else this.textInCopy(v, t, debug)
+            }
             .TextParam(x, k, t) => {
                 let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
                 if (src != null || k >= a.length()) {
                     TExpr.CallIface(this.debugSlotOf(), [this.specExpr(x.value, a)], t)
                 } else {
-                    this.stringOf(this.specExpr(x.value, a), nowhereSpan)
+                    this.textInCopy(this.specExpr(x.value, a), a[k], false)
                 }
             }
             .DebugParam(x, k, t) => {
@@ -5861,7 +5874,7 @@ class Checker {
                     // a shared copy: the value's own form, through its table
                     TExpr.CallIface(this.debugSlotOf(), [this.specExpr(x.value, a)], t)
                 } else {
-                    this.debugText(this.specExpr(x.value, a), a[k], nowhereSpan)
+                    this.textInCopy(this.specExpr(x.value, a), a[k], true)
                 }
             }
             .DescOfType(_, _) | .InstDesc(_, _, _) | .DescOfValue(_, _) | .DescArg(_, _, _) => e,
@@ -12420,6 +12433,44 @@ class Checker {
         );
     }
 
+    /// The text of `v`, of type `t`, in a copy — its Debug form where `debug`: an optional's and
+    /// a tuple's through a function of their own (S7c6b2). A copy is made in no context of its
+    /// own, and their text holds the value in a local: it took one of the context then checked
+    /// (since S3i, `fn show<T>(x: T) = f"{x}"` with a `?int` broke the code generator).
+    mut fn textInCopy(v: TExpr, t: Ty, debug: bool): TExpr {
+        return match (t) {
+            .Optional(_) | .Tuple(_) => TExpr.Call(this.textFnOf(t, debug), [v], Ty.Str),
+            _ => if (debug) this.debugText(v, t, nowhereSpan) else this.stringOf(v, nowhereSpan),
+        };
+    }
+
+    /// A function that gives the text of a value of type `t`, its Debug form where `debug`; one
+    /// for each type.
+    mut fn textFnOf(t: Ty, debug: bool): int {
+        let key = (if (debug) "debug:" else "text:") + tyKey(t);
+        if (let known = this.textFns.get(key)) {
+            return known;
+        }
+        let index = this.functions.length();
+        this.functions.push(FnInfo { name = "#text", owner = -1, isStatic = false, line = 1 });
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        this.textFns.insert(key, index);
+        let saved = this.ctx;
+        this.ctx = FnCtx.new(index, Ty.Str, false, false);
+        this.declareLocal("x", t, false, nowhereSpan);
+        let x = TExpr.Local(0, t);
+        let text = if (debug) this.debugText(x, t, nowhereSpan) else this.stringOf(x, nowhereSpan);
+        let f = this.functions[index];
+        f.params = [ParamInfo { name = "x", ty = t, default = null }];
+        f.returns = Ty.Str;
+        f.body = [TStmt.Return(text, 1)];
+        f.locals = this.ctx.locals.toArray();
+        f.boxed = this.ctx.boxed.toArray();
+        this.ctx = saved;
+        return index;
+    }
+
     /// The Debug form of a list type (S7b1): `[1, 2, 3]`, each element's own form between commas;
     /// one function for each list type printed.
     mut fn listDebugFnOf(t: Ty, at: Span): int {
@@ -13377,6 +13428,11 @@ class Checker {
                     this.debugSlotOf();
                     return TExpr.TextParam(boxE(v), k, Ty.Str);
                 }
+                // an associated type of one, `I.Item`: its answer's text in each copy (S7c6b2)
+                .Assoc(_, _, _) => {
+                    this.debugSlotOf();
+                    return TExpr.TextOf(boxE(v), t, false);
+                }
                 _ => { }
             }
             // every other value prints in its Debug form (03 Eq: `{x}` falls back to it)
@@ -13455,6 +13511,10 @@ class Checker {
             .Param(k) => {
                 this.debugSlotOf();
                 TExpr.DebugParam(boxE(v), k, Ty.Str)
+            }
+            .Assoc(_, _, _) => {
+                this.debugSlotOf();
+                TExpr.TextOf(boxE(v), t, true)
             }
             .Fn(_) => TExpr.Str("<fn>"),
             .Unknown => v,

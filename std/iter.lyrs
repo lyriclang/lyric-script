@@ -1,5 +1,6 @@
-// std.iter (Lyric 5 12 §Iteration; S7c6b): the adapters of every iterator. Each is a class of its
-// own, lazy, one value at a time; an adapter over a Closeable iterator is Closeable itself and
+// std.iter (Lyric 5 12 §Iteration; S7c6b): the adapters and the terminators of every iterator.
+// Each adapter is a class of its own, lazy, one value at a time; each terminator walks the
+// iterator to an answer. An adapter over a Closeable iterator is Closeable itself and
 // passes close() on, so a loop that leaves early closes the coroutine behind `gen().map(f)`. The
 // prelude names this module: its blocks reach every iterator in every module — the loader adds it
 // to a program that names a member of them —, and a program imports a class where it writes the
@@ -478,4 +479,294 @@ extend<I :: [Iterator<Item = T>], T :: [Equatable]> I {
 // an iterator from both ends walks from the back
 extend<I :: [DoubleEnded]> I {
     fn rev(): RevIter<I> = RevIter { inner = this }
+}
+
+// the terminators of every iterator (S7c6b2): each walks it to an answer — a class iterator where
+// it stands, so what is left is left
+extend<I :: [Iterator]> I {
+    // how many values are left
+    fn count(): int {
+        var n = 0
+        while (this.next() != null) {
+            n += 1
+        }
+        return n
+    }
+    // `init` and each value through `f`, in order
+    fn fold<A>(init: A, f: fn(A, I.Item) -> A): A {
+        var acc = init
+        while (let x = this.next()) {
+            acc = f(acc, x)
+        }
+        return acc
+    }
+    // the values through `f`, the first one the start; `null` without a value
+    fn reduce(f: fn(I.Item, I.Item) -> I.Item): ?I.Item {
+        if (let first = this.next()) {
+            var acc = first
+            while (let x = this.next()) {
+                acc = f(acc, x)
+            }
+            return acc
+        }
+        return null
+    }
+    fn first(): ?I.Item = this.next()
+    fn last(): ?I.Item {
+        var last: ?I.Item = null
+        while (let x = this.next()) {
+            last = x
+        }
+        return last
+    }
+    // the value at position `n` from 0; `null` where there is none, a negative `n` included
+    fn nth(n: int): ?I.Item {
+        if (n < 0) {
+            return null
+        }
+        var k = n
+        while (let x = this.next()) {
+            if (k == 0) {
+                return x
+            }
+            k -= 1
+        }
+        return null
+    }
+    // whether `p` holds for a value, stopping at the first that decides
+    fn any(p: fn(I.Item) -> bool): bool {
+        while (let x = this.next()) {
+            if (p(x)) {
+                return true
+            }
+        }
+        return false
+    }
+    // whether `p` holds for every value — `true` for none
+    fn all(p: fn(I.Item) -> bool): bool {
+        while (let x = this.next()) {
+            if (!p(x)) {
+                return false
+            }
+        }
+        return true
+    }
+    fn none(p: fn(I.Item) -> bool): bool = !this.any(p)
+    fn find(p: fn(I.Item) -> bool): ?I.Item {
+        while (let x = this.next()) {
+            if (p(x)) {
+                return x
+            }
+        }
+        return null
+    }
+    fn position(p: fn(I.Item) -> bool): ?int {
+        var k = 0
+        while (let x = this.next()) {
+            if (p(x)) {
+                return k
+            }
+            k += 1
+        }
+        return null
+    }
+    // `f` for each value; a `return` in the lambda leaves the lambda (no `inline fn`, 03 rule 11)
+    fn forEach(f: fn(I.Item) -> void) {
+        while (let x = this.next()) {
+            f(x)
+        }
+    }
+    // the values in a list, in one pass; `toList` is the same, a `List<T>` being a `T[]`
+    fn toArray(): I.Item[] {
+        let out: I.Item[] = []
+        while (let x = this.next()) {
+            out.push(x)
+        }
+        return out
+    }
+    fn toList(): I.Item[] = this.toArray()
+    // the value whose key is least, the first of equal ones; `null` without a value
+    fn minBy<K :: [TotalOrder]>(key: fn(I.Item) -> K): ?I.Item {
+        if (let first = this.next()) {
+            var best = first
+            var bestKey = key(first)
+            while (let x = this.next()) {
+                let k = key(x)
+                if (k.totalCompare(bestKey) == Ordering.Less) {
+                    best = x
+                    bestKey = k
+                }
+            }
+            return best
+        }
+        return null
+    }
+    // the value whose key is greatest, the first of equal ones; `null` without a value
+    fn maxBy<K :: [TotalOrder]>(key: fn(I.Item) -> K): ?I.Item {
+        if (let first = this.next()) {
+            var best = first
+            var bestKey = key(first)
+            while (let x = this.next()) {
+                let k = key(x)
+                if (k.totalCompare(bestKey) == Ordering.Greater) {
+                    best = x
+                    bestKey = k
+                }
+            }
+            return best
+        }
+        return null
+    }
+    // the values `p` holds for and the others, two lists in order
+    fn partition(p: fn(I.Item) -> bool): (I.Item[], I.Item[]) {
+        let yes: I.Item[] = []
+        let no: I.Item[] = []
+        while (let x = this.next()) {
+            if (p(x)) {
+                yes.push(x)
+            } else {
+                no.push(x)
+            }
+        }
+        return (yes, no)
+    }
+    // the values in lists of `n`, the last shorter where they do not divide; `n` below 1 panics
+    fn chunks(n: int): I.Item[][] {
+        if (n < 1) {
+            panic(f"chunks needs a size of at least 1, not {n}")
+        }
+        let out: I.Item[][] = []
+        var part: I.Item[] = []
+        while (let x = this.next()) {
+            part.push(x)
+            if (part.length() == n) {
+                out.push(part)
+                part = []
+            }
+        }
+        if (part.length() > 0) {
+            out.push(part)
+        }
+        return out
+    }
+    // every run of `n` values in turn, each a list of its own, none where there are fewer; `n`
+    // below 1 panics
+    fn windows(n: int): I.Item[][] {
+        if (n < 1) {
+            panic(f"windows needs a size of at least 1, not {n}")
+        }
+        let out: I.Item[][] = []
+        var window: I.Item[] = []
+        while (let x = this.next()) {
+            window.push(x)
+            if (window.length() > n) {
+                window = window[1..window.length()]
+            }
+            if (window.length() == n) {
+                out.push(window[0..n])
+            }
+        }
+        return out
+    }
+    // the values as `{x}` writes each, `sep` between each two — every value prints (03 Eq)
+    fn join(sep: string): string {
+        var s = ""
+        var first = true
+        while (let x = this.next()) {
+            if (!first) {
+                s += sep
+            }
+            s += f"{x}"
+            first = false
+        }
+        return s
+    }
+}
+
+// the terminators of the numbers, Script's two (02 T1): zero and one where there is no value,
+// the average a `float`, `null` without a value
+extend<I :: [Iterator<Item = int>]> I {
+    fn sum(): int {
+        var s = 0
+        while (let x = this.next()) {
+            s += x
+        }
+        return s
+    }
+    fn product(): int {
+        var p = 1
+        while (let x = this.next()) {
+            p *= x
+        }
+        return p
+    }
+    fn average(): ?float {
+        var s = 0.0
+        var n = 0
+        while (let x = this.next()) {
+            s += x
+            n += 1
+        }
+        if (n == 0) {
+            return null
+        }
+        return s / n
+    }
+}
+extend<I :: [Iterator<Item = float>]> I {
+    fn sum(): float {
+        var s = 0.0
+        while (let x = this.next()) {
+            s += x
+        }
+        return s
+    }
+    fn product(): float {
+        var p = 1.0
+        while (let x = this.next()) {
+            p *= x
+        }
+        return p
+    }
+    fn average(): ?float {
+        var s = 0.0
+        var n = 0
+        while (let x = this.next()) {
+            s += x
+            n += 1
+        }
+        if (n == 0) {
+            return null
+        }
+        return s / n
+    }
+}
+
+// the least and the greatest of values that are ordered, the first of equal ones; `null`
+// without a value
+extend<I :: [Iterator<Item = T>], T :: [Ordered]> I {
+    fn min(): ?T {
+        if (let first = this.next()) {
+            var best = first
+            while (let x = this.next()) {
+                if (x < best) {
+                    best = x
+                }
+            }
+            return best
+        }
+        return null
+    }
+    fn max(): ?T {
+        if (let first = this.next()) {
+            var best = first
+            while (let x = this.next()) {
+                if (x > best) {
+                    best = x
+                }
+            }
+            return best
+        }
+        return null
+    }
 }

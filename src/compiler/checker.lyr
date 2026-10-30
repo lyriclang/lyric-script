@@ -12832,6 +12832,57 @@ class Checker {
                 return TExpr.Native(Native.Std(nativeNumber(n)), [receiver], Ty.Void);
             }
         }
+        // `join(sep)` (S7c6c2): each element as `{x}` writes it, `sep` between each two — made
+        // where it is called, so a program that joins no list makes no element's text (in the
+        // prelude, over `T`, it took the Debug slot, and so every type's form, in every program)
+        if (method == "join" && args.length() == 1) {
+            let sep = this.coerce(this.expr(args[0].value, Ty.Str), Ty.Str, spanOf(args[0].value));
+            let t = Ty.List(boxTy(elem));
+            let h = this.hidden(t, at);
+            let hs = this.hidden(Ty.Str, at);
+            let acc = this.hidden(Ty.Str, at);
+            let i = this.hidden(Ty.Int, at);
+            let k = TExpr.Local(i, Ty.Int);
+            let text = TExpr.Local(acc, Ty.Str);
+            let each = [
+                TStmt.If(
+                    TExpr.Binary(boxE(k), BinaryOp.Gt, boxE(TExpr.Int(0)), Ty.Bool),
+                    [TStmt.SetLocal(acc, concatAll([text, TExpr.Local(hs, Ty.Str)]), at.line)],
+                    [],
+                    at.line
+                ),
+                TStmt.SetLocal(
+                    acc,
+                    concatAll(
+                        [
+                            text,
+                            this.stringOf(
+                                TExpr.ListOp(ListOp.Get, [TExpr.Local(h, t), k], elem),
+                                at
+                            ),
+                        ]
+                    ),
+                    at.line
+                ),
+            ];
+            return TExpr.Block(
+                [
+                    TStmt.SetLocal(h, receiver, at.line),
+                    TStmt.SetLocal(hs, sep, at.line),
+                    TStmt.SetLocal(acc, TExpr.Str(""), at.line),
+                    TStmt.ForRange(
+                        i,
+                        TExpr.Int(0),
+                        TExpr.ListOp(ListOp.Len, [TExpr.Local(h, t)], Ty.Int),
+                        false,
+                        each,
+                        at.line
+                    ),
+                ],
+                boxE(text),
+                Ty.Str
+            );
+        }
         let arity = match (method) {
             "length" | "pop" => 0,
             "push" => 1,

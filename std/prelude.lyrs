@@ -274,19 +274,6 @@ extend<T> T[] {
         }
         return lo
     }
-    /// The elements as `{x}` writes each, `sep` between each two — every value prints (03 Eq).
-    fn join(sep: string): string {
-        var s = ""
-        var k = 0
-        while (k < this.length()) {
-            if (k > 0) {
-                s += sep
-            }
-            s += f"{this[k]}"
-            k += 1
-        }
-        return s
-    }
     /// An empty list (Lyric 5's `List.new`; a `List<T>` is a `T[]`).
     static fn new(): T[] = []
     /// A new list of the elements of `xs` (Lyric 5's `List.of`).

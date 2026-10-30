@@ -1459,3 +1459,23 @@ Typparameter durch den Constraint; `-a`, `~a` über `Neg`, `BitNot`; `a op= b` i
 der Empfänger eines Felds, eine Liste samt Index einmal gehalten, `Out` der Typ des Orts. Spec 05
 Regel 17; vier Fälle, alle rot gegen S7c5c1. Vier Mutanten in zwei Läufen, alle wie vorhergesagt.
 Fälle 425 → 429.
+
+**Uhren nachgeschärft (2026-10-30).** NYI-Meldungen nannten abgelaufene Uhren: ein Bereich als
+Wert „S3“ (jetzt S7c6), die Konstante eines Blanket-Blocks „S7c4c3b“ und ein generischer Block auf
+anderem Ziel „S3i“ (beides gibt es in Lyric 5 §13 nicht: jetzt `SEM0124`), ein `[]` ohne Typ
+„S7b2“ (Lyric 5 §9.2 Regel 3: jetzt `SEM0060`); die Mitglieder eingebauter Typen nennen S7d,
+S7e oder S7f statt „S7“; ein toter `??=`-Zweig ist weg.
+
+**S7c5c3, Ergebnis (2026-10-30).** `++` und `--` (Lyric 5 08 §6) auf einem Zahlenort — Variable,
+Feld, Element einer Liste oder eines `IndexSet` —, `x++` der alte Wert, `++x` der neue, was zum
+Ort führt einmal ausgewertet: auf Ausdrucksebene über die vorhandene Zuweisung `ort op= 1`. Die
+Prelude deklariert `Contains<T>`, der Listen-Block ist eines; `x in xs` ist `xs.contains(x)` über
+das `Contains<T>` des rechten Operanden, `x` zuerst ausgewertet (Lyric 5 §12 Regel 10 — Script
+wertete seit S7b2a den Behälter zuerst aus). **Gefunden beim Bauen:** (1) **seit S7c1:** eine
+bedingte Konformanz zu einer *Instanz* eines generischen Interfaces wurde unter der gefragten
+Instanz gesucht, nie unter dem Interface des Blocks — keine Bedingung griff (`Box<int>` galt als
+`Holds<int>` ohne `int :: Show`); (2) die Tabelle einer Instanz kopierte die Mitglieder einer
+bedingten Konformanz, deren Bedingung sie nicht erfüllt; (3) `operatorMember` rief die
+Block-Methode einer Liste ohne ihr Element. Spec 05 Regel 8, 08 Regel 5; sechs Fälle (zwei davon
+für die Uhren), alle rot gegen S7c5c2. Sieben Mutanten in zwei Läufen, alle wie vorhergesagt.
+Fälle 429 → 435.

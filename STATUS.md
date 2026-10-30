@@ -270,8 +270,11 @@ VM's call path, S7k measurement point 3.
   through the prelude's `R = void`.
 - **S7c5c2 done** — the operator interfaces: `a + b` on a type of the program through `Add<B>`,
   `-a` through `Neg`, `a += b` derived, over `T :: [Add<Out = T>]`.
-- Next: **S7c5c3** — `++`/`--` as expressions, `Contains<T>` for `in`; then S7c5d several
-  instances of a generic interface, S7c6 `std.iter`.
+- **S7c5c3 done** — `++`/`--` as expressions, `Contains<T>` for `in` (the needle first). Found:
+  a conditional conformance to an instance of a generic interface held for every instance (since
+  S7c1). Stale NYI clocks sharpened.
+- Next: **S7c5d** — several instances of a generic interface at a type (members per block,
+  answers per instance), the built-in mixed conformances; then S7c6 `std.iter`.
 
 ## Working mode
 

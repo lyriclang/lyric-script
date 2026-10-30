@@ -1178,7 +1178,7 @@ fünf Teile, jeder braucht den vorigen.
 | **S7c2 Index und Literal** | `Index<K>`/`IndexSet<K>` in der Prelude: `x[k]`, `x[k] = v`, `x[k] op= v` auf eigenen Typen (03 Index), Objekt und Schlüssel einmal ausgewertet; `FromArrayLiteral<T>` mit `fromArrayLiteral` (Namensregel Spec 03 Regel 14) | Konformanzfälle |
 | **S7c3 Werte ohne Deskriptor** | eine Liste als Interfacewert (Deskriptor `T[]`, Tabelle des `List`-Eintrags je Element, `is int[]`, Debug über `Any`), Konformanzen `extend<T> T[] :: [I]`; Tasks, Koroutinen, Kanäle als Interfacewerte (Uhr aus S6) | Konformanzfälle |
 | **S7c4 Iteratoren** | (aus S7c3: Tasks, Koroutinen, Kanäle und Listen eines Typparameters als Interfacewerte) `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator<T>`, `collect()`; `for` über jedes Iterable, `Closeable`-Iteratoren geschlossen (05 E7); `T[] :: Iterable` mit der Änderungspanik; `Coroutine :: Iterator` | Konformanzfälle |
-| **S7c5 `std.iter`** | die Adapter von Lyric 5s `iter` in Script, die Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …), `sort` nativ mit Kostenregel | Konformanzfälle; Kostenregel für `sort` |
+| **S7c5 `std.iter`** | die Adapter von Lyric 5s `iter` in Script, die Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …), `sort` nativ mit Kostenregel; der Platzhalter `_` unter Typargumenten (Lyric 5 §9.2 Regeln 4–5, §9.3 Regel 2) | Konformanzfälle; Kostenregel für `sort` |
 
 **S7c1, geteilt (2026-10-30).** **S7c1a** generische Interfaces ohne `Self` und ohne Defaults;
 **S7c1b** `Self` in einem generischen Interface (seine Mitglieder generisch über die Parameter
@@ -1292,3 +1292,37 @@ und die eines generischen Interfaces als versteckte Parameter; eine Tabellenkopi
 immer exakt (ein Aufruf über die Tabelle reicht keinen versteckten Deskriptor). Spec 03 Regel
 12, 05 Regel 10; drei Fälle, alle rot gegen S7c4b. Drei Mutanten in drei Läufen, alle wie
 vorhergesagt. Fälle 389 → 392.
+
+**S7c4c2, neu geschnitten (2026-10-30).** `collect()` als Mitglied von `Iterator` hätte
+`Iterator` zur reinen Constraint gemacht (ein generisches Mitglied, `SEM0126`), kein
+`Iterator<Item = int>` mehr als Werttyp — Lyric 5 legt es darum in den Blanket-Block
+`extend<I :: [Iterator]> I`. Die Blanket-Blöcke mit Mitgliedern (05 §13 Regel 7) gehen deshalb
+in **S7c4c2**; ihre Konformanzen (Regeln 8–9), ihre statischen Mitglieder, ein Block auf einer
+Instanz und Listen eines Typparameters als Interfacewerte in **S7c4c3**. Der Platzhalter `_`
+unter Typargumenten (Lyric 5 §9.2 Regeln 4–5, §9.3 Regel 2) hat bisher keine Uhr: **S7c5**, wo
+die Adapter viele Typargumente tragen.
+
+**S7c4c2, Ergebnis (2026-10-30).** Die Prelude deklariert `FromIterator<T>` (`static fn
+fromIter<I :: [Iterator<Item = T>]>(it: I): Self`), jede Liste ist eines ihres Elements, und
+`collect<C :: [FromIterator<I.Item>]>()` steht im Blanket-Block über jedem Iterator. Dafür:
+Lyric 5 §9.2 Regel 2 — der erwartete Typ bindet, was die Argumente offen lassen, ohne sie zu
+überstimmen — und Regel 4 — Typargumente am Methodenaufruf, die eigenen nach denen des
+Empfängers (`SEM0026` bei anderer Zahl); Blanket-Blöcke mit Mitgliedern, der Empfänger bindet
+den Zielparameter, eine Fixierung die übrigen (`SEM0170` für einen, den nichts bindet,
+`SEM0168` für ein vom Typ verdecktes Mitglied, `SEM0121` für zwei Blöcke eines Namens); ein
+Interface-Mitglied mit eigenen Typparametern wird gegen das des Konformers geprüft (gleich
+viele, gleich beschränkt, `SEM0042`) und über einen Typparameter für das Argument kopiert.
+**Gefunden beim Bauen:** (1) **Lücke seit S3, ohne Uhr:** der Schlüssel der Instanzen und
+Kopien war der angezeigte Name — jeder Typparameter hieß `T`, ein Typ nur bei seinem Namen:
+`Pair<B, A>` und `Pair<A, A>` in einem Generic waren *eine* Instanz („expected B, found A“),
+`Holder<a.Item>` und `Holder<b.Item>` aus zwei Modulen auch; jetzt `tyKey`, injektiv. (2) Die
+Arität eines generischen Interfaces stand erst mit seiner Deklaration — zwei, die einander
+nennen (`Iterator`, `FromIterator`), scheiterten; jetzt ein Vorlauf. (3) Eine generische
+Konformanz der Listen (`T[] :: FromIterator<T>`) wurde nie am Element gelesen. (4) Ein
+statisches Mitglied mit eigenen Typparametern lief in einer geteilten Kopie über die Tabelle,
+deren Kopie das eigene `I` mit `Self` band (`Sum.build` gab 0, ein eigenes `fromIter` lief nie);
+ein Constraint mit einem solchen Mitglied macht die Kopien jetzt exakt, wie assoziierte Typen.
+(5) Die übrigen Methoden einer Koroutine erreichten ihre Prelude-Klasse nicht. Spec 03 Regeln
+12, 16; 05 Regeln 12, 15; 07 Regel 7; zwölf Fälle, elf rot gegen S7c4c1 — der zwölfte hält das
+`SEM0042` einer falschen Implementierung fest, das vorher für jede kam. Fünf Läufe mit sieben Mutanten: vier wie vorhergesagt; im fünften machte der alte Schlüssel auch `an_iterator_collects` rot — die Instanzen der Prelude selbst (`FromIterator` an verschiedenen Parametern) kollidierten, `collect` braucht den injektiven Schlüssel.
+Fälle 392 → 404.

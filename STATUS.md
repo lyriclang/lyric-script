@@ -249,8 +249,12 @@ VM's call path, S7k measurement point 3.
   interface values in a box; the S6 pins retired with their rule.
 - **S7c4c1 done** (S7c4c split in two) — generic methods of generic owners (a gap since S3: `fn
   map<U>` in `Box<T>` never worked); generic members of interfaces with `Self`.
-- Next: **S7c4c2** — `FromIterator<T>` and `collect()`, the blanket blocks, a list of a type
-  parameter as an interface value.
+- **S7c4c2 done** (cut again) — `FromIterator<T>`, `collect()` in a blanket block as Lyric 5
+  has it, blanket blocks with members, Lyric 5 §9.2 rules 2 and 4 (the position binds; type
+  arguments at a method). Found: instance keys were the shown names (`Pair<B, A>` and
+  `Pair<A, A>` one instance — since S3).
+- Next: **S7c4c3** — blanket conformances (05 §13 rules 8–9), static members of blanket blocks,
+  a block on one instance, a list of a type parameter as an interface value.
 
 ## Working mode
 

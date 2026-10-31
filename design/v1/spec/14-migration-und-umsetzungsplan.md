@@ -1676,3 +1676,19 @@ statt beim Übersetzen. Spec 12 Regel 6; zehn Fälle, neun rot gegen S7d2 — `g
 grün, wie vorhergesagt: dort fehlten die Glieder ganz, die Ablehnung ist dieselbe; er bleibt für
 die Mutanten. Mutanten: A 504 und B 504 von 506, C nach dem Fund (1) 505 von 508 — je genau die vorhergesagten Fälle; Cs erster Lauf (493) war ein Mutant, der nicht prüfte.
 Fälle 498 → 508.
+
+**S7d4, Ergebnis (2026-10-31) — damit S7d fertig.** `class Deque<T>` als Ring wie Lyric 5s (Plätze
+`(?T)[]`, `head`, `count`, Verdopplung ab 8): `pushBack`/`pushFront`, `popFront`/`popBack`,
+`peekFront`/`peekBack`, `d[i]` über `Index<int>` (nie geschrieben, eine Panik außerhalb mit dem
+Text der Listen), `Iterable` mit der Änderungspanik „Deque: …“, Gleichheit, `Clone`,
+`FromArrayLiteral`, `FromIterator`, Debug `[1, 2]`; `class Heap<T :: [TotalOrder]>` als
+binärer Min-Heap, `Heap.of` nach Floyd, Debug wie die Liste, die er hält. P28 gebaut:
+`import std.collections { Map, Set, List, Deque, Heap }` nennt die Namen der Prelude, `{ Map as
+Dict }` unter eigenem Namen, ein fremder Name `LYS-RES0004`, das ganze Modul `LYS-RES0003`; der
+Lader nimmt das Modul dann auf. Der offene Fall aus S7d3 behoben: die Debug-Form einer Instanz,
+deren Argumente die Parameter des umgebenden Rumpfs nennen (`Box<T[]>`), ging als eigene,
+nicht-generische Funktion — gebaut für Objekte, von `k<int>` mit einer `int`-Liste gerufen; jetzt
+die Vorlage, für die Argumente kopiert, wie bei jedem generischen Typ. Abgeglichen: `Deque.of` und
+`Deque.clear`, die Lyric 5 nicht hat, wieder heraus. Spec 12 Regeln 5 und 7; acht Fälle, alle rot
+gegen S7d3. Mutanten: A 514, B 513, C 514 von 516 — je genau die vorhergesagten Fälle; A erst im zweiten Lauf: ein `head`, den das Wachsen stehen ließ, überlebte, weil der Deque-Fall nach dem Wachsen nur die Enden las — er druckt jetzt die ganze Deque.
+Fälle 508 → 516.

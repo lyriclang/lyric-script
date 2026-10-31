@@ -1692,3 +1692,22 @@ die Vorlage, für die Argumente kopiert, wie bei jedem generischen Typ. Abgeglic
 `Deque.clear`, die Lyric 5 nicht hat, wieder heraus. Spec 12 Regeln 5 und 7; acht Fälle, alle rot
 gegen S7d3. Mutanten: A 514, B 513, C 514 von 516 — je genau die vorhergesagten Fälle; A erst im zweiten Lauf: ein `head`, den das Wachsen stehen ließ, überlebte, weil der Deque-Fall nach dem Wachsen nur die Enden las — er druckt jetzt die ganze Deque.
 Fälle 508 → 516.
+
+**S7e, geschnitten (2026-10-31).** Strings nach 12 Src: die Operationen nativ in der VM, als dünne
+Adapter über Lyric 5s `string`; die API in der Prelude als `extend string { … }` mit Lyric 5s Namen
+und Formen (`string` statt `StringView`, `T[]` statt `Slice`, keine `throws`-Klauseln); die
+Format-Logik in Script. **S7e1** die Glieder von `string` und `char`: `length()` in Bytes,
+`isEmpty()`, `s[i]` das Zeichen ab Byte `i` (`Index<int>`), `s[a..b]` ein neuer String, `chars()`,
+`charIndices()`, `charCount()`; `Pattern` über einen String und ein `char` mit `contains`,
+`startsWith`, `endsWith`, `find`, `rfind`, `count`, `stripPrefix`, `stripSuffix`, `replace`,
+`replaceN` und `trimMatches…`; `trim…`, `isBlank`, `toUpper`/`toLower`, `padStart`/`padEnd`,
+`s * n`, `string.fromChars`; die Glieder von `char` (`isDigit` … `toDigit`, `char.fromDigit`).
+**S7e2** die Iteratoren `split`, `splitN`, `splitOnce`, `matches`, `lines`; `Parse` und
+`ParseError`, Zahlen aus Text (`int.parse(s)`, `s.parse<int>()`). **S7e3** `Display` und `Debug`
+als Prelude-Interfaces (Lyric 5 05 §14, 12) mit `StringBuilder`: `{x}` über `Display`, sonst über
+`Debug` (03 Eq); die synthetisierte Debug-Form wird die Konformanz zu `Debug`, das eigene
+`debug()` der Prelude-Typen (die Brücke aus S7d2) ihre; `join` über `Display`. **S7e4**
+Formatangaben in f-Strings (`{n:>6}`, `{x:.2}`, `{x:?}`; `Format`) und `std.fmt.format` — dazu
+**variadische Parameter** und `xs...` (Lyric 5 08 §1): Lyric 5 hat sie, Scripts Spec übernimmt
+§8 ohne Abweichung, der Plan hatte keine Zeile, also keine Uhr; jetzt S7e4, wo `format` sie
+braucht. `toBytes()` und `string.fromUtf8` kommen mit `Bytes` (S7f).

@@ -302,7 +302,10 @@ VM's call path, S7k measurement point 3.
   generator (since S7c4a) — fixed for object arguments, open for `int` (clock S7d4).
 - **S7d4 done — S7d done** — `Deque` and `Heap`; `import std.collections` (P28); the
   `Box<T[]>` form at `T = int` (the instance's own form was built for objects).
-- Next: **S7e** — strings and formats (plan 14: cut it first).
+- **S7e cut in four** — e1 the members of `string` and `char`, e2 `split`/`lines` and `Parse`,
+  e3 `Display`/`Debug` and `StringBuilder`, e4 format specs and `std.fmt` with variadic
+  parameters (Lyric 5 08 §1: no plan line until now, so no clock).
+- Next: **S7e1** — the members of `string` and `char`.
 
 ## Working mode
 

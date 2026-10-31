@@ -476,7 +476,7 @@ class ThrowSets {
 /// The type a `throw` throws: its value's before it became an `Error`.
 fn thrownType(x: TExpr): Ty {
     return match (x) {
-        .Upcast(v, _) | .BoxOf(v, _, _) => typeOf(v.value),
+        .Upcast(v, _) | .BoxOf(v, _, _) | .BoxOfD(v, _, _) => typeOf(v.value),
         _ => typeOf(x),
     };
 }

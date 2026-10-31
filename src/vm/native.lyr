@@ -1,8 +1,9 @@
 //! The VM's natives (design/v1, 11 and 12): what a script reaches that is no bytecode. A native is
 //! called as a function is (`call.n`, the S1 convention): its arguments stand in consecutive
 //! registers from the call's bases, and its result lands at the base of its file. S2 has the
-//! prelude's output and the operations on strings the core needs; the standard library's natives
-//! follow with S7.
+//! prelude's output and the operations on strings the core needs; S7 the standard library's
+//! (S7a): a module of `std` calls one as `__os_env(name)` in the body of a function whose
+//! signature is the native's — the compiler checks the slots against this table.
 
 /// A native, by what it does.
 enum NativeFn :: [Equatable] {
@@ -23,6 +24,77 @@ enum NativeFn :: [Equatable] {
     /// The frames of an error's record as text, a line `    at <function> (line <n>)` each,
     /// innermost first (S4b).
     TraceText,
+    /// `std.os.env(name)`: the environment variable's value, `null` where it is not set.
+    OsEnv,
+    /// `std.fs.exists(path)`: whether something is at the path.
+    FsExists,
+    /// A `float`'s place in IEEE 754's total order as an `int` (S7c5b): -NaN, -infinity, …, -0.0,
+    /// 0.0, …, infinity, NaN, compared as integers.
+    FloatOrderKey,
+    /// A list sorted in place (S7c6c2): ints and chars by value, floats by IEEE 754's total
+    /// order, strings by their bytes.
+    ListSortInts,
+    ListSortFloats,
+    ListSortStrings,
+    /// A hash's state and a word mixed (S7d1): SipHash-1-3 under the process's key.
+    HashMixInt,
+    /// A hash's state and a string's bytes mixed.
+    HashMixStr,
+    /// An object's number, given the first time it is asked (01 S8).
+    ObjectNumber,
+    /// A map's index (S7d2): a new one; a place under a hash; the first place under a hash, or -1;
+    /// the next after a place, or -1; a place taken out; every place taken out.
+    IndexNew,
+    IndexAdd,
+    IndexFirst,
+    IndexNext,
+    IndexRemove,
+    IndexClear,
+    /// The strings' members (S7e1): a string's length in bytes; the character at a byte, a panic
+    /// outside or inside a character; the first byte of the next character and of the one
+    /// before; a slice on characters' bounds; the characters counted; the case mappings; the
+    /// trims (0 both ends, 1 the start, 2 the end); a repetition; a list of characters joined;
+    /// the first match of a string from a byte, or -1; whether one stands at a byte.
+    StrLen,
+    StrAt,
+    StrNext,
+    StrPrev,
+    StrSlice,
+    StrCharCount,
+    StrUpper,
+    StrLower,
+    StrTrim,
+    StrRepeat,
+    StrFromChars,
+    StrFind,
+    StrMatchesAt,
+    /// A character's general category, as its place in `UnicodeCategory`; whether it is white
+    /// space; its simple case mappings.
+    CharCategory,
+    CharWhite,
+    CharUpper,
+    CharLower,
+    /// A float read from a text of a float's form (S7e2), Lyric 5's reading, correctly rounded;
+    /// the form is the program's to check.
+    FloatOfText,
+    /// A builder of text (S7e3): a new one; a string and a character appended; its length in
+    /// bytes; emptied; its text.
+    BuilderNew,
+    BuilderAppendStr,
+    BuilderAppendChar,
+    BuilderLength,
+    BuilderClear,
+    BuilderText,
+    /// A string's and a character's Debug form (S7e3): Lyric 5's, quoted and escaped.
+    StrDebug,
+    CharDebug,
+    /// The format language (S7e4b): an integer's, a float's, a string's text under a spec,
+    /// a text padded, what is wrong with a spec read at run time.
+    FmtInt,
+    FmtFloat,
+    FmtStr,
+    FmtPad,
+    FmtProblem,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -36,7 +108,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 10;
+let nativeCount: int = 56;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -50,7 +122,53 @@ fn nativeOf(n: int): NativeFn {
         6 => NativeFn.CharToStr,
         7 => NativeFn.StrEq,
         8 => NativeFn.StrCmp,
-        _ => NativeFn.TraceText,
+        9 => NativeFn.TraceText,
+        10 => NativeFn.OsEnv,
+        11 => NativeFn.FsExists,
+        12 => NativeFn.FloatOrderKey,
+        13 => NativeFn.ListSortInts,
+        14 => NativeFn.ListSortFloats,
+        15 => NativeFn.ListSortStrings,
+        16 => NativeFn.HashMixInt,
+        17 => NativeFn.HashMixStr,
+        18 => NativeFn.ObjectNumber,
+        19 => NativeFn.IndexNew,
+        20 => NativeFn.IndexAdd,
+        21 => NativeFn.IndexFirst,
+        22 => NativeFn.IndexNext,
+        23 => NativeFn.IndexRemove,
+        24 => NativeFn.IndexClear,
+        25 => NativeFn.StrLen,
+        26 => NativeFn.StrAt,
+        27 => NativeFn.StrNext,
+        28 => NativeFn.StrPrev,
+        29 => NativeFn.StrSlice,
+        30 => NativeFn.StrCharCount,
+        31 => NativeFn.StrUpper,
+        32 => NativeFn.StrLower,
+        33 => NativeFn.StrTrim,
+        34 => NativeFn.StrRepeat,
+        35 => NativeFn.StrFromChars,
+        36 => NativeFn.StrFind,
+        37 => NativeFn.StrMatchesAt,
+        38 => NativeFn.CharCategory,
+        39 => NativeFn.CharWhite,
+        40 => NativeFn.CharUpper,
+        41 => NativeFn.CharLower,
+        42 => NativeFn.FloatOfText,
+        43 => NativeFn.BuilderNew,
+        44 => NativeFn.BuilderAppendStr,
+        45 => NativeFn.BuilderAppendChar,
+        46 => NativeFn.BuilderLength,
+        47 => NativeFn.BuilderClear,
+        48 => NativeFn.BuilderText,
+        49 => NativeFn.StrDebug,
+        50 => NativeFn.CharDebug,
+        51 => NativeFn.FmtInt,
+        52 => NativeFn.FmtFloat,
+        53 => NativeFn.FmtStr,
+        54 => NativeFn.FmtPad,
+        _ => NativeFn.FmtProblem,
     };
 }
 
@@ -67,6 +185,52 @@ fn nativeNumber(n: NativeFn): int {
         .StrEq => 7,
         .StrCmp => 8,
         .TraceText => 9,
+        .OsEnv => 10,
+        .FsExists => 11,
+        .FloatOrderKey => 12,
+        .ListSortInts => 13,
+        .ListSortFloats => 14,
+        .ListSortStrings => 15,
+        .HashMixInt => 16,
+        .HashMixStr => 17,
+        .ObjectNumber => 18,
+        .IndexNew => 19,
+        .IndexAdd => 20,
+        .IndexFirst => 21,
+        .IndexNext => 22,
+        .IndexRemove => 23,
+        .IndexClear => 24,
+        .StrLen => 25,
+        .StrAt => 26,
+        .StrNext => 27,
+        .StrPrev => 28,
+        .StrSlice => 29,
+        .StrCharCount => 30,
+        .StrUpper => 31,
+        .StrLower => 32,
+        .StrTrim => 33,
+        .StrRepeat => 34,
+        .StrFromChars => 35,
+        .StrFind => 36,
+        .StrMatchesAt => 37,
+        .CharCategory => 38,
+        .CharWhite => 39,
+        .CharUpper => 40,
+        .CharLower => 41,
+        .FloatOfText => 42,
+        .BuilderNew => 43,
+        .BuilderAppendStr => 44,
+        .BuilderAppendChar => 45,
+        .BuilderLength => 46,
+        .BuilderClear => 47,
+        .BuilderText => 48,
+        .StrDebug => 49,
+        .CharDebug => 50,
+        .FmtInt => 51,
+        .FmtFloat => 52,
+        .FmtStr => 53,
+        .FmtPad => 54,
+        .FmtProblem => 55,
     };
 }
 
@@ -82,7 +246,66 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .StrEq => sig("string.eq", 0, 2, true, false),
         .StrCmp => sig("string.cmp", 0, 2, true, false),
         .TraceText => sig("error.trace", 0, 1, false, true),
+        .OsEnv => sig("os.env", 0, 1, false, true),
+        .FsExists => sig("fs.exists", 0, 1, true, false),
+        .FloatOrderKey => sig("float.orderKey", 1, 0, true, false),
+        .ListSortInts => sig("list.sortInts", 0, 1, false, false),
+        .ListSortFloats => sig("list.sortFloats", 0, 1, false, false),
+        .ListSortStrings => sig("list.sortStrings", 0, 1, false, false),
+        .HashMixInt => sig("hash.mixInt", 2, 0, true, false),
+        .HashMixStr => sig("hash.mixStr", 1, 1, true, false),
+        .ObjectNumber => sig("object.number", 0, 1, true, false),
+        .IndexNew => sig("index.new", 0, 0, false, true),
+        .IndexAdd => sig("index.add", 2, 1, false, false),
+        .IndexFirst => sig("index.first", 1, 1, true, false),
+        .IndexNext => sig("index.next", 2, 1, true, false),
+        .IndexRemove => sig("index.remove", 2, 1, false, false),
+        .IndexClear => sig("index.clear", 0, 1, false, false),
+        .StrLen => sig("string.len", 0, 1, true, false),
+        .StrAt => sig("string.at", 1, 1, true, false),
+        .StrNext => sig("string.next", 1, 1, true, false),
+        .StrPrev => sig("string.prev", 1, 1, true, false),
+        .StrSlice => sig("string.slice", 2, 1, false, true),
+        .StrCharCount => sig("string.charCount", 0, 1, true, false),
+        .StrUpper => sig("string.upper", 0, 1, false, true),
+        .StrLower => sig("string.lower", 0, 1, false, true),
+        .StrTrim => sig("string.trim", 1, 1, false, true),
+        .StrRepeat => sig("string.repeat", 1, 1, false, true),
+        .StrFromChars => sig("string.fromChars", 0, 1, false, true),
+        .StrFind => sig("string.find", 1, 2, true, false),
+        .StrMatchesAt => sig("string.matchesAt", 1, 2, true, false),
+        .CharCategory => sig("char.category", 1, 0, true, false),
+        .CharWhite => sig("char.white", 1, 0, true, false),
+        .CharUpper => sig("char.upper", 1, 0, true, false),
+        .CharLower => sig("char.lower", 1, 0, true, false),
+        .FloatOfText => sig("float.ofText", 0, 1, true, false),
+        .BuilderNew => sig("builder.new", 0, 0, false, true),
+        .BuilderAppendStr => sig("builder.appendStr", 0, 2, false, false),
+        .BuilderAppendChar => sig("builder.appendChar", 1, 1, false, false),
+        .BuilderLength => sig("builder.length", 0, 1, true, false),
+        .BuilderClear => sig("builder.clear", 0, 1, false, false),
+        .BuilderText => sig("builder.text", 0, 1, false, true),
+        .StrDebug => sig("string.debug", 0, 1, false, true),
+        .CharDebug => sig("char.debug", 1, 0, false, true),
+        .FmtInt => sig("fmt.int", 1, 1, false, true),
+        .FmtFloat => sig("fmt.float", 1, 1, false, true),
+        .FmtStr => sig("fmt.str", 0, 2, false, true),
+        .FmtPad => sig("fmt.pad", 0, 2, false, true),
+        .FmtProblem => sig("fmt.problem", 1, 1, false, true),
     };
+}
+
+/// The native of a name of the table, `os.env`; `null` where none has it.
+fn nativeNamed(name: string): ?NativeFn {
+    var k = 0;
+    while (k < nativeCount) {
+        let n = nativeOf(k);
+        if (nativeInfo(n).name == name) {
+            return n;
+        }
+        k += 1;
+    }
+    return null;
 }
 
 fn sig(name: string, scalars: int, refs: int, returnsScalar: bool, returnsRef: bool): NativeInfo {

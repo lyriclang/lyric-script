@@ -43,6 +43,12 @@ severity = "panic"
 area = "08-expressions"
 summary = "An `int` operation's result does not fit 64 bits. The code and its meaning are Lyric 5's LYR-RT0002."
 
+[LYS-RT0003]
+title = "an index or a range out of bounds"
+severity = "panic"
+area = "08-expressions"
+summary = "A list read or written at an index it does not have: below 0, or at its length or above. The code and its meaning are Lyric 5's LYR-RT0003."
+
 [LYS-RT0004]
 title = "a null value used"
 severity = "panic"
@@ -54,6 +60,12 @@ title = "stack overflow"
 severity = "panic"
 area = "17-host"
 summary = "The script's calls nest deeper than the VM runs (10 000 frames). The code and its meaning are Lyric 5's LYR-RT0006."
+
+[LYS-RT0007]
+title = "a precondition from the program text"
+severity = "panic"
+area = "03-types"
+summary = "A value the program gives breaks what the operation asks of it: a negative count to repeat a list or a string, `xs * n` and `s * n`. The code and its meaning are Lyric 5's LYR-RT0007."
 
 [LYS-RT0008]
 title = "panic called by the script"
@@ -386,7 +398,7 @@ summary = "`Point { x = 1 }`, or `Point { x }` for `x = x`; a field of `with` al
 title = "nesting deeper than the parser carries"
 severity = "error"
 area = "02-grammar"
-summary = "Expressions, blocks and prefix operators nest at most 64 levels: the parser recurses on its caller's stack. Lyric 5's LYR-PAR0045."
+summary = "Expressions, blocks and prefix operators nest at most 64 levels: the parser recurses on its caller's stack. A link of an `else if` chain is such a level, so a chain of more than 62 is refused — a `match` takes any number of arms. Lyric 5's LYR-PAR0045."
 
 [LYS-PAR0047]
 title = "'by' in an enum's list"
@@ -431,10 +443,10 @@ area = "02-grammar"
 summary = "`a < b < c` is refused rather than read left to right: write each comparison on its own and join them with `&&`. Lyric 5's LYR-PAR0059."
 
 [LYS-PAR0060]
-title = "a default on a local function's parameter"
+title = "a default or a variadic parameter on a local function"
 severity = "error"
 area = "03-types"
-summary = "A local function is one closure: its parameters take no default. Lyric 5's LYR-PAR0060."
+summary = "A local function is one closure: its parameters take no default and none is variadic. Lyric 5's LYR-PAR0060."
 
 [LYS-PAR0900]
 title = "a digit beyond its literal's base"
@@ -533,7 +545,7 @@ summary = "A module imports a name it declares itself, or two of its imports bin
 title = "an import of a module that does not exist"
 severity = "error"
 area = "04-modules"
-summary = "An `import a.b` names a module no file provides: without a manifest, no `a/b.lyrs` below the entry script's folder. Lyric 5's LYR-RES0003."
+summary = "An `import a.b` names a module no file provides: without a manifest, no `a/b.lyrs` below the entry script's folder; `import std.collections` names no module as a whole — its names are the prelude's, imported by name. Lyric 5's LYR-RES0003."
 
 [LYS-RES0004]
 title = "an imported name the module does not declare"
@@ -626,10 +638,10 @@ area = "03-types"
 summary = "The name names no type. Lyric 5's LYR-SEM0011."
 
 [LYS-SEM0007]
-title = "a value that cannot be iterated"
+title = "a value that cannot be indexed or iterated"
 severity = "error"
 area = "07-statements"
-summary = "A `for` walks a value that gives none to bind — a `Coroutine<void>`. Lyric 5's LYR-SEM0007."
+summary = "A `for` walks a value that gives none to bind — a `Coroutine<void>` —, or `[k]` stands after a value whose type is no `Index` (S7c2), or `^n` counts from the end of what is no list. Lyric 5's LYR-SEM0007."
 
 [LYS-SEM0012]
 title = "a member the type does not have"
@@ -714,6 +726,12 @@ title = "a type argument that does not satisfy its parameter's constraints"
 severity = "error"
 area = "03-types"
 summary = "An argument, written or inferred, conforms to every interface its type parameter's constraints name. Lyric 5's LYR-SEM0028."
+
+[LYS-PAR0033]
+title = "a malformed pattern"
+severity = "error"
+area = "09-patterns"
+summary = "A list pattern holds two `..`: with two, the elements between them could not be placed. The code and its meaning are Lyric 5's LYR-PAR0033."
 
 [LYS-SEM0029]
 title = "a pattern that cannot match the value's type"
@@ -827,7 +845,7 @@ summary = "`==` and `!=` compare two values of one type; `== null` asks an optio
 title = "a type argument nothing gives"
 severity = "error"
 area = "03-types"
-summary = "A type parameter that occurs in no argument and not in the expected type is not inferred: write it. Lyric 5's LYR-SEM0060."
+summary = "A type parameter that occurs in no argument and not in the expected type is not inferred: write it — so too an empty `[]` or `[:]` no position gives a type, `let m: Map<string, int> = [:]`. Lyric 5's LYR-SEM0060."
 
 [LYS-SEM0064]
 title = "a type alias that expands to itself"
@@ -863,13 +881,25 @@ summary = "A type's list and an interface's parents name interfaces only, and an
 title = "two functions of one name taking the same number of arguments"
 severity = "error"
 area = "08-expressions"
-summary = "Functions may share a name when they take different numbers of arguments, never otherwise. Lyric 5's LYR-SEM0085."
+summary = "Functions may share a name when they take different numbers of arguments, never otherwise; two members of a type that both answer one instance of a generic interface are refused too. Lyric 5's LYR-SEM0085."
+
+[LYS-SEM0086]
+title = "a call whose arguments' types choose no one member"
+severity = "error"
+area = "05-interfaces"
+summary = "Members of one name and count answering instances of one generic interface are chosen by the arguments' types: the member whose parameters take them, of several the one whose parameters are those types. None or several left is refused; write the argument as its type, `x as float`. Lyric 5's LYR-SEM0086."
 
 [LYS-SEM0087]
 title = "a call that no function of the name takes"
 severity = "error"
 area = "08-expressions"
 summary = "No function of the name takes as many arguments as the call gives. Lyric 5's LYR-SEM0087."
+
+[LYS-SEM0089]
+title = "a member of a shared name read without a call where nothing says which"
+severity = "error"
+area = "08-expressions"
+summary = "A method read as a value, `c.from`, is one of several of its name only where the position's function type says which. Lyric 5's LYR-SEM0089."
 
 [LYS-SEM0097]
 title = "a name bound twice in one pattern"
@@ -881,7 +911,7 @@ summary = "One pattern binds a name once: `let (a, a) = …` is refused. Lyric 5
 title = "a pattern that can fail where nothing takes the miss"
 severity = "error"
 area = "09-patterns"
-summary = "A `let` takes apart only what cannot fail; a pattern that tests goes in a `match`. Lyric 5's LYR-SEM0098."
+summary = "A `let` and a `for` take apart only what cannot fail — a name, `_`, a tuple or a field pattern over a struct of such; a pattern that tests goes in a `match`, an `if let` or a `let … else`. Lyric 5's LYR-SEM0098."
 
 [LYS-SEM0101]
 title = "a jump to a label no loop around carries"
@@ -931,11 +961,35 @@ severity = "error"
 area = "03-types"
 summary = "`.Red`, `.Num(1)` and `.Rect { … }` name a member of the enum the position expects; where it expects none, name the enum: `Color.Red`. Lyric 5's LYR-SEM0113."
 
+[LYS-SEM0114]
+title = "a string's byte counted from the end"
+severity = "error"
+area = "12-stdlib"
+summary = "`s[^n]` is no index of a string: a byte counted from the end is rarely where a character begins. `^n` stands as a bound of a range alone, `s[^3..]`. Lyric 5's LYR-SEM0114."
+
 [LYS-SEM0116]
 title = "'with' on something other than a struct"
 severity = "error"
 area = "03-types"
 summary = "The target of `with` is a class, a tuple, an enum or another type that is no struct, or a path among its fields reaches through a field that is no struct. Lyric 5's LYR-SEM0116."
+
+[LYS-SEM0024]
+title = "a variadic parameter out of place"
+severity = "error"
+area = "08-expressions"
+summary = "A variadic parameter, `xs: T...`, stands last and takes no default: a call without its arguments passes the empty array. Lyric 5's LYR-SEM0024."
+
+[LYS-SEM0166]
+title = "a spread that is not a variadic parameter's rest"
+severity = "error"
+area = "08-expressions"
+summary = "`xs...` hands an array on as the rest of a call's arguments: one spread, at a variadic parameter, alone there. Lyric 5's LYR-SEM0166."
+
+[LYS-SEM0164]
+title = "a format spec that does not apply"
+severity = "error"
+area = "12-stdlib"
+summary = "A hole's spec is checked where it is written: `[[fill]align][sign][#][0][width][grouping][.precision][type]`, an integer all but a precision and a float's type, a float all but `#` and an integer's type, a string fill, alignment, width and precision, any other value fill, alignment and width — under `?` too. Lyric 5's LYR-SEM0164."
 
 [LYS-SEM0119]
 title = "a named argument that does not fit the parameters"
@@ -943,11 +997,23 @@ severity = "error"
 area = "08-expressions"
 summary = "A name no parameter has, a name given twice, or a positional argument after a named one. Lyric 5's LYR-SEM0119."
 
+[LYS-SEM0117]
+title = "the placeholder `_` where it is no type argument"
+severity = "error"
+area = "03-types"
+summary = "`_` stands for one type argument the inference fills, among the type arguments of a call, an initializer or a function's value; anywhere else — `let p: Pair<_, int>` — it is refused. Lyric 5's LYR-SEM0117."
+
 [LYS-SEM0121]
 title = "a second member of one name on a type"
 severity = "error"
 area = "03-types"
-summary = "A type has one field, method or variant of each name. Lyric 5's LYR-SEM0121."
+summary = "A type has one field or variant of each name, and one method of each name and count; members of one name and count stand side by side only each in its own conformance block, or each answering its own instance of a generic interface. A conformance block's member beside the type's own of the name is refused at any count. Lyric 5's LYR-SEM0121."
+
+[LYS-SEM0122]
+title = "an unqualified call of a member each conformance block gives apart"
+severity = "error"
+area = "05-interfaces"
+summary = "A name two conformance blocks of a type implement apart belongs to each block: `c.greet()` is refused, `Greeter.greet(c)` names the one. Lyric 5's LYR-SEM0122."
 
 [LYS-SEM0123]
 title = "a delegation to what is no field holding the interface"
@@ -1087,6 +1153,24 @@ severity = "error"
 area = "05-interfaces"
 summary = "A conforming type answers an associated type with a type that does not conform to the bound the interface declares for it, `type Iter :: [Iterator]` answered with `int`. Lyric 5's LYR-SEM0160."
 
+[LYS-SEM0135]
+title = "a Default of an enum"
+severity = "error"
+area = "05-interfaces"
+summary = "An enum that lists `Default` without a `default` of its own is refused: no variant is the default. Lyric 5's LYR-SEM0135."
+
+[LYS-SEM0168]
+title = "a type's member hides a blanket member"
+severity = "warning"
+area = "05-interfaces"
+summary = "A type has a member of its own — written, from another extend block, inherited as an interface's default or left to a field — of the name a blanket block `extend<T :: [I]> T { … }` gives it. A call on the type reaches the type's; generic code that reaches the name through the block's constraints calls the block's, for that type too. Lyric 5's LYR-SEM0168."
+
+[LYS-SEM0170]
+title = "an extend block's type parameter bound by nothing"
+severity = "error"
+area = "05-interfaces"
+summary = "A blanket block declares a type parameter that its target does not name and no constraint's fixation names, as `X` in `extend<I :: [Iterator], X> I`: the block reaches no type. Lyric 5's LYR-SEM0170."
+
 [LYS-SEM0176]
 title = "a name bound twice in one scope"
 severity = "error"
@@ -1202,6 +1286,12 @@ title = "a coroutine misused"
 severity = "panic"
 area = "10-concurrency"
 summary = "A coroutine is used against its rules: pulled or closed while it runs, a `yield` where no coroutine runs or after the coroutine was closed, or a yield of another type than the running coroutine's. The code and its meaning are Lyric 5's LYR-RT0014."
+
+[LYS-RT0016]
+title = "a collection changed while it was walked"
+severity = "panic"
+area = "12-stdlib"
+summary = "A list's length changed — a push, a pop, an insert, a removal — while a `for` loop walked it. The next step of the walk panics; collect the changes and apply them after the loop. The code and its meaning are Lyric 5's LYR-RT0016."
 
 [LYS-RT0018]
 title = "a deadlock"

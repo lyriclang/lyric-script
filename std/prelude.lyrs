@@ -1,0 +1,1800 @@
+//! The prelude (07 V3 I8): what every module names without an import, written in Lyric-Script and
+//! parsed before the program as no file of it. The literal protocols (03 Lit), each a static
+//! member that builds the conforming type from a literal of its kind; `Error`, the root of what is
+//! thrown, `Exception`, the ready-made one with a message, `Backtrace`, where an error was first
+//! thrown, and `Closeable`, what `using` closes (05 E3, E6, E7; Lyric 5's std.core); tasks,
+//! coroutines, scopes, channels, semaphores, `select` and time (S6; 07 N2-N9). Its `__` names are
+//! the VM's intrinsics, which only the prelude and the standard library's modules can call.
+interface Error {
+    fn message(): string
+    fn cause(): ?Error {
+        return null
+    }
+}
+class Exception :: Error {
+    text: string
+    inner: ?Error = null
+    static fn new(message: string, cause: ?Error = null): Exception {
+        return Exception { text = message, inner = cause }
+    }
+    fn message(): string {
+        return this.text
+    }
+    fn cause(): ?Error {
+        return this.inner
+    }
+}
+struct Backtrace {
+    text: string
+    fn show(): string = this.text
+}
+interface Closeable {
+    fn close()
+}
+interface FromIntLiteral {
+    static fn fromIntLiteral(v: int): Self
+}
+interface FromFloatLiteral {
+    static fn fromFloatLiteral(v: float): Self
+}
+interface FromStringLiteral {
+    static fn fromStringLiteral(v: string): Self
+}
+interface FromBoolLiteral {
+    static fn fromBoolLiteral(v: bool): Self
+}
+interface FromNullLiteral {
+    static fn fromNullLiteral(): Self
+}
+class Task<T> {
+}
+class PanicInfo {
+    code: string
+    message: string
+    trace: string
+}
+enum TaskStatus<T> {
+    Running,
+    Done(T),
+    Failed(Error),
+    Cancelled,
+    Panicked(PanicInfo),
+}
+class Coroutine<Y, R = void> :: [Identity, Closeable, Iterator] {
+    type Item = Y
+    fn next(): ?Y = __coNext(this)
+    fn close() {
+        __coClose(this)
+    }
+}
+class Cancelled :: Error {
+    fn message(): string = "cancelled"
+}
+class TaskScope :: Closeable {
+    fn close() {
+        __scopeClose(this)
+    }
+}
+class ChannelClosed :: Error {
+    fn message(): string = "channel closed"
+}
+class Channel<T> {
+}
+class Semaphore {
+}
+interface SelectCase {
+    fn ready(): bool
+    fn watch()
+    fn fire()
+}
+class ChannelCase<T> :: SelectCase {
+    channel: Channel<T>
+    body: fn(?T) -> void
+    fn ready(): bool = __chanReady(this.channel)
+    fn watch() {
+        __chanWatch(this.channel)
+    }
+    fn fire() {
+        let f = this.body
+        f(this.channel.recv())
+    }
+}
+class CaseNode {
+    entry: SelectCase
+    var next: ?CaseNode = null
+}
+class Selection {
+    var first: ?CaseNode = null
+    var last: ?CaseNode = null
+    var timeoutNanos: int = -1
+    var onTimeout: ?fn() -> void = null
+    fn on<T>(c: Channel<T>, body: fn(?T) -> void): Selection {
+        let node = CaseNode { entry = ChannelCase { channel = c, body = body } }
+        if (let tail = this.last) {
+            tail.next = node
+        } else {
+            this.first = node
+        }
+        this.last = node
+        return this
+    }
+    fn timeout(d: Duration, body: fn() -> void): Selection {
+        this.timeoutNanos = if (d.nanos() > 0) d.nanos() else 0
+        this.onTimeout = body
+        return this
+    }
+    fn run() {
+        var timer: ?Channel<void> = null
+        while (true) {
+            var n = this.first
+            while (let c = n) {
+                if (c.entry.ready()) {
+                    c.entry.fire()
+                    return
+                }
+                n = c.next
+            }
+            if (let late = this.onTimeout) {
+                if (this.timeoutNanos == 0) {
+                    late()
+                    return
+                }
+                if (timer == null) {
+                    timer = Timer.after(Duration.ofNanos(this.timeoutNanos))
+                }
+                if (let tc = timer) {
+                    if (__chanReady(tc)) {
+                        late()
+                        return
+                    }
+                    __chanWatch(tc)
+                }
+            }
+            n = this.first
+            while (let c = n) {
+                c.entry.watch()
+                n = c.next
+            }
+            __parkWatched()
+        }
+    }
+}
+class Select {
+    static fn on<T>(c: Channel<T>, body: fn(?T) -> void): Selection = Selection { }.on(c, body)
+}
+struct Duration {
+    private nanosCount: int
+    static fn ofNanos(n: int): Duration = Duration { nanosCount = n }
+    static fn ofMicros(n: int): Duration = Duration { nanosCount = n * 1000 }
+    static fn ofMillis(n: int): Duration = Duration { nanosCount = n * 1000000 }
+    static fn ofSecs(n: int): Duration = Duration { nanosCount = n * 1000000000 }
+    static fn ofMinutes(n: int): Duration = Duration { nanosCount = n * 60000000000 }
+    static fn ofHours(n: int): Duration = Duration { nanosCount = n * 3600000000000 }
+    fn nanos(): int = this.nanosCount
+    fn millis(): int = this.nanosCount / 1000000
+    fn secs(): int = this.nanosCount / 1000000000
+}
+fn sleep(d: Duration) {
+    __sleep(d.nanos())
+}
+class Timer {
+    static fn after(d: Duration): Channel<void> = __timerAfter(d.nanos())
+}
+fn readLine(): ?string = __readLine()
+class TimedOut :: Error {
+    fn message(): string = "timed out"
+}
+class TimeoutFlag {
+    var late: bool = false
+}
+fn withTimeout<T>(d: Duration, body: fn() -> T): T {
+    let flag = TimeoutFlag { }
+    let scope = TaskScope.new()
+    let work = scope.spawn { body() }
+    let timer = scope.spawn {
+        sleep(d)
+        flag.late = true
+        work.cancel()
+    }
+    defer {
+        timer.cancel()
+        try {
+            scope.close()
+        } catch (e) {
+        }
+    }
+    try {
+        return work.await()
+    } catch (e: Cancelled) {
+        if (flag.late) {
+            throw TimedOut { }
+        }
+        throw e
+    }
+}
+extend<T> T[] {
+    /// The elements in the order `cmp` gives, stably — equal ones keep their order (Lyric 5 C10;
+    /// S7c6c2): a merge sort through a buffer of the length, O(n log n) comparisons. Where `cmp`
+    /// throws, the list is as it was.
+    fn sortBy(cmp: fn(T, T) -> Ordering) {
+        let n = this.length()
+        if (n < 2) {
+            return
+        }
+        var a = this[..]
+        var b = this[..]
+        var width = 1
+        while (width < n) {
+            var lo = 0
+            while (lo < n) {
+                let mid = if (lo + width < n) lo + width else n
+                let hi = if (lo + 2 * width < n) lo + 2 * width else n
+                var i = lo
+                var j = mid
+                var k = lo
+                while (k < hi) {
+                    if (i < mid && (j >= hi || cmp(a[j], a[i]) != Ordering.Less)) {
+                        b[k] = a[i]
+                        i += 1
+                    } else {
+                        b[k] = a[j]
+                        j += 1
+                    }
+                    k += 1
+                }
+                lo = hi
+            }
+            let t = a
+            a = b
+            b = t
+            width *= 2
+        }
+        var k = 0
+        while (k < n) {
+            this[k] = a[k]
+            k += 1
+        }
+    }
+    /// The elements in the order of a `TotalOrder` key, stably.
+    fn sortByKey<K :: [TotalOrder]>(key: fn(T) -> K) {
+        this.sortBy((x, y) => key(x).totalCompare(key(y)))
+    }
+    /// The first index whose element fails `p`, for elements `p` partitions — every one it holds
+    /// for before every one it does not: a binary search.
+    fn partitionPoint(p: fn(T) -> bool): int {
+        var lo = 0
+        var hi = this.length()
+        while (lo < hi) {
+            let mid = lo + (hi - lo) / 2
+            if (p(this[mid])) {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return lo
+    }
+    /// An empty list (Lyric 5's `List.new`; a `List<T>` is a `T[]`).
+    static fn new(): T[] = []
+    /// A new list of the elements of `xs` (Lyric 5's `List.of`).
+    static fn of(xs: T[]): T[] = xs[..]
+    /// The values of an iterator, in order (Lyric 5's `List.from`).
+    static fn from<I :: [Iterator<Item = T>]>(it: I): T[] {
+        let out: T[] = []
+        while (let x = it.next()) {
+            out.push(x)
+        }
+        return out
+    }
+    /// An empty list (Lyric 5's `List.withCapacity`: the room is the VM's to keep); a negative
+    /// `n` panics.
+    static fn withCapacity(n: int): T[] {
+        if (n < 0) {
+            panic(f"a negative capacity: {n}")
+        }
+        return []
+    }
+    /// Whether the list has no element.
+    fn isEmpty(): bool = this.length() == 0
+    /// The element at `i`, `null` outside the list.
+    fn get(i: int): ?T {
+        if (i < 0 || i >= this.length()) {
+            return null
+        }
+        return this[i]
+    }
+    /// The first element, `null` where the list is empty.
+    fn first(): ?T = this.get(0)
+    /// The last element, `null` where the list is empty.
+    fn last(): ?T = this.get(this.length() - 1)
+    /// Appends every element of `xs`, in order; `xs` may be the list itself.
+    fn pushAll(xs: T[]) {
+        let n = xs.length()
+        var k = 0
+        while (k < n) {
+            this.push(xs[k])
+            k += 1
+        }
+    }
+    /// `v` at `i`, the elements from `i` on one place further; a panic where `i` is outside
+    /// `0..=length()`.
+    fn insert(i: int, v: T) {
+        let n = this.length()
+        if (i < 0 || i > n) {
+            __boundsPanic(f"index {i} out of bounds for length {n}")
+        }
+        this.push(v)
+        var k = n
+        while (k > i) {
+            this[k] = this[k - 1]
+            k -= 1
+        }
+        this[i] = v
+    }
+    /// Takes the element at `i` out and gives it, the elements after it one place nearer.
+    fn removeAt(i: int): T {
+        let v = this[i]
+        let n = this.length()
+        var k = i
+        while (k < n - 1) {
+            this[k] = this[k + 1]
+            k += 1
+        }
+        __listTruncate(this, n - 1)
+        return v
+    }
+    /// Takes out the elements `p` holds for, the others kept in order; how many went. Where `p`
+    /// throws, the elements decided so far are gone or kept and the rest stay, in order.
+    fn removeWhere(p: fn(T) -> bool): int {
+        let n = this.length()
+        var kept = 0
+        var k = 0
+        defer {
+            var j = k
+            while (j < n) {
+                this[kept + j - k] = this[j]
+                j += 1
+            }
+            __listTruncate(this, kept + n - k)
+        }
+        while (k < n) {
+            let v = this[k]
+            if (!p(v)) {
+                this[kept] = v
+                kept += 1
+            }
+            k += 1
+        }
+        return n - kept
+    }
+    /// Takes every element out.
+    fn clear() {
+        __listTruncate(this, 0)
+    }
+    /// Keeps the first `n` elements: an `n` at or past the length keeps all, a negative one panics.
+    fn truncate(n: int) {
+        if (n < 0) {
+            panic(f"a negative length: {n}")
+        }
+        __listTruncate(this, n)
+    }
+    /// Exchanges the elements at `i` and `j`.
+    fn swap(i: int, j: int) {
+        let v = this[i]
+        this[i] = this[j]
+        this[j] = v
+    }
+    /// The elements in the opposite order, in place.
+    fn reverse() {
+        var i = 0
+        var j = this.length() - 1
+        while (i < j) {
+            this.swap(i, j)
+            i += 1
+            j -= 1
+        }
+    }
+    /// A new list of the elements in the opposite order.
+    fn reversed(): T[] {
+        let out: T[] = []
+        var k = this.length() - 1
+        while (k >= 0) {
+            out.push(this[k])
+            k -= 1
+        }
+        return out
+    }
+    /// Every element `v`.
+    fn fill(v: T) {
+        var k = 0
+        while (k < this.length()) {
+            this[k] = v
+            k += 1
+        }
+    }
+}
+fn __listConcat<T>(a: T[], b: T[]): T[] {
+    let out: T[] = []
+    out.pushAll(a)
+    out.pushAll(b)
+    return out
+}
+fn __listRepeat<T>(a: T[], n: int): T[] {
+    if (n < 0) {
+        __argumentPanic(f"repeat count {n} is negative")
+    }
+    let out: T[] = []
+    var k = 0
+    while (k < n) {
+        out.pushAll(a)
+        k += 1
+    }
+    return out
+}
+fn __listSlice<T>(xs: T[], from: int, to: int): T[] {
+    let n = xs.length()
+    if (from < 0 || from > to || to > n) {
+        __boundsPanic(f"range {from}..{to} out of bounds for length {n}")
+    }
+    let out: T[] = []
+    var k = from
+    while (k < to) {
+        out.push(xs[k])
+        k += 1
+    }
+    return out
+}
+// what `==` asks of a type parameter (Lyric 5 05 §12 rule 5): a struct, an enum, a tuple, a list
+// and an optional are one where their parts are, a class through `:: Equatable` or `:: Identity`
+interface Equatable {
+    fn equals(o: Self): bool
+}
+// the order of two values (Lyric 5 05 §12 rule 6; S7c5b): `<` … read `compare`, `null` where the
+// two are not ordered; `TotalOrder` is what sorting asks — `float` is one in IEEE 754's order
+enum Ordering {
+    Less,
+    Equal,
+    Greater,
+}
+interface Ordered :: Equatable {
+    fn compare(o: Self): ?Ordering
+}
+interface TotalOrder :: Ordered {
+    fn totalCompare(o: Self): Ordering
+}
+extend int :: [Ordered, TotalOrder] {
+    fn compare(o: int): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: int): Ordering = if (this < o) Ordering.Less
+        else if (this > o) Ordering.Greater
+        else Ordering.Equal
+}
+extend char :: [Ordered, TotalOrder] {
+    fn compare(o: char): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: char): Ordering = if (this < o) Ordering.Less
+        else if (this > o) Ordering.Greater
+        else Ordering.Equal
+}
+extend string :: [Ordered, TotalOrder] {
+    fn compare(o: string): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: string): Ordering = if (this < o) Ordering.Less
+        else if (this > o) Ordering.Greater
+        else Ordering.Equal
+}
+extend float :: [Ordered, TotalOrder] {
+    fn compare(o: float): ?Ordering = if (this < o) Ordering.Less
+        else if (this > o) Ordering.Greater
+        else if (this == o) Ordering.Equal
+        else null
+    fn totalCompare(o: float): Ordering = __floatKey(this).totalCompare(__floatKey(o))
+}
+fn __floatKey(x: float): int = __float_orderKey(x)
+// the operators of a type of the program (Lyric 5 05 §12 rules 1–4; S7c5c2): `a + b` is
+// `a.add(b)` through the conformance the right operand's type picks, `-a` is `a.neg()`; the
+// result is the conformance's `Out`, `Self` unless it answers otherwise
+interface Add<Rhs = Self> {
+    type Out = Self
+    fn add(rhs: Rhs): Self.Out
+}
+interface Sub<Rhs = Self> {
+    type Out = Self
+    fn sub(rhs: Rhs): Self.Out
+}
+interface Mul<Rhs = Self> {
+    type Out = Self
+    fn mul(rhs: Rhs): Self.Out
+}
+interface Div<Rhs = Self> {
+    type Out = Self
+    fn div(rhs: Rhs): Self.Out
+}
+interface Rem<Rhs = Self> {
+    type Out = Self
+    fn rem(rhs: Rhs): Self.Out
+}
+interface BitAnd<Rhs = Self> {
+    type Out = Self
+    fn bitAnd(rhs: Rhs): Self.Out
+}
+interface BitOr<Rhs = Self> {
+    type Out = Self
+    fn bitOr(rhs: Rhs): Self.Out
+}
+interface BitXor<Rhs = Self> {
+    type Out = Self
+    fn bitXor(rhs: Rhs): Self.Out
+}
+interface Shl<Rhs = int> {
+    type Out = Self
+    fn shl(rhs: Rhs): Self.Out
+}
+interface Shr<Rhs = int> {
+    type Out = Self
+    fn shr(rhs: Rhs): Self.Out
+}
+interface Neg {
+    type Out = Self
+    fn neg(): Self.Out
+}
+interface BitNot {
+    type Out = Self
+    fn bitNot(): Self.Out
+}
+// the scalars keep their own arithmetic and conform besides, for a constraint to take them
+extend int :: [Add, Sub, Mul, Div, Rem, Neg, BitAnd, BitOr, BitXor, BitNot, Shl, Shr] {
+    fn add(rhs: int): int = this + rhs
+    fn sub(rhs: int): int = this - rhs
+    fn mul(rhs: int): int = this * rhs
+    fn div(rhs: int): int = this / rhs
+    fn rem(rhs: int): int = this % rhs
+    fn neg(): int = -this
+    fn bitAnd(rhs: int): int = this & rhs
+    fn bitOr(rhs: int): int = this | rhs
+    fn bitXor(rhs: int): int = this ^ rhs
+    fn bitNot(): int = ~this
+    fn shl(rhs: int): int = this << rhs
+    fn shr(rhs: int): int = this >> rhs
+}
+extend float :: [Add, Sub, Mul, Div, Rem, Neg] {
+    fn add(rhs: float): float = this + rhs
+    fn sub(rhs: float): float = this - rhs
+    fn mul(rhs: float): float = this * rhs
+    fn div(rhs: float): float = this / rhs
+    fn rem(rhs: float): float = this % rhs
+    fn neg(): float = -this
+}
+extend string :: Add {
+    fn add(rhs: string): string = this + rhs
+}
+// what a hash is written into (Lyric 5 12 §Hashing; S7d1): one hasher, SipHash-1-3 under a key
+// the process draws, its mixing the VM's — an int's arithmetic panics where it overflows
+class Hasher {
+    var state: int = 0
+    fn writeByte(b: int) {
+        this.state = __mixInt(this.state, b & 255)
+    }
+    fn writeInt(v: int) {
+        this.state = __mixInt(this.state, v)
+    }
+    fn finish(): int = this.state
+}
+fn __mixInt(a: int, b: int): int = __hash_mixInt(a, b)
+fn __mixStr(a: int, s: string): int = __hash_mixStr(a, s)
+// a value that hashes (Lyric 5 05 §14; Script 03 Eq): it writes its parts into the hasher, equal
+// values the same; a struct, an enum and a tuple of hashable parts by themselves, a class by its
+// identity or through `:: Hashable`; a float none (05 Fl)
+interface Hashable :: Equatable {
+    fn hash(h: Hasher)
+}
+extend int :: Hashable {
+    fn hash(h: Hasher) {
+        h.writeInt(this)
+    }
+}
+extend char :: Hashable {
+    fn hash(h: Hasher) {
+        h.writeInt(this as int)
+    }
+}
+extend bool :: Hashable {
+    fn hash(h: Hasher) {
+        h.writeByte(if (this) 1 else 0)
+    }
+}
+extend string :: Hashable {
+    fn hash(h: Hasher) {
+        h.state = __mixStr(h.state, this)
+    }
+}
+
+// a builder of text's natives (S7e3): Lyric 5's `StringBuilder` under them
+fn __sbNew(): Any = __builder_new()
+fn __sbAppendStr(b: Any, s: string): void = __builder_appendStr(b, s)
+fn __sbAppendChar(b: Any, c: char): void = __builder_appendChar(b, c)
+fn __sbLength(b: Any): int = __builder_length(b)
+fn __sbClear(b: Any): void = __builder_clear(b)
+fn __sbText(b: Any): string = __builder_text(b)
+
+// a text built a part at a time in one buffer that doubles, no chain of concatenations (Lyric 5
+// 12 §Strings; S7e3)
+class StringBuilder :: Debug {
+    b: Any = __sbNew()
+
+    static fn new(): StringBuilder = StringBuilder { }
+    // its length in bytes
+    fn length(): int = __sbLength(this.b)
+    fn appendStr(s: string) = __sbAppendStr(this.b, s)
+    fn appendChar(c: char) = __sbAppendChar(this.b, c)
+    fn clear() = __sbClear(this.b)
+    fn toString(): string = __sbText(this.b)
+    // `v`'s text, through its `showTo` (S7e3b)
+    fn append<T :: [Display]>(v: T) {
+        v.showTo(this)
+    }
+    // the VM holds its text: its Debug form is its type, as a task's is (S7e3; its field printed
+    // through no table)
+    fn debug(): string = "<StringBuilder>"
+}
+
+// renders a value as text: `{x}` renders through `show()` where the value's type is one (Lyric 5
+// 05 §14, 12; S7e3) — every other value in its Debug form
+interface Display {
+    fn show(): string
+    // `show()` appended to `out`; a type that can write itself directly overrides it
+    fn showTo(out: StringBuilder) {
+        out.appendStr(this.show())
+    }
+}
+// renders a value for debugging: `P { x = 1, y = "a" }`, `E.B(3)`; every value has one, written
+// or synthesized
+interface Debug {
+    fn debug(): string
+    // `debug()` appended to `out` — the compiler's for every value, written or not: a default
+    // here would print through a table in every program (S7e3)
+    fn debugTo(out: StringBuilder)
+}
+extend int :: Display {
+    fn show(): string = f"{this}"
+}
+extend float :: Display {
+    fn show(): string = f"{this}"
+}
+extend bool :: Display {
+    fn show(): string = f"{this}"
+}
+extend char :: Display {
+    fn show(): string = f"{this}"
+}
+extend string :: Display {
+    fn show(): string = this
+}
+// the format language (S7e4b): Lyric 5's own formatting under it; a spec read at run time is
+// checked first, its fault a panic (`LYS-RT0008`) — an f-string's the compiler checked
+fn __fmtProblem(kind: int, spec: string): string = __fmt_problem(kind, spec)
+fn __fmtChecked(spec: string, kind: int) {
+    let p = __fmtProblem(kind, spec)
+    if (p != "") {
+        panic(p)
+    }
+}
+fn __fmtText(text: string, spec: string): string = __fmt_pad(text, spec)
+fn __fmtInt(v: int, spec: string): string = __fmt_int(v, spec)
+fn __fmtFloat(v: float, spec: string): string = __fmt_float(v, spec)
+fn __fmtStr(s: string, spec: string): string = __fmt_str(s, spec)
+
+// a type with formats of its own: `{x:spec}` hands it the spec as written (Lyric 5 12 §2 rule 2);
+// the scalars and the string conform with the format language
+interface Format {
+    fn format(spec: string, out: StringBuilder)
+}
+extend int :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 0)
+        out.appendStr(__fmtInt(this, spec))
+    }
+}
+extend float :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 1)
+        out.appendStr(__fmtFloat(this, spec))
+    }
+}
+extend string :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 2)
+        out.appendStr(__fmtStr(this, spec))
+    }
+}
+extend char :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 3)
+        out.appendStr(__fmtText(f"{this}", spec))
+    }
+}
+extend bool :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 4)
+        out.appendStr(__fmtText(f"{this}", spec))
+    }
+}
+// `{x:spec}` of a `Format` of its own
+fn __formatOf<T :: [Format]>(x: T, spec: string): string {
+    let b = StringBuilder.new()
+    x.format(spec, b)
+    return b.toString()
+}
+
+// a tuple of `Display`s is one: its elements' texts between parentheses, `(1, a)` — its Debug
+// form `(1, "a")` (Lyric 5 12 §Strings; S7e3)
+extend<A :: [Display], B :: [Display]> (A, B) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display]> (A, B, C) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display]> (A, B, C, D) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display], E :: [Display]> (A, B, C, D, E) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ", " + this.4.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display], E :: [Display], F :: [Display]> (A, B, C, D, E, F) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ", " + this.4.show() + ", " + this.5.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display], E :: [Display], F :: [Display], G :: [Display]> (A, B, C, D, E, F, G) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ", " + this.4.show() + ", " + this.5.show() + ", " + this.6.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display], E :: [Display], F :: [Display], G :: [Display], H :: [Display]> (A, B, C, D, E, F, G, H) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ", " + this.4.show() + ", " + this.5.show() + ", " + this.6.show() + ", " +
+        this.7.show() + ")"
+}
+
+// a string's natives (S7e1): Lyric 5's string under them, its bytes and characters
+fn __strLen(s: string): int = __string_len(s)
+fn __strAt(s: string, i: int): char = __string_at(s, i)
+fn __strNext(s: string, at: int): int = __string_next(s, at)
+fn __strPrev(s: string, end: int): int = __string_prev(s, end)
+fn __strSlice(s: string, from: int, to: int): string = __string_slice(s, from, to)
+fn __strCharCount(s: string): int = __string_charCount(s)
+fn __strUpper(s: string): string = __string_upper(s)
+fn __strLower(s: string): string = __string_lower(s)
+fn __strTrim(s: string, mode: int): string = __string_trim(s, mode)
+fn __strRepeat(s: string, n: int): string = __string_repeat(s, n)
+fn __strFromChars(cs: char[]): string = __string_fromChars(cs)
+fn __strFind(t: string, p: string, from: int): int = __string_find(t, p, from)
+fn __strMatchesAt(t: string, p: string, at: int): bool = __string_matchesAt(t, p, at)
+fn __charCategory(c: char): int = __char_category(c)
+fn __charWhite(c: char): bool = __char_white(c)
+fn __charUpper(c: char): char = __char_upper(c)
+fn __charLower(c: char): char = __char_lower(c)
+
+// a string's members (Lyric 5 12 §Strings; S7e1): its bytes, its characters; a new string for
+// what Lyric 5 gives a view of (03 Str)
+extend string {
+    // the bytes, O(1); `charCount()` counts the characters
+    fn length(): int = __strLen(this)
+    fn isEmpty(): bool = __strLen(this) == 0
+    // the characters, decoded, from either end
+    fn chars(): CharsIter = CharsIter { s = this, end = __strLen(this) }
+    // each character with the byte it begins at
+    fn charIndices(): CharIndicesIter = CharIndicesIter { s = this }
+    // the characters, O(n)
+    fn charCount(): int = __strCharCount(this)
+    // each character by its simple case mapping, one for one, no locale
+    fn toUpper(): string = __strUpper(this)
+    fn toLower(): string = __strLower(this)
+    // without the white space — the characters with the property White_Space — at the ends
+    fn trim(): string = __strTrim(this, 0)
+    fn trimStart(): string = __strTrim(this, 1)
+    fn trimEnd(): string = __strTrim(this, 2)
+    // whether it holds nothing but white space; true for the empty text too
+    fn isBlank(): bool = __strLen(__strTrim(this, 1)) == 0
+    // the text of an iterator's characters, in order
+    static fn fromChars<I :: [Iterator<Item = char>]>(chars: I): string {
+        let cs: char[] = []
+        while (let c = chars.next()) {
+            cs.push(c)
+        }
+        return __strFromChars(cs)
+    }
+}
+// `s[i]`: the character that begins at byte `i` — a panic outside or at a byte that continues one
+extend string :: Index<int> {
+    type Output = char
+    fn index(i: int): char = __strAt(this, i)
+}
+
+// what a text is searched for: a string, a character, a test of characters (Lyric 5 12 §Strings;
+// S7e1, S7e2). `matchAt` gives the end of a match that begins at byte `at`, `matchBefore` the start of
+// one that ends at `end`, `null` where there is none — `at` and `end` a character's first byte or
+// the length; `nextIn` the first byte at or after `from` where one begins, by default through
+// `matchAt` at each, faster where a pattern can find
+interface Pattern {
+    fn matchAt(text: string, at: int): ?int
+    fn matchBefore(text: string, end: int): ?int
+    fn nextIn(text: string, from: int): ?int {
+        let n = __strLen(text)
+        var at = from
+        while (at <= n) {
+            if (this.matchAt(text, at) != null) {
+                return at
+            }
+            at = __strNext(text, at)
+        }
+        return null
+    }
+}
+// a string's bytes, where they stand
+extend string :: Pattern {
+    fn matchAt(text: string, at: int): ?int {
+        if (__strMatchesAt(text, this, at)) {
+            return at + __strLen(this)
+        }
+        return null
+    }
+    fn matchBefore(text: string, end: int): ?int {
+        let start = end - __strLen(this)
+        if (__strMatchesAt(text, this, start)) {
+            return start
+        }
+        return null
+    }
+    fn nextIn(text: string, from: int): ?int {
+        let at = __strFind(text, this, from)
+        if (at < 0) {
+            return null
+        }
+        return at
+    }
+}
+// the character, where it stands
+extend char :: Pattern {
+    fn matchAt(text: string, at: int): ?int {
+        if (at >= __strLen(text) || __strAt(text, at) != this) {
+            return null
+        }
+        return __strNext(text, at)
+    }
+    fn matchBefore(text: string, end: int): ?int {
+        if (end <= 0) {
+            return null
+        }
+        let start = __strPrev(text, end)
+        if (__strAt(text, start) != this) {
+            return null
+        }
+        return start
+    }
+}
+// a character for which the test holds (S7e2: a block on a function type)
+extend fn(char) -> bool :: Pattern {
+    fn matchAt(text: string, at: int): ?int {
+        if (at >= __strLen(text) || !this(__strAt(text, at))) {
+            return null
+        }
+        return __strNext(text, at)
+    }
+    fn matchBefore(text: string, end: int): ?int {
+        if (end <= 0) {
+            return null
+        }
+        let start = __strPrev(text, end)
+        if (!this(__strAt(text, start))) {
+            return null
+        }
+        return start
+    }
+}
+
+// whether `p` matches the empty text: as a separator or a pattern to replace it would stand
+// everywhere
+fn __matchesNothing<P :: [Pattern]>(p: P): bool = p.matchAt("", 0) != null
+
+// a string's members that search for a pattern (Lyric 5 12 §Strings; S7e1)
+extend string {
+    // whether `p` stands in it
+    fn contains<P :: [Pattern]>(p: P): bool = p.nextIn(this, 0) != null
+    fn startsWith<P :: [Pattern]>(p: P): bool = p.matchAt(this, 0) != null
+    fn endsWith<P :: [Pattern]>(p: P): bool = p.matchBefore(this, __strLen(this)) != null
+    // the byte of the first `p`, `null` where there is none; an empty `p` stands at 0
+    fn find<P :: [Pattern]>(p: P): ?int = p.nextIn(this, 0)
+    // the byte of the last `p`, `null` where there is none; an empty `p` stands at the length
+    fn rfind<P :: [Pattern]>(p: P): ?int {
+        var end = __strLen(this)
+        while (end >= 0) {
+            if (let start = p.matchBefore(this, end)) {
+                return start
+            }
+            end = __strPrev(this, end)
+        }
+        return null
+    }
+    // how many times `p` stands in it, none overlapping another; an empty `p` between every two
+    // characters and at both ends
+    fn count<P :: [Pattern]>(p: P): int {
+        let n = __strLen(this)
+        var count = 0
+        var from = 0
+        while (from <= n) {
+            if (let at = p.nextIn(this, from)) {
+                let end = p.matchAt(this, at)!
+                count += 1
+                from = if (end > at) end else __strNext(this, at)
+            } else {
+                return count
+            }
+        }
+        return count
+    }
+    // without the matches of `p` at the ends, removed again and again; a match of the empty text
+    // takes nothing
+    fn trimMatches<P :: [Pattern]>(p: P): string = this.trimStartMatches(p).trimEndMatches(p)
+    fn trimStartMatches<P :: [Pattern]>(p: P): string {
+        let n = __strLen(this)
+        var i = 0
+        while (i < n) {
+            let end = p.matchAt(this, i) ?? i
+            if (end == i) {
+                break
+            }
+            i = end
+        }
+        return __strSlice(this, i, n)
+    }
+    fn trimEndMatches<P :: [Pattern]>(p: P): string {
+        var n = __strLen(this)
+        while (n > 0) {
+            let start = p.matchBefore(this, n) ?? n
+            if (start == n) {
+                break
+            }
+            n = start
+        }
+        return __strSlice(this, 0, n)
+    }
+    // the rest after `p` where it begins with `p`, `null` where it does not
+    fn stripPrefix<P :: [Pattern]>(p: P): ?string {
+        if (let end = p.matchAt(this, 0)) {
+            return __strSlice(this, end, __strLen(this))
+        }
+        return null
+    }
+    // the rest before `p` where it ends with `p`, `null` where it does not
+    fn stripSuffix<P :: [Pattern]>(p: P): ?string {
+        if (let start = p.matchBefore(this, __strLen(this))) {
+            return __strSlice(this, 0, start)
+        }
+        return null
+    }
+    // every `p` replaced by `with`, none overlapping another; a `p` that matches the empty text
+    // panics
+    fn replace<P :: [Pattern]>(p: P, with: string): string = this.replaceN(p, with, -1)
+    // the first `n` of `p` replaced, all of them where `n` is negative
+    fn replaceN<P :: [Pattern]>(p: P, with: string, n: int): string {
+        if (__matchesNothing(p)) {
+            panic("replace: a pattern that matches the empty text")
+        }
+        let length = __strLen(this)
+        var out = ""
+        var left = n
+        var from = 0
+        while (from < length && left != 0) {
+            if (let at = p.nextIn(this, from)) {
+                out += __strSlice(this, from, at) + with
+                from = p.matchAt(this, at)!
+                left -= 1
+            } else {
+                left = 0
+            }
+        }
+        return out + __strSlice(this, from, length)
+    }
+    // `fill` before it until it is `width` characters long; a longer one as it is
+    fn padStart(width: int, fill: char = ' '): string {
+        let missing = width - __strCharCount(this)
+        if (missing <= 0) {
+            return this
+        }
+        return __strRepeat(f"{fill}", missing) + this
+    }
+    // `fill` after it until it is `width` characters long
+    fn padEnd(width: int, fill: char = ' '): string {
+        let missing = width - __strCharCount(this)
+        if (missing <= 0) {
+            return this
+        }
+        return this + __strRepeat(f"{fill}", missing)
+    }
+}
+
+// a string's parts and lines (Lyric 5 12 §Strings; S7e2): new strings, where Lyric 5 gives views
+extend string {
+    // the parts between the separators, in order, empty ones kept; a separator that matches the
+    // empty text panics
+    fn split<P :: [Pattern]>(sep: P): SplitIter<P> {
+        if (__matchesNothing(sep)) {
+            panic("split: a separator that matches the empty text")
+        }
+        return SplitIter { s = this, sep = sep, at = 0, left = -1 }
+    }
+    // at most `n` parts, the last one the rest; none for 0; a negative `n` panics
+    fn splitN<P :: [Pattern]>(sep: P, n: int): SplitIter<P> {
+        if (__matchesNothing(sep)) {
+            panic("splitN: a separator that matches the empty text")
+        }
+        if (n < 0) {
+            panic(f"splitN: {n} parts")
+        }
+        return SplitIter { s = this, sep = sep, at = if (n == 0) -1 else 0, left = n }
+    }
+    // the parts before and after the first `sep`, `null` where there is none
+    fn splitOnce<P :: [Pattern]>(sep: P): ?(string, string) {
+        if (let at = sep.nextIn(this, 0)) {
+            return (__strSlice(this, 0, at), __strSlice(this, sep.matchAt(this, at)!, __strLen(this)))
+        }
+        return null
+    }
+    // the matches of `p` in order, none overlapping another
+    fn matches<P :: [Pattern]>(p: P): MatchesIter<P> = MatchesIter { s = this, p = p }
+    // the lines: split at `\n`, a `\r` before it taken off, no empty line after a last `\n`
+    fn lines(): LinesIter = LinesIter { s = this }
+    // `T.parse(s)`, `T` from where the result goes: `let n: int = s.parse()`
+    fn parse<T :: [Parse]>(): T = T.parse(this)
+}
+
+// a string's parts between a pattern's matches: `at` where the next begins, -1 once the last was
+// given; `left` how many `splitN` still gives, -1 without a bound
+class SplitIter<P :: [Pattern]> :: Iterator {
+    type Item = string
+    s: string
+    sep: P
+    var at: int
+    var left: int
+    fn next(): ?string {
+        if (this.at < 0) {
+            return null
+        }
+        let n = __strLen(this.s)
+        if (this.left != 1) {
+            if (let i = this.sep.nextIn(this.s, this.at)) {
+                let part = __strSlice(this.s, this.at, i)
+                this.at = this.sep.matchAt(this.s, i)!
+                if (this.left > 0) {
+                    this.left -= 1
+                }
+                return part
+            }
+        }
+        let rest = __strSlice(this.s, this.at, n)
+        this.at = -1
+        return rest
+    }
+}
+// a pattern's matches in a text, none overlapping another
+class MatchesIter<P :: [Pattern]> :: Iterator {
+    type Item = string
+    s: string
+    p: P
+    var at: int = 0
+    fn next(): ?string {
+        let n = __strLen(this.s)
+        if (this.at > n) {
+            return null
+        }
+        if (let begin = this.p.nextIn(this.s, this.at)) {
+            let end = this.p.matchAt(this.s, begin)!
+            this.at = if (end > begin) end else __strNext(this.s, begin)
+            return __strSlice(this.s, begin, end)
+        }
+        this.at = n + 1
+        return null
+    }
+}
+// a text's lines
+class LinesIter :: Iterator {
+    type Item = string
+    s: string
+    var at: int = 0
+    fn next(): ?string {
+        let n = __strLen(this.s)
+        if (this.at >= n) {
+            return null
+        }
+        let found = __strFind(this.s, "\n", this.at)
+        let i = if (found < 0) n else found
+        var end = i
+        if (end > this.at) {
+            let before = __strPrev(this.s, end)
+            if (before == end - 1 && __strAt(this.s, before) == '\r') {
+                end = before
+            }
+        }
+        let line = __strSlice(this.s, this.at, end)
+        this.at = i + 1
+        return line
+    }
+}
+
+// why a text is no value of the type (Lyric 5 12 §Parsing; S7e2)
+enum ParseErrorKind {
+    Empty,
+    Invalid,
+    Overflow,
+}
+// the error `parse` throws where a text is no value of the type: empty, not of the type's form,
+// or a number beyond the type's range
+struct ParseError :: Error {
+    kind: ParseErrorKind,
+    // what the parser can say beyond the kind; empty where it says nothing
+    detail: string = "",
+    // the byte the refusal points at, where the parser knows one
+    offset: ?int = null,
+    fn message(): string {
+        var text = match (this.kind) {
+            .Empty => "cannot parse a value from an empty text",
+            .Invalid => "the text is not a value of the type",
+            .Overflow => "the number is beyond the type's range",
+        }
+        if (!this.detail.isEmpty()) {
+            text = f"{text}: {this.detail}"
+        }
+        if (let at = this.offset) {
+            text = f"{text} (at byte {at})"
+        }
+        return text
+    }
+}
+// a type read from a text: `T.parse(s)`, throwing a `ParseError` with the reason
+interface Parse {
+    static fn parse(s: string): Self
+}
+// `true` or `false`, exactly
+extend bool :: Parse {
+    static fn parse(s: string): bool {
+        if (s == "true") {
+            return true
+        }
+        if (s == "false") {
+            return false
+        }
+        throw ParseError { kind = if (s == "") ParseErrorKind.Empty else ParseErrorKind.Invalid }
+    }
+}
+// an integer: an optional `+` or `-`, ASCII digits, `_` between two of them, nothing else — a
+// character outside the form is `Invalid` however many digits run before it, only a well-formed
+// number an `Overflow`
+extend int :: Parse {
+    static fn parse(s: string): int = __parseInt(s, 10)
+    // the integer a text names in base `radix`; a radix outside 2–36 panics
+    static fn parse(s: string, radix: int): int = __parseInt(s, radix)
+}
+// a float, rounded to the nearest: an optional sign, then `inf`, `nan`, or digits with an
+// optional `.` and fraction and an optional exponent, `_` between two digits
+extend float :: Parse {
+    static fn parse(s: string): float {
+        __checkFloatText(s)
+        return __floatOfText(s)
+    }
+}
+fn __floatOfText(s: string): float = __float_ofText(s)
+
+// the integer of a text in base `radix`: negative ones accumulate downward, so the least is
+// reached; the overflow is asked before each step, as an `int` that overflows panics
+fn __parseInt(s: string, radix: int): int {
+    if (radix < 2 || radix > 36) {
+        panic(f"radix {radix} is outside 2..36")
+    }
+    let cs: char[] = s.chars().collect()
+    let n = cs.length()
+    if (n == 0) {
+        throw ParseError { kind = ParseErrorKind.Empty }
+    }
+    let negative = cs[0] == '-'
+    var i = if (negative || cs[0] == '+') 1 else 0
+    if (i == n) {
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+    let least = -9223372036854775807 - 1
+    let most = 9223372036854775807
+    var value = 0
+    var overflowed = false
+    var afterDigit = false
+    while (i < n) {
+        let c = cs[i]
+        i += 1
+        if (c == '_') {
+            if (!afterDigit || i == n) {
+                throw ParseError { kind = ParseErrorKind.Invalid }
+            }
+            afterDigit = false
+            continue
+        }
+        let d = c.toDigit(radix) ?? -1
+        if (d < 0) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        afterDigit = true
+        if (!overflowed) {
+            if (negative) {
+                if (value < (least + d) / radix) {
+                    overflowed = true
+                } else {
+                    value = value * radix - d
+                }
+            } else if (value > (most - d) / radix) {
+                overflowed = true
+            } else {
+                value = value * radix + d
+            }
+        }
+    }
+    if (overflowed) {
+        throw ParseError { kind = ParseErrorKind.Overflow }
+    }
+    return value
+}
+
+// a float's form (Lyric 5's `checkFloatText`), refused with `Empty` or `Invalid`
+fn __checkFloatText(s: string) {
+    let cs: char[] = s.chars().collect()
+    let n = cs.length()
+    if (n == 0) {
+        throw ParseError { kind = ParseErrorKind.Empty }
+    }
+    var i = if (cs[0] == '+' || cs[0] == '-') 1 else 0
+    if (n - i == 3) {
+        let word = __strSlice(s, __strLen(s) - 3, __strLen(s))
+        if (word == "inf" || word == "nan") {
+            return
+        }
+    }
+    var digits = 0
+    var point = false
+    var afterDigit = false
+    while (i < n) {
+        let c = cs[i]
+        if (c.isAsciiDigit()) {
+            digits += 1
+            afterDigit = true
+        } else if (c == '_' && afterDigit && i + 1 < n && cs[i + 1].isAsciiDigit()) {
+            afterDigit = false
+        } else if (c == '.' && !point) {
+            point = true
+            afterDigit = false
+        } else {
+            break
+        }
+        i += 1
+    }
+    if (digits == 0) {
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+    if (i == n) {
+        return
+    }
+    if (cs[i] != 'e' && cs[i] != 'E') {
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+    i += 1
+    if (i < n && (cs[i] == '+' || cs[i] == '-')) {
+        i += 1
+    }
+    var exponent = 0
+    afterDigit = false
+    while (i < n) {
+        let c = cs[i]
+        if (c.isAsciiDigit()) {
+            exponent += 1
+            afterDigit = true
+        } else if (c == '_' && afterDigit && i + 1 < n && cs[i + 1].isAsciiDigit()) {
+            afterDigit = false
+        } else {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        i += 1
+    }
+    if (exponent == 0) {
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+}
+
+// a string's characters, decoded from the bytes, from either end: the two ends meet
+class CharsIter :: [Iterator, DoubleEnded] {
+    type Item = char
+    s: string
+    var at: int = 0
+    var end: int
+    fn next(): ?char {
+        if (this.at >= this.end) {
+            return null
+        }
+        let c = __strAt(this.s, this.at)
+        this.at = __strNext(this.s, this.at)
+        return c
+    }
+    fn nextBack(): ?char {
+        if (this.end <= this.at) {
+            return null
+        }
+        this.end = __strPrev(this.s, this.end)
+        return __strAt(this.s, this.end)
+    }
+}
+// a string's characters, each with the byte it begins at
+class CharIndicesIter :: Iterator {
+    type Item = (int, char)
+    s: string
+    var at: int = 0
+    fn next(): ?(int, char) {
+        if (this.at >= __strLen(this.s)) {
+            return null
+        }
+        let i = this.at
+        let c = __strAt(this.s, i)
+        this.at = __strNext(this.s, i)
+        return (i, c)
+    }
+}
+
+// the general categories of Unicode, in their order (Lyric 5 12 §Characters)
+enum UnicodeCategory {
+    UppercaseLetter,
+    LowercaseLetter,
+    TitlecaseLetter,
+    ModifierLetter,
+    OtherLetter,
+    NonspacingMark,
+    SpacingMark,
+    EnclosingMark,
+    DecimalNumber,
+    LetterNumber,
+    OtherNumber,
+    ConnectorPunctuation,
+    DashPunctuation,
+    OpenPunctuation,
+    ClosePunctuation,
+    InitialPunctuation,
+    FinalPunctuation,
+    OtherPunctuation,
+    MathSymbol,
+    CurrencySymbol,
+    ModifierSymbol,
+    OtherSymbol,
+    SpaceSeparator,
+    LineSeparator,
+    ParagraphSeparator,
+    Control,
+    Format,
+    Surrogate,
+    PrivateUse,
+    Unassigned,
+}
+
+// a character's members (Lyric 5 12 §Characters; S7e1): its category, the tests on it, its case
+extend char {
+    fn category(): UnicodeCategory = match (__charCategory(this)) {
+        0 => .UppercaseLetter,
+        1 => .LowercaseLetter,
+        2 => .TitlecaseLetter,
+        3 => .ModifierLetter,
+        4 => .OtherLetter,
+        5 => .NonspacingMark,
+        6 => .SpacingMark,
+        7 => .EnclosingMark,
+        8 => .DecimalNumber,
+        9 => .LetterNumber,
+        10 => .OtherNumber,
+        11 => .ConnectorPunctuation,
+        12 => .DashPunctuation,
+        13 => .OpenPunctuation,
+        14 => .ClosePunctuation,
+        15 => .InitialPunctuation,
+        16 => .FinalPunctuation,
+        17 => .OtherPunctuation,
+        18 => .MathSymbol,
+        19 => .CurrencySymbol,
+        20 => .ModifierSymbol,
+        21 => .OtherSymbol,
+        22 => .SpaceSeparator,
+        23 => .LineSeparator,
+        24 => .ParagraphSeparator,
+        25 => .Control,
+        26 => .Format,
+        27 => .Surrogate,
+        28 => .PrivateUse,
+        _ => .Unassigned,
+    }
+    // a letter of any script: the categories Lu, Ll, Lt, Lm and Lo
+    fn isAlpha(): bool = __charCategory(this) <= 4
+    // a decimal digit of any script: the category Nd
+    fn isDigit(): bool = __charCategory(this) == 8
+    fn isAlphanumeric(): bool {
+        let k = __charCategory(this)
+        return k <= 4 || k == 8
+    }
+    // the property White_Space
+    fn isWhitespace(): bool = __charWhite(this)
+    fn isUpper(): bool = __charCategory(this) == 0
+    fn isLower(): bool = __charCategory(this) == 1
+    fn isControl(): bool = __charCategory(this) == 25
+    // its simple case mappings
+    fn toUpper(): char = __charUpper(this)
+    fn toLower(): char = __charLower(this)
+    fn isAsciiDigit(): bool = this >= '0' && this <= '9'
+    fn isAsciiAlpha(): bool = (this >= 'a' && this <= 'z') || (this >= 'A' && this <= 'Z')
+    fn isAsciiHexDigit(): bool = this.isAsciiDigit()
+        || (this >= 'a' && this <= 'f')
+        || (this >= 'A' && this <= 'F')
+    fn isAsciiWhitespace(): bool {
+        let n = this as int
+        return n == 32 || n == 9 || n == 10 || n == 12 || n == 13
+    }
+    // its value as a digit in base `radix`, `0`–`9` then `a`–`z` or `A`–`Z` — ASCII alone, as
+    // `parse` reads; `null` where it is no digit of the base; a radix outside 2–36 panics
+    fn toDigit(radix: int): ?int {
+        if (radix < 2 || radix > 36) {
+            panic(f"radix {radix} is outside 2…36")
+        }
+        let n = this as int
+        var d = 36
+        if (n >= 48 && n <= 57) {
+            d = n - 48
+        } else if (n >= 97 && n <= 122) {
+            d = n - 87
+        } else if (n >= 65 && n <= 90) {
+            d = n - 55
+        }
+        if (d < radix) {
+            return d
+        }
+        return null
+    }
+    // the digit `n` in base `radix`, lower case past 9; `null` where `n` is no digit of it
+    static fn fromDigit(n: int, radix: int): ?char {
+        if (radix < 2 || radix > 36) {
+            panic(f"radix {radix} is outside 2…36")
+        }
+        if (n < 0 || n >= radix) {
+            return null
+        }
+        return (if (n < 10) 48 + n else 87 + n) as char
+    }
+}
+// a value's own copy, and a type's value where nothing is given (Lyric 5 05 §14; S7c6c1):
+// synthesized where a struct, a class or an enum lists them without the member — `clone` copies
+// the value fields and clones the reference fields, `default` takes each field's initializer or
+// its type's default
+interface Clone {
+    fn clone(): Self
+}
+interface Default {
+    static fn default(): Self
+}
+extend int :: [Clone, Default] {
+    fn clone(): int = this
+    static fn default(): int = 0
+}
+extend float :: [Clone, Default] {
+    fn clone(): float = this
+    static fn default(): float = 0.0
+}
+extend bool :: [Clone, Default] {
+    fn clone(): bool = this
+    static fn default(): bool = false
+}
+extend char :: [Clone, Default] {
+    fn clone(): char = this
+    static fn default(): char = 0 as char
+}
+extend string :: [Clone, Default] {
+    fn clone(): string = this
+    static fn default(): string = ""
+}
+// of a Clone element a list is Clone: a new list of the elements' clones
+extend<T :: [Clone]> T[] :: Clone {
+    fn clone(): T[] {
+        let out: T[] = []
+        for (x in this) {
+            out.push(x.clone())
+        }
+        return out
+    }
+}
+extend<T> T[] :: Default {
+    static fn default(): T[] = []
+}
+// mixed arithmetic through the interfaces, the `int` widened (03 Mix; S7c5d3)
+extend int :: [Add<float>, Sub<float>, Mul<float>, Div<float>, Rem<float>] {
+    type Out = float
+    fn add(rhs: float): float = this + rhs
+    fn sub(rhs: float): float = this - rhs
+    fn mul(rhs: float): float = this * rhs
+    fn div(rhs: float): float = this / rhs
+    fn rem(rhs: float): float = this % rhs
+}
+extend float :: [Add<int>, Sub<int>, Mul<int>, Div<int>, Rem<int>] {
+    fn add(rhs: int): float = this + rhs
+    fn sub(rhs: int): float = this - rhs
+    fn mul(rhs: int): float = this * rhs
+    fn div(rhs: int): float = this / rhs
+    fn rem(rhs: int): float = this % rhs
+}
+// the sorts and the search of elements in a total order (Lyric 5 C10; S7c6c2): ascending,
+// stably; a list of ints, chars, floats or strings is sorted by the VM
+extend<T :: [TotalOrder]> T[] {
+    fn sort() {
+        this.sortBy((x, y) => x.totalCompare(y))
+    }
+    // Lyric 5's sorts in place without a buffer, equal elements in any order: a stable sort is
+    // one
+    fn sortUnstable() {
+        this.sort()
+    }
+    // the index of an element equal to `x` in sorted elements, any of several equal ones; `null`
+    // where there is none
+    fn binarySearch(x: T): ?int {
+        var lo = 0
+        var hi = this.length()
+        while (lo < hi) {
+            let mid = lo + (hi - lo) / 2
+            let c = this[mid].totalCompare(x)
+            if (c == Ordering.Less) {
+                lo = mid + 1
+            } else if (c == Ordering.Greater) {
+                hi = mid
+            } else {
+                return mid
+            }
+        }
+        return null
+    }
+}
+// what `<`, `<=`, `>` and `>=` make of a `compare`
+fn __less(c: ?Ordering): bool = c == Ordering.Less
+fn __lessOrEqual(c: ?Ordering): bool = c == Ordering.Less || c == Ordering.Equal
+fn __greater(c: ?Ordering): bool = c == Ordering.Greater
+fn __greaterOrEqual(c: ?Ordering): bool = c == Ordering.Greater || c == Ordering.Equal
+// what `x in xs` asks of `xs` (Lyric 5 05 §12 rule 10; S7c5c3)
+interface Contains<T> {
+    fn contains(x: T): bool
+}
+// the comparing methods of every list whose elements compare (S7c5a; S7b2a synthesized them)
+extend<T :: [Equatable]> T[] :: Contains<T> {
+    fn contains(x: T): bool = this.indexOf(x) != null
+    fn indexOf(x: T): ?int {
+        var k = 0
+        while (k < this.length()) {
+            if (this[k] == x) {
+                return k
+            }
+            k += 1
+        }
+        return null
+    }
+    fn remove(x: T): bool {
+        if (let k = this.indexOf(x)) {
+            this.removeAt(k)
+            return true
+        }
+        return false
+    }
+    fn dedup() {
+        if (this.length() < 2) {
+            return
+        }
+        var kept = 1
+        var k = 1
+        while (k < this.length()) {
+            if (this[k] != this[kept - 1]) {
+                this[kept] = this[k]
+                kept += 1
+            }
+            k += 1
+        }
+        this.truncate(kept)
+    }
+}
+interface Index<K> {
+    type Output
+    fn index(k: K): Self.Output
+}
+interface IndexSet<K> :: Index<K> {
+    fn setIndex(k: K, v: Self.Output)
+}
+// a map literal where the place's type is one, `["a": 1]` (Script 02 K4, 03 Lit; S7d2)
+interface FromMapLiteral<K, V> {
+    static fn fromMapLiteral(entries: (K, V)[]): Self
+}
+interface FromArrayLiteral<T> {
+    static fn fromArrayLiteral(items: T[]): Self
+}
+interface Iterator {
+    type Item
+    fn next(): ?Self.Item
+    // how many values are left, at least and at most where that is known (S7c6a)
+    fn sizeHint(): (int, ?int) = (0, null)
+}
+// an iterator from both ends: `nextBack()` gives the last value not yet given (S7c6a)
+interface DoubleEnded :: Iterator {
+    fn nextBack(): ?Self.Item
+}
+interface FromIterator<T> {
+    static fn fromIter<I :: [Iterator<Item = T>]>(it: I): Self
+}
+extend<T> T[] :: FromIterator<T> {
+    static fn fromIter<I :: [Iterator<Item = T>]>(it: I): T[] {
+        let out: T[] = []
+        while (let x = it.next()) {
+            out.push(x)
+        }
+        return out
+    }
+}
+extend<I :: [Iterator]> I {
+    fn collect<C :: [FromIterator<I.Item>]>(): C = C.fromIter(this)
+}
+extend<I :: [Iterator]> I :: Iterable<Iter = I> {
+    fn iter(): I = this
+}
+interface Iterable {
+    type Iter :: [Iterator]
+    fn iter(): Self.Iter
+}
+class ListIter<T> :: [Iterator, DoubleEnded, Clone] {
+    type Item = T
+    list: T[]
+    var at: int = 0
+    var end: int
+    changes: int
+    fn next(): ?T {
+        __listCheck(this.list, this.changes)
+        if (this.at >= this.end) {
+            return null
+        }
+        let v = this.list[this.at]
+        this.at += 1
+        return v
+    }
+    fn nextBack(): ?T {
+        __listCheck(this.list, this.changes)
+        if (this.at >= this.end) {
+            return null
+        }
+        this.end -= 1
+        return this.list[this.end]
+    }
+    fn sizeHint(): (int, ?int) = (this.end - this.at, this.end - this.at)
+    // its walk, the list shared (S7c6c1)
+    fn clone(): ListIter<T> = ListIter {
+        list = this.list,
+        at = this.at,
+        end = this.end,
+        changes = this.changes,
+    }
+}
+extend<T> T[] :: Iterable {
+    type Iter = ListIter<T>
+    fn iter(): ListIter<T> = ListIter {
+        list = this,
+        end = this.length(),
+        changes = __listChanges(this),
+    }
+}
+// what a range walks by (Lyric 5 core's `Step`, internal there — the prelude's own, so `__`;
+// S7c6a): the value after and the value before, and the type's first and last — an `int`'s by
+// one, a `char`'s past the surrogates
+interface __Step :: TotalOrder {
+    static fn __first(): Self
+    static fn __last(): Self
+    fn __after(): Self
+    fn __before(): Self
+}
+extend int :: __Step {
+    static fn __first(): int = -9223372036854775807 - 1
+    static fn __last(): int = 9223372036854775807
+    fn __after(): int = this + 1
+    fn __before(): int = this - 1
+}
+extend char :: __Step {
+    static fn __first(): char = 0 as char
+    static fn __last(): char = 1114111 as char
+    fn __after(): char {
+        let n = (this as int) + 1
+        return (if (n == 55296) 57344 else n) as char
+    }
+    fn __before(): char {
+        let n = (this as int) - 1
+        return (if (n == 57343) 55295 else n) as char
+    }
+}
+// `a..b` and `a..=b` as values (Lyric 5 12 Iteration; S7c6a): a struct never changes (02 T7), so a
+// range is walked by the iterator `iter()` gives, a new one each time — `for` over a range twice
+// walks it twice, as Lyric 5's copy does
+struct Range<T> {
+    start: T,
+    end: T,
+}
+struct RangeInclusive<T> {
+    start: T,
+    end: T,
+}
+class RangeIter<T> {
+    var start: T
+    var end: T
+}
+class RangeInclusiveIter<T> {
+    var start: T
+    var end: T
+}
+extend<T :: [__Step]> RangeIter<T> :: [Iterator, DoubleEnded] {
+    type Item = T
+    fn next(): ?T {
+        if (this.start >= this.end) {
+            return null
+        }
+        let value = this.start
+        this.start = value.__after()
+        return value
+    }
+    fn nextBack(): ?T {
+        if (this.start >= this.end) {
+            return null
+        }
+        this.end = this.end.__before()
+        return this.end
+    }
+}
+// its last value leaves `start` past `end`, or `end` before `start` where that value is the type's
+// last (its first, from the back): no bound leaves the type
+extend<T :: [__Step]> RangeInclusiveIter<T> :: [Iterator, DoubleEnded] {
+    type Item = T
+    fn next(): ?T {
+        if (this.start > this.end) {
+            return null
+        }
+        let value = this.start
+        if (value == this.end && value == T.__last()) {
+            this.end = value.__before()
+        } else {
+            this.start = value.__after()
+        }
+        return value
+    }
+    fn nextBack(): ?T {
+        if (this.start > this.end) {
+            return null
+        }
+        let value = this.end
+        if (value == this.start && value == T.__first()) {
+            this.start = value.__after()
+        } else {
+            this.end = value.__before()
+        }
+        return value
+    }
+}
+// a range's walk clones where it stands (S7c6c1)
+extend<T> RangeIter<T> :: Clone {
+    fn clone(): RangeIter<T> = RangeIter { start = this.start, end = this.end }
+}
+extend<T> RangeInclusiveIter<T> :: Clone {
+    fn clone(): RangeInclusiveIter<T> = RangeInclusiveIter { start = this.start, end = this.end }
+}
+extend<T :: [__Step]> Range<T> :: Iterable {
+    type Iter = RangeIter<T>
+    fn iter(): RangeIter<T> = RangeIter { start = this.start, end = this.end }
+}
+extend<T :: [__Step]> RangeInclusive<T> :: Iterable {
+    type Iter = RangeInclusiveIter<T>
+    fn iter(): RangeInclusiveIter<T> = RangeInclusiveIter { start = this.start, end = this.end }
+}
+extend<T :: [Ordered]> Range<T> :: Contains<T> {
+    fn contains(x: T): bool = this.start <= x && x < this.end
+}
+extend<T :: [Ordered]> RangeInclusive<T> :: Contains<T> {
+    fn contains(x: T): bool = this.start <= x && x <= this.end
+}

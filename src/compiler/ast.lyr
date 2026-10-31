@@ -69,6 +69,9 @@ enum TypeExpr :: [Debug] {
 struct Arg :: [Debug] {
     name: ?string,
     value: Expr,
+    // `xs...`: the array spread over a variadic parameter, where its dots stand (Lyric 5 08 §1
+    // rule 1; S7e4a)
+    spread: ?Span = null,
 }
 
 /// A field of an initializer, `name = value`; `name` alone reads the binding of that name.
@@ -115,17 +118,23 @@ enum Expr :: [Debug] {
     Binary(Box<Expr>, BinaryOp, Box<Expr>, Span),
     /// `target = value`, or `target op= value` with the operator.
     Assign(Box<Expr>, ?BinaryOp, Box<Expr>, Span),
+    /// `x++` (up, after), `--x` (down, before): a number's place stepped (Lyric 5 08 §6; S7c5c3).
+    Step(Box<Expr>, bool, bool, Span),
     /// `a..b`, or `a..=b` when the flag is set.
     Range(Box<Expr>, Box<Expr>, bool, Span),
     Cast(Box<Expr>, TypeExpr, Span),
     Call(Box<Expr>, Arg[], Span),
     Index(Box<Expr>, Box<Expr>, Span),
+    /// `^n` in a list's brackets (S7b2b; Lyric 5 03 T14): `n` counted from the end, `^1` the last.
+    FromEnd(Box<Expr>, Span),
     /// `x.name`, or `x?.name` when the flag is set.
     Member(Box<Expr>, string, bool, Span),
     List(Expr[], Span),
     /// `["a": 1]`, and `[:]` with no entry.
     Map(MapEntry[], Span),
-    StructInit(string, FieldInit[], Span),
+    /// `Point { x = 1 }`, `Pair<int, _> { … }`: the type's name, its type arguments where written
+    /// (S7c6d), the fields.
+    StructInit(string, TypeExpr[], FieldInit[], Span),
     /// `if (c) a else b` where a value stands: each branch an expression or a value block.
     If(Box<Expr>, Box<Expr>, Box<Expr>, Span),
     Block(Block, Span),
@@ -205,6 +214,10 @@ enum Pattern :: [Debug] {
     Or(Pattern[], Span),
     /// `c: Circle`, `_: Circle`: an interface value that holds a `Circle`, bound as one.
     Typed(?string, TypeExpr, Span),
+    /// `[a, b]`, `[first, ..rest]`, `[a, .., z]` (S7b3; Lyric 5 §9): a list's elements by position;
+    /// the place of the one `..` among them, -1 where there is none, and the name it binds the
+    /// elements between to, as a new list (03 S).
+    List(Pattern[], int, ?string, Span),
 }
 
 /// A statement, each form a variant.
@@ -267,6 +280,8 @@ struct Param :: [Debug] {
     type: TypeExpr,
     default: ?Expr,
     span: Span,
+    // `xs: T...`: the variadic parameter, its type the array `T[]` (Lyric 5 08 §1 rule 1; S7e4a)
+    variadic: bool = false,
 }
 
 /// A function's body: a block, or `= expr` (09 Ret).
@@ -284,6 +299,8 @@ struct Conformance :: [Debug] {
     span: Span,
     // `Iterator<Item = int>`: the associated types the constraint fixes (05 §8 rule 5)
     fixed: FixedAnswer[] = [],
+    // `I<int>`: a generic interface's type arguments (S7c1)
+    args: TypeExpr[] = [],
 }
 
 /// `Item = int` in a constraint: an associated type fixed.
@@ -296,6 +313,8 @@ struct FixedAnswer :: [Debug] {
 /// `interface I :: [Parents] { fn m(): T  fn d(): U { … } }`, `sealed` before it or not.
 struct InterfaceDecl :: [Debug] {
     name: string,
+    /// `interface I<T>` (S7c1; Lyric 5 §5): its type parameters.
+    typeParams: TypeParam[] = [],
     parents: Conformance[],
     members: FnDecl[],
     sealed: bool,
@@ -348,6 +367,8 @@ struct TypeParam :: [Debug] {
     name: string,
     constraints: Conformance[],
     span: Span,
+    // `Rhs = Self`: what a use that leaves the argument out takes (Lyric 5 03 §9.1 rule 5)
+    defaultType: ?TypeExpr = null,
 }
 
 struct FnDecl :: [Debug] {

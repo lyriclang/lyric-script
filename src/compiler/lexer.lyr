@@ -518,7 +518,8 @@ class Scanner {
         return true;
     }
 
-    /// An interpolation past its `{`, to its `}`, on one line; the strings in it are skipped whole.
+    /// An interpolation past its `{`, to its `}`, on one line; the strings and the character
+    /// literals in it are skipped whole.
     mut fn interpolation(): bool {
         var depth = 1;
         while (!this.atEnd() && this.peek(0) != '\n') {
@@ -527,6 +528,18 @@ class Scanner {
             if (c == '"') {
                 if (!this.stringBody(false, 0, false, false)) {
                     return false;
+                }
+            } else if (c == '\'') {
+                // `'"'` and `'}'` too (S7e3: its quote opened a string, its brace closed the
+                // interpolation; Lyric 5 reads them)
+                while (!this.atEnd() && this.peek(0) != '\'' && this.peek(0) != '\n') {
+                    if (this.peek(0) == '\\') {
+                        this.i += 1;
+                    }
+                    this.i += 1;
+                }
+                if (this.peek(0) == '\'') {
+                    this.i += 1;
                 }
             } else if (c == '{') {
                 depth += 1;

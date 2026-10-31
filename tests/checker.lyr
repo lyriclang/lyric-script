@@ -103,6 +103,16 @@ fn callsFitTheirParameters(): void {
 }
 
 @Test
+fn aRefusedSpreadIsSaidOnce(): void {
+    // a spread that does not fit is checked as nothing: its parameter is not said missing too
+    // (Lyric 5 08 §1 rule 1; S7e4a)
+    let d = "fn one(x: int) { }\nfn two(x: int, xs: int...) { }\n";
+    assertEq(errs(d + "one([1]...)"), ["LYS-SEM0166"]);
+    assertEq(errs(d + "two([1]...)"), ["LYS-SEM0166"]);
+    assertEq(errs(d + "two(1, 2)\ntwo(1)\ntwo(1, [2]...)"), []);
+}
+
+@Test
 fn structsAreBuiltWhole(): void {
     let p = "struct P {\n    x: int\n    y: int = 0\n}\n";
     assertEq(errs(p + "let a = P { x = 1 }\nprintln(a.x + a.y)"), []);
@@ -158,6 +168,67 @@ fn valuesOfIfAndBlocks(): void {
 @Test
 fn whatLyricScriptHasNot(): void {
     assertEq(errs("let a: int8 = 1\nprintln(a)"), ["LYS-SEM0900"]);
-    // what a later milestone builds is named as such
-    assertEq(errs("let xs = [1]\nprintln(1)"), ["LYS-NYI0001"]);
+    // what a later milestone builds is named as such (a format spec until S7e4b; a string's
+    // bytes come with S7f)
+    assertEq(errs("let b = \"a\".toBytes()"), ["LYS-NYI0001"]);
+}
+
+@Test
+fn aFirstPassKeepsTheInstancesOfTypes(): void {
+    // more types than functions: an instance's index lies past the count of functions the first
+    // pass of 03 Leer drops from (S7b2b dropped type instances with the copies of functions)
+    let parts = List<string>.new();
+    var k = 0;
+    while (k < 300) {
+        parts.push("struct S" + f"{k}" + " { }");
+        k += 1;
+    }
+    parts.push("struct Box<T> {\n    v: T,\n}");
+    parts.push("fn f(b: Box<S299>): int = 1");
+    parts.push("var x = null");
+    parts.push("let b: Box<S299> = Box { v = S299 { } }");
+    parts.push("println(f(b))");
+    parts.push("x = 1");
+    assertEq(errs(parts.toArray().join("\n")), []);
+}
+
+@Test
+fn aCopyTakesALongChainOfConditionsInOneFrame(): void {
+    // a match as a value lowers to a chain of conditions, and a copy holds it in one frame (S7e1:
+    // a frame for each link outgrew this test task's stack at thirty); an `else if` chain nests as
+    // a block does, refused past the parser's bound
+    let parts = List<string>.new();
+    parts.push("fn arm<T>(x: T, n: int): int = match (n) {");
+    var k = 0;
+    while (k < 60) {
+        parts.push("    " + f"{k}" + " => " + f"{k}" + ",");
+        k += 1;
+    }
+    parts.push("    _ => -1,");
+    parts.push("}");
+    parts.push("println(arm(\"s\", 7))");
+    parts.push("println(arm(2, 7))");
+    parts.push(chainOf(30));
+    assertEq(errs(parts.toArray().join("\n")), []);
+    assertEq(errs(chainOf(70)), ["LYS-PAR0045"]);
+}
+
+/// A generic function whose body is an `else if` chain of `n` links, and calls of it.
+fn chainOf(n: int): string {
+    let parts = List<string>.new();
+    parts.push("fn pick<T>(x: T, n: int): int {");
+    parts.push("    if (n == 0) {");
+    parts.push("        return 0");
+    var k = 1;
+    while (k < n) {
+        parts.push("    } else if (n == " + f"{k}" + ") {");
+        parts.push("        return " + f"{k}");
+        k += 1;
+    }
+    parts.push("    }");
+    parts.push("    return -1");
+    parts.push("}");
+    parts.push("println(pick(\"s\", 7))");
+    parts.push("println(pick(2, 7))");
+    return parts.toArray().join("\n");
 }

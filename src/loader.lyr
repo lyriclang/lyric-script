@@ -29,6 +29,7 @@ import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.cache { cacheRoot };
 import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
 import lyric_script.rights { classOf };
+import lyric_script.stdsrc { stdBelow, stdPackage, stdSource };
 import lyric_script.vm.module { RightUse };
 import lyric_script.package {
     Dep,
@@ -83,6 +84,9 @@ class Loaded {
     // `--offline`: nothing is fetched (S5c)
     var offline: bool = false,
     var how: LoadOptions = LoadOptions { },
+    // whether a module names a map or writes a map literal: std.collections is added, its names the
+    // prelude's (S7d2)
+    var collections: bool = false,
     // the lock as read, its manifest index, and what this build read from git (S5c2)
     var lockOld: LockEntry[] = [],
     var lockDoc: int = -1,
@@ -218,6 +222,31 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
                 file = i,
             };
             var j = indexOf(l.names, name);
+            // std.collections' names are the prelude's (S7d2): its import loads no module of its
+            // own, it adds the module to the prelude (S7d4, P28)
+            if (name == "std.collections") {
+                l.collections = true;
+                continue;
+            }
+            if (j < 0 && (im.path[0] == "std" || l.pkgOf[i] == stdPackage)) {
+                // the standard library's modules come with the toolchain (S7a): `std` names no
+                // package of the program, and a module of it imports only its own
+                let text = if (im.path[0] == "std") stdSource(name) else null;
+                if (text == null) {
+                    l.errors.push(
+                        where with {
+                            message = f"no module '{name}': the standard library has none of that name",
+                        }
+                    );
+                    continue;
+                }
+                j = l.paths.length();
+                l.paths.push(f"<{name}>");
+                l.texts.push(text);
+                l.names.push(name);
+                l.pkgOf.push(stdPackage);
+                l.subs.push(stdBelow(name));
+            }
             if (j < 0) {
                 // a script's own modules keep the path rule; its dependencies, by their names
                 let byPath = l.pkgs.length() == 0
@@ -264,6 +293,35 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
             deps.push(j);
             at.push(where);
         }
+        // the prelude names std.iter: its blocks reach every module without an import (Lyric 5 04
+        // rule 5; S7c6b), so the entry depends on it — where a module names a member of them: a
+        // program that names none reaches none, and does not pay for checking the module (P21)
+        if (i == l.paths.length() - 1 && indexOf(l.names, "std.iter") < 0 && namesIter(l)) {
+            var j = indexOf(l.names, "std.iter");
+            if (j < 0) {
+                j = l.paths.length();
+                l.paths.push("<std.iter>");
+                l.texts.push(stdSource("std.iter") ?? "");
+                l.names.push("std.iter");
+                l.pkgOf.push(stdPackage);
+                l.subs.push(stdBelow("std.iter"));
+            }
+            let first = if (i == 0) deps else edges[0];
+            let firstAt = if (i == 0) at else edgeAt[0];
+            first.push(j);
+            firstAt.push(
+                Diagnostic {
+                    code = "LYS-RES0003",
+                    message = "",
+                    start = 0,
+                    end = 0,
+                    line = 1,
+                    column = 1,
+                    help = null,
+                    file = 0,
+                }
+            );
+        }
         edges.push(deps);
         edgeAt.push(at);
         i += 1;
@@ -273,7 +331,106 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
         state.push(0);
     }
     visit(0, edges, edgeAt, state, List<int>.new(), l);
+    l.collections = l.collections || namesCollections(l);
     return l;
+}
+
+/// Whether a module loaded names one of std.collections' types or its iterators' members as a
+/// word — `Map`, `Set`, `groupBy`, `toMap`, `toSet` — or writes a map literal, a `[` whose bracket
+/// holds a `:` of its own, `["a": 1]`, `[:]` (S7d2, S7d3). Too many is a cost, none too few.
+fn namesCollections(l: Loaded): bool {
+    let words = List<char[]>.new();
+    for (w in ["Map", "Set", "Deque", "Heap", "groupBy", "toMap", "toSet"]) {
+        words.push(w.chars().toArray());
+    }
+    for (text in l.texts) {
+        let cs = text.chars().toArray();
+        let n = cs.length();
+        var k = 0;
+        while (k < n) {
+            let c = cs[k];
+            if (isWordChar(c) && (k == 0 || !isWordChar(cs[k - 1]))) {
+                var end = k;
+                while (end < n && isWordChar(cs[end])) {
+                    end += 1;
+                }
+                for (w in words) {
+                    if (wordIs(cs, k, end, w)) {
+                        return true;
+                    }
+                }
+                k = end;
+                continue;
+            }
+            if (c == '[') {
+                var depth = 0;
+                var j = k + 1;
+                while (j < n && depth >= 0) {
+                    let d = cs[j];
+                    if (d == '[' || d == '(' || d == '{') {
+                        depth += 1;
+                    } else if (d == ']' || d == ')' || d == '}') {
+                        depth -= 1;
+                    } else if (d == ':' && depth == 0) {
+                        return true;
+                    } else if (d == '\n' && depth == 0) {
+                        j = n;
+                    }
+                    j += 1;
+                }
+            }
+            k += 1;
+        }
+    }
+    return false;
+}
+
+/// Whether `cs[from..to]` is the word `w`.
+fn wordIs(cs: char[], from: int, to: int, w: char[]): bool {
+    if (to - from != w.length()) {
+        return false;
+    }
+    var i = 0;
+    while (i < w.length()) {
+        if (cs[from + i] != w[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+fn isWordChar(c: char): bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+/// Whether a module loaded names a member of std.iter's blocks over every iterator (S7c6b): `.map`,
+/// `.filter` and the others, read off the module's text — a name of a function of a block
+/// `extend<I :: [...]> I` there.
+fn namesIter(l: Loaded): bool {
+    let members = List<string>.new();
+    var inBlock = false;
+    for (line in (stdSource("std.iter") ?? "").split("\n")) {
+        if (line.startsWith("extend<") && line.endsWith("> I {")) {
+            inBlock = true;
+        } else if (line == "}") {
+            inBlock = false;
+        } else if (inBlock && line.startsWith("    fn ")) {
+            var end = 7;
+            while (end < line.length() && line[end] != '(' && line[end] != '<') {
+                end += 1;
+            }
+            members.push("." + line[7..end].toString());
+        }
+    }
+    for (text in l.texts) {
+        for (m in members) {
+            if (text.contains(m)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /// A single script's frontmatter (07 Dep, 09 Hd): where it names dependencies, the script is

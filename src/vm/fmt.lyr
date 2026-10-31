@@ -1,0 +1,159 @@
+//! The format language's spec (Lyric 5 12 §2; S7e4b), read alike where the compiler checks an
+//! f-string's spec and where the VM checks one read at run time, before Lyric 5's own formatting
+//! writes it: its rules and its words are std.core's.
+
+/// What a spec formats; the prelude passes them to `fmt.problem` as their positions.
+pub enum FmtKind :: [Equatable] {
+    Int,
+    Float,
+    Str,
+    Char,
+    Bool,
+    Shown,
+    Debug,
+}
+
+/// The kind at position `k`, as the prelude numbers them.
+pub fn fmtKindOf(k: int): FmtKind {
+    return match (k) {
+        0 => FmtKind.Int,
+        1 => FmtKind.Float,
+        2 => FmtKind.Str,
+        3 => FmtKind.Char,
+        4 => FmtKind.Bool,
+        5 => FmtKind.Shown,
+        _ => FmtKind.Debug,
+    };
+}
+
+/// What a spec says beyond fill, alignment and width, as std.core's `readSpec` reads
+/// `[[fill]align][sign][#][0][width][grouping][.precision][type]`: `zeros` where a `0` stands with
+/// no alignment written, its `=`.
+struct FmtSpec {
+    plus: bool,
+    alternate: bool,
+    zeros: bool,
+    grouping: char,
+    precision: int,
+    kind: char,
+}
+
+/// Reads `text` as a spec, as std.core's `readSpec` does; null where it is none — and where a
+/// width or a precision runs past nine digits, which no text fills.
+fn readFmtSpec(text: string): ?FmtSpec {
+    let cs = text.chars().toArray();
+    let n = cs.length();
+    var i = 0;
+    var aligned = false;
+    if (n >= 2 && isAlignment(cs[1])) {
+        aligned = true;
+        i = 2;
+    } else if (n >= 1 && isAlignment(cs[0])) {
+        aligned = true;
+        i = 1;
+    }
+    var plus = false;
+    if (i < n && (cs[i] == '+' || cs[i] == '-')) {
+        plus = cs[i] == '+';
+        i += 1;
+    }
+    var alternate = false;
+    if (i < n && cs[i] == '#') {
+        alternate = true;
+        i += 1;
+    }
+    var zeros = false;
+    if (i < n && cs[i] == '0') {
+        zeros = !aligned;
+        i += 1;
+    }
+    var digits = 0;
+    while (i < n && isDecimal(cs[i])) {
+        digits += 1;
+        i += 1;
+    }
+    var grouping = '\0';
+    if (i < n && (cs[i] == ',' || cs[i] == '_')) {
+        grouping = cs[i];
+        i += 1;
+    }
+    var precision = -1;
+    var places = 0;
+    if (i < n && cs[i] == '.') {
+        i += 1;
+        precision = 0;
+        while (i < n && isDecimal(cs[i])) {
+            if (places < 9) {
+                precision = precision * 10 + (((cs[i] as uint32) as int) - 48);
+            }
+            places += 1;
+            i += 1;
+        }
+    }
+    var kind = '\0';
+    if (i < n) {
+        kind = cs[i];
+        i += 1;
+    }
+    if (i != n || digits > 9 || places > 9) {
+        return null;
+    }
+    return FmtSpec {
+        plus = plus,
+        alternate = alternate,
+        zeros = zeros,
+        grouping = grouping,
+        precision = precision,
+        kind = kind,
+    };
+}
+
+fn isAlignment(c: char): bool {
+    return c == '<' || c == '>' || c == '^';
+}
+
+fn isDecimal(c: char): bool {
+    return c >= '0' && c <= '9';
+}
+
+/// Whether a spec says no more than fill, alignment and width, besides the type `kind`.
+fn padsOnly(s: FmtSpec, kind: char): bool {
+    return !s.plus
+        && !s.alternate
+        && !s.zeros
+        && s.grouping == '\0'
+        && s.precision < 0
+        && s.kind == kind;
+}
+
+/// What is wrong with `spec` for a value of `kind`, in std.core's words; null where nothing is.
+pub fn fmtProblem(spec: string, kind: FmtKind): ?string {
+    let read = readFmtSpec(spec);
+    if (read == null) {
+        return f"'{spec}' is no format spec";
+    }
+    let s = read;
+    let k = s.kind;
+    let (fits, what) = match (kind) {
+        .Int => (
+            s.precision < 0 && (k == '\0' || k == 'b' || k == 'o' || k == 'x' || k == 'X'),
+            "an integer"
+        ),
+        .Float => (
+            !s.alternate && (k == '\0' || k == 'e' || k == 'E' || k == 'f' || k == '%'),
+            "a float"
+        ),
+        .Str => (
+            !(s.plus || s.alternate || s.zeros || s.grouping != '\0' || k != '\0'),
+            "a string"
+        ),
+        .Char => (padsOnly(s, '\0'), "a char"),
+        .Bool => (padsOnly(s, '\0'), "a bool"),
+        .Shown => (padsOnly(s, '\0'), "a Display type's text"),
+        .Debug => (padsOnly(s, '?'), "a Debug text"),
+    };
+    if (fits) {
+        return null;
+    }
+    return f"'{spec}' does not apply to {what}";
+}

@@ -196,6 +196,21 @@ fn showPattern(p: Pattern): string {
             + "}",
         .Fields(name, fields, _) => name + " {" + showFieldPatterns(fields) + "}",
         .Typed(name, t, _) => (name ?? "_") + ": " + showType(t),
+        .List(items, rest, name, _) => {
+            let parts = List<string>.new();
+            var k = 0;
+            for (x in items) {
+                if (k == rest) {
+                    parts.push(".." + (name ?? ""));
+                }
+                parts.push(showPattern(x));
+                k += 1;
+            }
+            if (rest == items.length()) {
+                parts.push(".." + (name ?? ""));
+            }
+            "[" + parts.toArray().join(", ") + "]"
+        }
         .Or(items, _) => {
             let parts = List<string>.new();
             for (x in items) {
@@ -348,6 +363,10 @@ fn showExpr(e: Expr): string {
             let word = if (op != null) binaryText(op) + "=" else "=";
             "(" + word + " " + showExpr(target.value) + " " + showExpr(value.value) + ")"
         }
+        .Step(target, up, prefix, _) => {
+            let word = (if (prefix) "pre" else "post") + (if (up) "++" else "--");
+            "(" + word + " " + showExpr(target.value) + ")"
+        }
         .Range(a, b, inclusive, _) => {
             let word = if (inclusive) "..=" else "..";
             "(" + word + " " + showExpr(a.value) + " " + showExpr(b.value) + ")"
@@ -381,9 +400,15 @@ fn showExpr(e: Expr): string {
             }
             if (parts.length() == 0) "[:]" else "[" + parts.toArray().join(", ") + "]"
         }
-        .StructInit(name, fields, _) => {
+        .StructInit(name, targs, fields, _) => {
             let parts = List<string>.new();
-            parts.push(name);
+            let shown = List<string>.new();
+            for (x in targs) {
+                shown.push(showType(x));
+            }
+            parts.push(
+                if (targs.length() == 0) name else name + "<" + shown.toArray().join(", ") + ">"
+            );
             for (field in fields) {
                 parts.push(field.name + "=" + showExpr(field.value));
             }
@@ -415,6 +440,7 @@ fn showExpr(e: Expr): string {
             "(tuple " + parts.toArray().join(" ") + ")"
         }
         .Implicit(name, _) => "." + name,
+        .FromEnd(n, _) => "(^ " + showExpr(n.value) + ")",
         .Is(x, t, _) => "(is " + showExpr(x.value) + " " + showType(t) + ")",
         .Instance(x, args, _) => {
             let parts = List<string>.new();

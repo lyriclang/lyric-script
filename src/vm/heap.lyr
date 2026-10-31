@@ -2,7 +2,8 @@
 //! conforms to — objects of script types, strings, and the one `nil` that stands for `null`.
 //! A string is wrapped once when it is made; converting a Lyric 5 string to an interface would
 //! box it at every conversion (value probe W1).
-import std.collections { List };
+import std.collections { List, Map };
+import std.core { StringBuilder };
 import lyric_script.vm.module { TypeDesc };
 
 /// A value in a reference register.
@@ -42,6 +43,12 @@ pub fn sameRef(x: HeapRef, y: HeapRef): bool {
         }
         return false;
     }
+    if (x is ScriptArray) {
+        if (y is ScriptArray) {
+            return same(x, y);
+        }
+        return false;
+    }
     return x is Nil && y is Nil;
 }
 
@@ -58,9 +65,49 @@ pub class ErrorRecord :: [HeapRef] {
     }
 }
 
+/// A map's index (S7d2; P27): the places of its entries by their hashes. The entries lie in the
+/// map's lists, in the order they came; the program hashes and compares them, the VM keeps only
+/// where each hash is.
+pub class ScriptIndex :: [HeapRef] {
+    pub table: Map<uint64, List<int>>,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A builder of text (S7e3): Lyric 5's `StringBuilder`, one buffer that doubles.
+pub class ScriptBuilder :: [HeapRef] {
+    pub sb: StringBuilder,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
 /// A string of the script: a Lyric 5 string, wrapped once.
 pub class ScriptString :: [HeapRef] {
     pub text: string,
+    /// Its bytes, read the first time a member asks at a byte (S7e1): Lyric 5 gives a string's
+    /// bytes as a copy alone, and a character's bounds are a byte's to tell.
+    pub var bytes: ?uint8[] = null,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A list of the script (S7b1; design/v1, 03 S): the scalar and the reference slots of its
+/// elements apart, `ns` and `nr` of each, element `k` at `k * ns` and at `k * nr` — a list of
+/// `int` holds its ints unboxed (11 Gen). It counts the changes of its length, so that a walk
+/// over it notices one (S7b2a; Lyric 5's `List.changes`, `LYS-RT0016`).
+pub class ScriptArray :: [HeapRef] {
+    pub ns: int,
+    pub nr: int,
+    pub s: List<uint64>,
+    pub r: List<HeapRef>,
+    pub var n: int = 0,
+    pub var changes: int = 0,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -87,6 +134,9 @@ pub class ScriptObject :: [HeapRef] {
     pub var owner: int = 0,
     /// The version of its type the object was built for (01 S7a); set from S9.
     pub var version: int = 0,
+    /// Its number, given the first time it is hashed by its identity (01 S8: no addresses; S7d1);
+    /// 0 before.
+    pub var number: int = 0,
 
     pub fn desc(): ?TypeDesc {
         return this.typeDesc;

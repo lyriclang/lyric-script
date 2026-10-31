@@ -15,14 +15,23 @@
 //! leaves every frame is reported: the VM calls its `message()` and its `cause()` in the same
 //! run, each call returning to a frame of function `-1`, and the run ends with `Outcome.Error`,
 //! the record's frames its trace.
-import std.collections { List };
+import std.collections { List, Map };
+import std.core { StringBuilder, UnicodeCategory };
 import std.core { arrayOf };
+import std.core { fstringFormatted, fstringPadded };
+import std.fs { exists };
+import std.hash { DefaultHasher };
 import std.io { print, println, stdin };
+import std.os { env };
 import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
 import std.time { Duration, Monotonic };
+import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
+    ScriptArray,
+    ScriptIndex,
+    ScriptBuilder,
     ErrorRecord,
     HeapRef,
     Nil,
@@ -322,6 +331,8 @@ class RunShared {
     // the tasks ready to run, from `head` on; every task spawned, in order (S6a)
     queue: List<TaskState>,
     var head: int = 0,
+    // the objects numbered so far, for a hash by identity (01 S8; S7d1)
+    var objects: int = 0,
     tasks: List<ScriptTask>,
     // the first task to end with an error or a panic: what the top level's end gives (07 End;
     // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
@@ -2753,6 +2764,208 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 }
                 pc += 1;
             }
+            .ListNew => {
+                let shape = b;
+                r[br + a] = ScriptArray {
+                    ns = shape / 256,
+                    nr = shape % 256,
+                    s = List<uint64>.new(),
+                    r = List<HeapRef>.new(),
+                };
+                pc += 1;
+            }
+            .ListPush => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a push on no list");
+                }
+                var k = 0;
+                while (k < o.ns) {
+                    o.s.push(s[bs + a + k]);
+                    k += 1;
+                }
+                k = 0;
+                while (k < o.nr) {
+                    o.r.push(r[br + c + k]);
+                    k += 1;
+                }
+                o.n += 1;
+                o.changes += 1;
+                pc += 1;
+            }
+            .ListGetS | .ListGetR | .ListSetS | .ListSetR => {
+                let reads = ins.op == .ListGetS || ins.op == .ListGetR;
+                let o = r[br + (if (reads) b else a)];
+                let i = (s[bs + (if (reads) c else b)]) as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an index into no list");
+                }
+                if (i < 0 || i >= o.n) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0003",
+                        f"index {i} out of bounds for length {o.n}"
+                    );
+                }
+                match (ins.op) {
+                    .ListGetS => s[bs + a] = o.s[i],
+                    .ListGetR => r[br + a] = o.r[i],
+                    .ListSetS => o.s[i] = s[bs + c],
+                    _ => o.r[i] = r[br + c],
+                }
+                pc += 1;
+            }
+            .ListGetN | .ListSetN => {
+                let o = r[br + b];
+                let i = s[bs + a] as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an index into no list");
+                }
+                if (i < 0 || i >= o.n) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0003",
+                        f"index {i} out of bounds for length {o.n}"
+                    );
+                }
+                // a write's value stands after the index and the list
+                let writes = ins.op == .ListSetN;
+                let at = if (writes) 1 else 0;
+                var k = 0;
+                while (k < o.ns) {
+                    if (writes) {
+                        o.s[i * o.ns + k] = s[bs + a + at + k];
+                    } else {
+                        s[bs + a + k] = o.s[i * o.ns + k];
+                    }
+                    k += 1;
+                }
+                k = 0;
+                while (k < o.nr) {
+                    if (writes) {
+                        o.r[i * o.nr + k] = r[br + b + at + k];
+                    } else {
+                        r[br + b + k] = o.r[i * o.nr + k];
+                    }
+                    k += 1;
+                }
+                pc += 1;
+            }
+            .ListLen => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "the length of no list");
+                }
+                s[bs + a] = o.n as uint64;
+                pc += 1;
+            }
+            .ListPop => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a pop of no list");
+                }
+                let plain = c == 1;
+                if (o.n == 0) {
+                    if (plain) {
+                        r[br + b] = nil;
+                    } else {
+                        s[bs + a + o.ns] = 0 as uint64;
+                        var k = 0;
+                        while (k < o.nr) {
+                            r[br + b + k] = nil;
+                            k += 1;
+                        }
+                    }
+                } else {
+                    o.n -= 1;
+                    var k = 0;
+                    while (k < o.ns) {
+                        s[bs + a + k] = o.s[o.n * o.ns + k];
+                        k += 1;
+                    }
+                    k = 0;
+                    while (k < o.nr) {
+                        r[br + b + k] = o.r[o.n * o.nr + k];
+                        k += 1;
+                    }
+                    if (!plain) {
+                        s[bs + a + o.ns] = 1 as uint64;
+                    }
+                    o.s.truncate(o.n * o.ns);
+                    o.r.truncate(o.n * o.nr);
+                    o.changes += 1;
+                }
+                pc += 1;
+            }
+            .ListTrunc => {
+                let o = r[br + a];
+                let n = s[bs + b] as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a truncate of no list");
+                }
+                if (n >= 0 && n < o.n) {
+                    o.n = n;
+                    o.s.truncate(n * o.ns);
+                    o.r.truncate(n * o.nr);
+                    o.changes += 1;
+                }
+                pc += 1;
+            }
+            .ListSupp => {
+                let out = ScriptArray {
+                    ns = 0,
+                    nr = 1,
+                    s = List<uint64>.new(),
+                    r = List<HeapRef>.new(),
+                };
+                let rec = r[br + b];
+                if (rec is ErrorRecord) {
+                    for (x in rec.suppressed) {
+                        out.r.push(x);
+                        out.n += 1;
+                    }
+                }
+                r[br + a] = out;
+                pc += 1;
+            }
+            .ListChanges => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "the changes of no list"
+                    );
+                }
+                s[bs + a] = o.changes as uint64;
+                pc += 1;
+            }
+            .ListCheck => {
+                let o = r[br + a];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a walk over no list");
+                }
+                if (o.changes != s[bs + b] as int) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0016",
+                        "List: changed while it was walked"
+                    );
+                }
+                pc += 1;
+            }
             .CallN => {
                 let x = bs + b;
                 let y = br + c;
@@ -2777,6 +2990,379 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                             lines.push(f"    {line}");
                         }
                         r[y] = ScriptString { text = lines.toArray().join("\n") };
+                    }
+                    .OsEnv => {
+                        if (let v = env(textOf(r[y]))) {
+                            r[y] = ScriptString { text = v };
+                        } else {
+                            r[y] = nil;
+                        }
+                    }
+                    .FsExists => s[x] = truth(exists(textOf(r[y]))),
+                    // the sign bit set: the other bits turned over, so the integers' order is the
+                    // total order (S7c5b)
+                    .FloatOrderKey => {
+                        let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
+                        let b = s[x];
+                        s[x] = if ((b >> 63) != 0) b ^ mask else b;
+                    }
+                    // a hash's mixing (S7d1): SipHash-1-3 under the process's key, a word or a
+                    // string's bytes into the state
+                    .HashMixInt => {
+                        var h = DefaultHasher.new();
+                        h.writeUint(s[x]);
+                        h.writeUint(s[x + 1]);
+                        s[x] = h.finish();
+                    }
+                    .HashMixStr => {
+                        var h = DefaultHasher.new();
+                        h.writeUint(s[x]);
+                        textOf(r[y]).hash(&h);
+                        s[x] = h.finish();
+                    }
+                    // an object's number for a hash by identity, given at its first (01 S8); a
+                    // value the VM holds otherwise has none of its own
+                    .ObjectNumber => {
+                        let o = r[y];
+                        if (o is ScriptObject) {
+                            if (o.number == 0) {
+                                shared.objects += 1;
+                                o.number = shared.objects;
+                            }
+                            s[x] = o.number as uint64;
+                        } else {
+                            s[x] = 0;
+                        }
+                    }
+                    // a map's index (S7d2): where each hash is, the places in the order they came
+                    .IndexNew => {
+                        r[y] = ScriptIndex { table = Map<uint64, List<int>>.new() };
+                    }
+                    .IndexAdd => {
+                        let o = r[y];
+                        if (o is ScriptIndex) {
+                            if (let places = o.table.get(s[x])) {
+                                places.push(s[x + 1] as int);
+                            } else {
+                                let places = List<int>.new();
+                                places.push(s[x + 1] as int);
+                                o.table.insert(s[x], places);
+                            }
+                        }
+                    }
+                    .IndexFirst => {
+                        let o = r[y];
+                        var found = -1;
+                        if (o is ScriptIndex) {
+                            if (let places = o.table.get(s[x])) {
+                                if (places.length() > 0) {
+                                    found = places[0];
+                                }
+                            }
+                        }
+                        s[x] = found as uint64;
+                    }
+                    .IndexNext => {
+                        let o = r[y];
+                        var found = -1;
+                        if (o is ScriptIndex) {
+                            if (let places = o.table.get(s[x])) {
+                                let at = s[x + 1] as int;
+                                var k = 0;
+                                while (k < places.length() - 1 && found < 0) {
+                                    if (places[k] == at) {
+                                        found = places[k + 1];
+                                    }
+                                    k += 1;
+                                }
+                            }
+                        }
+                        s[x] = found as uint64;
+                    }
+                    .IndexRemove => {
+                        let o = r[y];
+                        if (o is ScriptIndex) {
+                            if (let places = o.table.get(s[x])) {
+                                let at = s[x + 1] as int;
+                                let kept = List<int>.new();
+                                for (p in places) {
+                                    if (p != at) {
+                                        kept.push(p);
+                                    }
+                                }
+                                if (kept.length() == 0) {
+                                    o.table.remove(s[x]);
+                                } else {
+                                    o.table.insert(s[x], kept);
+                                }
+                            }
+                        }
+                    }
+                    .IndexClear => {
+                        let o = r[y];
+                        if (o is ScriptIndex) {
+                            o.table.clear();
+                        }
+                    }
+                    // the strings' members (S7e1): Lyric 5's string under them, its bytes read
+                    // once for the bounds of the characters
+                    .StrLen => s[x] = textOf(r[y]).length() as uint64,
+                    .StrAt => {
+                        let o = r[y];
+                        let t = textOf(o);
+                        let i = s[x] as int;
+                        let n = t.length();
+                        if (i < 0 || i >= n) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0003",
+                                f"index {i} out of bounds for length {n}"
+                            );
+                        }
+                        if (!beginsChar(o, i)) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0003",
+                                f"byte {i} does not begin a character"
+                            );
+                        }
+                        s[x] = (t[i] as uint32) as uint64;
+                    }
+                    .StrNext => {
+                        let b = bytesOf(r[y]);
+                        var i = (s[x] as int) + 1;
+                        while (i < b.length() && (b[i] & 192) == 128) {
+                            i += 1;
+                        }
+                        s[x] = i as uint64;
+                    }
+                    .StrPrev => {
+                        let b = bytesOf(r[y]);
+                        var i = (s[x] as int) - 1;
+                        while (i > 0 && (b[i] & 192) == 128) {
+                            i -= 1;
+                        }
+                        s[x] = i as uint64;
+                    }
+                    .StrSlice => {
+                        let o = r[y];
+                        let t = textOf(o);
+                        let a = s[x] as int;
+                        let e = s[x + 1] as int;
+                        let n = t.length();
+                        if (a < 0 || a > e || e > n) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0003",
+                                f"range {a}..{e} out of bounds for length {n}"
+                            );
+                        }
+                        for (at in [a, e]) {
+                            if (!beginsChar(o, at)) {
+                                return panicOut(
+                                    module,
+                                    frames,
+                                    fi,
+                                    pc,
+                                    "LYS-RT0003",
+                                    f"byte {at} does not begin a character"
+                                );
+                            }
+                        }
+                        r[y] = ScriptString { text = t[a..e].toString() };
+                    }
+                    .StrCharCount => s[x] = textOf(r[y]).charCount() as uint64,
+                    .StrUpper => r[y] = ScriptString { text = textOf(r[y]).toUpper() },
+                    .StrLower => r[y] = ScriptString { text = textOf(r[y]).toLower() },
+                    .StrTrim => {
+                        let t = textOf(r[y]);
+                        let mode = s[x] as int;
+                        let kept = if (mode == 1) t.trimStart()
+                            else if (mode == 2) t.trimEnd() else t.trim();
+                        r[y] = ScriptString { text = kept.toString() };
+                    }
+                    .StrRepeat => {
+                        let n = s[x] as int;
+                        if (n < 0) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0007",
+                                f"repeat count {n} is negative"
+                            );
+                        }
+                        r[y] = ScriptString { text = textOf(r[y]) * n };
+                    }
+                    .StrFromChars => {
+                        let o = r[y];
+                        let out = StringBuilder.new();
+                        if (o is ScriptArray) {
+                            var k = 0;
+                            while (k < o.n) {
+                                out.appendChar(charOfCode(o.s[k]));
+                                k += 1;
+                            }
+                        }
+                        r[y] = ScriptString { text = out.toString() };
+                    }
+                    .StrFind => {
+                        let o = r[y];
+                        let t = textOf(o);
+                        let from = s[x] as int;
+                        var found = -1;
+                        if (from >= 0 && from <= t.length() && beginsChar(o, from)) {
+                            if (let k = t[from..t.length()].find(textOf(r[y + 1]))) {
+                                found = from + k;
+                            }
+                        }
+                        s[x] = found as uint64;
+                    }
+                    .StrMatchesAt => {
+                        let o = r[y];
+                        let t = textOf(o);
+                        let at = s[x] as int;
+                        s[x] = truth(
+                            at >= 0
+                                && at <= t.length()
+                                && beginsChar(o, at)
+                                && t[at..t.length()].startsWith(textOf(r[y + 1]))
+                        );
+                    }
+                    .CharCategory => s[x] = categoryIndex(charOfCode(s[x]).category()) as uint64,
+                    .CharWhite => s[x] = truth(charOfCode(s[x]).isWhitespace()),
+                    .CharUpper => s[x] = (charOfCode(s[x]).toUpper() as uint32) as uint64,
+                    .CharLower => s[x] = (charOfCode(s[x]).toLower() as uint32) as uint64,
+                    // a builder of text (S7e3)
+                    .BuilderNew => r[y] = ScriptBuilder { sb = StringBuilder.new() },
+                    .BuilderAppendStr => {
+                        let o = r[y];
+                        if (o is ScriptBuilder) {
+                            o.sb.appendStr(textOf(r[y + 1]));
+                        }
+                    }
+                    .BuilderAppendChar => {
+                        let o = r[y];
+                        if (o is ScriptBuilder) {
+                            o.sb.appendChar(charOfCode(s[x]));
+                        }
+                    }
+                    .BuilderLength => {
+                        let o = r[y];
+                        s[x] = (if (o is ScriptBuilder) o.sb.length() else 0) as uint64;
+                    }
+                    .BuilderClear => {
+                        let o = r[y];
+                        if (o is ScriptBuilder) {
+                            o.sb.clear();
+                        }
+                    }
+                    .BuilderText => {
+                        let o = r[y];
+                        r[y] = ScriptString {
+                            text = if (o is ScriptBuilder) o.sb.toString() else "",
+                        };
+                    }
+                    .StrDebug => r[y] = ScriptString { text = textOf(r[y]).debug() },
+                    .CharDebug => r[y] = ScriptString { text = charOfCode(s[x]).debug() },
+                    // the format language (S7e4b): Lyric 5's own formatting, the spec checked
+                    // before — by the compiler, or at run time through `fmt.problem`
+                    .FmtInt => {
+                        let b = StringBuilder.new();
+                        fstringFormatted(b, s[x] as int, textOf(r[y]));
+                        r[y] = ScriptString { text = b.toString() };
+                    }
+                    .FmtFloat => {
+                        let b = StringBuilder.new();
+                        fstringFormatted(b, float.fromBits(s[x]), textOf(r[y]));
+                        r[y] = ScriptString { text = b.toString() };
+                    }
+                    .FmtStr => {
+                        let b = StringBuilder.new();
+                        fstringFormatted(b, textOf(r[y]), textOf(r[y + 1]));
+                        r[y] = ScriptString { text = b.toString() };
+                    }
+                    .FmtPad => {
+                        let b = StringBuilder.new();
+                        fstringPadded(b, textOf(r[y]), textOf(r[y + 1]));
+                        r[y] = ScriptString { text = b.toString() };
+                    }
+                    .FmtProblem => {
+                        let problem = fmtProblem(textOf(r[y]), fmtKindOf(s[x] as int));
+                        r[y] = ScriptString { text = problem ?? "" };
+                    }
+                    .FloatOfText => {
+                        let v = (try? float.parse(textOf(r[y]))) ?? 0.0;
+                        s[x] = v.toBits();
+                    }
+                    // a list sorted in place (S7c6c2): its length unchanged, a walk goes on
+                    .ListSortInts => {
+                        let o = r[y];
+                        if (o is ScriptArray) {
+                            let keys = List<int>.new();
+                            var k = 0;
+                            while (k < o.n) {
+                                keys.push(o.s[k] as int);
+                                k += 1;
+                            }
+                            let sorted = keys.toArray();
+                            sorted.sort();
+                            k = 0;
+                            while (k < o.n) {
+                                o.s[k] = sorted[k] as uint64;
+                                k += 1;
+                            }
+                        }
+                    }
+                    // a float's place in the total order as an int, and back
+                    .ListSortFloats => {
+                        let o = r[y];
+                        if (o is ScriptArray) {
+                            let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
+                            let keys = List<int>.new();
+                            var k = 0;
+                            while (k < o.n) {
+                                let b = o.s[k];
+                                keys.push((if ((b >> 63) != 0) b ^ mask else b) as int);
+                                k += 1;
+                            }
+                            let sorted = keys.toArray();
+                            sorted.sort();
+                            k = 0;
+                            while (k < o.n) {
+                                let key = sorted[k] as uint64;
+                                o.s[k] = if ((key >> 63) != 0) key ^ mask else key;
+                                k += 1;
+                            }
+                        }
+                    }
+                    .ListSortStrings => {
+                        let o = r[y];
+                        if (o is ScriptArray) {
+                            let items = List<HeapRef>.new();
+                            var k = 0;
+                            while (k < o.n) {
+                                items.push(o.r[k]);
+                                k += 1;
+                            }
+                            let sorted = items.toArray();
+                            sorted.sortByKey((h) => textOf(h));
+                            k = 0;
+                            while (k < o.n) {
+                                o.r[k] = sorted[k];
+                                k += 1;
+                            }
+                        }
                     }
                 }
                 pc += 1;
@@ -2883,6 +3469,69 @@ fn errorOf(rep: Report): ScriptError {
 /// The text of a string reference; the compiler gives a native nothing else.
 fn textOf(v: HeapRef): string {
     return if (v is ScriptString) v.text else "";
+}
+
+/// A string's bytes, read the first time they are asked for and kept (S7e1).
+fn bytesOf(v: HeapRef): uint8[] {
+    if (v is ScriptString) {
+        if (let b = v.bytes) {
+            return b;
+        }
+        let b = v.text.toBytes();
+        v.bytes = b;
+        return b;
+    }
+    return [];
+}
+
+/// Whether a character begins at byte `i` of a string, or `i` is its length.
+fn beginsChar(v: HeapRef, i: int): bool {
+    let b = bytesOf(v);
+    return i >= b.length() || (b[i] & 192) != 128;
+}
+
+/// The character of a scalar slot; U+FFFD for a value that is no Unicode scalar value.
+fn charOfCode(v: uint64): char {
+    if (v > 1114111) {
+        return '\u{FFFD}';
+    }
+    return char.fromUint32(v as uint32) ?? '\u{FFFD}';
+}
+
+/// A general category's place in `UnicodeCategory`, the order of Lyric 5's enum.
+fn categoryIndex(c: UnicodeCategory): int {
+    return match (c) {
+        .UppercaseLetter => 0,
+        .LowercaseLetter => 1,
+        .TitlecaseLetter => 2,
+        .ModifierLetter => 3,
+        .OtherLetter => 4,
+        .NonspacingMark => 5,
+        .SpacingMark => 6,
+        .EnclosingMark => 7,
+        .DecimalNumber => 8,
+        .LetterNumber => 9,
+        .OtherNumber => 10,
+        .ConnectorPunctuation => 11,
+        .DashPunctuation => 12,
+        .OpenPunctuation => 13,
+        .ClosePunctuation => 14,
+        .InitialPunctuation => 15,
+        .FinalPunctuation => 16,
+        .OtherPunctuation => 17,
+        .MathSymbol => 18,
+        .CurrencySymbol => 19,
+        .ModifierSymbol => 20,
+        .OtherSymbol => 21,
+        .SpaceSeparator => 22,
+        .LineSeparator => 23,
+        .ParagraphSeparator => 24,
+        .Control => 25,
+        .Format => 26,
+        .Surrogate => 27,
+        .PrivateUse => 28,
+        .Unassigned => 29,
+    };
 }
 
 fn firstScalars(s: uint64[], from: int, n: int): uint64[] {

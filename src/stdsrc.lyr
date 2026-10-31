@@ -1,0 +1,49 @@
+//! The standard library's Script sources (S7a; design/v1, 12 Src): the logic of `std` is written in
+//! Lyric-Script, in `std/` beside `src/`, and each file is in the binary, read while lyric-script
+//! compiles. `import std.<m>` finds its module here, never on the disk; it is compiled with the
+//! program, so the bytecode cache keys it by its text. The prelude is here too, though no import
+//! names it.
+import std.collections { List };
+import std.core { embed };
+
+/// The package of the standard library's modules: none of the program's, so that what one of
+/// them keeps `internal` stays its own.
+let stdPackage: int = -1;
+
+/// The modules of the standard library, by their names.
+let stdModules: string[] = ["std.fs", "std.iter", "std.os"];
+
+/// The text of the standard library's module `name`, `null` where there is none of that name.
+fn stdSource(name: string): ?string {
+    return match (name) {
+        "std.fs" => string.fromUtf8Lossy(comptime embed("../std/fs.lyrs")),
+        "std.iter" => string.fromUtf8Lossy(comptime embed("../std/iter.lyrs")),
+        "std.os" => string.fromUtf8Lossy(comptime embed("../std/os.lyrs")),
+        _ => null,
+    };
+}
+
+/// The last segments of the standard library's modules directly below `name`.
+fn stdBelow(name: string): string[] {
+    let out = List<string>.new();
+    for (m in stdModules) {
+        if (m.startsWith(name + ".")) {
+            let rest = m[name.length() + 1..m.length()].toString();
+            if (rest.find('.') == null) {
+                out.push(rest);
+            }
+        }
+    }
+    return out.toArray();
+}
+
+/// std.collections' text (S7d2): the maps, whose names are the prelude's, added where a
+/// program names one.
+fn collectionsText(): string {
+    return string.fromUtf8Lossy(comptime embed("../std/collections.lyrs"));
+}
+
+/// The prelude's text (07 V3 I8): what every module names without an import.
+fn preludeText(): string {
+    return string.fromUtf8Lossy(comptime embed("../std/prelude.lyrs"));
+}

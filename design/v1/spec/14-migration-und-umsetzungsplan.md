@@ -1870,3 +1870,20 @@ nicht zusätzlich fehlend genannt — ein Unit-Test, weil ein Konformanzfall nur
 Funktionswert einer variadischen Funktion ist `fn(T[]) -> R`, mit dem Array gerufen (Lyric 5
 ebenso). Spec 08 Regel 6; drei Fälle, alle rot gegen S7e3b. Mutanten (acht): jeder traf genau die vorhergesagten Fälle und Tests — auch H, der allein am Unit-Test hängt.
 Fälle 550 → 553, Tests 357 → 358.
+
+**Ergebnis S7e4b (2026-10-31).** Ein Modul `vm/fmt.lyr` liest eine Spec wie std.cores `readSpec` und
+sagt mit dessen Worten, was an ihr für welche Art Wert nicht passt — einmal für zwei Nutzer: der
+Checker lehnt eine Spec im f-String ab (`LYS-SEM0164`), und das Native `fmt.problem` lässt die
+Prelude eine zur Laufzeit gelesene als Script-Panik ablehnen (`LYS-RT0008`), bevor Lyric 5s
+Formatierung sie sieht — deren eigene Panik beendete sonst den Prozess. Geschrieben wird mit Lyric 5s
+öffentlichen `fstringFormatted` und `fstringPadded` (vier Natives `fmt.int`, `fmt.float`, `fmt.str`,
+`fmt.pad`, Format 31): dieselben Vorgaben und dieselbe Rundung („half away from zero“ auf den
+exakten Binärziffern, `{2.675:.2f}` ist `2.67`); ein `char`, ein `bool` und jeder andere Wert werden
+auf ihrem Text gepolstert, `?` auf der Debug-Form. `interface Format { fn format(spec: string, out:
+StringBuilder) }` mit den Skalaren und `string` als Konformern; ein eigener Typ liest die Spec wie
+geschrieben, über eine generische Hilfe der Prelude. Ein Native braucht in der Prelude einen
+getypten Mantel (`__fmtProblem`), sonst `LYS-ICE0001`. Der Pin `whatLyricScriptHasNot` (die
+Format-Spec als NYI) ging mit seiner Uhr; er nimmt jetzt `toBytes()` (S7f). Kalter `hello`, zwanzig
+Runden im Wechsel: S7e4a ≈ 313 ms, S7e4b ≈ 328 ms; die fünf `Format`-Konformitäten ≈ 8 ms davon (A/B
+im Wechsel), P21. Spec 12 Regel 11 und Abweichungen; fünf Fälle, alle rot gegen S7e4a. Mutanten (acht): jeder traf genau die vorhergesagten Fälle.
+Fälle 553 → 558.

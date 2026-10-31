@@ -1785,3 +1785,31 @@ Konformität der Collections. **S7e3b** Tupel als `Display` und `Debug` über Bl
 (Stelligkeit 2–8; `{(1, "a")}` wird `(1, a)`, Ausgaben bestehender Fälle ändern sich), `{x}` eines
 Typparameters in einer geteilten Kopie über einen Text-Slot der Tabelle (`Display`, sonst `Debug`),
 `StringBuilder.append<T :: [Display]>`.
+
+**Ergebnis S7e3a (2026-10-31).** `StringBuilder` ist ein Objekt der VM über Lyric 5s Builder (sechs
+Natives, Format 30); `Display` und `Debug` stehen in der Prelude, die Skalare und `string` sind
+`Display`. Ein String und ein Zeichen in einer Debug-Form maskiert ein Native mit Lyric 5s
+`debug()` (zwei weitere, `nativeCount` 51). `Debug` gehört zu den synthetisierten Interfaces wie
+`Clone` und `Hashable`: `x.debug()` und `x.debugTo(out)` jedes Werts gehen über die Debug-Form, die
+ein Typ mit `:: Debug` und eigenem `debug()` selbst schreibt — die Collections listen `Debug` nun,
+die Brücke „nur Typen der Prelude“ aus S7d2 ist weg; `T :: [Debug]` nimmt jeden Typ, `x is Debug`
+gilt für jeden Wert. `{x}` eines `Display` geht über `show()` — ein Interface-Wert und ein
+Typparameter, den `Display` bindet, über die Tabelle. Lyric 5 macht einen Typ mit eigenem `debug()`
+ohne Listung zu keinem `Debug`; Script druckt jeden Wert, also bleibt dessen Form synthetisiert
+(05 Abweichungen). `debugTo` ist in der Prelude abstrakt: ein Default hätte `this.debug()` über
+eine Tabelle gerufen und so jedem Programm den Debug-Slot angelegt (S7c6c2s Lehre) — der Compiler
+schreibt es für jeden Wert, über einen Typparameter oder einen `Debug`-Wert ohne ein eigenes
+`debugTo` (P30). Gefunden: ein void-Task-Status druckte nicht, sobald irgendetwas über eine Tabelle
+druckte (`text of a void`, seit S6a) — der eine Wert von `void` ist nun `()` (Lyric 5 03 M6-5: `void`
+steht für das leere Tupel), die Uhr „Text eines void → S7e“ ist eingelöst; ein Zeichenliteral im
+Loch eines f-Strings, `'"'`, `'}'`, `':'`, öffnete einen String, schloss das Loch oder begann eine
+Format-Spec (seit S2c, Lexer und Leser des Lochs; Lyric 5 liest es); im Slice selbst, über Mutant C:
+die synthetisierte Form eines Builders druckte sein Feld, ein Objekt der VM ohne Tabelle
+(`LYS-ICE0001`) — seine Debug-Form ist sein Typ, `<StringBuilder>`, wie die einer Task (10 Regel
+19). In S7e3b auch: `{x}` eines
+`Any`, der ein `Display` hält, über denselben Text-Slot; Listen und Collections als `Display`
+(Lyric 5: ihr `show` ist die Debug-Form) für `T :: [Display]`. Kalter `hello`: S7e2 ≈ 263 ms, S7e3a
+≈ 280 ms (Median von zehn, dieselbe Maschine und Stunde, laut); die fünf `Display`-Blöcke tragen
+≈ 5 ms davon (A/B). Spec 05 Regeln 9 und 21 und Abweichungen, 12 Regel 10 und Abweichungen; neun
+Fälle, alle rot gegen S7e2c. Mutanten (elf): A–I, M und N trafen je genau die vorhergesagten Fälle; C verfehlte die Vorhersage (≥4 Fälle der Collections, tatsächlich 13 und einer aus 03, zehn davon Paniken) — und führte zum Fund am Builder.
+Fälle 538 → 547.

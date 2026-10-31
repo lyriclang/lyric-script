@@ -61,6 +61,12 @@ severity = "panic"
 area = "17-host"
 summary = "The script's calls nest deeper than the VM runs (10 000 frames). The code and its meaning are Lyric 5's LYR-RT0006."
 
+[LYS-RT0007]
+title = "a precondition from the program text"
+severity = "panic"
+area = "03-types"
+summary = "A value the program gives breaks what the operation asks of it: a negative count to repeat a list or a string, `xs * n` and `s * n`. The code and its meaning are Lyric 5's LYR-RT0007."
+
 [LYS-RT0008]
 title = "panic called by the script"
 severity = "panic"
@@ -392,7 +398,7 @@ summary = "`Point { x = 1 }`, or `Point { x }` for `x = x`; a field of `with` al
 title = "nesting deeper than the parser carries"
 severity = "error"
 area = "02-grammar"
-summary = "Expressions, blocks and prefix operators nest at most 64 levels: the parser recurses on its caller's stack. Lyric 5's LYR-PAR0045."
+summary = "Expressions, blocks and prefix operators nest at most 64 levels: the parser recurses on its caller's stack. A link of an `else if` chain is such a level, so a chain of more than 62 is refused — a `match` takes any number of arms. Lyric 5's LYR-PAR0045."
 
 [LYS-PAR0047]
 title = "'by' in an enum's list"
@@ -954,6 +960,12 @@ title = "`.Name` where no enum is expected"
 severity = "error"
 area = "03-types"
 summary = "`.Red`, `.Num(1)` and `.Rect { … }` name a member of the enum the position expects; where it expects none, name the enum: `Color.Red`. Lyric 5's LYR-SEM0113."
+
+[LYS-SEM0114]
+title = "a string's byte counted from the end"
+severity = "error"
+area = "12-stdlib"
+summary = "`s[^n]` is no index of a string: a byte counted from the end is rarely where a character begins. `^n` stands as a bound of a range alone, `s[^3..]`. Lyric 5's LYR-SEM0114."
 
 [LYS-SEM0116]
 title = "'with' on something other than a struct"

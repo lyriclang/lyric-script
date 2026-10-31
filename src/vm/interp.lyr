@@ -16,6 +16,7 @@
 //! run, each call returning to a frame of function `-1`, and the run ends with `Outcome.Error`,
 //! the record's frames its trace.
 import std.collections { List, Map };
+import std.core { StringBuilder, UnicodeCategory };
 import std.core { arrayOf };
 import std.fs { exists };
 import std.hash { DefaultHasher };
@@ -3100,6 +3101,145 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                             o.table.clear();
                         }
                     }
+                    // the strings' members (S7e1): Lyric 5's string under them, its bytes read
+                    // once for the bounds of the characters
+                    .StrLen => s[x] = textOf(r[y]).length() as uint64,
+                    .StrAt => {
+                        let o = r[y];
+                        let t = textOf(o);
+                        let i = s[x] as int;
+                        let n = t.length();
+                        if (i < 0 || i >= n) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0003",
+                                f"index {i} out of bounds for length {n}"
+                            );
+                        }
+                        if (!beginsChar(o, i)) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0003",
+                                f"byte {i} does not begin a character"
+                            );
+                        }
+                        s[x] = (t[i] as uint32) as uint64;
+                    }
+                    .StrNext => {
+                        let b = bytesOf(r[y]);
+                        var i = (s[x] as int) + 1;
+                        while (i < b.length() && (b[i] & 192) == 128) {
+                            i += 1;
+                        }
+                        s[x] = i as uint64;
+                    }
+                    .StrPrev => {
+                        let b = bytesOf(r[y]);
+                        var i = (s[x] as int) - 1;
+                        while (i > 0 && (b[i] & 192) == 128) {
+                            i -= 1;
+                        }
+                        s[x] = i as uint64;
+                    }
+                    .StrSlice => {
+                        let o = r[y];
+                        let t = textOf(o);
+                        let a = s[x] as int;
+                        let e = s[x + 1] as int;
+                        let n = t.length();
+                        if (a < 0 || a > e || e > n) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0003",
+                                f"range {a}..{e} out of bounds for length {n}"
+                            );
+                        }
+                        for (at in [a, e]) {
+                            if (!beginsChar(o, at)) {
+                                return panicOut(
+                                    module,
+                                    frames,
+                                    fi,
+                                    pc,
+                                    "LYS-RT0003",
+                                    f"byte {at} does not begin a character"
+                                );
+                            }
+                        }
+                        r[y] = ScriptString { text = t[a..e].toString() };
+                    }
+                    .StrCharCount => s[x] = textOf(r[y]).charCount() as uint64,
+                    .StrUpper => r[y] = ScriptString { text = textOf(r[y]).toUpper() },
+                    .StrLower => r[y] = ScriptString { text = textOf(r[y]).toLower() },
+                    .StrTrim => {
+                        let t = textOf(r[y]);
+                        let mode = s[x] as int;
+                        let kept = if (mode == 1) t.trimStart()
+                            else if (mode == 2) t.trimEnd() else t.trim();
+                        r[y] = ScriptString { text = kept.toString() };
+                    }
+                    .StrRepeat => {
+                        let n = s[x] as int;
+                        if (n < 0) {
+                            return panicOut(
+                                module,
+                                frames,
+                                fi,
+                                pc,
+                                "LYS-RT0007",
+                                f"repeat count {n} is negative"
+                            );
+                        }
+                        r[y] = ScriptString { text = textOf(r[y]) * n };
+                    }
+                    .StrFromChars => {
+                        let o = r[y];
+                        let out = StringBuilder.new();
+                        if (o is ScriptArray) {
+                            var k = 0;
+                            while (k < o.n) {
+                                out.appendChar(charOfCode(o.s[k]));
+                                k += 1;
+                            }
+                        }
+                        r[y] = ScriptString { text = out.toString() };
+                    }
+                    .StrFind => {
+                        let o = r[y];
+                        let t = textOf(o);
+                        let from = s[x] as int;
+                        var found = -1;
+                        if (from >= 0 && from <= t.length() && beginsChar(o, from)) {
+                            if (let k = t[from..t.length()].find(textOf(r[y + 1]))) {
+                                found = from + k;
+                            }
+                        }
+                        s[x] = found as uint64;
+                    }
+                    .StrMatchesAt => {
+                        let o = r[y];
+                        let t = textOf(o);
+                        let at = s[x] as int;
+                        s[x] = truth(
+                            at >= 0
+                                && at <= t.length()
+                                && beginsChar(o, at)
+                                && t[at..t.length()].startsWith(textOf(r[y + 1]))
+                        );
+                    }
+                    .CharCategory => s[x] = categoryIndex(charOfCode(s[x]).category()) as uint64,
+                    .CharWhite => s[x] = truth(charOfCode(s[x]).isWhitespace()),
+                    .CharUpper => s[x] = (charOfCode(s[x]).toUpper() as uint32) as uint64,
+                    .CharLower => s[x] = (charOfCode(s[x]).toLower() as uint32) as uint64,
                     // a list sorted in place (S7c6c2): its length unchanged, a walk goes on
                     .ListSortInts => {
                         let o = r[y];
@@ -3264,6 +3404,69 @@ fn errorOf(rep: Report): ScriptError {
 /// The text of a string reference; the compiler gives a native nothing else.
 fn textOf(v: HeapRef): string {
     return if (v is ScriptString) v.text else "";
+}
+
+/// A string's bytes, read the first time they are asked for and kept (S7e1).
+fn bytesOf(v: HeapRef): uint8[] {
+    if (v is ScriptString) {
+        if (let b = v.bytes) {
+            return b;
+        }
+        let b = v.text.toBytes();
+        v.bytes = b;
+        return b;
+    }
+    return [];
+}
+
+/// Whether a character begins at byte `i` of a string, or `i` is its length.
+fn beginsChar(v: HeapRef, i: int): bool {
+    let b = bytesOf(v);
+    return i >= b.length() || (b[i] & 192) != 128;
+}
+
+/// The character of a scalar slot; U+FFFD for a value that is no Unicode scalar value.
+fn charOfCode(v: uint64): char {
+    if (v > 1114111) {
+        return '\u{FFFD}';
+    }
+    return char.fromUint32(v as uint32) ?? '\u{FFFD}';
+}
+
+/// A general category's place in `UnicodeCategory`, the order of Lyric 5's enum.
+fn categoryIndex(c: UnicodeCategory): int {
+    return match (c) {
+        .UppercaseLetter => 0,
+        .LowercaseLetter => 1,
+        .TitlecaseLetter => 2,
+        .ModifierLetter => 3,
+        .OtherLetter => 4,
+        .NonspacingMark => 5,
+        .SpacingMark => 6,
+        .EnclosingMark => 7,
+        .DecimalNumber => 8,
+        .LetterNumber => 9,
+        .OtherNumber => 10,
+        .ConnectorPunctuation => 11,
+        .DashPunctuation => 12,
+        .OpenPunctuation => 13,
+        .ClosePunctuation => 14,
+        .InitialPunctuation => 15,
+        .FinalPunctuation => 16,
+        .OtherPunctuation => 17,
+        .MathSymbol => 18,
+        .CurrencySymbol => 19,
+        .ModifierSymbol => 20,
+        .OtherSymbol => 21,
+        .SpaceSeparator => 22,
+        .LineSeparator => 23,
+        .ParagraphSeparator => 24,
+        .Control => 25,
+        .Format => 26,
+        .Surrogate => 27,
+        .PrivateUse => 28,
+        .Unassigned => 29,
+    };
 }
 
 fn firstScalars(s: uint64[], from: int, n: int): uint64[] {

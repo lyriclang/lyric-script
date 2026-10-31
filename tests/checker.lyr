@@ -180,3 +180,44 @@ fn aFirstPassKeepsTheInstancesOfTypes(): void {
     parts.push("x = 1");
     assertEq(errs(parts.toArray().join("\n")), []);
 }
+
+@Test
+fn aCopyTakesALongChainOfConditionsInOneFrame(): void {
+    // a match as a value lowers to a chain of conditions, and a copy holds it in one frame (S7e1:
+    // a frame for each link outgrew this test task's stack at thirty); an `else if` chain nests as
+    // a block does, refused past the parser's bound
+    let parts = List<string>.new();
+    parts.push("fn arm<T>(x: T, n: int): int = match (n) {");
+    var k = 0;
+    while (k < 60) {
+        parts.push("    " + f"{k}" + " => " + f"{k}" + ",");
+        k += 1;
+    }
+    parts.push("    _ => -1,");
+    parts.push("}");
+    parts.push("println(arm(\"s\", 7))");
+    parts.push("println(arm(2, 7))");
+    parts.push(chainOf(30));
+    assertEq(errs(parts.toArray().join("\n")), []);
+    assertEq(errs(chainOf(70)), ["LYS-PAR0045"]);
+}
+
+/// A generic function whose body is an `else if` chain of `n` links, and calls of it.
+fn chainOf(n: int): string {
+    let parts = List<string>.new();
+    parts.push("fn pick<T>(x: T, n: int): int {");
+    parts.push("    if (n == 0) {");
+    parts.push("        return 0");
+    var k = 1;
+    while (k < n) {
+        parts.push("    } else if (n == " + f"{k}" + ") {");
+        parts.push("        return " + f"{k}");
+        k += 1;
+    }
+    parts.push("    }");
+    parts.push("    return -1");
+    parts.push("}");
+    parts.push("println(pick(\"s\", 7))");
+    parts.push("println(pick(2, 7))");
+    return parts.toArray().join("\n");
+}

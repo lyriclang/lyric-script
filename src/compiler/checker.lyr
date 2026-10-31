@@ -47,7 +47,7 @@ import lyric_script.compiler.ast {
     unaryText,
 };
 import lyric_script.compiler.diagnostic { Diagnostic };
-import lyric_script.compiler.parser { parse };
+import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.compiler.throws { ThrowSets, Thrown };
 import lyric_script.stdsrc { collectionsText, preludeText, stdPackage };
 import lyric_script.vm.native { nativeNamed, nativeNumber };
@@ -103,12 +103,16 @@ fn checkModule(parsed: Module, imported: ProgramUnit[] = [], collections: bool =
     let c = Checker.new();
     // the prelude's declarations before the program's, parsed as no file of it; the entry's last
     let items = List<Item>.new();
-    for (item in parse(preludeText(), -1).module.items) {
+    let prelude = parse(preludeText(), -1);
+    c.stdParses(prelude, "the prelude");
+    for (item in prelude.module.items) {
         items.push(item);
     }
     // std.collections where the program names a map: its names the prelude's (S7d2)
     if (collections) {
-        for (item in parse(collectionsText(), -1).module.items) {
+        let parsed = parse(collectionsText(), -1);
+        c.stdParses(parsed, "std.collections");
+        for (item in parsed.module.items) {
             items.push(item);
         }
     }
@@ -556,6 +560,19 @@ class Checker {
     /// module of the program — the entry's path empty —, its name alone in the prelude (S5a).
     mut fn declKey(name: string): string {
         return keyIn(this.modNames.get(this.mod) ?? "", this.mod, name);
+    }
+
+    /// A part of the standard library merged into the prelude parses, or the compiler is at fault:
+    /// a parse error there would drop its declarations without a word (S7e1: an `extend fn(…)`
+    /// block did).
+    mut fn stdParses(p: Parsed, what: string): void {
+        for (d in p.errors) {
+            this.error(
+                "LYS-ICE0001",
+                f"{what} does not parse at line {d.line}: {d.message}",
+                nowhereSpan
+            );
+        }
     }
 
     /// The current module sees a declaration of its own by its name, before the prelude's of
@@ -2630,6 +2647,15 @@ class Checker {
             .List(_, _) => "List",
             _ => "",
         };
+        // a function type, an optional, a tuple: Lyric 5 05 §13 rule 6, not built yet
+        if (name == "") {
+            this.notYet(
+                "an extend block on a function type, an optional or a tuple",
+                "S7e2 (the built-in constructors, 05 §13 rule 6)",
+                x.span
+            );
+            return;
+        }
         let index = this.typeNamed(name);
         if (index < 0 || this.types[index].kind == .Interface) {
             this.error(
@@ -6298,6 +6324,38 @@ class Checker {
 
     /// `e` with the type parameters replaced by `a`, a generic's call by its copy's, a
     /// constraint's member by the type's own — or, on a shared copy, through the value's table.
+    /// An `if` and the `if`s standing as its `else`, copied as one chain (S7e1): a match of many
+    /// arms lowers to one `if` in another's `else`, and a frame for each of them outgrew a test's
+    /// stack at the thirty variants of `UnicodeCategory`. The order is the walk's: each condition,
+    /// its branch, then the next.
+    mut fn specIfChain(e: TExpr, a: Ty[]): TExpr {
+        let conds = List<TExpr>.new();
+        let thens = List<TExpr>.new();
+        let tys = List<Ty>.new();
+        var cur = e;
+        var going = true;
+        while (going) {
+            match (cur) {
+                .If(c, x, y, t) => {
+                    conds.push(this.specExpr(c.value, a));
+                    thens.push(this.specExpr(x.value, a));
+                    tys.push(this.subst(t, a));
+                    cur = y.value;
+                }
+                _ => {
+                    going = false;
+                }
+            }
+        }
+        var out = this.specExpr(cur, a);
+        var k = conds.length() - 1;
+        while (k >= 0) {
+            out = TExpr.If(boxE(conds[k]), boxE(thens[k]), boxE(out), tys[k]);
+            k -= 1;
+        }
+        return out;
+    }
+
     mut fn specExpr(e: TExpr, a: Ty[]): TExpr {
         return match (e) {
             .Int(_) | .Float(_) | .Bool(_) | .Char(_) | .Str(_) | .Variant(_, _) | .Unit | .Unknown => e,
@@ -6374,12 +6432,7 @@ class Checker {
                 };
                 TExpr.Assign(p, op, this.specBox(v, a), this.subst(t, a))
             }
-            .If(c, x, y, t) => TExpr.If(
-                this.specBox(c, a),
-                this.specBox(x, a),
-                this.specBox(y, a),
-                this.subst(t, a)
-            ),
+            .If(_, _, _, _) => this.specIfChain(e, a),
             .Block(b, v, t) => TExpr.Block(
                 this.specStmts(b, a),
                 this.specBox(v, a),
@@ -10878,6 +10931,11 @@ class Checker {
                 if (op == .Add && ta == .Str && tb == .Str) {
                     return TExpr.Native(Native.Concat, [a, b], Ty.Str);
                 }
+                // `s * n`, the text `n` times (Lyric 5 12 §Strings; S7e1), `n * s` refused as
+                // `n * xs` is
+                if (op == .Mul && ta == .Str && tb == .Int) {
+                    return this.preludeCall("__strRepeat", [a, b], Ty.Str);
+                }
             }
             .AddWrap | .SubWrap | .MulWrap | .Shl | .Shr | .BitAnd | .BitOr | .BitXor => {
                 if (ta == .Int && tb == .Int) {
@@ -11061,7 +11119,8 @@ class Checker {
         let ht = typeOf(hay);
         let ci = match (ht) {
             .Unknown => -2,
-            .Str | .Map(_, _) => -3,
+            .Str => -4,
+            .Map(_, _) => -3,
             // a list's, where its block admits the element
             .List(e) => {
                 let c = this.exactIface(this.typeIndex.get("Contains") ?? -1, [e.value]);
@@ -11076,6 +11135,27 @@ class Checker {
         if (ci == -3) {
             this.expr(l, null);
             return this.notYet(f"'{binaryText(op)}' over a {this.tyName(ht)}", laterClock(ht), at);
+        }
+        if (ci == -4) {
+            // `c in s`: a character in a string, through its `contains` of a pattern (Lyric 5 12
+            // §Strings, whose string is a `Contains<char>` through that member; S7e1) — the
+            // character first, then the string
+            let needle = this.coerce(this.expr(l, Ty.Char), Ty.Char, spanOf(l));
+            let hx = this.hidden(Ty.Char, at);
+            let hh = this.hidden(Ty.Str, at);
+            let has = this.methodCall(
+                TExpr.Local(hh, Ty.Str),
+                "contains",
+                [Arg { name = null, value = Expr.Name(this.ctx.localNames[hx], at) }],
+                at,
+                at
+            );
+            let value = if (op == .In) has else TExpr.Unary(UnaryOp.Not, boxE(has), Ty.Bool);
+            return TExpr.Block(
+                [TStmt.SetLocal(hx, needle, at.line), TStmt.SetLocal(hh, hay, at.line)],
+                boxE(value),
+                Ty.Bool
+            );
         }
         if (ci < 0) {
             this.expr(l, null);
@@ -12271,7 +12351,7 @@ class Checker {
                     .Unknown => {
                         return TExpr.Unknown;
                     }
-                    .Str | .Map(_, _) => {
+                    .Map(_, _) => {
                         return this.notYet(
                             f"indexing a {this.tyName(typeOf(lv))}",
                             laterClock(typeOf(lv)),
@@ -12469,7 +12549,12 @@ class Checker {
                 this.error("LYS-SEM0012", f"'{this.tyName(t)}' has no field '{field}'", at);
                 return null;
             }
-            .Str | .Map(_, _) => {
+            // a string has methods and no fields (S7e1)
+            .Str => {
+                this.error("LYS-SEM0012", f"'{this.tyName(t)}' has no field '{field}'", at);
+                return null;
+            }
+            .Map(_, _) => {
                 this.notYet(f"the members of {this.tyName(t)}", laterClock(t), at);
                 return null;
             }
@@ -13015,7 +13100,10 @@ class Checker {
             .Unknown => {
                 return TExpr.Unknown;
             }
-            .Str | .Map(_, _) => {
+            .Str => {
+                return this.stringIndex(lv, i, at);
+            }
+            .Map(_, _) => {
                 return this.notYet(f"indexing a {this.tyName(t)}", "S7 (the core collections)", at);
             }
             _ => {
@@ -13030,6 +13118,72 @@ class Checker {
                 return this.methodCall(lv, "index", [Arg { name = null, value = i }], at, at);
             }
         }
+    }
+
+    /// `s[i]` and `s[a..b]` of a string (Lyric 5 12 §Strings rules 2–3; S7e1): the character that
+    /// begins at byte `i`, through the prelude's `string :: Index<int>`; a new string of the bytes
+    /// from `a` to `b` (03 Str), its bounds `^n` too — the string held once. `^n` alone is no index
+    /// of a string: a byte counted from the end is rarely where a character begins.
+    mut fn stringIndex(s: TExpr, i: Expr, at: Span): TExpr {
+        match (i) {
+            .Range(from, to, inclusive, _) => {
+                var lv = s;
+                var hold: ?int = null;
+                if (countsFromEnd(i)) {
+                    let h = this.hidden(Ty.Str, at);
+                    lv = TExpr.Block(
+                        [TStmt.SetLocal(h, s, at.line)],
+                        boxE(TExpr.Local(h, Ty.Str)),
+                        Ty.Str
+                    );
+                    hold = h;
+                }
+                let a = this.stringBound(from.value, hold);
+                let b = this.stringBound(to.value, hold);
+                let end = if (inclusive) TExpr.Binary(
+                    boxE(b),
+                    BinaryOp.Add,
+                    boxE(TExpr.Int(1)),
+                    Ty.Int
+                )
+                    else b;
+                return this.preludeCall("__strSlice", [lv, a, end], Ty.Str);
+            }
+            .FromEnd(_, fromAt) => {
+                this.error(
+                    "LYS-SEM0114",
+                    "'^n' counts from the end of a string in a range alone: a byte from the end is rarely where a character begins",
+                    fromAt
+                );
+                return TExpr.Unknown;
+            }
+            _ => { }
+        }
+        return this.methodCall(s, "index", [Arg { name = null, value = i }], at, at);
+    }
+
+    /// A bound of a string's slice: an `int`, or `^n`, the string's length in bytes less `n`.
+    mut fn stringBound(i: Expr, hold: ?int): TExpr {
+        match (i) {
+            .FromEnd(n, _) => {
+                let k = this.coerce(this.expr(n.value, Ty.Int), Ty.Int, spanOf(n.value));
+                let len = this.preludeCall("__strLen", [TExpr.Local(hold ?? 0, Ty.Str)], Ty.Int);
+                return TExpr.Binary(boxE(len), BinaryOp.Sub, boxE(k), Ty.Int);
+            }
+            _ => { }
+        }
+        return this.coerce(this.expr(i, Ty.Int), Ty.Int, spanOf(i));
+    }
+
+    /// A call of the prelude's function `name`, one of its own (S7e1).
+    mut fn preludeCall(name: string, args: TExpr[], returns: Ty): TExpr {
+        var fi = -1;
+        if (let fs = this.fnByName.get(name)) {
+            if (fs.length() > 0) {
+                fi = fs[0];
+            }
+        }
+        return TExpr.Call(fi, args, returns);
     }
 
     /// An index of a list: an `int`, or `^n`, the list's length less `n` — the list in hidden
@@ -13632,6 +13786,8 @@ class Checker {
             },
             "__scopeClose" => TExpr.ScopeClose(boxE(one)),
             "__boundsPanic" => TExpr.Panic(boxE(one), 3),
+            // a precondition from the program text (S7e1: a negative repetition), `LYS-RT0007`
+            "__argumentPanic" => TExpr.Panic(boxE(one), 7),
             // a collection changed while it was walked (S7d2): Lyric 5's `LYR-RT0016`
             "__changedPanic" => TExpr.Panic(boxE(one), 16),
             // a value's Debug form, where a type writes its own (S7d2: a map's entries)
@@ -14990,6 +15146,15 @@ class Checker {
                             if (index != null) {
                                 this.callExpected = expected;
                                 return this.staticCall(index, method, args, at);
+                            }
+                            // `char.fromDigit(n, 16)`, `string.fromChars(cs)`: a static of a
+                            // built-in type, its extend blocks' (S7e1)
+                            if (isScalarOrString(typeName)) {
+                                let bi = this.typeNamed(typeName);
+                                if (bi >= 0) {
+                                    this.callExpected = expected;
+                                    return this.staticCall(bi, method, args, at);
+                                }
                             }
                         }
                     }
@@ -17247,9 +17412,18 @@ fn ends(s: TStmt): bool {
     };
 }
 
+/// Whether `name` is a scalar's or the string's: a type whose extend blocks may give statics.
+fn isScalarOrString(name: string): bool {
+    return match (name) {
+        "int" | "float" | "bool" | "char" | "string" => true,
+        _ => false,
+    };
+}
+
 fn isBuiltinType(name: string): bool {
     return match (name) {
-        "int" | "float" | "bool" | "char" | "string" | "void" | "never" | "List" | "Map" => true,
+        // `Map` is std.collections' class since S7d2, a name a module may give its own
+        "int" | "float" | "bool" | "char" | "string" | "void" | "never" | "List" => true,
         _ => isWidthType(name),
     };
 }
@@ -17683,7 +17857,7 @@ fn isIntrinsic(name: string): bool {
     return match (name) {
         "__chanReady" | "__chanWatch" | "__parkWatched" | "__sleep" | "__readLine" => true,
         "__timerAfter" | "__listTruncate" | "__listChanges" | "__listCheck" | "__boundsPanic" => true,
-        "__changedPanic" | "__debugOf" => true,
+        "__changedPanic" | "__debugOf" | "__argumentPanic" => true,
         "__coNext" | "__coClose" | "__scopeClose" => true,
         _ => false,
     };

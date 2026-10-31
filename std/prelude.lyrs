@@ -421,7 +421,7 @@ fn __listConcat<T>(a: T[], b: T[]): T[] {
 }
 fn __listRepeat<T>(a: T[], n: int): T[] {
     if (n < 0) {
-        panic("negative repeat count")
+        __argumentPanic(f"repeat count {n} is negative")
     }
     let out: T[] = []
     var k = 0
@@ -603,6 +603,407 @@ extend bool :: Hashable {
 extend string :: Hashable {
     fn hash(h: Hasher) {
         h.state = __mixStr(h.state, this)
+    }
+}
+
+// a string's natives (S7e1): Lyric 5's string under them, its bytes and characters
+fn __strLen(s: string): int = __string_len(s)
+fn __strAt(s: string, i: int): char = __string_at(s, i)
+fn __strNext(s: string, at: int): int = __string_next(s, at)
+fn __strPrev(s: string, end: int): int = __string_prev(s, end)
+fn __strSlice(s: string, from: int, to: int): string = __string_slice(s, from, to)
+fn __strCharCount(s: string): int = __string_charCount(s)
+fn __strUpper(s: string): string = __string_upper(s)
+fn __strLower(s: string): string = __string_lower(s)
+fn __strTrim(s: string, mode: int): string = __string_trim(s, mode)
+fn __strRepeat(s: string, n: int): string = __string_repeat(s, n)
+fn __strFromChars(cs: char[]): string = __string_fromChars(cs)
+fn __strFind(t: string, p: string, from: int): int = __string_find(t, p, from)
+fn __strMatchesAt(t: string, p: string, at: int): bool = __string_matchesAt(t, p, at)
+fn __charCategory(c: char): int = __char_category(c)
+fn __charWhite(c: char): bool = __char_white(c)
+fn __charUpper(c: char): char = __char_upper(c)
+fn __charLower(c: char): char = __char_lower(c)
+
+// a string's members (Lyric 5 12 §Strings; S7e1): its bytes, its characters; a new string for
+// what Lyric 5 gives a view of (03 Str)
+extend string {
+    // the bytes, O(1); `charCount()` counts the characters
+    fn length(): int = __strLen(this)
+    fn isEmpty(): bool = __strLen(this) == 0
+    // the characters, decoded, from either end
+    fn chars(): CharsIter = CharsIter { s = this, end = __strLen(this) }
+    // each character with the byte it begins at
+    fn charIndices(): CharIndicesIter = CharIndicesIter { s = this }
+    // the characters, O(n)
+    fn charCount(): int = __strCharCount(this)
+    // each character by its simple case mapping, one for one, no locale
+    fn toUpper(): string = __strUpper(this)
+    fn toLower(): string = __strLower(this)
+    // without the white space — the characters with the property White_Space — at the ends
+    fn trim(): string = __strTrim(this, 0)
+    fn trimStart(): string = __strTrim(this, 1)
+    fn trimEnd(): string = __strTrim(this, 2)
+    // whether it holds nothing but white space; true for the empty text too
+    fn isBlank(): bool = __strLen(__strTrim(this, 1)) == 0
+    // the text of an iterator's characters, in order
+    static fn fromChars<I :: [Iterator<Item = char>]>(chars: I): string {
+        let cs: char[] = []
+        while (let c = chars.next()) {
+            cs.push(c)
+        }
+        return __strFromChars(cs)
+    }
+}
+// `s[i]`: the character that begins at byte `i` — a panic outside or at a byte that continues one
+extend string :: Index<int> {
+    type Output = char
+    fn index(i: int): char = __strAt(this, i)
+}
+
+// what a text is searched for: a string, a character (Lyric 5 12 §Strings; S7e1) — a test of
+// characters, `fn(char) -> bool`, comes with S7e2. `matchAt` gives the end of a match that begins at byte `at`, `matchBefore` the start of
+// one that ends at `end`, `null` where there is none — `at` and `end` a character's first byte or
+// the length; `nextIn` the first byte at or after `from` where one begins, by default through
+// `matchAt` at each, faster where a pattern can find
+interface Pattern {
+    fn matchAt(text: string, at: int): ?int
+    fn matchBefore(text: string, end: int): ?int
+    fn nextIn(text: string, from: int): ?int {
+        let n = __strLen(text)
+        var at = from
+        while (at <= n) {
+            if (this.matchAt(text, at) != null) {
+                return at
+            }
+            at = __strNext(text, at)
+        }
+        return null
+    }
+}
+// a string's bytes, where they stand
+extend string :: Pattern {
+    fn matchAt(text: string, at: int): ?int {
+        if (__strMatchesAt(text, this, at)) {
+            return at + __strLen(this)
+        }
+        return null
+    }
+    fn matchBefore(text: string, end: int): ?int {
+        let start = end - __strLen(this)
+        if (__strMatchesAt(text, this, start)) {
+            return start
+        }
+        return null
+    }
+    fn nextIn(text: string, from: int): ?int {
+        let at = __strFind(text, this, from)
+        if (at < 0) {
+            return null
+        }
+        return at
+    }
+}
+// the character, where it stands
+extend char :: Pattern {
+    fn matchAt(text: string, at: int): ?int {
+        if (at >= __strLen(text) || __strAt(text, at) != this) {
+            return null
+        }
+        return __strNext(text, at)
+    }
+    fn matchBefore(text: string, end: int): ?int {
+        if (end <= 0) {
+            return null
+        }
+        let start = __strPrev(text, end)
+        if (__strAt(text, start) != this) {
+            return null
+        }
+        return start
+    }
+}
+// whether `p` matches the empty text: as a separator or a pattern to replace it would stand
+// everywhere
+fn __matchesNothing<P :: [Pattern]>(p: P): bool = p.matchAt("", 0) != null
+
+// a string's members that search for a pattern (Lyric 5 12 §Strings; S7e1)
+extend string {
+    // whether `p` stands in it
+    fn contains<P :: [Pattern]>(p: P): bool = p.nextIn(this, 0) != null
+    fn startsWith<P :: [Pattern]>(p: P): bool = p.matchAt(this, 0) != null
+    fn endsWith<P :: [Pattern]>(p: P): bool = p.matchBefore(this, __strLen(this)) != null
+    // the byte of the first `p`, `null` where there is none; an empty `p` stands at 0
+    fn find<P :: [Pattern]>(p: P): ?int = p.nextIn(this, 0)
+    // the byte of the last `p`, `null` where there is none; an empty `p` stands at the length
+    fn rfind<P :: [Pattern]>(p: P): ?int {
+        var end = __strLen(this)
+        while (end >= 0) {
+            if (let start = p.matchBefore(this, end)) {
+                return start
+            }
+            end = __strPrev(this, end)
+        }
+        return null
+    }
+    // how many times `p` stands in it, none overlapping another; an empty `p` between every two
+    // characters and at both ends
+    fn count<P :: [Pattern]>(p: P): int {
+        let n = __strLen(this)
+        var count = 0
+        var from = 0
+        while (from <= n) {
+            if (let at = p.nextIn(this, from)) {
+                let end = p.matchAt(this, at)!
+                count += 1
+                from = if (end > at) end else __strNext(this, at)
+            } else {
+                return count
+            }
+        }
+        return count
+    }
+    // without the matches of `p` at the ends, removed again and again; a match of the empty text
+    // takes nothing
+    fn trimMatches<P :: [Pattern]>(p: P): string = this.trimStartMatches(p).trimEndMatches(p)
+    fn trimStartMatches<P :: [Pattern]>(p: P): string {
+        let n = __strLen(this)
+        var i = 0
+        while (i < n) {
+            let end = p.matchAt(this, i) ?? i
+            if (end == i) {
+                break
+            }
+            i = end
+        }
+        return __strSlice(this, i, n)
+    }
+    fn trimEndMatches<P :: [Pattern]>(p: P): string {
+        var n = __strLen(this)
+        while (n > 0) {
+            let start = p.matchBefore(this, n) ?? n
+            if (start == n) {
+                break
+            }
+            n = start
+        }
+        return __strSlice(this, 0, n)
+    }
+    // the rest after `p` where it begins with `p`, `null` where it does not
+    fn stripPrefix<P :: [Pattern]>(p: P): ?string {
+        if (let end = p.matchAt(this, 0)) {
+            return __strSlice(this, end, __strLen(this))
+        }
+        return null
+    }
+    // the rest before `p` where it ends with `p`, `null` where it does not
+    fn stripSuffix<P :: [Pattern]>(p: P): ?string {
+        if (let start = p.matchBefore(this, __strLen(this))) {
+            return __strSlice(this, 0, start)
+        }
+        return null
+    }
+    // every `p` replaced by `with`, none overlapping another; a `p` that matches the empty text
+    // panics
+    fn replace<P :: [Pattern]>(p: P, with: string): string = this.replaceN(p, with, -1)
+    // the first `n` of `p` replaced, all of them where `n` is negative
+    fn replaceN<P :: [Pattern]>(p: P, with: string, n: int): string {
+        if (__matchesNothing(p)) {
+            panic("replace: a pattern that matches the empty text")
+        }
+        let length = __strLen(this)
+        var out = ""
+        var left = n
+        var from = 0
+        while (from < length && left != 0) {
+            if (let at = p.nextIn(this, from)) {
+                out += __strSlice(this, from, at) + with
+                from = p.matchAt(this, at)!
+                left -= 1
+            } else {
+                left = 0
+            }
+        }
+        return out + __strSlice(this, from, length)
+    }
+    // `fill` before it until it is `width` characters long; a longer one as it is
+    fn padStart(width: int, fill: char = ' '): string {
+        let missing = width - __strCharCount(this)
+        if (missing <= 0) {
+            return this
+        }
+        return __strRepeat(f"{fill}", missing) + this
+    }
+    // `fill` after it until it is `width` characters long
+    fn padEnd(width: int, fill: char = ' '): string {
+        let missing = width - __strCharCount(this)
+        if (missing <= 0) {
+            return this
+        }
+        return this + __strRepeat(f"{fill}", missing)
+    }
+}
+
+// a string's characters, decoded from the bytes, from either end: the two ends meet
+class CharsIter :: [Iterator, DoubleEnded] {
+    type Item = char
+    s: string
+    var at: int = 0
+    var end: int
+    fn next(): ?char {
+        if (this.at >= this.end) {
+            return null
+        }
+        let c = __strAt(this.s, this.at)
+        this.at = __strNext(this.s, this.at)
+        return c
+    }
+    fn nextBack(): ?char {
+        if (this.end <= this.at) {
+            return null
+        }
+        this.end = __strPrev(this.s, this.end)
+        return __strAt(this.s, this.end)
+    }
+}
+// a string's characters, each with the byte it begins at
+class CharIndicesIter :: Iterator {
+    type Item = (int, char)
+    s: string
+    var at: int = 0
+    fn next(): ?(int, char) {
+        if (this.at >= __strLen(this.s)) {
+            return null
+        }
+        let i = this.at
+        let c = __strAt(this.s, i)
+        this.at = __strNext(this.s, i)
+        return (i, c)
+    }
+}
+
+// the general categories of Unicode, in their order (Lyric 5 12 §Characters)
+enum UnicodeCategory {
+    UppercaseLetter,
+    LowercaseLetter,
+    TitlecaseLetter,
+    ModifierLetter,
+    OtherLetter,
+    NonspacingMark,
+    SpacingMark,
+    EnclosingMark,
+    DecimalNumber,
+    LetterNumber,
+    OtherNumber,
+    ConnectorPunctuation,
+    DashPunctuation,
+    OpenPunctuation,
+    ClosePunctuation,
+    InitialPunctuation,
+    FinalPunctuation,
+    OtherPunctuation,
+    MathSymbol,
+    CurrencySymbol,
+    ModifierSymbol,
+    OtherSymbol,
+    SpaceSeparator,
+    LineSeparator,
+    ParagraphSeparator,
+    Control,
+    Format,
+    Surrogate,
+    PrivateUse,
+    Unassigned,
+}
+
+// a character's members (Lyric 5 12 §Characters; S7e1): its category, the tests on it, its case
+extend char {
+    fn category(): UnicodeCategory = match (__charCategory(this)) {
+        0 => .UppercaseLetter,
+        1 => .LowercaseLetter,
+        2 => .TitlecaseLetter,
+        3 => .ModifierLetter,
+        4 => .OtherLetter,
+        5 => .NonspacingMark,
+        6 => .SpacingMark,
+        7 => .EnclosingMark,
+        8 => .DecimalNumber,
+        9 => .LetterNumber,
+        10 => .OtherNumber,
+        11 => .ConnectorPunctuation,
+        12 => .DashPunctuation,
+        13 => .OpenPunctuation,
+        14 => .ClosePunctuation,
+        15 => .InitialPunctuation,
+        16 => .FinalPunctuation,
+        17 => .OtherPunctuation,
+        18 => .MathSymbol,
+        19 => .CurrencySymbol,
+        20 => .ModifierSymbol,
+        21 => .OtherSymbol,
+        22 => .SpaceSeparator,
+        23 => .LineSeparator,
+        24 => .ParagraphSeparator,
+        25 => .Control,
+        26 => .Format,
+        27 => .Surrogate,
+        28 => .PrivateUse,
+        _ => .Unassigned,
+    }
+    // a letter of any script: the categories Lu, Ll, Lt, Lm and Lo
+    fn isAlpha(): bool = __charCategory(this) <= 4
+    // a decimal digit of any script: the category Nd
+    fn isDigit(): bool = __charCategory(this) == 8
+    fn isAlphanumeric(): bool {
+        let k = __charCategory(this)
+        return k <= 4 || k == 8
+    }
+    // the property White_Space
+    fn isWhitespace(): bool = __charWhite(this)
+    fn isUpper(): bool = __charCategory(this) == 0
+    fn isLower(): bool = __charCategory(this) == 1
+    fn isControl(): bool = __charCategory(this) == 25
+    // its simple case mappings
+    fn toUpper(): char = __charUpper(this)
+    fn toLower(): char = __charLower(this)
+    fn isAsciiDigit(): bool = this >= '0' && this <= '9'
+    fn isAsciiAlpha(): bool = (this >= 'a' && this <= 'z') || (this >= 'A' && this <= 'Z')
+    fn isAsciiHexDigit(): bool = this.isAsciiDigit()
+        || (this >= 'a' && this <= 'f')
+        || (this >= 'A' && this <= 'F')
+    fn isAsciiWhitespace(): bool {
+        let n = this as int
+        return n == 32 || n == 9 || n == 10 || n == 12 || n == 13
+    }
+    // its value as a digit in base `radix`, `0`–`9` then `a`–`z` or `A`–`Z` — ASCII alone, as
+    // `parse` reads; `null` where it is no digit of the base; a radix outside 2–36 panics
+    fn toDigit(radix: int): ?int {
+        if (radix < 2 || radix > 36) {
+            panic(f"radix {radix} is outside 2…36")
+        }
+        let n = this as int
+        var d = 36
+        if (n >= 48 && n <= 57) {
+            d = n - 48
+        } else if (n >= 97 && n <= 122) {
+            d = n - 87
+        } else if (n >= 65 && n <= 90) {
+            d = n - 55
+        }
+        if (d < radix) {
+            return d
+        }
+        return null
+    }
+    // the digit `n` in base `radix`, lower case past 9; `null` where `n` is no digit of it
+    static fn fromDigit(n: int, radix: int): ?char {
+        if (radix < 2 || radix > 36) {
+            panic(f"radix {radix} is outside 2…36")
+        }
+        if (n < 0 || n >= radix) {
+            return null
+        }
+        return (if (n < 10) 48 + n else 87 + n) as char
     }
 }
 // a value's own copy, and a type's value where nothing is given (Lyric 5 05 §14; S7c6c1):

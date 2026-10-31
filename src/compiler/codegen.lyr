@@ -1317,6 +1317,36 @@ class FnGen {
     }
 
     /// Evaluates `e` into `dst`; `nowhere` where no value is wanted.
+    /// An `if` and the `if`s standing as its `else`, as one chain (S7e1): each condition, its
+    /// branch and a jump to the end, then the last `else` — a match of many arms lowers to such a
+    /// chain, and a frame for each link overflowed the stack at four hundred.
+    mut fn ifChain(e: TExpr, dst: Loc): void {
+        let ends = List<int>.new();
+        var cur = e;
+        var going = true;
+        while (going) {
+            match (cur) {
+                .If(c, a, b, _) => {
+                    let m = this.mark();
+                    let cond = this.any(c.value).s;
+                    let toElse = this.emit(Op.JumpIfNot, cond, 0, 0);
+                    this.release(m);
+                    this.to(a.value, dst);
+                    ends.push(this.emit(Op.Jump, 0, 0, 0));
+                    this.patch(toElse, this.here());
+                    cur = b.value;
+                }
+                _ => {
+                    going = false;
+                }
+            }
+        }
+        this.to(cur, dst);
+        for (j in ends) {
+            this.patch(j, this.here());
+        }
+    }
+
     mut fn to(e: TExpr, dst: Loc): void {
         let m = this.mark();
         match (e) {
@@ -1393,16 +1423,7 @@ class FnGen {
                 this.getField(dst, ro, this.layout.fieldLoc[owner][k], t);
             }
             .Assign(place, op, value, t) => this.assign(place, op, value.value, t, dst),
-            .If(c, a, b, _) => {
-                let cond = this.any(c.value).s;
-                let toElse = this.emit(Op.JumpIfNot, cond, 0, 0);
-                this.release(m);
-                this.to(a.value, dst);
-                let toEnd = this.emit(Op.Jump, 0, 0, 0);
-                this.patch(toElse, this.here());
-                this.to(b.value, dst);
-                this.patch(toEnd, this.here());
-            }
+            .If(_, _, _, _) => this.ifChain(e, dst),
             .Block(list, value, _) => {
                 this.stmts(list);
                 this.to(value.value, dst);

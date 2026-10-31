@@ -50,6 +50,30 @@ enum NativeFn :: [Equatable] {
     IndexNext,
     IndexRemove,
     IndexClear,
+    /// The strings' members (S7e1): a string's length in bytes; the character at a byte, a panic
+    /// outside or inside a character; the first byte of the next character and of the one
+    /// before; a slice on characters' bounds; the characters counted; the case mappings; the
+    /// trims (0 both ends, 1 the start, 2 the end); a repetition; a list of characters joined;
+    /// the first match of a string from a byte, or -1; whether one stands at a byte.
+    StrLen,
+    StrAt,
+    StrNext,
+    StrPrev,
+    StrSlice,
+    StrCharCount,
+    StrUpper,
+    StrLower,
+    StrTrim,
+    StrRepeat,
+    StrFromChars,
+    StrFind,
+    StrMatchesAt,
+    /// A character's general category, as its place in `UnicodeCategory`; whether it is white
+    /// space; its simple case mappings.
+    CharCategory,
+    CharWhite,
+    CharUpper,
+    CharLower,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -63,7 +87,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 25;
+let nativeCount: int = 42;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -92,7 +116,24 @@ fn nativeOf(n: int): NativeFn {
         21 => NativeFn.IndexFirst,
         22 => NativeFn.IndexNext,
         23 => NativeFn.IndexRemove,
-        _ => NativeFn.IndexClear,
+        24 => NativeFn.IndexClear,
+        25 => NativeFn.StrLen,
+        26 => NativeFn.StrAt,
+        27 => NativeFn.StrNext,
+        28 => NativeFn.StrPrev,
+        29 => NativeFn.StrSlice,
+        30 => NativeFn.StrCharCount,
+        31 => NativeFn.StrUpper,
+        32 => NativeFn.StrLower,
+        33 => NativeFn.StrTrim,
+        34 => NativeFn.StrRepeat,
+        35 => NativeFn.StrFromChars,
+        36 => NativeFn.StrFind,
+        37 => NativeFn.StrMatchesAt,
+        38 => NativeFn.CharCategory,
+        39 => NativeFn.CharWhite,
+        40 => NativeFn.CharUpper,
+        _ => NativeFn.CharLower,
     };
 }
 
@@ -124,6 +165,23 @@ fn nativeNumber(n: NativeFn): int {
         .IndexNext => 22,
         .IndexRemove => 23,
         .IndexClear => 24,
+        .StrLen => 25,
+        .StrAt => 26,
+        .StrNext => 27,
+        .StrPrev => 28,
+        .StrSlice => 29,
+        .StrCharCount => 30,
+        .StrUpper => 31,
+        .StrLower => 32,
+        .StrTrim => 33,
+        .StrRepeat => 34,
+        .StrFromChars => 35,
+        .StrFind => 36,
+        .StrMatchesAt => 37,
+        .CharCategory => 38,
+        .CharWhite => 39,
+        .CharUpper => 40,
+        .CharLower => 41,
     };
 }
 
@@ -154,6 +212,23 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .IndexNext => sig("index.next", 2, 1, true, false),
         .IndexRemove => sig("index.remove", 2, 1, false, false),
         .IndexClear => sig("index.clear", 0, 1, false, false),
+        .StrLen => sig("string.len", 0, 1, true, false),
+        .StrAt => sig("string.at", 1, 1, true, false),
+        .StrNext => sig("string.next", 1, 1, true, false),
+        .StrPrev => sig("string.prev", 1, 1, true, false),
+        .StrSlice => sig("string.slice", 2, 1, false, true),
+        .StrCharCount => sig("string.charCount", 0, 1, true, false),
+        .StrUpper => sig("string.upper", 0, 1, false, true),
+        .StrLower => sig("string.lower", 0, 1, false, true),
+        .StrTrim => sig("string.trim", 1, 1, false, true),
+        .StrRepeat => sig("string.repeat", 1, 1, false, true),
+        .StrFromChars => sig("string.fromChars", 0, 1, false, true),
+        .StrFind => sig("string.find", 1, 2, true, false),
+        .StrMatchesAt => sig("string.matchesAt", 1, 2, true, false),
+        .CharCategory => sig("char.category", 1, 0, true, false),
+        .CharWhite => sig("char.white", 1, 0, true, false),
+        .CharUpper => sig("char.upper", 1, 0, true, false),
+        .CharLower => sig("char.lower", 1, 0, true, false),
     };
 }
 

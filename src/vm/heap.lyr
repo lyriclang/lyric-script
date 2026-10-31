@@ -78,6 +78,9 @@ pub class ScriptIndex :: [HeapRef] {
 /// A string of the script: a Lyric 5 string, wrapped once.
 pub class ScriptString :: [HeapRef] {
     pub text: string,
+    /// Its bytes, read the first time a member asks at a byte (S7e1): Lyric 5 gives a string's
+    /// bytes as a copy alone, and a character's bounds are a byte's to tell.
+    pub var bytes: ?uint8[] = null,
 
     pub fn desc(): ?TypeDesc {
         return null;

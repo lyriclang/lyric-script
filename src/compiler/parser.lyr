@@ -286,6 +286,21 @@ class Parser {
         }
     }
 
+    /// A link of an `else if` chain: a level of nesting, refused past the bound with the form that
+    /// takes any number of cases.
+    mut fn enterLink(t: Token): void throws SyntaxError {
+        this.depth += 1;
+        // two levels short of the bound: the link's block and its first expression come next
+        if (this.depth > maxNesting - 2) {
+            this.depth -= 1;
+            throw this.failure(
+                "LYS-PAR0045",
+                f"more than {maxNesting - 2} links of 'else if' nest too deep: a 'match' takes any number of arms",
+                t
+            );
+        }
+    }
+
     mut fn enter(t: Token): void throws SyntaxError {
         this.depth += 1;
         if (this.depth > maxNesting) {
@@ -360,7 +375,11 @@ class Parser {
             let i = try this.parseInterface(isPub, first);
             return Item.Decl(Decl.Interface(i with { isInternal = inPackage }));
         }
-        if (this.atWord("extend") && (this.peek(1).kind == .Ident || this.peek(1).kind == .Lt)) {
+        // `extend fn(char) -> bool { … }` too: a word `fn` after it begins no expression (S7e1)
+        if (this.atWord("extend")
+            && (this.peek(1).kind == .Ident
+                || this.peek(1).kind == .Lt
+                || this.isWord(this.peek(1), "fn"))) {
             return Item.Decl(Decl.Extend(try this.parseExtend(first)));
         }
         if (this.pos > 0 && this.tokens[this.pos - 1].start == first.start) {
@@ -1384,7 +1403,11 @@ class Parser {
             this.advance();
             this.skipNewlines();
             if (this.atWord("if")) {
+                // a link of an `else if` chain nests as a block does (S7e1: four hundred of them
+                // overflowed the checker's stack)
+                try this.enterLink(this.current());
                 otherwise = boxedStmt(try this.parseIf());
+                this.depth -= 1;
             } else {
                 let b = try this.parseBlock();
                 otherwise = boxedStmt(Stmt.Block(b, b.span));
@@ -2289,7 +2312,14 @@ class Parser {
             );
         }
         this.advance();
-        let otherwise = if (this.atWord("if")) try this.parseIfExpr() else try this.parseBranch();
+        var otherwise = Expr.Bool(false, this.since(first));
+        if (this.atWord("if")) {
+            try this.enterLink(this.current());
+            otherwise = try this.parseIfExpr();
+            this.depth -= 1;
+        } else {
+            otherwise = try this.parseBranch();
+        }
         return Expr.If(boxed(cond), boxed(then), boxed(otherwise), this.since(first));
     }
 

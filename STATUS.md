@@ -311,8 +311,9 @@ VM's call path, S7k measurement point 3.
   `extend` on a function type was taken without effect (now NYI, clock S7e2); a copy walked an
   `else if` chain one frame per link (a 30-arm match broke the unit tests' stack); a 400-arm
   match crashed the code generator, a 400-link `else if` chain the checker (now PAR0045).
-- Next: **S7e2** — `split`, `lines`, `Parse`; blocks on function types, optionals and tuples (Lyric
-  5 05 §13 rule 6) and `fn(char) -> bool` as a pattern.
+- **S7e2 done** — `split`, `lines`, `Parse`; blocks on function types, optionals and tuples at
+  fixed types (Lyric 5 05 §13 rule 6), `fn(char) -> bool` as a pattern.
+- Next: **S7e2c** — blocks over shapes of a block's parameters (`extend<T> ?T`); then S7e3.
 
 ## Working mode
 

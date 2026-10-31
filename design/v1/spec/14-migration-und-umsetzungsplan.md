@@ -1740,3 +1740,21 @@ Listenwiederholung erwartete RT0008 „wie Lyric 5“ — mit der Regel gezogen.
 `hello` ging um etwa 20–35 ms hoch (P21). Spec 12 Regel 8, 02 Regel 1, 03 Regel 16, 05 Regeln 3
 und 8, 08; vierzehn Fälle, alle rot gegen S7d4. Mutanten: A 527, B 526, C 527 von 529 — je genau die vorhergesagten Fälle und der veraltete alte Fall (die Unit-Tests dieser Läufe waren am Stand selbst rot, Fund 5); für die Ketten D 528 von 530 und zwei Unit-Tests wie vorhergesagt, E (die Kopie wieder rekursiv) 237 rote Unit-Tests und — anders als vorhergesagt — auch der Fall der 400 Arme: die CLI hält die rekursive Kopie dort ebenfalls nicht.
 Fälle 516 → 530.
+
+**S7e2, Ergebnis (2026-10-31).** `split`, `splitN`, `splitOnce`, `matches` und `lines` als
+Iteratoren über jedes `Pattern`, neue Strings statt Sichten; `Parse` und `ParseError` (`Empty`,
+`Invalid`, `Overflow`, Lyric 5s Texte) für `bool`, `int` — auch `int.parse(s, radix)` — und
+`float` (die Form prüft Script nach Lyric 5s `checkFloatText`, den Wert liest ein Native über
+Lyric 5s `float.parse`, Format 29); `s.parse<T>()`. Die Ganzzahl nach Lyric 5s Verfahren, die
+negative abwärts gezählt, der Überlauf vor jedem Schritt gefragt, weil Scripts `int` beim Überlauf
+panikt. Blöcke auf Funktionstypen, Optionals und Tupeln zu festen Typen (Lyric 5 05 §13 Regel 6):
+ein Eintrag je Form, `this` die Form, Glieder und Konformitäten; die Defaults einer Konformität
+über eine Box, die die Slots der Form trägt, wie bei Skalaren; Kopien für Funktionstypen jetzt
+exakt statt geteilt, so wird ein Aufruf über eine Bedingung das Glied des Blocks — damit
+`fn(char) -> bool` als `Pattern`. Der Parser nimmt `extend ?T` und `extend (…)` (an dem, was der
+Klammer folgt, von einem Aufruf unterschieden). Unbekannte Glieder eines Strings sind
+`LYS-SEM0012`, nur `toBytes` (S7f) und die Formen (S7e3) NYI; die `withCapacity`-Panik in Lyric 5s
+Worten. **Uhr:** Blöcke über Formen mit Parametern des Blocks (`extend<T> ?T`) → S7e2c, bis dahin
+`LYS-NYI0001`. Spec 12 Regeln 8 und 9, 05 Regel 3; acht Fälle, alle rot gegen S7e1; der Fall,
+der `extend fn(…)` als NYI verlangte, ging mit seiner Regel. Mutanten: A 535, B 535, C 534 von 537 — je genau die vorhergesagten Fälle.
+Fälle 530 → 537.

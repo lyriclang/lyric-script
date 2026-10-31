@@ -27,7 +27,7 @@ fn theStandardLibrarysModulesAreInTheBinary(): void {
     }
     assertEq(stdSource("std.nothere"), null);
     assertEq(stdSource("std"), null);
-    assertEq(stdBelow("std"), ["fs", "iter", "os"]);
+    assertEq(stdBelow("std"), ["fmt", "fs", "iter", "os"]);
     assertEq(stdBelow("std.fs"), []);
 }
 

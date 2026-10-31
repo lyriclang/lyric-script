@@ -339,7 +339,9 @@ VM's call path, S7k measurement point 3.
   and a module compiled alone did not have.
 - **S7e4d done** — the clocks S7e left: an unknown member of a `bool`, a `char`, a tuple, an
   optional or a function value is `LYS-SEM0012`, no longer NYI; `[null]` prints.
-- Next: **S7f** — numbers, `BigInt`, `Bytes` (cut first).
+- **S7f cut in six** — f1 the number tower, constants at a scalar's name, `+% -% *%`, `clamp`;
+  f2 `std.math`; f3 `From`/`Into`; f4 `BigInt`; f5 `Bytes`; f6 `std.random`.
+- Next: **S7f1**.
 
 ## Working mode
 

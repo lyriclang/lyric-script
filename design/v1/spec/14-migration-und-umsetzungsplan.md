@@ -1908,3 +1908,17 @@ Debug-Form (`quietDebug`): was der Rest-Zweig noch erreicht, `never` und eine Ze
 Wert, den ein Programm druckt. Gefunden beim Abschluss von S7e, mit `grep` nach den Uhren im Code.
 Ein Fall neu, einer verstärkt, beide rot gegen S7e4c. Mutanten (zwei): beide trafen genau den vorhergesagten Fall.
 Fälle 563 → 564.
+
+**S7f, geschnitten (2026-10-31).** Lyric 5 12 §Numbers gibt den Turm `Num`, `Signed`, `Integer`,
+`Float` (P25), die Glieder von `Integer` (`checked…`, `saturating…`, `wrapping…`, `pow`, Bitzählungen,
+Rotationen) und von `Float` (Statics, `isNan` …, `totalCompare`, `toBits`/`fromBits`), `clamp` an
+`Ordered` und `std.math`. Script hat eine Ganzzahl und eine Gleitkommazahl (03 K3): Lyric 5s
+Verengungen (`int8.exact`, `clamping`) haben kein Ziel. `static let` in einem Interface und `T.zero`
+über eine Einschränkung gehen schon; eine Konstante am Namen eines Skalars, `int.max`, ist heute
+`LYS-SEM0052`. **S7f1** der Turm in der Prelude mit seinen Gliedern, Konstanten am Skalarnamen,
+`+% -% *%` (03 Überlauf), `clamp`, `sum`/`product` über `Num` statt über `int` und `float` (P25).
+**S7f2** `std.math` — die Funktionen über Natives auf Lyric 5s `math` (dieselben Bits auf jeder
+Plattform), `abs`/`signum` über `Signed`, `min`/`max`, `gcd`/`lcm`, `lerp`, `pi`/`e`/`tau`.
+**S7f3** `From`/`Into` mit 05 §13 Regel 9 (P19) und P22. **S7f4** `BigInt` in der VM, Literale über
+`FromIntLiteral`, die Kostenregeln. **S7f5** `Bytes`, `b"…"`, `toBytes()`, `string.fromUtf8`.
+**S7f6** `std.random`, geseedet ohne Recht, ungeseedet mit `os` (01 S8).

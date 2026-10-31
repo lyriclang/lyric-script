@@ -1735,11 +1735,15 @@ class Checker {
                 }
             }
         }
-        // a parent's members are the child's
+        // a parent's members are the child's — each read in its own module too (S7f1b: the
+        // prelude's `Num` made a script's own `Num` a constraint only, since S7c4a)
         var changed = true;
         while (changed) {
             changed = false;
+            var dk = 0;
             for (i in decls) {
+                this.mod = files[dk];
+                dk += 1;
                 let index = this.typeIndex.get(this.q(i.name));
                 if (index == null || this.types[index].constraintOnly) {
                     continue;
@@ -13166,6 +13170,14 @@ class Checker {
                     }
                     if (index != null) {
                         return this.typeMember(index, typeName, name, at);
+                    }
+                    // `int.max`, `float.epsilon`: a constant of a built-in type, its blocks'
+                    // (S7f1; since S7e1 a static was called there, read not)
+                    if (isScalarOrString(typeName)) {
+                        let bi = this.typeNamed(typeName);
+                        if (bi >= 0) {
+                            return this.typeMember(bi, typeName, name, at);
+                        }
                     }
                 }
             }

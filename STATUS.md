@@ -329,7 +329,9 @@ VM's call path, S7k measurement point 3.
   a generic class's own `Display` printed empty (a copy made before its body was checked).
 - **S7e4 cut in three** — a variadic parameters and `xs...`; b format specs in f-strings, checked
   (`LYS-SEM0164`), the scalars through Lyric 5's own formatting, `Format`; c `std.fmt.format`.
-- Next: **S7e4a**.
+- **S7e4a done** — variadic parameters `xs: T...` and the spread `xs...` (`LYS-SEM0024`,
+  `LYS-SEM0166`); a function value of a variadic function takes the array, as Lyric 5's.
+- Next: **S7e4b** — format specs in f-strings.
 
 ## Working mode
 

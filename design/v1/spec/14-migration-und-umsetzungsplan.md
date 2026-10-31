@@ -1856,3 +1856,17 @@ die Spec beim Übersetzen gelesen und geprüft (`LYS-SEM0164`), die Skalare übe
 Polsterung des Texts (Lyric 5s `string` als Format), `interface Format` für eigene Formate, die
 Spec wie geschrieben. **S7e4c** `std.fmt.format` in Script über dieselben Natives, `{}`, `{i}`,
 `{{`, Panik `LYS-RT0008` für alles, was der Compiler im f-String ablehnt.
+
+**Ergebnis S7e4a (2026-10-31).** Der Parser liest `xs: T...` als `T[]` mit einer Marke und `xs...`
+als Ausbreitung, wie Lyric 5s Parser. `callAmong` nimmt zuerst einen Kandidaten genau der Zahl,
+dann einen variadischen; `gatherRest` macht aus den übrigen Positionsargumenten ein Array-Literal,
+dem variadischen Parameter beim Namen gegeben — so prüft und bindet es wie jedes Literal
+(`count<T>(xs: T...)` mit `count([1, 2])` ist `T = int[]`, gegen Lyric 5 geprüft); eine Ausbreitung
+ist das Array selbst. `LYS-SEM0024` (zuletzt, ohne Default), `LYS-SEM0166` (eine Ausbreitung, am
+variadischen Parameter, allein im Rest — auch wo ein Aufruf `callAmong` nie erreicht, `println(xs...)`),
+`LYS-SEM0119` für den benannten variadischen Parameter, `LYS-PAR0060` für eine lokale Funktion mit
+Lyric 5s Wortlaut. Eine abgelehnte Ausbreitung wird wie in Lyric 5 als nichts geprüft, ihr Parameter
+nicht zusätzlich fehlend genannt — ein Unit-Test, weil ein Konformanzfall nur Vorhandenes prüft. Ein
+Funktionswert einer variadischen Funktion ist `fn(T[]) -> R`, mit dem Array gerufen (Lyric 5
+ebenso). Spec 08 Regel 6; drei Fälle, alle rot gegen S7e3b. Mutanten (acht): jeder traf genau die vorhergesagten Fälle und Tests — auch H, der allein am Unit-Test hängt.
+Fälle 550 → 553, Tests 357 → 358.

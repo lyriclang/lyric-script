@@ -15068,9 +15068,9 @@ class Checker {
                         return this.showCall(v);
                     }
                     // a type's own `show()` through a function of the type, as its Debug form is
-                    // reached — a generic type's its template's, copied for the arguments once
-                    // the bodies are checked (S7e3b: `memberCallOn` copied a generic class's
-                    // `show` while the top level was checked, before its body was: an empty copy)
+                    // reached — a generic type's its template's, copied for the arguments (S7e3b:
+                    // through `memberCallOn`, which is made for the copies, an instance of a
+                    // generic class printed empty while the top level was checked)
                     if (info.typeParams.length() > 0
                         || (info.template >= 0 && this.anyParamIn(t))) {
                         return TExpr.CallGeneric(this.showFnOf(tmpl), info.args, [v], Ty.Str);
@@ -15079,7 +15079,7 @@ class Checker {
                 }
             }
             // a tuple of `Display`s, through the prelude's block of its arity (S7e3b) — called as
-            // `x.show()` is written, whose copy waits for the block's body to be checked
+            // `x.show()` is written
             .Tuple(_) => {
                 if (this.conformsTo(t, di)) {
                     return this.showCall(v);
@@ -15090,9 +15090,8 @@ class Checker {
         return null;
     }
 
-    /// `v.show()` as it is written (S7e3b): a block's copy waits for the block's body to be
-    /// checked — `memberCallOn`, made for the copies, copied it at once, empty while the top level
-    /// was checked. The call in progress keeps what it expects.
+    /// `v.show()` as it is written (S7e3b): `memberCallOn`, made for the copies, gave a tuple a
+    /// wrong text while the top level was checked. The call in progress keeps what it expects.
     mut fn showCall(v: TExpr): TExpr {
         let expected = this.callExpected;
         let written = this.writtenArgs;
@@ -15249,7 +15248,8 @@ class Checker {
         let info = this.types[i];
         let t = Ty.Named(i);
         let own = if (di >= 0 && this.saysItself(i, di)) this.methodOf(i, "show") ?? -1 else -1;
-        // a `show()` a blanket block gives the type (the bodies are checked: its copy is whole)
+        // a `show()` a blanket block gives the type, reached when the slot is filled, the bodies
+        // checked
         let blanket = own < 0
             && di >= 0
             && info.typeParams.length() == 0

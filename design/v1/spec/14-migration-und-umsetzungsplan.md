@@ -1813,3 +1813,31 @@ die synthetisierte Form eines Builders druckte sein Feld, ein Objekt der VM ohne
 ≈ 5 ms davon (A/B). Spec 05 Regeln 9 und 21 und Abweichungen, 12 Regel 10 und Abweichungen; neun
 Fälle, alle rot gegen S7e2c. Mutanten (elf): A–I, M und N trafen je genau die vorhergesagten Fälle; C verfehlte die Vorhersage (≥4 Fälle der Collections, tatsächlich 13 und einer aus 03, zehn davon Paniken) — und führte zum Fund am Builder.
 Fälle 538 → 547.
+
+**Ergebnis S7e3b (2026-10-31) — S7e3 fertig.** Ein Text-Slot neben dem Debug-Slot: je Typ sein
+Text — ein `Display` sein `show()` (eine Funktion des Typs, die einer Vorlage generisch wie die der
+Debug-Form; ein `show()` eines Blanket-Blocks über `memberCallOn`, dessen Kopie beim Füllen ganz
+ist), ein Skalar und ein String ihr eigener aus der Box, jeder andere Wert seine Debug-Form, ein
+Funktionswert `<fn>`. `{x}` eines Interface-Werts und eines Typparameters in einer geteilten Kopie
+gehen darüber; drinnen in einem anderen Wert bleibt es die Debug-Form. Tupel aus `Display`s sind
+eins über sieben Blöcke der Prelude (Stelligkeit 2–8, Lyric 5s; `{(1, "a")}` druckt `(1, a)`, sechs
+bestehende Fälle angepasst); Debug-Blöcke für Tupel braucht es nicht, die Debug-Form ist
+synthetisiert. Listen sind `Display` ohne Block — Lyric 5s `extend<T :: [Debug]> T[]` druckte über
+`T` und legte in jedem Programm den Debug-Slot an (S7c6c2) —: `conformsDirect`, `xs.show()` und
+`showTo` neben `debug()`, die Kopie in `memberCallOn`, der Slot in der Tabelle jeder Listeninstanz;
+die Tupel bleiben Blöcke, weil ihre Rümpfe über `T :: [Display]` ohne Tabelle laufen. Map, Set und
+Deque sind `:: [Debug, Display]`, `show()` ihre Debug-Form; `StringBuilder.append<T :: [Display]>`.
+Gefunden: ein String in einem Interface-Wert druckte allein in Anführungszeichen — gegen 05 Regel 9,
+und ein Fall und ein Unit-Test pinnten die falsche Form (seit S3i); `{x}` einer Instanz einer
+generischen Klasse mit eigenem `Display` druckte leer, und danach auch ihr direkter `show()`-Aufruf
+(S7e3a selbst, an dessen Build geprüft; ein Tupel ebenso): `shownBy` rief beim Prüfen
+`memberCallOn`, das für die Kopien gebaut ist — belegt ist der Ort (Bisektion über vier Builds),
+nicht, warum die Kopie leer ausfiel. `shownBy` ruft ein eigenes `show()` jetzt über eine Funktion
+des Typs, wie die Debug-Form erreicht wird, ein Tupel und einen Blanket-Block wie geschrieben
+(`showCall`). Ein erster Mutant dazu überlebte: er drehte den Zweig der Vorlagen zurück, den eine
+konkrete Instanz nicht nimmt; der zweite (T2) traf den richtigen und tötete auch die Fälle der
+Collections, die nun generische `Display`-Klassen sind. Kalter `hello`, zwanzig Runden im
+Wechsel: S7e3a ≈ 283 ms, S7e3b ≈ 300 ms; die Tupel-Blöcke tragen ≈ 13 ms davon (A/B im Wechsel — eine Messung in Zehnerblöcken hatte sie unter
+der Drift der Maschine verdeckt), P21. Spec 05 Regeln 9 und 21, eine Abweichung weniger, 12 Regel
+10; drei Fälle neu, einer verstärkt, sechs angepasst — alle zehn rot gegen S7e3a. Mutanten (elf): P, Q, S, V, W und Z trafen je genau die vorhergesagten Fälle; R, U und X trafen mehr (R auch den eigenen `show` über `showFnOf`, U zwölf statt sechs Fälle — Tupel aus Zahlen ebenso —, X zwei bestehende Fälle, die Listen über `Display` erreichen); T überlebte, T2 tötete (oben).
+Fälle 547 → 550.

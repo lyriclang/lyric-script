@@ -18,12 +18,14 @@
 import std.collections { List, Map };
 import std.core { StringBuilder, UnicodeCategory };
 import std.core { arrayOf };
+import std.core { fstringFormatted, fstringPadded };
 import std.fs { exists };
 import std.hash { DefaultHasher };
 import std.io { print, println, stdin };
 import std.os { env };
 import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
 import std.time { Duration, Monotonic };
+import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
@@ -3273,6 +3275,32 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     }
                     .StrDebug => r[y] = ScriptString { text = textOf(r[y]).debug() },
                     .CharDebug => r[y] = ScriptString { text = charOfCode(s[x]).debug() },
+                    // the format language (S7e4b): Lyric 5's own formatting, the spec checked
+                    // before — by the compiler, or at run time through `fmt.problem`
+                    .FmtInt => {
+                        let b = StringBuilder.new();
+                        fstringFormatted(b, s[x] as int, textOf(r[y]));
+                        r[y] = ScriptString { text = b.toString() };
+                    }
+                    .FmtFloat => {
+                        let b = StringBuilder.new();
+                        fstringFormatted(b, float.fromBits(s[x]), textOf(r[y]));
+                        r[y] = ScriptString { text = b.toString() };
+                    }
+                    .FmtStr => {
+                        let b = StringBuilder.new();
+                        fstringFormatted(b, textOf(r[y]), textOf(r[y + 1]));
+                        r[y] = ScriptString { text = b.toString() };
+                    }
+                    .FmtPad => {
+                        let b = StringBuilder.new();
+                        fstringPadded(b, textOf(r[y]), textOf(r[y + 1]));
+                        r[y] = ScriptString { text = b.toString() };
+                    }
+                    .FmtProblem => {
+                        let problem = fmtProblem(textOf(r[y]), fmtKindOf(s[x] as int));
+                        r[y] = ScriptString { text = problem ?? "" };
+                    }
                     .FloatOfText => {
                         let v = (try? float.parse(textOf(r[y]))) ?? 0.0;
                         s[x] = v.toBits();

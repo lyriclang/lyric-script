@@ -985,6 +985,12 @@ severity = "error"
 area = "08-expressions"
 summary = "`xs...` hands an array on as the rest of a call's arguments: one spread, at a variadic parameter, alone there. Lyric 5's LYR-SEM0166."
 
+[LYS-SEM0164]
+title = "a format spec that does not apply"
+severity = "error"
+area = "12-stdlib"
+summary = "A hole's spec is checked where it is written: `[[fill]align][sign][#][0][width][grouping][.precision][type]`, an integer all but a precision and a float's type, a float all but `#` and an integer's type, a string fill, alignment, width and precision, any other value fill, alignment and width — under `?` too. Lyric 5's LYR-SEM0164."
+
 [LYS-SEM0119]
 title = "a named argument that does not fit the parameters"
 severity = "error"

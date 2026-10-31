@@ -88,6 +88,13 @@ enum NativeFn :: [Equatable] {
     /// A string's and a character's Debug form (S7e3): Lyric 5's, quoted and escaped.
     StrDebug,
     CharDebug,
+    /// The format language (S7e4b): an integer's, a float's, a string's text under a spec,
+    /// a text padded, what is wrong with a spec read at run time.
+    FmtInt,
+    FmtFloat,
+    FmtStr,
+    FmtPad,
+    FmtProblem,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -101,7 +108,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 51;
+let nativeCount: int = 56;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -156,7 +163,12 @@ fn nativeOf(n: int): NativeFn {
         47 => NativeFn.BuilderClear,
         48 => NativeFn.BuilderText,
         49 => NativeFn.StrDebug,
-        _ => NativeFn.CharDebug,
+        50 => NativeFn.CharDebug,
+        51 => NativeFn.FmtInt,
+        52 => NativeFn.FmtFloat,
+        53 => NativeFn.FmtStr,
+        54 => NativeFn.FmtPad,
+        _ => NativeFn.FmtProblem,
     };
 }
 
@@ -214,6 +226,11 @@ fn nativeNumber(n: NativeFn): int {
         .BuilderText => 48,
         .StrDebug => 49,
         .CharDebug => 50,
+        .FmtInt => 51,
+        .FmtFloat => 52,
+        .FmtStr => 53,
+        .FmtPad => 54,
+        .FmtProblem => 55,
     };
 }
 
@@ -270,6 +287,11 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .BuilderText => sig("builder.text", 0, 1, false, true),
         .StrDebug => sig("string.debug", 0, 1, false, true),
         .CharDebug => sig("char.debug", 1, 0, false, true),
+        .FmtInt => sig("fmt.int", 1, 1, false, true),
+        .FmtFloat => sig("fmt.float", 1, 1, false, true),
+        .FmtStr => sig("fmt.str", 0, 2, false, true),
+        .FmtPad => sig("fmt.pad", 0, 2, false, true),
+        .FmtProblem => sig("fmt.problem", 1, 1, false, true),
     };
 }
 

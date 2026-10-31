@@ -667,6 +667,62 @@ extend char :: Display {
 extend string :: Display {
     fn show(): string = this
 }
+// the format language (S7e4b): Lyric 5's own formatting under it; a spec read at run time is
+// checked first, its fault a panic (`LYS-RT0008`) — an f-string's the compiler checked
+fn __fmtProblem(kind: int, spec: string): string = __fmt_problem(kind, spec)
+fn __fmtChecked(spec: string, kind: int) {
+    let p = __fmtProblem(kind, spec)
+    if (p != "") {
+        panic(p)
+    }
+}
+fn __fmtText(text: string, spec: string): string = __fmt_pad(text, spec)
+fn __fmtInt(v: int, spec: string): string = __fmt_int(v, spec)
+fn __fmtFloat(v: float, spec: string): string = __fmt_float(v, spec)
+fn __fmtStr(s: string, spec: string): string = __fmt_str(s, spec)
+
+// a type with formats of its own: `{x:spec}` hands it the spec as written (Lyric 5 12 §2 rule 2);
+// the scalars and the string conform with the format language
+interface Format {
+    fn format(spec: string, out: StringBuilder)
+}
+extend int :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 0)
+        out.appendStr(__fmtInt(this, spec))
+    }
+}
+extend float :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 1)
+        out.appendStr(__fmtFloat(this, spec))
+    }
+}
+extend string :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 2)
+        out.appendStr(__fmtStr(this, spec))
+    }
+}
+extend char :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 3)
+        out.appendStr(__fmtText(f"{this}", spec))
+    }
+}
+extend bool :: Format {
+    fn format(spec: string, out: StringBuilder) {
+        __fmtChecked(spec, 4)
+        out.appendStr(__fmtText(f"{this}", spec))
+    }
+}
+// `{x:spec}` of a `Format` of its own
+fn __formatOf<T :: [Format]>(x: T, spec: string): string {
+    let b = StringBuilder.new()
+    x.format(spec, b)
+    return b.toString()
+}
+
 // a tuple of `Display`s is one: its elements' texts between parentheses, `(1, a)` — its Debug
 // form `(1, "a")` (Lyric 5 12 §Strings; S7e3)
 extend<A :: [Display], B :: [Display]> (A, B) :: Display {

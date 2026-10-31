@@ -50,6 +50,7 @@ import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.compiler.throws { ThrowSets, Thrown };
 import lyric_script.stdsrc { collectionsText, preludeText, stdPackage };
+import lyric_script.vm.fmt { FmtKind, fmtProblem };
 import lyric_script.vm.native { nativeNamed, nativeNumber };
 import lyric_script.compiler.typed {
     FieldInfo,
@@ -347,6 +348,7 @@ class Synthesized {
     var debugIx: int = -1,
     var displayIx: int = -1,
     var builderIx: int = -1,
+    var formatIx: int = -1,
     // the slot of every type's text (S7e3), as `debugSlot` is of its Debug form
     var textSlot: int = -1,
     // whether the call being checked took its spread, `xs...` (S7e4a)
@@ -1169,6 +1171,7 @@ class Checker {
         this.synth.debugIx = this.typeIndex.get("Debug") ?? -1;
         this.synth.displayIx = this.typeIndex.get("Display") ?? -1;
         this.synth.builderIx = this.typeIndex.get("StringBuilder") ?? -1;
+        this.synth.formatIx = this.typeIndex.get("Format") ?? -1;
         this.orderedIndex = this.typeIndex.get("Ordered") ?? -1;
         this.totalOrderIndex = this.typeIndex.get("TotalOrder") ?? -1;
         this.orderingIndex = this.typeIndex.get("Ordering") ?? -1;
@@ -10876,7 +10879,7 @@ class Checker {
                 expected
             ),
             .Bytes(_, at) => this.notYet("a byte string", "S7f (Bytes)", at),
-            .Interpolated(segments, at) => this.interpolated(segments, at),
+            .Interpolated(segments, _) => this.interpolated(segments),
             .Null(_) => {
                 let t = expected ?? Ty.NullLit;
                 let built = this.literalBuilt(null, "FromNullLiteral", "fromNullLiteral", t);
@@ -14866,8 +14869,61 @@ class Checker {
         return TExpr.If(boxE(c), boxE(this.coerce(a, t, at)), boxE(this.coerce(b, t, at)), t);
     }
 
+    /// `{x:spec}` (Lyric 5 12 §2; S7e4b): the spec checked where it is written — a part the
+    /// value's type does not take refused (`LYS-SEM0164`) — and written by Lyric 5's own
+    /// formatting: an `int`'s, a `float`'s, a string's text; a `char`'s, a `bool`'s and any other
+    /// value's text padded; under `?` its Debug form padded. A `Format` of its own reads the spec as
+    /// written, unchecked.
+    mut fn formattedHole(x: Expr, spec: string, at: Span): TExpr {
+        let v = this.expr(x, null);
+        let t = typeOf(v);
+        if (t == .Unknown || t == .Never) {
+            return v;
+        }
+        let kind = if (spec.endsWith("?")) FmtKind.Debug
+            else match (t) {
+                .Int => FmtKind.Int,
+                .Float => FmtKind.Float,
+                .Str => FmtKind.Str,
+                .Char => FmtKind.Char,
+                .Bool => FmtKind.Bool,
+                _ => FmtKind.Shown,
+            };
+        // a type with formats of its own takes the spec as written (`?` stays Debug)
+        let fi = this.synth.formatIx;
+        let own = kind == FmtKind.Shown && fi >= 0 && match (t) {
+            .Named(_) | .Param(_) | .Assoc(_, _, _) => this.conformsTo(t, fi),
+            _ => false,
+        };
+        if (own) {
+            var at0 = -1;
+            if (let fs = this.fnByName.get("__formatOf")) {
+                if (fs.length() > 0) {
+                    at0 = fs[0];
+                }
+            }
+            return TExpr.CallGeneric(at0, [t], [v, TExpr.Str(spec)], Ty.Str);
+        }
+        if (let problem = fmtProblem(spec, kind)) {
+            this.error("LYS-SEM0164", problem, at);
+            return TExpr.Unknown;
+        }
+        return match (kind) {
+            .Int => this.stdNative("fmt.int", [v, TExpr.Str(spec)], Ty.Str),
+            .Float => this.stdNative("fmt.float", [v, TExpr.Str(spec)], Ty.Str),
+            .Str => this.stdNative("fmt.str", [v, TExpr.Str(spec)], Ty.Str),
+            // the Debug form in the spec's width, the `?` read
+            .Debug => this.stdNative(
+                "fmt.pad",
+                [this.debugText(v, t, at), TExpr.Str(spec[0..spec.length() - 1].toString())],
+                Ty.Str
+            ),
+            _ => this.stdNative("fmt.pad", [this.stringOf(v, at), TExpr.Str(spec)], Ty.Str),
+        };
+    }
+
     /// `f"…"`: its text and its holes as strings, joined.
-    mut fn interpolated(segments: Segment[], at: Span): TExpr {
+    mut fn interpolated(segments: Segment[]): TExpr {
         let parts = List<TExpr>.new();
         for (seg in segments) {
             match (seg) {
@@ -14878,7 +14934,7 @@ class Checker {
                 }
                 .Hole(x, spec) => {
                     if (spec != null) {
-                        parts.push(this.notYet("a format spec", "S7e (std.fmt)", at));
+                        parts.push(this.formattedHole(x, spec, spanOf(x)));
                     } else {
                         parts.push(this.stringOf(this.expr(x, null), spanOf(x)));
                     }

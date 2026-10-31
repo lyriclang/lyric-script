@@ -1703,7 +1703,10 @@ Format-Logik in Script. **S7e1** die Glieder von `string` und `char`: `length()`
 `replaceN` und `trimMatches…`; `trim…`, `isBlank`, `toUpper`/`toLower`, `padStart`/`padEnd`,
 `s * n`, `string.fromChars`; die Glieder von `char` (`isDigit` … `toDigit`, `char.fromDigit`).
 **S7e2** die Iteratoren `split`, `splitN`, `splitOnce`, `matches`, `lines`; `Parse` und
-`ParseError`, Zahlen aus Text (`int.parse(s)`, `s.parse<int>()`). **S7e3** `Display` und `Debug`
+`ParseError`, Zahlen aus Text (`int.parse(s)`, `s.parse<int>()`); dazu Blöcke auf Funktionstypen,
+Optionals und Tupeln (Lyric 5 05 §13 Regel 6 — Scripts Spec nahm nur die Regeln 1–4, gebaut waren
+Listen allein; seit S7e1 abgelehnt statt still verschluckt) und damit `fn(char) -> bool` als
+`Pattern`. **S7e3** `Display` und `Debug`
 als Prelude-Interfaces (Lyric 5 05 §14, 12) mit `StringBuilder`: `{x}` über `Display`, sonst über
 `Debug` (03 Eq); die synthetisierte Debug-Form wird die Konformanz zu `Debug`, das eigene
 `debug()` der Prelude-Typen (die Brücke aus S7d2) ihre; `join` über `Display`. **S7e4**
@@ -1711,3 +1714,29 @@ Formatangaben in f-Strings (`{n:>6}`, `{x:.2}`, `{x:?}`; `Format`) und `std.fmt.
 **variadische Parameter** und `xs...` (Lyric 5 08 §1): Lyric 5 hat sie, Scripts Spec übernimmt
 §8 ohne Abweichung, der Plan hatte keine Zeile, also keine Uhr; jetzt S7e4, wo `format` sie
 braucht. `toBytes()` und `string.fromUtf8` kommen mit `Bytes` (S7f).
+
+**S7e1, Ergebnis (2026-10-31).** Die Glieder von `string` und `char` in der Prelude über 17
+Natives (Format 28): Länge in Bytes, `s[i]` und `s[a..b]` — ein neuer String, `^n` als
+Bereichsgrenze, `^n` als Index `LYS-SEM0114` —, `chars()` von beiden Enden, `charIndices()`,
+`charCount()`, die Fallabbildungen, die Trims, `s * n`, `string.fromChars`; `Pattern` über String
+und `char` mit Lyric 5s `matchAt`/`matchBefore`/`nextIn` und den suchenden, trimmenden,
+abstreifenden, ersetzenden und auffüllenden Gliedern, wie Lyric 5 sie darüber schreibt; `c in s`.
+Die Natives prüfen Zeichengrenzen mit Lyric 5s Texten („byte i does not begin a character“); die
+VM hält die Bytes eines Strings faul, weil Lyric 5 sie nur als Kopie gibt. Statische Glieder an
+Skalaren und `string` (`char.fromDigit`, `string.fromChars`) waren `LYS-SEM0052`, jetzt
+gerufen. **Gefunden:** (1) `xs * n` mit negativem `n` war `LYS-RT0008`, Lyric 5s ist `LYS-RT0007`
+— seit S7b2a, ohne Fall; (2) ein eigenes `class Map` war seit S7d2 `LYS-RES0011`
+(„ein eingebauter Typname“) statt die Prelude zu verdecken; (3) ein Syntaxfehler in der Prelude
+oder in `std.collections` verschwand still mit seinen Deklarationen — jetzt `LYS-ICE0001` mit Zeile
+und Grund (so fiel ein `extend fn(…)`-Block auf, den der Parser nicht nahm); (4) `extend` auf einem
+Funktionstyp nahm der Checker hin, ohne dass er wirkte — jetzt abgelehnt mit Uhr S7e2; (5) eine
+Kopie setzte eine `else if`-Kette mit einem Frame je Glied ein — die dreißig Varianten von
+`UnicodeCategory` sprengten den 2-MiB-Stapel der Unit-Tests (235 rot); `specIfChain` geht sie
+iterativ; (6) eine `match` von 400 Armen brachte den Codegenerator, eine `else if`-Kette von 400
+Gliedern den Checker zum Absturz (seit S2/S3) — der Codegenerator geht die Kette jetzt in einem
+Frame (`ifChain`), und ein Glied einer `else if`-Kette zählt im Parser als Verschachtelungsebene:
+über der Grenze `LYS-PAR0045` mit dem Hinweis auf `match`, statt eines Absturzes. Der alte Fall der
+Listenwiederholung erwartete RT0008 „wie Lyric 5“ — mit der Regel gezogen. Kosten: der kalte
+`hello` ging um etwa 20–35 ms hoch (P21). Spec 12 Regel 8, 02 Regel 1, 03 Regel 16, 05 Regeln 3
+und 8, 08; vierzehn Fälle, alle rot gegen S7d4. Mutanten: A 527, B 526, C 527 von 529 — je genau die vorhergesagten Fälle und der veraltete alte Fall (die Unit-Tests dieser Läufe waren am Stand selbst rot, Fund 5); für die Ketten D 528 von 530 und zwei Unit-Tests wie vorhergesagt, E (die Kopie wieder rekursiv) 237 rote Unit-Tests und — anders als vorhergesagt — auch der Fall der 400 Arme: die CLI hält die rekursive Kopie dort ebenfalls nicht.
+Fälle 516 → 530.

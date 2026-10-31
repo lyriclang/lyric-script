@@ -616,7 +616,7 @@ fn __sbText(b: Any): string = __builder_text(b)
 
 // a text built a part at a time in one buffer that doubles, no chain of concatenations (Lyric 5
 // 12 §Strings; S7e3)
-class StringBuilder {
+class StringBuilder :: Debug {
     b: Any = __sbNew()
 
     static fn new(): StringBuilder = StringBuilder { }
@@ -626,6 +626,9 @@ class StringBuilder {
     fn appendChar(c: char) = __sbAppendChar(this.b, c)
     fn clear() = __sbClear(this.b)
     fn toString(): string = __sbText(this.b)
+    // the VM holds its text: its Debug form is its type, as a task's is (S7e3; its field printed
+    // through no table)
+    fn debug(): string = "<StringBuilder>"
 }
 
 // renders a value as text: `{x}` renders through `show()` where the value's type is one (Lyric 5

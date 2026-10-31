@@ -353,6 +353,8 @@ class Synthesized {
     var textSlot: int = -1,
     // whether the call being checked took its spread, `xs...` (S7e4a)
     var spreadTaken: bool = false,
+    // an interface's parents over `Self`, as written: read where `Self` is known (S7f1a)
+    selfParents: Map<int, List<Conformance>> = Map<int, List<Conformance>>.new(),
     fns: Map<string, int> = Map<string, int>.new(),
 }
 
@@ -2347,6 +2349,14 @@ class Checker {
                 );
                 continue;
             }
+            // over `Self`: a constraint on the conformer, read where it is known (Lyric 5 05 §8
+            // rule 7; S7f1a — read here, `Self` was no type and the parent `Add<?>`)
+            if (this.overSelf(p, named)) {
+                let held = this.synth.selfParents.get(index) ?? List<Conformance>.new();
+                held.push(p);
+                this.synth.selfParents.insert(index, held);
+                continue;
+            }
             let pi = this.ifaceOf(p);
             if (pi >= 0) {
                 parents.push(pi);
@@ -2521,12 +2531,163 @@ class Checker {
 
     /// `Self` of interface `index`, then its own parameters: what a member generic over `Self` is
     /// generic over (S7c1b).
-    fn selfFirst(index: int, params: TypeParamInfo[]): TypeParamInfo[] {
+    mut fn selfFirst(index: int, params: TypeParamInfo[]): TypeParamInfo[] {
         let out = List<TypeParamInfo>.new();
-        out.push(TypeParamInfo { name = "Self", constraints = [index] });
+        // its parents over `Self` too, and what they fix (S7f1a)
+        let cs = List<int>.new();
+        cs.push(index);
+        for (x in this.impliedAt([index], Ty.Param(0))) {
+            cs.push(x);
+        }
+        out.push(
+            TypeParamInfo {
+                name = "Self",
+                constraints = cs.toArray(),
+                fixed = this.impliedFixedAt([index], Ty.Param(0)),
+            }
+        );
         for (p in params) {
             out.push(p);
         }
+        return out.toArray();
+    }
+
+    /// Whether parent `p` of an interface is one over `Self` (Lyric 5 05 §8 rule 7; S7f1a): it
+    /// names `Self`, fixes an associated type to it, or leaves out an argument whose default is it,
+    /// `Add` for `Add<Self>`.
+    mut fn overSelf(p: Conformance, parent: int): bool {
+        for (x in p.args) {
+            if (mentionsSelf(x)) {
+                return true;
+            }
+        }
+        for (f in p.fixed) {
+            if (mentionsSelf(f.type)) {
+                return true;
+            }
+        }
+        return p.args.length() < this.types[parent].typeParams.length();
+    }
+
+    /// The parents over `Self` of interfaces `cs` and their ancestors, as written (S7f1a).
+    mut fn selfParentsOf(cs: int[]): Conformance[] {
+        let out = List<Conformance>.new();
+        let seen = Set<int>.new();
+        for (c in cs) {
+            for (x in this.ancestry(c)) {
+                let base = this.ifaceBase(x);
+                if (seen.contains(base)) {
+                    continue;
+                }
+                seen.insert(base);
+                if (let held = this.synth.selfParents.get(base)) {
+                    for (p in held) {
+                        out.push(p);
+                    }
+                }
+            }
+        }
+        return out.toArray();
+    }
+
+    /// The parents over `Self` of interfaces `cs`, read with `Self` the type `self` (S7f1a): what
+    /// a constraint `T :: [Num]` asks of `T` beside `Num`, `Add<T>` among them.
+    mut fn impliedAt(cs: int[], self: Ty): int[] {
+        let out = List<int>.new();
+        let ps = this.selfParentsOf(cs);
+        if (ps.length() == 0) {
+            return [];
+        }
+        let savedDefault = this.defaultSelf;
+        let savedSelf = this.selfTyIs;
+        this.defaultSelf = self;
+        this.selfTyIs = self;
+        for (p in ps) {
+            let pi = this.ifaceOf(p);
+            if (pi >= 0) {
+                out.push(pi);
+            }
+        }
+        this.defaultSelf = savedDefault;
+        this.selfTyIs = savedSelf;
+        return out.toArray();
+    }
+
+    /// What the parents over `Self` of interfaces `cs` fix, read with `Self` the type `self`
+    /// (S7f1a): `Add<Out = Self>` makes `a + b` of a `T :: [Num]` a `T`.
+    mut fn impliedFixedAt(cs: int[], self: Ty): FixedTy[] {
+        let out = List<FixedTy>.new();
+        let ps = this.selfParentsOf(cs);
+        if (ps.length() == 0) {
+            return [];
+        }
+        let savedDefault = this.defaultSelf;
+        let savedSelf = this.selfTyIs;
+        this.defaultSelf = self;
+        this.selfTyIs = self;
+        for (p in ps) {
+            if (p.fixed.length() == 0) {
+                continue;
+            }
+            let pi = this.ifaceOf(p);
+            if (pi < 0) {
+                continue;
+            }
+            for (fx in p.fixed) {
+                var declaring = -1;
+                for (x in this.ancestry(pi)) {
+                    for (n in this.assocNamesOf(x)) {
+                        if (n == fx.name && declaring < 0) {
+                            declaring = x;
+                        }
+                    }
+                }
+                if (declaring >= 0) {
+                    out.push(
+                        FixedTy {
+                            iface = declaring,
+                            name = fx.name,
+                            ty = this.resolveType(fx.type),
+                        }
+                    );
+                }
+            }
+        }
+        this.defaultSelf = savedDefault;
+        this.selfTyIs = savedSelf;
+        return out.toArray();
+    }
+
+    /// The conformances `conforms` with the parents over `Self` their interfaces name, read at
+    /// `self` — those `self` conforms to already stay out (Lyric 5 05 §8 rule 7; S7f1a): a type
+    /// listing `Num` and no `Add` of its own takes `Add<Self>` here.
+    mut fn withSelfParents(conforms: Conformance[], self: Ty): Conformance[] {
+        let out = List<Conformance>.new();
+        let named = List<int>.new();
+        for (c in conforms) {
+            out.push(c);
+            if (let ii = this.typeIndex.get(this.q(c.name))) {
+                named.push(ii);
+            }
+        }
+        let ps = this.selfParentsOf(named.toArray());
+        if (ps.length() == 0) {
+            return conforms;
+        }
+        let savedDefault = this.defaultSelf;
+        let savedSelf = this.selfTyIs;
+        this.defaultSelf = self;
+        this.selfTyIs = self;
+        let taken = Set<int>.new();
+        for (p in ps) {
+            let pi = this.ifaceOf(p);
+            if (pi >= 0 && !taken.contains(pi) && !this.conformsTo(self, pi)) {
+                taken.insert(pi);
+                out.push(p);
+            }
+        }
+        this.defaultSelf = savedDefault;
+        this.selfTyIs = savedSelf;
         return out.toArray();
     }
 
@@ -4576,6 +4737,7 @@ class Checker {
         let self = this.selfTy(index);
         let boxedSelf = this.boxed(self);
         let added = List<int>.new();
+        let listed = this.withSelfParents(conforms, self);
         // `V :: [Add]` is `V :: [Add<V>]` (S7c5c1)
         let savedDefaultSelf = this.defaultSelf;
         this.defaultSelf = self;
@@ -4592,7 +4754,7 @@ class Checker {
             }
             this.typeParams = scope;
         }
-        for (c in conforms) {
+        for (c in listed) {
             let ii = this.ifaceOf(c);
             if (ii < 0) {
                 continue;
@@ -4766,8 +4928,38 @@ class Checker {
                 this.error("LYS-SEM0160", text, conforms[0].span);
             }
         }
+        // what a parent over `Self` fixes, the type answers as fixed (Lyric 5 05 §8 rule 7;
+        // S7f1a): another answer does not conform
+        this.answersAsFixed(info.name, conforms, self);
         this.defaultSelf = savedDefaultSelf;
         this.typeParams = savedScope;
+    }
+
+    /// Whether type `self` answers each associated type a parent over `Self` of its conformances
+    /// `conforms` fixes, as fixed (`LYS-SEM0042` where it does not; S7f1a).
+    mut fn answersAsFixed(name: string, conforms: Conformance[], self: Ty): void {
+        for (c in conforms) {
+            let ii = this.typeIndex.get(this.q(c.name)) ?? -1;
+            if (ii < 0) {
+                continue;
+            }
+            let savedDefault = this.defaultSelf;
+            let savedSelf = this.selfTyIs;
+            this.defaultSelf = self;
+            this.selfTyIs = self;
+            for (f in this.impliedFixedAt([ii], self)) {
+                let got = this.answerThroughAt(self, f.iface, f.name, c.span);
+                if (!sameOrUnknown(got, f.ty)) {
+                    this.error(
+                        "LYS-SEM0042",
+                        f"'{name}' answers '{this.types[f.iface].name}.{f.name}' with {this.tyName(got)}, where '{c.name}' fixes it to {this.tyName(f.ty)}",
+                        c.span
+                    );
+                }
+            }
+            this.defaultSelf = savedDefault;
+            this.selfTyIs = savedSelf;
+        }
     }
 
     /// Whether interface `x` is `ii`, or an instance of `ii` where `ii` is a generic interface's
@@ -5366,6 +5558,9 @@ class Checker {
                     if (ii >= 0) {
                         cs.push(ii);
                     }
+                }
+                for (x in this.impliedAt(cs.toArray(), Ty.Param(scope.get(tp.name) ?? 0))) {
+                    cs.push(x);
                 }
                 tps.push(
                     TypeParamInfo {
@@ -7596,6 +7791,9 @@ class Checker {
                 }
                 cs.push(ii);
             }
+            for (x in this.impliedAt(cs.toArray(), Ty.Param(j))) {
+                cs.push(x);
+            }
             out.push(
                 TypeParamInfo {
                     name = tp.name,
@@ -7654,6 +7852,9 @@ class Checker {
                         }
                     );
                 }
+            }
+            for (f in this.impliedFixedAt(infos[k].constraints, Ty.Param(k))) {
+                fixed.push(f);
             }
             let info = infos[k];
             out.push(

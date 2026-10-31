@@ -1841,3 +1841,18 @@ Wechsel: S7e3a ≈ 283 ms, S7e3b ≈ 300 ms; die Tupel-Blöcke tragen ≈ 13 ms 
 der Drift der Maschine verdeckt), P21. Spec 05 Regeln 9 und 21, eine Abweichung weniger, 12 Regel
 10; drei Fälle neu, einer verstärkt, sechs angepasst — alle zehn rot gegen S7e3a. Mutanten (elf): P, Q, S, V, W und Z trafen je genau die vorhergesagten Fälle; R, U und X trafen mehr (R auch den eigenen `show` über `showFnOf`, U zwölf statt sechs Fälle — Tupel aus Zahlen ebenso —, X zwei bestehende Fälle, die Listen über `Display` erreichen); T überlebte, T2 tötete (oben).
 Fälle 547 → 550.
+
+**S7e4, geschnitten (2026-10-31).** Lyric 5 12 §2 gibt die Formatsprache (`[[fill]align][sign][#][0]
+[width][grouping][.precision][type]`, was auf welchen Typ passt, `LYR-SEM0164`, die Rundung „half away
+from zero“ auf den exakten Binärziffern) und `std.fmt.format(template, args: Display...)`, das sie
+zur Laufzeit liest; 08 §1 Regel 1 die variadischen Parameter, die `format` braucht. Scripts Parser
+lehnt `xs: int...` und `xs...` mit `LYS-PAR0008` ab, ohne NYI und ohne Uhr; eine Format-Spec im Loch
+ist NYI mit der Uhr S7e. **S7e4a** variadische Parameter: `xs: T...` zuletzt, ohne Default, nicht
+benannt, die übrigen Positionsargumente als `T[]` — ein Array darin ein Element, wo `T` es nimmt
+(`Any...`, `T...`) —, `xs...` breitet ein Array über den Parameter (`LYS-SEM0166` sonst), ohne Kopie;
+ein variadischer Funktionswert und eine Methode ebenso. **S7e4b** die Formatsprache in f-Strings:
+die Spec beim Übersetzen gelesen und geprüft (`LYS-SEM0164`), die Skalare über Natives auf Lyric 5s
+`format(spec, out)` — dieselbe Ausgabe, dieselbe Rundung —, ein `Display`-Typ und `?` über die
+Polsterung des Texts (Lyric 5s `string` als Format), `interface Format` für eigene Formate, die
+Spec wie geschrieben. **S7e4c** `std.fmt.format` in Script über dieselben Natives, `{}`, `{i}`,
+`{{`, Panik `LYS-RT0008` für alles, was der Compiler im f-String ablehnt.

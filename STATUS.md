@@ -327,7 +327,9 @@ VM's call path, S7k measurement point 3.
   `Display`s, lists, maps, sets and deques are `Display`s; `StringBuilder.append`. Found: a string
   in an interface value printed quoted alone, against spec 05 rule 9 (since S3i); S7e3a's `{x}` of
   a generic class's own `Display` printed empty (a copy made before its body was checked).
-- Next: **S7e4** — format specs, `std.fmt`, variadic parameters (cut first).
+- **S7e4 cut in three** — a variadic parameters and `xs...`; b format specs in f-strings, checked
+  (`LYS-SEM0164`), the scalars through Lyric 5's own formatting, `Format`; c `std.fmt.format`.
+- Next: **S7e4a**.
 
 ## Working mode
 

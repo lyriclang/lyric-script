@@ -1922,3 +1922,18 @@ Plattform), `abs`/`signum` über `Signed`, `min`/`max`, `gcd`/`lcm`, `lerp`, `pi
 **S7f3** `From`/`Into` mit 05 §13 Regel 9 (P19) und P22. **S7f4** `BigInt` in der VM, Literale über
 `FromIntLiteral`, die Kostenregeln. **S7f5** `Bytes`, `b"…"`, `toBytes()`, `string.fromUtf8`.
 **S7f6** `std.random`, geseedet ohne Recht, ungeseedet mit `os` (01 S8).
+
+**S7f1, neu geschnitten, und Ergebnis S7f1a (2026-10-31).** Der Turm braucht, was Lyric 5 05 §8
+Regel 7 sagt und Scripts Spec über die Basis zusagt, gebaut war es nie: eine Elternliste ist eine
+Einschränkung auf `Self`. Ein Elternteil `Add<Out = Self>` — oder `Add`, dessen `Rhs` `Self`
+vorgibt — wurde gelesen, wo `Self` kein Typ war: `Add<?>`; durch `T :: [Ring]` war `T` kein
+`Add<T>`, und `float` mit seinen zwei `add` meldete `LYS-SEM0085` (seit S7c5c1, mit den
+Operator-Interfaces). **S7f1a** behält einen Elternteil über `Self` geschrieben am Interface
+(`Synthesized.selfParents`) und liest ihn, wo `Self` bekannt ist: an der Einschränkung eines
+Typparameters samt seinen Fixierungen — `a + b` ist ein `T`, unfixiert ein `T.Out`, wie Lyric 5,
+gegen den Compiler geprüft —; am eigenen `Self` der Rümpfe des Interfaces (`selfFirst`); an einem
+Typ, der das Interface listet — dort kommt ein Elternteil mit, wo der Typ ihm nicht schon
+konformiert, seine Glieder aus derselben Liste, und der Typ antwortet wie fixiert
+(`LYS-SEM0042`). **S7f1b** der Turm, **S7f1c** `clamp`, `sum`/`product` über `Num`. Spec 05
+Regel 22; zwei Fälle, beide rot gegen S7e4d. Mutanten (sechs): A, B, C, E und F trafen je genau die vorhergesagten Fälle; D (der Typ nimmt keinen Elternteil mit) traf auch den Lauffall — die Kopie ruft `add` nicht beim Namen, wie vorhergesagt, sondern über die Konformanz.
+Fälle 564 → 566.

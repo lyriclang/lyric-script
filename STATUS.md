@@ -341,7 +341,11 @@ VM's call path, S7k measurement point 3.
   optional or a function value is `LYS-SEM0012`, no longer NYI; `[null]` prints.
 - **S7f cut in six** — f1 the number tower, constants at a scalar's name, `+% -% *%`, `clamp`;
   f2 `std.math`; f3 `From`/`Into`; f4 `BigInt`; f5 `Bytes`; f6 `std.random`.
-- Next: **S7f1**.
+- **S7f1 cut in three, S7f1a done** — an interface's parent list is a constraint on `Self`
+  (Lyric 5 05 §8 rule 7): `Add<Out = Self>` through `T :: [Ring]` makes `a + b` a `T`; a
+  conformer takes such a parent along and answers as it is fixed. Found: the parent was read with
+  no `Self`, `Add<?>` (since S7c5c1). Then b the tower, c `clamp` and `sum`/`product` over `Num`.
+- Next: **S7f1b** — the number tower.
 
 ## Working mode
 

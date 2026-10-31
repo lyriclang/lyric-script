@@ -223,6 +223,8 @@ struct ParamInfo :: [Debug] {
     name: string,
     ty: Ty,
     default: ?TExpr,
+    // the rest of a call's positional arguments, `ty` their array (S7e4a)
+    variadic: bool = false,
 }
 
 /// A function as checked: its signature, its locals by id (a method's receiver is local 0, the

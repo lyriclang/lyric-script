@@ -550,14 +550,27 @@ class Parser {
         while (!this.at(.RParen)) {
             let pt = try this.expect(.Ident, "LYS-PAR0026", "a parameter's name");
             try this.expect(.Colon, "LYS-PAR0031", "':' before the parameter's type");
-            let ty = try this.parseType();
+            var ty = try this.parseType();
+            // `xs: int...`: the variadic parameter names its element, an array of it
+            var variadic = false;
+            if (this.at(.DotDotDot)) {
+                this.advance();
+                ty = TypeExpr.List(boxedType(ty), this.since(pt));
+                variadic = true;
+            }
             var dflt: ?Expr = null;
             if (this.at(.Assign)) {
                 this.advance();
                 dflt = try this.parseExpr();
             }
             params.push(
-                Param { name = this.text(pt), type = ty, default = dflt, span = this.since(pt) }
+                Param {
+                    name = this.text(pt),
+                    type = ty,
+                    default = dflt,
+                    span = this.since(pt),
+                    variadic = variadic,
+                }
             );
             if (!this.at(.Comma)) {
                 break;
@@ -1947,7 +1960,12 @@ class Parser {
                 this.advance();
             }
             let value = try this.parseExpr();
-            args.push(Arg { name = name, value = value });
+            // `xs...`: the array handed on as a variadic parameter's rest
+            var spread: ?Span = null;
+            if (this.at(.DotDotDot)) {
+                spread = this.spanOf(this.advance());
+            }
+            args.push(Arg { name = name, value = value, spread = spread });
             if (!this.at(.Comma)) {
                 break;
             }

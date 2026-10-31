@@ -443,10 +443,10 @@ area = "02-grammar"
 summary = "`a < b < c` is refused rather than read left to right: write each comparison on its own and join them with `&&`. Lyric 5's LYR-PAR0059."
 
 [LYS-PAR0060]
-title = "a default on a local function's parameter"
+title = "a default or a variadic parameter on a local function"
 severity = "error"
 area = "03-types"
-summary = "A local function is one closure: its parameters take no default. Lyric 5's LYR-PAR0060."
+summary = "A local function is one closure: its parameters take no default and none is variadic. Lyric 5's LYR-PAR0060."
 
 [LYS-PAR0900]
 title = "a digit beyond its literal's base"
@@ -972,6 +972,18 @@ title = "'with' on something other than a struct"
 severity = "error"
 area = "03-types"
 summary = "The target of `with` is a class, a tuple, an enum or another type that is no struct, or a path among its fields reaches through a field that is no struct. Lyric 5's LYR-SEM0116."
+
+[LYS-SEM0024]
+title = "a variadic parameter out of place"
+severity = "error"
+area = "08-expressions"
+summary = "A variadic parameter, `xs: T...`, stands last and takes no default: a call without its arguments passes the empty array. Lyric 5's LYR-SEM0024."
+
+[LYS-SEM0166]
+title = "a spread that is not a variadic parameter's rest"
+severity = "error"
+area = "08-expressions"
+summary = "`xs...` hands an array on as the rest of a call's arguments: one spread, at a variadic parameter, alone there. Lyric 5's LYR-SEM0166."
 
 [LYS-SEM0119]
 title = "a named argument that does not fit the parameters"

@@ -349,6 +349,8 @@ class Synthesized {
     var builderIx: int = -1,
     // the slot of every type's text (S7e3), as `debugSlot` is of its Debug form
     var textSlot: int = -1,
+    // whether the call being checked took its spread, `xs...` (S7e4a)
+    var spreadTaken: bool = false,
     fns: Map<string, int> = Map<string, int>.new(),
 }
 
@@ -1537,7 +1539,14 @@ class Checker {
                 dflt = this.coerce(this.expr(written, t), t, spanOf(written));
                 this.ctx = saved;
             }
-            params.push(ParamInfo { name = p.name, ty = t, default = dflt });
+            params.push(
+                ParamInfo {
+                    name = p.name,
+                    ty = t,
+                    default = dflt,
+                    variadic = info.params[j].variadic,
+                }
+            );
             j += 1;
         }
         info.params = params.toArray();
@@ -5379,8 +5388,33 @@ class Checker {
             this.declaringParams = info.typeParams;
         }
         let params = List<ParamInfo>.new();
+        var pk = 0;
         for (p in f.params) {
-            params.push(ParamInfo { name = p.name, ty = this.resolveType(p.type), default = null });
+            // the rest of a call's positional arguments: last, and without a default — a call
+            // without them passes the empty array (Lyric 5 08 §1 rule 1)
+            if (p.variadic && pk != f.params.length() - 1) {
+                this.error(
+                    "LYS-SEM0024",
+                    f"the variadic parameter '{p.name}' must be the last parameter",
+                    p.span
+                );
+            }
+            if (p.variadic && p.default != null) {
+                this.error(
+                    "LYS-SEM0024",
+                    f"the variadic parameter '{p.name}' takes no default — a call without its arguments passes the empty array",
+                    p.span
+                );
+            }
+            params.push(
+                ParamInfo {
+                    name = p.name,
+                    ty = this.resolveType(p.type),
+                    default = null,
+                    variadic = p.variadic && pk == f.params.length() - 1,
+                }
+            );
+            pk += 1;
         }
         info.params = params.toArray();
         var state = FnState.Done;
@@ -10905,7 +10939,7 @@ class Checker {
                 this.rangeValue(first, to.value, inclusive, want, spanOf(from.value))
             }
             .Cast(x, written, at) => this.cast(x.value, written, at),
-            .Call(callee, args, at) => this.call(callee.value, args, expected, at),
+            .Call(callee, args, at) => this.spreadingCall(callee.value, args, expected, at),
             .Implicit(name, at) => this.implicit(name, expected, at),
             .VariantInit(enumName, name, fields, at) => this.variantInit(
                 enumName,
@@ -15506,6 +15540,33 @@ class Checker {
 
     // --- calls -----------------------------------------------------------------------------------
 
+    /// A call whose arguments spread an array, `f(xs...)`: refused where the function it reaches
+    /// takes no variadic parameter (`LYS-SEM0166`; S7e4a).
+    mut fn spreadingCall(callee: Expr, args: Arg[], expected: ?Ty, at: Span): TExpr {
+        var dots: ?Span = null;
+        for (a in args) {
+            if (dots == null) {
+                dots = a.spread;
+            }
+        }
+        if (dots == null) {
+            return this.call(callee, args, expected, at);
+        }
+        let saved = this.synth.spreadTaken;
+        this.synth.spreadTaken = false;
+        let r = this.call(callee, args, expected, at);
+        let taken = this.synth.spreadTaken;
+        this.synth.spreadTaken = saved;
+        if (!taken) {
+            this.error(
+                "LYS-SEM0166",
+                "'...' spreads an array over a variadic parameter, and what this calls has none",
+                dots
+            );
+        }
+        return r;
+    }
+
     mut fn call(callee: Expr, args: Arg[], expected: ?Ty, at: Span): TExpr {
         match (callee) {
             // `.Num(3)`: a variant of the enum the position expects
@@ -16164,8 +16225,12 @@ class Checker {
         let names = List<string>.new();
         let tys = List<Ty>.new();
         for (p in f.params) {
-            if (p.default != null) {
-                this.error("LYS-PAR0060", "a local function's parameter takes no default", p.span);
+            if (p.default != null || p.variadic) {
+                this.error(
+                    "LYS-PAR0060",
+                    f"a local function's parameter has no default and is no variadic one: '{p.name}'",
+                    p.span
+                );
             }
             names.push(p.name);
             tys.push(this.resolveType(p.type));
@@ -17600,7 +17665,7 @@ class Checker {
         name: string,
         candidates: int[],
         receiver: ?TExpr,
-        args: Arg[],
+        written: Arg[],
         at: Span
     ): TExpr {
         // this call's alone: an argument's call checks without them
@@ -17609,19 +17674,50 @@ class Checker {
         this.callExpected = null;
         this.writtenArgs = [];
         // the arguments a member's choice checked already (S7c5d2)
-        let pre = this.preChecked;
+        var pre = this.preChecked;
         this.preChecked = [];
+        var args = written;
+        // one that takes exactly the count first, then one whose variadic parameter takes the rest
+        // (Lyric 5 08 §1 rule 1; S7e4a)
         var chosen = -1;
         for (c in candidates) {
             let params = this.functions[c].params;
             var required = 0;
             for (p in params) {
-                if (p.default == null) {
+                if (p.default == null && !p.variadic) {
                     required += 1;
                 }
             }
-            if (args.length() >= required && args.length() <= params.length()) {
+            if (!variadicIn(params)
+                && args.length() >= required
+                && args.length() <= params.length()) {
                 chosen = c;
+            }
+        }
+        if (chosen < 0) {
+            for (c in candidates) {
+                let params = this.functions[c].params;
+                var required = 0;
+                for (p in params) {
+                    if (p.default == null && !p.variadic) {
+                        required += 1;
+                    }
+                }
+                if (variadicIn(params) && args.length() >= required) {
+                    chosen = c;
+                }
+            }
+        }
+        // a spread refused leaves its parameter without an argument, said once (Lyric 5: checked
+        // as nothing)
+        var refused = false;
+        if (chosen >= 0) {
+            let (moved, refusal) = this.gatherRest(chosen, written, name, at);
+            args = moved;
+            refused = refusal;
+            if (args.length() != written.length() || variadicIn(this.functions[chosen].params)) {
+                // the arguments moved: what a member's choice checked is checked again
+                pre = [];
             }
         }
         if (chosen < 0) {
@@ -17840,7 +17936,9 @@ class Checker {
                 } else if (dflt != null) {
                     out.push(dflt);
                 } else {
-                    this.error("LYS-SEM0014", f"'{name}' needs its argument '{p.name}'", at);
+                    if (!refused) {
+                        this.error("LYS-SEM0014", f"'{name}' needs its argument '{p.name}'", at);
+                    }
                     out.push(TExpr.Unknown);
                 }
                 k += 1;
@@ -17865,12 +17963,116 @@ class Checker {
             } else if (dflt != null) {
                 out.push(dflt);
             } else {
-                this.error("LYS-SEM0014", f"'{name}' needs its argument '{p.name}'", at);
+                if (!refused) {
+                    this.error("LYS-SEM0014", f"'{name}' needs its argument '{p.name}'", at);
+                }
                 out.push(TExpr.Unknown);
             }
             k += 1;
         }
         return TExpr.Call(chosen, out.toArray(), this.returnsOf(chosen, at));
+    }
+
+    /// The arguments as function `chosen` takes them (Lyric 5 08 §1 rule 1; S7e4a): the positional
+    /// ones past its fixed parameters one array literal, given to its variadic parameter by name —
+    /// or the array a spread hands on, the whole rest; a spread anywhere else refused
+    /// (`LYS-SEM0166`), checked as nothing — and whether one was.
+    mut fn gatherRest(chosen: int, written: Arg[], name: string, at: Span): (Arg[], bool) {
+        let params = this.functions[chosen].params;
+        let variadic = variadicIn(params);
+        var spreads = 0;
+        for (a in written) {
+            if (a.spread != null) {
+                spreads += 1;
+            }
+        }
+        if (!variadic && spreads == 0) {
+            return (written, false);
+        }
+        // the call answers for its spreads here
+        this.synth.spreadTaken = true;
+        let fixed = if (variadic) params.length() - 1 else params.length();
+        let vname = if (variadic) params[fixed].name else "";
+        let out = List<Arg>.new();
+        let rest = List<Expr>.new();
+        var handed: ?Expr = null;
+        var position = 0;
+        var seen = 0;
+        var refused = false;
+        for (a in written) {
+            if (let dots = a.spread) {
+                seen += 1;
+                refused = true;
+                if (seen > 1) {
+                    this.error(
+                        "LYS-SEM0166",
+                        "a call spreads one array, the rest of its arguments — this is a second",
+                        dots
+                    );
+                } else if (!variadic) {
+                    this.error(
+                        "LYS-SEM0166",
+                        f"'...' spreads an array over a variadic parameter, and '{name}' has none",
+                        dots
+                    );
+                } else if (a.name != null || position < fixed) {
+                    let to = if (position < params.length()) params[position].name else vname;
+                    this.error(
+                        "LYS-SEM0166",
+                        f"'...' spreads an array over the variadic parameter '{vname}', and this argument goes to '{a.name ?? to}'",
+                        dots
+                    );
+                } else {
+                    handed = a.value;
+                    position += 1;
+                    refused = false;
+                    continue;
+                }
+                this.expr(a.value, null);
+                if (a.name == null) {
+                    position += 1;
+                }
+                continue;
+            }
+            if (a.name == null && variadic && position >= fixed) {
+                rest.push(a.value);
+                position += 1;
+                continue;
+            }
+            if (a.name != null && variadic && a.name == vname) {
+                this.error(
+                    "LYS-SEM0119",
+                    f"'{vname}' is variadic: the call gives it the rest of its positional arguments, by no name",
+                    spanOf(a.value)
+                );
+                this.expr(a.value, null);
+                continue;
+            }
+            if (a.name == null) {
+                position += 1;
+            }
+            out.push(a);
+        }
+        if (!variadic) {
+            return (out.toArray(), refused);
+        }
+        let whole = handed;
+        if (whole != null) {
+            if (rest.length() > 0) {
+                this.error(
+                    "LYS-SEM0166",
+                    f"a spread is the whole rest — '{vname}' takes the array as its own, and no other argument beside it",
+                    spanOf(rest[0])
+                );
+                for (r in rest) {
+                    this.expr(r, null);
+                }
+            }
+            out.push(Arg { name = vname, value = whole });
+        } else {
+            out.push(Arg { name = vname, value = Expr.List(rest.toArray(), at) });
+        }
+        return (out.toArray(), refused);
     }
 
     /// `print(x)` and `println(x)`, `println()`: the prelude's output, any core value as text.
@@ -18645,6 +18847,11 @@ fn operatorOf(op: BinaryOp): (string, string) {
         .Shr => ("Shr", "shr"),
         _ => ("", ""),
     };
+}
+
+/// Whether a function's last parameter is variadic (S7e4a).
+fn variadicIn(params: ParamInfo[]): bool {
+    return params.length() > 0 && params[params.length() - 1].variadic;
 }
 
 /// The slice that builds what a built-in type still lacks — a string's methods and indexing, a

@@ -69,6 +69,9 @@ enum TypeExpr :: [Debug] {
 struct Arg :: [Debug] {
     name: ?string,
     value: Expr,
+    // `xs...`: the array spread over a variadic parameter, where its dots stand (Lyric 5 08 §1
+    // rule 1; S7e4a)
+    spread: ?Span = null,
 }
 
 /// A field of an initializer, `name = value`; `name` alone reads the binding of that name.
@@ -277,6 +280,8 @@ struct Param :: [Debug] {
     type: TypeExpr,
     default: ?Expr,
     span: Span,
+    // `xs: T...`: the variadic parameter, its type the array `T[]` (Lyric 5 08 §1 rule 1; S7e4a)
+    variadic: bool = false,
 }
 
 /// A function's body: a block, or `= expr` (09 Ret).

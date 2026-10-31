@@ -1269,6 +1269,19 @@ class Checker {
                                     this.blockSite = "";
                                     this.blockCond = [];
                                 }
+                                // a function type, an optional, a tuple of the block's parameters
+                                // (S7e2c), its conformances conditional on the block, as a list's
+                                _ if (x.typeParams.length() > 0) => {
+                                    let (kind, n) = shapeKindOf(x.target);
+                                    let g = this.shapeTemplate(kind, n, false);
+                                    if (g >= 0) {
+                                        this.blockCond = this.typeParamsOf(x.typeParams);
+                                        this.blockSite = f"{x.span.file}:{x.span.start}";
+                                        this.conformAt(g, x.conforms);
+                                        this.blockSite = "";
+                                        this.blockCond = [];
+                                    }
+                                }
                                 // a function type, an optional, a tuple at fixed types (S7e2)
                                 _ => {
                                     let shape = this.resolveType(x.target);
@@ -2659,12 +2672,24 @@ class Checker {
         // a function type, an optional, a tuple (Lyric 5 05 §13 rule 6; S7e2): at fixed types an
         // entry of its own; over a block's parameters not yet
         var index = -1;
-        if (name == "") {
+        if (name == "" && x.typeParams.length() > 0) {
+            // over a shape of the block's parameters (S7e2c): the template of its kind and arity
+            let (kind, n) = shapeKindOf(x.target);
+            index = this.shapeTemplate(kind, n, true);
+            if (index < 0) {
+                this.error(
+                    "LYS-SEM0124",
+                    "a generic block's target is its type at the block's parameters, in their order",
+                    x.span
+                );
+                return;
+            }
+        } else if (name == "") {
             let shape = this.resolveType(x.target);
-            if (x.typeParams.length() > 0 || hasParam(shape)) {
-                this.notYet(
-                    "an extend block over a function type, an optional or a tuple of type parameters",
-                    "S7e2c (the built-in constructors, 05 §13 rule 6)",
+            if (hasParam(shape)) {
+                this.error(
+                    "LYS-SEM0124",
+                    "a generic block's target is its type at the block's parameters, in their order",
                     x.span
                 );
                 return;
@@ -4124,7 +4149,18 @@ class Checker {
         let targs: TypeExpr[] = match (x.target) {
             .Named(_, args, _) => args,
             .List(inner, _) => [inner.value],
-            _ => [],
+            // a shape's parts (S7e2c): an optional's value, a tuple's elements, a function's
+            // parameters and its result
+            .Optional(inner, _) => [inner.value],
+            .Tuple(elems, _, _) => elems,
+            .Fn(params, result, _) => {
+                let all = List<TypeExpr>.new();
+                for (p in params) {
+                    all.push(p);
+                }
+                all.push(result.value);
+                all.toArray()
+            }
         };
         var plain = info.typeParams.length() == x.typeParams.length()
             && targs.length() == x.typeParams.length();
@@ -4267,6 +4303,71 @@ class Checker {
         return index;
     }
 
+    /// The entry of the blocks over a shape of their own parameters (S7e2c), one for each kind and
+    /// arity — `?T`, `(A, B)`, `fn(A) -> R` — generic over its parts, as the lists' entry is over
+    /// the element; -1 where no block stands over such a shape and `make` is not asked.
+    mut fn shapeTemplate(kind: string, n: int, make: bool): int {
+        let key = "shapeG " + kind;
+        if (let known = this.builtinIndex.get(key)) {
+            return known;
+        }
+        if (!make || kind == "") {
+            return -1;
+        }
+        let ps = List<Ty>.new();
+        let tps = List<TypeParamInfo>.new();
+        var k = 0;
+        while (k < n) {
+            ps.push(Ty.Param(k));
+            tps.push(TypeParamInfo { name = f"P{k}", constraints = [] });
+            k += 1;
+        }
+        let parts = ps.toArray();
+        let labels = List<string>.new();
+        for (_ in parts) {
+            labels.push("");
+        }
+        let shape = if (kind == "?") Ty.Optional(boxTy(parts[0]))
+            else if (kind.startsWith("fn")) Ty.Fn(
+                FnTy { params = sliceOf(parts, 0, n - 1), result = boxTy(parts[n - 1]) }
+            )
+                else Ty.Tuple(TupleTy { elements = parts, labels = labels.toArray() });
+        let index = this.types.length();
+        this.types.push(
+            TypeInfo {
+                name = this.tyName(shape),
+                kind = TypeKind.Builtin,
+                methods = Map<string, int>.new(),
+            }
+        );
+        this.types[index].typeParams = tps.toArray();
+        this.types[index].shape = shape;
+        this.builtinIndex.insert(key, index);
+        return index;
+    }
+
+    /// An instance of a shape template at a shape's parts (S7e2c): its members, its table, its box.
+    mut fn shapeInstance(g: int, t: Ty): int {
+        let parts = shapeParts(t) ?? [];
+        let inst = this.typeInstance(g, parts);
+        let info = this.types[inst];
+        info.shape = t;
+        // its conformances where its parts meet their blocks, for a default's box to find; the
+        // table comes with the copies (`instantiate`): made now, it copied members not yet checked
+        if (!info.tabled) {
+            let tmpl = this.types[g];
+            let merged = List<int>.new();
+            for (x in tmpl.ifaces) {
+                let cond = tmpl.condIfaces.get(x);
+                if (cond == null || this.meetsBlock(parts, cond)) {
+                    merged.push(x);
+                }
+            }
+            info.ifaces = merged.toArray();
+        }
+        return inst;
+    }
+
     /// What `this` is in a method of type `owner`: the value of a built-in type, else the type.
     mut fn selfTy(owner: int): Ty {
         let info = this.types[owner];
@@ -4295,8 +4396,27 @@ class Checker {
             // a list's type: an entry for its element type, its box's type and its table (S7c3)
             .List(e) => if (hasParam(t)) this.builtinOf(t)
                 else this.typeInstance(this.builtinOf(t), [e.value]),
+            // a shape: its blocks' entry at fixed types where it has any, else the instance of the
+            // template a block over its kind's parts made (S7e2c)
+            .Fn(_) | .Optional(_) | .Tuple(_) => this.shapeEntryOf(t),
             _ => this.builtinOf(t),
         };
+    }
+
+    /// A shape's entry (S7e2c): its fixed blocks', or its template's instance, or the empty fixed
+    /// entry where neither gives it anything.
+    mut fn shapeEntryOf(t: Ty): int {
+        let fixed = this.builtinOf(t);
+        if (fixed >= 0
+            && (this.types[fixed].methods.length() > 0 || this.types[fixed].ifaces.length() > 0)) {
+            return fixed;
+        }
+        let parts = shapeParts(t) ?? [];
+        let g = this.shapeTemplate(shapeKind(t), parts.length(), false);
+        if (g >= 0 && !hasParam(t)) {
+            return this.shapeInstance(g, t);
+        }
+        return fixed;
     }
 
     /// Whether a value of `t` goes into a box to be an interface value: a scalar or a string.
@@ -4962,13 +5082,26 @@ class Checker {
                 }
                 found
             }
-            // a function type, an optional, a tuple: what a block on its shape gives (S7e2)
+            // a function type, an optional, a tuple: what a block on its shape gives (S7e2), or a
+            // block over its kind's parts where they meet its condition (S7e2c)
             .Fn(_) | .Optional(_) | .Tuple(_) => {
                 let i = this.builtinOf(t);
                 var found = false;
                 if (i >= 0) {
                     for (x in this.types[i].ifaces) {
                         found = found || this.isOf(x, ii);
+                    }
+                }
+                let parts = shapeParts(t) ?? [];
+                let g = this.shapeTemplate(shapeKind(t), parts.length(), false);
+                if (!found && g >= 0) {
+                    for (x in this.types[g].ifaces) {
+                        let cond = this.types[g].condIfaces.get(x);
+                        if (!found
+                            && (this.isOf(x, ii) || this.ifaceAt(x, parts) == ii)
+                            && (cond == null || this.meetsBlock(parts, cond))) {
+                            found = true;
+                        }
                     }
                 }
                 found
@@ -16372,8 +16505,44 @@ class Checker {
                     }
                     _ => { }
                 }
-                // a built-in type's methods: its extend blocks', and its conformances' defaults
-                let i = this.builtinOf(t);
+                // a block over the receiver's shape's parts (S7e2c): the receiver binds them, as a
+                // list binds its element; a block at fixed types answers first
+                if (let parts = shapeParts(t)) {
+                    let fixed = this.builtinOf(t);
+                    let g = this.shapeTemplate(shapeKind(t), parts.length(), false);
+                    let fixedHas = fixed >= 0 && this.types[fixed].methods.containsKey(method);
+                    if (g >= 0 && !fixedHas) {
+                        if (let m = this.types[g].methods.get(method)) {
+                            if (!this.meetsBlock(parts, this.functions[m].blockParams)) {
+                                this.error(
+                                    "LYS-SEM0134",
+                                    f"'{this.tyName(t)}' has no method '{method}': its block asks more of its parts",
+                                    memberAt
+                                );
+                                return TExpr.Unknown;
+                            }
+                            this.presetBinds = parts;
+                            let call = this.callExpecting(
+                                posTy,
+                                writtenTys,
+                                method,
+                                [m],
+                                receiver,
+                                args,
+                                at
+                            );
+                            this.presetBinds = [];
+                            return call;
+                        }
+                    }
+                }
+                // a built-in type's methods: its extend blocks', and its conformances' defaults —
+                // a shape's through its entry, its template's instance where a block over its
+                // parts gave the conformance (S7e2c)
+                let i = match (t) {
+                    .Fn(_) | .Optional(_) | .Tuple(_) => this.shapeEntryOf(t),
+                    _ => this.builtinOf(t),
+                };
                 // a block on this list type alone, `extend int[] { … }` (S7c4c3b)
                 let inst = this.entryOf(t);
                 if (i >= 0 && inst >= 0 && inst != i) {
@@ -17504,6 +17673,44 @@ fn ends(s: TStmt): bool {
             all
         }
         _ => false,
+    };
+}
+
+/// A shape's parts (S7e2c): an optional's value, a tuple's elements, a function's parameters and
+/// its result; `null` for no shape.
+fn shapeParts(t: Ty): ?Ty[] {
+    return match (t) {
+        .Optional(inner) => [inner.value],
+        .Tuple(tt) => tt.elements,
+        .Fn(ft) => {
+            let all = List<Ty>.new();
+            for (p in ft.params) {
+                all.push(p);
+            }
+            all.push(ft.result.value);
+            all.toArray()
+        }
+        _ => null,
+    };
+}
+
+/// A shape's kind and arity, the key of its template (S7e2c).
+fn shapeKind(t: Ty): string {
+    return match (t) {
+        .Optional(_) => "?",
+        .Tuple(tt) => f"({tt.elements.length()})",
+        .Fn(ft) => f"fn({ft.params.length()})",
+        _ => "",
+    };
+}
+
+/// A written shape's kind and its count of parts (S7e2c).
+fn shapeKindOf(x: TypeExpr): (string, int) {
+    return match (x) {
+        .Optional(_, _) => ("?", 1),
+        .Tuple(elems, _, _) => (f"({elems.length()})", elems.length()),
+        .Fn(params, _, _) => (f"fn({params.length()})", params.length() + 1),
+        _ => ("", 0),
     };
 }
 

@@ -3240,6 +3240,10 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     .CharWhite => s[x] = truth(charOfCode(s[x]).isWhitespace()),
                     .CharUpper => s[x] = (charOfCode(s[x]).toUpper() as uint32) as uint64,
                     .CharLower => s[x] = (charOfCode(s[x]).toLower() as uint32) as uint64,
+                    .FloatOfText => {
+                        let v = (try? float.parse(textOf(r[y]))) ?? 0.0;
+                        s[x] = v.toBits();
+                    }
                     // a list sorted in place (S7c6c2): its length unchanged, a walk goes on
                     .ListSortInts => {
                         let o = r[y];

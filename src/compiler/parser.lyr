@@ -288,6 +288,27 @@ class Parser {
 
     /// A link of an `else if` chain: a level of nesting, refused past the bound with the form that
     /// takes any number of cases.
+    /// Whether the parenthesis at `ahead` closes on a token that opens a block or a list of
+    /// conformances, `{` or `::`: an extend block's tuple, not a call's arguments.
+    mut fn opensABlockAfterParens(ahead: int): bool {
+        var k = this.pos + ahead;
+        var depth = 0;
+        while (k < this.tokens.length()) {
+            let kind = this.tokens[k].kind;
+            if (kind == .LParen) {
+                depth += 1;
+            } else if (kind == .RParen) {
+                depth -= 1;
+                if (depth == 0) {
+                    let next = if (k + 1 < this.tokens.length()) this.tokens[k + 1].kind else kind;
+                    return next == .LBrace || next == .ColonColon;
+                }
+            }
+            k += 1;
+        }
+        return false;
+    }
+
     mut fn enterLink(t: Token): void throws SyntaxError {
         this.depth += 1;
         // two levels short of the bound: the link's block and its first expression come next
@@ -376,10 +397,15 @@ class Parser {
             return Item.Decl(Decl.Interface(i with { isInternal = inPackage }));
         }
         // `extend fn(char) -> bool { … }` too: a word `fn` after it begins no expression (S7e1)
+        // and `extend ?int`, `extend (int, string)` (S7e2): `?.` is a token of its own, and a tuple
+        // is told from a call by what follows its parenthesis
         if (this.atWord("extend")
             && (this.peek(1).kind == .Ident
                 || this.peek(1).kind == .Lt
-                || this.isWord(this.peek(1), "fn"))) {
+                || this.isWord(this.peek(1), "fn")
+                || this.peek(1).kind == .Question
+                || this.peek(1).kind == .QuestionQuestion
+                || (this.peek(1).kind == .LParen && this.opensABlockAfterParens(1)))) {
             return Item.Decl(Decl.Extend(try this.parseExtend(first)));
         }
         if (this.pos > 0 && this.tokens[this.pos - 1].start == first.start) {

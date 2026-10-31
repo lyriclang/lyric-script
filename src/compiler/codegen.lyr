@@ -180,11 +180,32 @@ struct Placement {
                 let isRef = t.vmHeld
                     || (t.kind == .Builtin
                         && (t.name == "string" || t.name == "List" || t.name.startsWith("List<")));
-                let d = TypeDesc {
+                var d = TypeDesc {
                     name = f"<box {t.name}>",
                     scalarFields = if (isRef) [] else ["v"],
                     refFields = if (isRef) ["v"] else [],
                 };
+                // a function value's, an optional's, a tuple's box (S7e2): the shape's slots
+                if (let shape = t.shape) {
+                    let (ns, nr) = slotsOf(shape, p.types);
+                    let sf = List<string>.new();
+                    let rf = List<string>.new();
+                    var j = 0;
+                    while (j < ns) {
+                        sf.push(f"s{j}");
+                        j += 1;
+                    }
+                    j = 0;
+                    while (j < nr) {
+                        rf.push(f"r{j}");
+                        j += 1;
+                    }
+                    d = TypeDesc {
+                        name = f"<box {t.name}>",
+                        scalarFields = sf.toArray(),
+                        refFields = rf.toArray(),
+                    };
+                }
                 d.methods = rows[bi];
                 d.family = bi;
                 d.ifaces = t.ifaces;

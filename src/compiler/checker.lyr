@@ -1269,7 +1269,16 @@ class Checker {
                                     this.blockSite = "";
                                     this.blockCond = [];
                                 }
-                                _ => { }
+                                // a function type, an optional, a tuple at fixed types (S7e2)
+                                _ => {
+                                    let shape = this.resolveType(x.target);
+                                    let i = if (hasParam(shape)) -1 else this.builtinOf(shape);
+                                    if (i >= 0) {
+                                        this.blockSite = f"{x.span.file}:{x.span.start}";
+                                        this.conformAt(i, x.conforms);
+                                        this.blockSite = "";
+                                    }
+                                }
                             }
                         }
                         _ => { }
@@ -2647,16 +2656,31 @@ class Checker {
             .List(_, _) => "List",
             _ => "",
         };
-        // a function type, an optional, a tuple: Lyric 5 05 §13 rule 6, not built yet
+        // a function type, an optional, a tuple (Lyric 5 05 §13 rule 6; S7e2): at fixed types an
+        // entry of its own; over a block's parameters not yet
+        var index = -1;
         if (name == "") {
-            this.notYet(
-                "an extend block on a function type, an optional or a tuple",
-                "S7e2 (the built-in constructors, 05 §13 rule 6)",
-                x.span
-            );
-            return;
+            let shape = this.resolveType(x.target);
+            if (x.typeParams.length() > 0 || hasParam(shape)) {
+                this.notYet(
+                    "an extend block over a function type, an optional or a tuple of type parameters",
+                    "S7e2c (the built-in constructors, 05 §13 rule 6)",
+                    x.span
+                );
+                return;
+            }
+            index = this.builtinOf(shape);
+            if (index < 0) {
+                this.error(
+                    "LYS-SEM0124",
+                    f"'{this.tyName(shape)}' is no type an extend block adds to",
+                    x.span
+                );
+                return;
+            }
+        } else {
+            index = this.typeNamed(name);
         }
-        let index = this.typeNamed(name);
         if (index < 0 || this.types[index].kind == .Interface) {
             this.error(
                 "LYS-SEM0124",
@@ -4201,7 +4225,11 @@ class Checker {
             _ => "",
         };
         if (name == "") {
-            return -1;
+            // a function type, an optional, a tuple at fixed types (S7e2): an entry for each shape
+            return match (t) {
+                .Fn(_) | .Optional(_) | .Tuple(_) => if (hasParam(t)) -1 else this.shapeEntry(t),
+                _ => -1,
+            };
         }
         let known = this.builtinIndex.get(name);
         if (known != null) {
@@ -4219,11 +4247,35 @@ class Checker {
         return index;
     }
 
+    /// The entry of a function type, an optional or a tuple at fixed types, made when it is first
+    /// needed (S7e2; Lyric 5 05 §13 rule 6): its blocks' members and conformances.
+    mut fn shapeEntry(t: Ty): int {
+        let key = "shape " + tyKey(t);
+        if (let known = this.builtinIndex.get(key)) {
+            return known;
+        }
+        let index = this.types.length();
+        this.types.push(
+            TypeInfo {
+                name = this.tyName(t),
+                kind = TypeKind.Builtin,
+                methods = Map<string, int>.new(),
+            }
+        );
+        this.types[index].shape = t;
+        this.builtinIndex.insert(key, index);
+        return index;
+    }
+
     /// What `this` is in a method of type `owner`: the value of a built-in type, else the type.
     mut fn selfTy(owner: int): Ty {
         let info = this.types[owner];
         if (info.blanketAt >= 0) {
             return Ty.Param(info.blanketAt);
+        }
+        if (let shape = info.shape) {
+            // `this` in a block on a function type, an optional, a tuple (S7e2): the shape
+            return shape;
         }
         if (info.kind == .Builtin && info.name == "List") {
             // `this` in an extend block of `T[]` (S7b2a): a list of the block's parameter
@@ -4252,6 +4304,9 @@ class Checker {
         let list = match (t) {
             .List(_) => true,
             .Named(i) => this.types[i].vmHeld,
+            // a function value, an optional, a tuple of a block's conformance (S7e2): a box carries
+            // its shape's table to an interface's default
+            .Fn(_) | .Optional(_) | .Tuple(_) => true,
             _ => false,
         };
         return t == .Str || list || isScalar(t, this.types.toArray());
@@ -4904,6 +4959,17 @@ class Checker {
                 var found = false;
                 for (x in this.types[i].ifaces) {
                     found = found || x == ii;
+                }
+                found
+            }
+            // a function type, an optional, a tuple: what a block on its shape gives (S7e2)
+            .Fn(_) | .Optional(_) | .Tuple(_) => {
+                let i = this.builtinOf(t);
+                var found = false;
+                if (i >= 0) {
+                    for (x in this.types[i].ifaces) {
+                        found = found || this.isOf(x, ii);
+                    }
                 }
                 found
             }
@@ -5933,7 +5999,9 @@ class Checker {
                 || (this.types[i].kind == .Class && !this.types[i].vmHeld)
                 || this.types[i].kind == .Interface
                 || (this.types[i].kind == .Enum && this.types[i].payload),
-            .Fn(_) => true,
+            // a function value has a copy for its type (S7e2): a call through a constraint is
+            // its block's member, as a list's is, where a shared copy would ask a table it has not
+            .Fn(_) => false,
             _ => false,
         };
     }
@@ -16408,8 +16476,35 @@ class Checker {
                 if (let call = this.blanketCall(t, receiver, method, args, at, posTy, writtenTys)) {
                     return call;
                 }
-                // a list's methods are all here (S7b); a string's and a number's come with S7e, S7f
+                // a list's methods are all here (S7b), a string's since S7e2 but what S7e3 and S7f
+                // bring; a number's come with S7f
                 match (t) {
+                    .Str => {
+                        match (method) {
+                            "toBytes" => {
+                                return this.notYet(
+                                    "a string's bytes",
+                                    "S7f (numbers, BigInt, Bytes)",
+                                    memberAt
+                                );
+                            }
+                            "show" | "showTo" | "debug" | "debugTo" => {
+                                return this.notYet(
+                                    "Display and Debug",
+                                    "S7e3 (Display, Debug)",
+                                    memberAt
+                                );
+                            }
+                            _ => {
+                                this.error(
+                                    "LYS-SEM0012",
+                                    f"'{this.tyName(t)}' has no method '{method}'",
+                                    memberAt
+                                );
+                                return TExpr.Unknown;
+                            }
+                        }
+                    }
                     .List(_) => {
                         this.error(
                             "LYS-SEM0012",

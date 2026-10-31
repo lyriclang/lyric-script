@@ -661,8 +661,8 @@ extend string :: Index<int> {
     fn index(i: int): char = __strAt(this, i)
 }
 
-// what a text is searched for: a string, a character (Lyric 5 12 §Strings; S7e1) — a test of
-// characters, `fn(char) -> bool`, comes with S7e2. `matchAt` gives the end of a match that begins at byte `at`, `matchBefore` the start of
+// what a text is searched for: a string, a character, a test of characters (Lyric 5 12 §Strings;
+// S7e1, S7e2). `matchAt` gives the end of a match that begins at byte `at`, `matchBefore` the start of
 // one that ends at `end`, `null` where there is none — `at` and `end` a character's first byte or
 // the length; `nextIn` the first byte at or after `from` where one begins, by default through
 // `matchAt` at each, faster where a pattern can find
@@ -723,6 +723,26 @@ extend char :: Pattern {
         return start
     }
 }
+// a character for which the test holds (S7e2: a block on a function type)
+extend fn(char) -> bool :: Pattern {
+    fn matchAt(text: string, at: int): ?int {
+        if (at >= __strLen(text) || !this(__strAt(text, at))) {
+            return null
+        }
+        return __strNext(text, at)
+    }
+    fn matchBefore(text: string, end: int): ?int {
+        if (end <= 0) {
+            return null
+        }
+        let start = __strPrev(text, end)
+        if (!this(__strAt(text, start))) {
+            return null
+        }
+        return start
+    }
+}
+
 // whether `p` matches the empty text: as a separator or a pattern to replace it would stand
 // everywhere
 fn __matchesNothing<P :: [Pattern]>(p: P): bool = p.matchAt("", 0) != null
@@ -841,6 +861,297 @@ extend string {
             return this
         }
         return this + __strRepeat(f"{fill}", missing)
+    }
+}
+
+// a string's parts and lines (Lyric 5 12 §Strings; S7e2): new strings, where Lyric 5 gives views
+extend string {
+    // the parts between the separators, in order, empty ones kept; a separator that matches the
+    // empty text panics
+    fn split<P :: [Pattern]>(sep: P): SplitIter<P> {
+        if (__matchesNothing(sep)) {
+            panic("split: a separator that matches the empty text")
+        }
+        return SplitIter { s = this, sep = sep, at = 0, left = -1 }
+    }
+    // at most `n` parts, the last one the rest; none for 0; a negative `n` panics
+    fn splitN<P :: [Pattern]>(sep: P, n: int): SplitIter<P> {
+        if (__matchesNothing(sep)) {
+            panic("splitN: a separator that matches the empty text")
+        }
+        if (n < 0) {
+            panic(f"splitN: {n} parts")
+        }
+        return SplitIter { s = this, sep = sep, at = if (n == 0) -1 else 0, left = n }
+    }
+    // the parts before and after the first `sep`, `null` where there is none
+    fn splitOnce<P :: [Pattern]>(sep: P): ?(string, string) {
+        if (let at = sep.nextIn(this, 0)) {
+            return (__strSlice(this, 0, at), __strSlice(this, sep.matchAt(this, at)!, __strLen(this)))
+        }
+        return null
+    }
+    // the matches of `p` in order, none overlapping another
+    fn matches<P :: [Pattern]>(p: P): MatchesIter<P> = MatchesIter { s = this, p = p }
+    // the lines: split at `\n`, a `\r` before it taken off, no empty line after a last `\n`
+    fn lines(): LinesIter = LinesIter { s = this }
+    // `T.parse(s)`, `T` from where the result goes: `let n: int = s.parse()`
+    fn parse<T :: [Parse]>(): T = T.parse(this)
+}
+
+// a string's parts between a pattern's matches: `at` where the next begins, -1 once the last was
+// given; `left` how many `splitN` still gives, -1 without a bound
+class SplitIter<P :: [Pattern]> :: Iterator {
+    type Item = string
+    s: string
+    sep: P
+    var at: int
+    var left: int
+    fn next(): ?string {
+        if (this.at < 0) {
+            return null
+        }
+        let n = __strLen(this.s)
+        if (this.left != 1) {
+            if (let i = this.sep.nextIn(this.s, this.at)) {
+                let part = __strSlice(this.s, this.at, i)
+                this.at = this.sep.matchAt(this.s, i)!
+                if (this.left > 0) {
+                    this.left -= 1
+                }
+                return part
+            }
+        }
+        let rest = __strSlice(this.s, this.at, n)
+        this.at = -1
+        return rest
+    }
+}
+// a pattern's matches in a text, none overlapping another
+class MatchesIter<P :: [Pattern]> :: Iterator {
+    type Item = string
+    s: string
+    p: P
+    var at: int = 0
+    fn next(): ?string {
+        let n = __strLen(this.s)
+        if (this.at > n) {
+            return null
+        }
+        if (let begin = this.p.nextIn(this.s, this.at)) {
+            let end = this.p.matchAt(this.s, begin)!
+            this.at = if (end > begin) end else __strNext(this.s, begin)
+            return __strSlice(this.s, begin, end)
+        }
+        this.at = n + 1
+        return null
+    }
+}
+// a text's lines
+class LinesIter :: Iterator {
+    type Item = string
+    s: string
+    var at: int = 0
+    fn next(): ?string {
+        let n = __strLen(this.s)
+        if (this.at >= n) {
+            return null
+        }
+        let found = __strFind(this.s, "\n", this.at)
+        let i = if (found < 0) n else found
+        var end = i
+        if (end > this.at) {
+            let before = __strPrev(this.s, end)
+            if (before == end - 1 && __strAt(this.s, before) == '\r') {
+                end = before
+            }
+        }
+        let line = __strSlice(this.s, this.at, end)
+        this.at = i + 1
+        return line
+    }
+}
+
+// why a text is no value of the type (Lyric 5 12 §Parsing; S7e2)
+enum ParseErrorKind {
+    Empty,
+    Invalid,
+    Overflow,
+}
+// the error `parse` throws where a text is no value of the type: empty, not of the type's form,
+// or a number beyond the type's range
+struct ParseError :: Error {
+    kind: ParseErrorKind,
+    // what the parser can say beyond the kind; empty where it says nothing
+    detail: string = "",
+    // the byte the refusal points at, where the parser knows one
+    offset: ?int = null,
+    fn message(): string {
+        var text = match (this.kind) {
+            .Empty => "cannot parse a value from an empty text",
+            .Invalid => "the text is not a value of the type",
+            .Overflow => "the number is beyond the type's range",
+        }
+        if (!this.detail.isEmpty()) {
+            text = f"{text}: {this.detail}"
+        }
+        if (let at = this.offset) {
+            text = f"{text} (at byte {at})"
+        }
+        return text
+    }
+}
+// a type read from a text: `T.parse(s)`, throwing a `ParseError` with the reason
+interface Parse {
+    static fn parse(s: string): Self
+}
+// `true` or `false`, exactly
+extend bool :: Parse {
+    static fn parse(s: string): bool {
+        if (s == "true") {
+            return true
+        }
+        if (s == "false") {
+            return false
+        }
+        throw ParseError { kind = if (s == "") ParseErrorKind.Empty else ParseErrorKind.Invalid }
+    }
+}
+// an integer: an optional `+` or `-`, ASCII digits, `_` between two of them, nothing else — a
+// character outside the form is `Invalid` however many digits run before it, only a well-formed
+// number an `Overflow`
+extend int :: Parse {
+    static fn parse(s: string): int = __parseInt(s, 10)
+    // the integer a text names in base `radix`; a radix outside 2–36 panics
+    static fn parse(s: string, radix: int): int = __parseInt(s, radix)
+}
+// a float, rounded to the nearest: an optional sign, then `inf`, `nan`, or digits with an
+// optional `.` and fraction and an optional exponent, `_` between two digits
+extend float :: Parse {
+    static fn parse(s: string): float {
+        __checkFloatText(s)
+        return __floatOfText(s)
+    }
+}
+fn __floatOfText(s: string): float = __float_ofText(s)
+
+// the integer of a text in base `radix`: negative ones accumulate downward, so the least is
+// reached; the overflow is asked before each step, as an `int` that overflows panics
+fn __parseInt(s: string, radix: int): int {
+    if (radix < 2 || radix > 36) {
+        panic(f"radix {radix} is outside 2..36")
+    }
+    let cs: char[] = s.chars().collect()
+    let n = cs.length()
+    if (n == 0) {
+        throw ParseError { kind = ParseErrorKind.Empty }
+    }
+    let negative = cs[0] == '-'
+    var i = if (negative || cs[0] == '+') 1 else 0
+    if (i == n) {
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+    let least = -9223372036854775807 - 1
+    let most = 9223372036854775807
+    var value = 0
+    var overflowed = false
+    var afterDigit = false
+    while (i < n) {
+        let c = cs[i]
+        i += 1
+        if (c == '_') {
+            if (!afterDigit || i == n) {
+                throw ParseError { kind = ParseErrorKind.Invalid }
+            }
+            afterDigit = false
+            continue
+        }
+        let d = c.toDigit(radix) ?? -1
+        if (d < 0) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        afterDigit = true
+        if (!overflowed) {
+            if (negative) {
+                if (value < (least + d) / radix) {
+                    overflowed = true
+                } else {
+                    value = value * radix - d
+                }
+            } else if (value > (most - d) / radix) {
+                overflowed = true
+            } else {
+                value = value * radix + d
+            }
+        }
+    }
+    if (overflowed) {
+        throw ParseError { kind = ParseErrorKind.Overflow }
+    }
+    return value
+}
+
+// a float's form (Lyric 5's `checkFloatText`), refused with `Empty` or `Invalid`
+fn __checkFloatText(s: string) {
+    let cs: char[] = s.chars().collect()
+    let n = cs.length()
+    if (n == 0) {
+        throw ParseError { kind = ParseErrorKind.Empty }
+    }
+    var i = if (cs[0] == '+' || cs[0] == '-') 1 else 0
+    if (n - i == 3) {
+        let word = __strSlice(s, __strLen(s) - 3, __strLen(s))
+        if (word == "inf" || word == "nan") {
+            return
+        }
+    }
+    var digits = 0
+    var point = false
+    var afterDigit = false
+    while (i < n) {
+        let c = cs[i]
+        if (c.isAsciiDigit()) {
+            digits += 1
+            afterDigit = true
+        } else if (c == '_' && afterDigit && i + 1 < n && cs[i + 1].isAsciiDigit()) {
+            afterDigit = false
+        } else if (c == '.' && !point) {
+            point = true
+            afterDigit = false
+        } else {
+            break
+        }
+        i += 1
+    }
+    if (digits == 0) {
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+    if (i == n) {
+        return
+    }
+    if (cs[i] != 'e' && cs[i] != 'E') {
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+    i += 1
+    if (i < n && (cs[i] == '+' || cs[i] == '-')) {
+        i += 1
+    }
+    var exponent = 0
+    afterDigit = false
+    while (i < n) {
+        let c = cs[i]
+        if (c.isAsciiDigit()) {
+            exponent += 1
+            afterDigit = true
+        } else if (c == '_' && afterDigit && i + 1 < n && cs[i + 1].isAsciiDigit()) {
+            afterDigit = false
+        } else {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        i += 1
+    }
+    if (exponent == 0) {
+        throw ParseError { kind = ParseErrorKind.Invalid }
     }
 }
 

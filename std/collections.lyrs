@@ -33,7 +33,7 @@ class Map<K :: [Hashable], V> {
     // an empty map; a negative `n` panics (the room is the VM's to keep)
     static fn withCapacity(n: int): Map<K, V> {
         if (n < 0) {
-            panic(f"a negative capacity: {n}")
+            panic(f"Map.withCapacity: a negative capacity {n}")
         }
         return Map { }
     }
@@ -349,7 +349,7 @@ class Set<T :: [Hashable]> {
     // an empty set; a negative `n` panics (the room is the VM's to keep)
     static fn withCapacity(n: int): Set<T> {
         if (n < 0) {
-            panic(f"a negative capacity: {n}")
+            panic(f"Map.withCapacity: a negative capacity {n}")
         }
         return Set { }
     }
@@ -521,7 +521,7 @@ class Deque<T> {
     // an empty deque; a negative `n` panics (the room is the VM's to keep)
     static fn withCapacity(n: int): Deque<T> {
         if (n < 0) {
-            panic(f"a negative capacity: {n}")
+            panic(f"Deque.withCapacity: a negative capacity {n}")
         }
         return Deque { }
     }
@@ -690,7 +690,7 @@ class Heap<T :: [TotalOrder]> {
     // an empty heap; a negative `n` panics (the room is the VM's to keep)
     static fn withCapacity(n: int): Heap<T> {
         if (n < 0) {
-            panic(f"a negative capacity: {n}")
+            panic(f"List.withCapacity: a negative capacity {n}")
         }
         return Heap { }
     }

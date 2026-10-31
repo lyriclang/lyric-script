@@ -74,6 +74,9 @@ enum NativeFn :: [Equatable] {
     CharWhite,
     CharUpper,
     CharLower,
+    /// A float read from a text of a float's form (S7e2), Lyric 5's reading, correctly rounded;
+    /// the form is the program's to check.
+    FloatOfText,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -87,7 +90,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 42;
+let nativeCount: int = 43;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -133,7 +136,8 @@ fn nativeOf(n: int): NativeFn {
         38 => NativeFn.CharCategory,
         39 => NativeFn.CharWhite,
         40 => NativeFn.CharUpper,
-        _ => NativeFn.CharLower,
+        41 => NativeFn.CharLower,
+        _ => NativeFn.FloatOfText,
     };
 }
 
@@ -182,6 +186,7 @@ fn nativeNumber(n: NativeFn): int {
         .CharWhite => 39,
         .CharUpper => 40,
         .CharLower => 41,
+        .FloatOfText => 42,
     };
 }
 
@@ -229,6 +234,7 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .CharWhite => sig("char.white", 1, 0, true, false),
         .CharUpper => sig("char.upper", 1, 0, true, false),
         .CharLower => sig("char.lower", 1, 0, true, false),
+        .FloatOfText => sig("float.ofText", 0, 1, true, false),
     };
 }
 

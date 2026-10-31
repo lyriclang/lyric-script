@@ -368,8 +368,10 @@ class TextReader {
         var colon = -1;
         while (k < to) {
             let c = this.at(k);
-            if (c == '"') {
-                k = this.skipString(k + 1, to);
+            // a string and a character literal whole: `'"'`, `'}'`, `':'` (S7e3: a character
+            // literal's quote opened a string, its brace closed the hole, its colon began a spec)
+            if (c == '"' || c == '\'') {
+                k = this.skipQuoted(k + 1, to, c);
                 continue;
             }
             if (c == '(' || c == '[' || c == '{') {
@@ -410,9 +412,10 @@ class TextReader {
         return k + 1;
     }
 
-    mut fn skipString(from: int, to: int): int {
+    /// Past a literal's closing `mark`, from after its opening one.
+    mut fn skipQuoted(from: int, to: int, mark: char): int {
         var k = from;
-        while (k < to && this.at(k) != '"') {
+        while (k < to && this.at(k) != mark) {
             if (this.at(k) == '\\') {
                 k += 1;
             }

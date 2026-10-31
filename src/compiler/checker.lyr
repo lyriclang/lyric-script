@@ -9476,8 +9476,10 @@ class Checker {
     /// or a conformance to an interface; `null` where no interface value holds one.
     mut fn typeTest(x: TExpr, target: Ty, at: Span): ?TExpr {
         return match (target) {
-            // every value an interface value holds is an `Any`
-            .Named(i) => if (i == this.anyIndex) TExpr.Bool(true)
+            // every value an interface value holds is an `Any`, and a `Debug` (S7e3)
+            .Named(i) => if (i == this.anyIndex || (i == this.synth.debugIx && i >= 0)) TExpr.Bool(
+                true
+            )
                 else if (this.types[i].kind == .Interface) TExpr.IsIface(boxE(x), i, target)
                     else TExpr.IsType(boxE(x), i, target),
             .Int | .Float | .Bool | .Char | .Str => TExpr.IsType(

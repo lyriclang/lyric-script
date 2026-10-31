@@ -313,7 +313,9 @@ VM's call path, S7k measurement point 3.
   match crashed the code generator, a 400-link `else if` chain the checker (now PAR0045).
 - **S7e2 done** — `split`, `lines`, `Parse`; blocks on function types, optionals and tuples at
   fixed types (Lyric 5 05 §13 rule 6), `fn(char) -> bool` as a pattern.
-- Next: **S7e2c** — blocks over shapes of a block's parameters (`extend<T> ?T`); then S7e3.
+- **S7e2c done — S7e2 done** — blocks over a shape of their parameters (`extend<T> ?T`,
+  `extend<A, B> (A, B)`, `extend<A, R> fn(A) -> R`), conditional conformances, defaults.
+- Next: **S7e3** — `Display` and `Debug` as prelude interfaces, `StringBuilder`.
 
 ## Working mode
 

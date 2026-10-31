@@ -1758,3 +1758,17 @@ Worten. **Uhr:** Blöcke über Formen mit Parametern des Blocks (`extend<T> ?T`)
 `LYS-NYI0001`. Spec 12 Regeln 8 und 9, 05 Regel 3; acht Fälle, alle rot gegen S7e1; der Fall,
 der `extend fn(…)` als NYI verlangte, ging mit seiner Regel. Mutanten: A 535, B 535, C 534 von 537 — je genau die vorhergesagten Fälle.
 Fälle 530 → 537.
+
+**S7e2c, Ergebnis (2026-10-31) — damit S7e2 fertig.** Blöcke über eine Form ihrer eigenen Parameter
+(Lyric 5 05 §13 Regel 6): `extend<T> ?T`, `extend<A, B> (A, B)`, `extend<A, R> fn(A) -> R` — eine
+Vorlage je Art und Stelligkeit, generisch über die Teile wie der Eintrag der Listen über das
+Element; der Empfänger bindet die Teile, ein Block zu festen Typen antwortet zuerst; die
+Konformitäten bedingt auf die Bedingungen des Blocks, die Defaults über die Box einer Instanz der
+Vorlage. Wie bei generischen Typen nennt der Block jeden Parameter einmal in Reihenfolge
+(`LYS-SEM0124`), wo Lyric 5 jede Form nimmt (`fn(T) -> T`) — als Abweichung festgehalten. **Gefunden
+beim Bauen:** eine Tabelle, schon beim Prüfen eines Aufrufs gebaut, kopierte die Glieder der Vorlage,
+bevor deren Rümpfe geprüft waren — leer, und die leere Kopie galt danach überall; die Tabelle kommt
+nun erst mit den Kopien (`instantiate`), die Instanz bekommt beim Prüfen nur ihre Konformitäten.
+Spec 05 Regel 3 und Abweichungen; zwei Fälle, beide rot gegen S7e2; der NYI-Fall von S7e2 ging mit
+seiner Regel. Mutanten: A 536, B 537, C 537 von 538 — je genau die vorhergesagten Fälle.
+Fälle 537 → 538.

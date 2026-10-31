@@ -103,6 +103,16 @@ fn callsFitTheirParameters(): void {
 }
 
 @Test
+fn aRefusedSpreadIsSaidOnce(): void {
+    // a spread that does not fit is checked as nothing: its parameter is not said missing too
+    // (Lyric 5 08 §1 rule 1; S7e4a)
+    let d = "fn one(x: int) { }\nfn two(x: int, xs: int...) { }\n";
+    assertEq(errs(d + "one([1]...)"), ["LYS-SEM0166"]);
+    assertEq(errs(d + "two([1]...)"), ["LYS-SEM0166"]);
+    assertEq(errs(d + "two(1, 2)\ntwo(1)\ntwo(1, [2]...)"), []);
+}
+
+@Test
 fn structsAreBuiltWhole(): void {
     let p = "struct P {\n    x: int\n    y: int = 0\n}\n";
     assertEq(errs(p + "let a = P { x = 1 }\nprintln(a.x + a.y)"), []);

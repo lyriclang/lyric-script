@@ -791,6 +791,35 @@ class Checker {
     /// qualified or aliased one's module under its name; `pub` passes them on.
     mut fn bindImport(im: ImportDecl): void {
         let path = im.path.join(".");
+        // std.collections' names are the prelude's: an import of them, as Lyric 5's modules
+        // write it, names what every module sees already (S7d4, P28)
+        if (path == "std.collections") {
+            if (!im.selective) {
+                this.error(
+                    "LYS-RES0003",
+                    "std.collections is no module to name as a whole: its names are the prelude's, `import std.collections { Map }`",
+                    im.span
+                );
+                return;
+            }
+            let names = collectionsNames();
+            for (it in im.items) {
+                if (!names.contains(it.name)) {
+                    this.error(
+                        "LYS-RES0004",
+                        f"the module 'std.collections' declares no '{it.name}'",
+                        it.span
+                    );
+                } else if (let alias = it.alias) {
+                    // under a name of its own: the prelude's declaration, whose key is its name
+                    if (this.noteImport(alias, it.span, im.isPub)) {
+                        this.viewOf(this.mod).insert(alias, it.name);
+                        this.notASubmodule(alias, it.span);
+                    }
+                }
+            }
+            return;
+        }
         let target = this.modByName.get(path);
         if (target == null) {
             this.error("LYS-RES0003", f"no module '{path}'", im.span);
@@ -14491,8 +14520,12 @@ class Checker {
                 if (info.kind == .Interface) {
                     // the held value's form, through its table (S3i)
                     TExpr.CallIface(this.debugSlotOf(), [v], Ty.Str)
-                } else if (info.typeParams.length() > 0) {
-                    // a generic type's form is its template's, copied for the arguments
+                } else if (info.typeParams.length() > 0
+                    || (info.template >= 0 && this.anyParamIn(t))) {
+                    // a generic type's form is its template's, copied for the arguments — an
+                    // instance's whose arguments name the body's parameters too, so each copy of
+                    // the body has its own (S7d4: `Box<T[]>` in a generic `k` printed `k<int>`'s
+                    // list as one of objects, since S7c4a)
                     let tmpl = if (info.template >= 0) info.template else i;
                     TExpr.CallGeneric(this.debugFnOf(tmpl, at), info.args, [v], Ty.Str)
                 } else {
@@ -18254,6 +18287,28 @@ fn bindsGlobals(st: Stmt): bool {
 
 /// The key of `name` in module `m` whose path is `path`: "<path>::<name>" in a module of the
 /// program — the entry's path empty —, the name alone in the prelude.
+/// The names std.collections declares for a program to import (S7d4, P28): its types and
+/// functions but the natives' wrappers, and `List`, the prelude's alias of every list, which is a
+/// class of Lyric 5's `std.collections`. Read where a program imports the module, alone.
+fn collectionsNames(): Set<string> {
+    let out = Set<string>.new();
+    out.insert("List");
+    for (item in parse(collectionsText(), -1).module.items) {
+        let name = match (item) {
+            .Decl(.Fn(f)) => f.name,
+            .Decl(.Type(t)) => t.name,
+            .Decl(.Enum(e)) => e.name,
+            .Decl(.Alias(a)) => a.name,
+            .Decl(.Interface(i)) => i.name,
+            _ => "",
+        };
+        if (name != "" && !name.startsWith("__")) {
+            out.insert(name);
+        }
+    }
+    return out;
+}
+
 fn keyIn(path: string, m: int, name: string): string {
     return if (m < 0) name else path + "::" + name;
 }

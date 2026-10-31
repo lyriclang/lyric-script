@@ -506,3 +506,277 @@ extend<I :: [Iterator<Item = (K, V)>], K :: [Hashable], V> I {
 extend<I :: [Iterator<Item = T>], T :: [Hashable]> I {
     fn toSet(): Set<T> = this.collect()
 }
+
+// a double-ended queue: values pushed and popped at either end (Lyric 5 12 §Collections; S7d4).
+// The values lie in a ring: `count` of them from `head` on, wrapping at the slots' end; a full ring
+// is copied, in order, into one twice its size (at least 8); a slot no value holds is `null`.
+// `d[i]` counts from the front; it walks front to back.
+class Deque<T> {
+    var slots: (?T)[] = []
+    var head: int = 0
+    var count: int = 0
+    var changes: int = 0
+
+    static fn new(): Deque<T> = Deque { }
+    // an empty deque; a negative `n` panics (the room is the VM's to keep)
+    static fn withCapacity(n: int): Deque<T> {
+        if (n < 0) {
+            panic(f"a negative capacity: {n}")
+        }
+        return Deque { }
+    }
+    fn length(): int = this.count
+    fn isEmpty(): bool = this.count == 0
+    fn pushBack(v: T) {
+        this.grow()
+        this.slots[this.slotOf(this.count)] = v
+        this.count += 1
+        this.changes += 1
+    }
+    fn pushFront(v: T) {
+        this.grow()
+        this.head = (this.head + this.slots.length() - 1) % this.slots.length()
+        this.slots[this.head] = v
+        this.count += 1
+        this.changes += 1
+    }
+    // the front value taken out, `null` where there is none
+    fn popFront(): ?T {
+        if (this.count == 0) {
+            return null
+        }
+        let v = this.slots[this.head]
+        this.slots[this.head] = null
+        this.head = (this.head + 1) % this.slots.length()
+        this.count -= 1
+        this.changes += 1
+        return v
+    }
+    // the back value taken out, `null` where there is none
+    fn popBack(): ?T {
+        if (this.count == 0) {
+            return null
+        }
+        let at = this.slotOf(this.count - 1)
+        let v = this.slots[at]
+        this.slots[at] = null
+        this.count -= 1
+        this.changes += 1
+        return v
+    }
+    fn peekFront(): ?T = if (this.count == 0) null else this.slots[this.head]
+    fn peekBack(): ?T = if (this.count == 0) null else this.slots[this.slotOf(this.count - 1)]
+    // the slot `offset` places past the head, around the ring
+    fn slotOf(offset: int): int = (this.head + offset) % this.slots.length()
+    // room for one more value: a full ring copied from its head on into one twice its size
+    fn grow() {
+        if (this.count < this.slots.length()) {
+            return
+        }
+        let room = if (this.slots.length() == 0) 8 else this.slots.length() * 2
+        let grown: (?T)[] = []
+        var i = 0
+        while (i < this.count) {
+            grown.push(this.slots[this.slotOf(i)])
+            i += 1
+        }
+        while (grown.length() < room) {
+            grown.push(null)
+        }
+        this.slots = grown
+        this.head = 0
+    }
+    // `[1, 2]`: the values front to back, each in its Debug form
+    fn debug(): string {
+        var s = "["
+        var i = 0
+        while (i < this.count) {
+            if (i > 0) {
+                s += ", "
+            }
+            s += __debugOf(this.slots[this.slotOf(i)]!)
+            i += 1
+        }
+        return s + "]"
+    }
+}
+
+// a deque's values front to back; a push or a pop while it walks makes the next pull panic
+class DequeIter<T> :: Iterator {
+    type Item = T
+    deque: Deque<T>
+    var at: int = 0
+    changes: int
+    fn next(): ?T {
+        if (this.deque.changes != this.changes) {
+            __changedPanic("Deque: changed while it was walked")
+        }
+        if (this.at >= this.deque.count) {
+            return null
+        }
+        this.at += 1
+        return this.deque.slots[this.deque.slotOf(this.at - 1)]
+    }
+}
+
+// walked front to back; `d[i]` the value `i` places from the front, a panic outside
+// `0 ≤ i < length()`; a list literal where a deque is taken; equal where the values are, in order
+extend<T> Deque<T> :: Iterable {
+    type Iter = DequeIter<T>
+    fn iter(): DequeIter<T> = DequeIter { deque = this, changes = this.changes }
+}
+extend<T> Deque<T> :: Index<int> {
+    type Output = T
+    fn index(i: int): T {
+        if (i < 0 || i >= this.count) {
+            __boundsPanic(f"index {i} out of bounds for length {this.count}")
+        }
+        return this.slots[this.slotOf(i)]!
+    }
+}
+extend<T> Deque<T> :: FromArrayLiteral<T> {
+    static fn fromArrayLiteral(items: T[]): Deque<T> {
+        let out: Deque<T> = Deque { }
+        for (x in items) {
+            out.pushBack(x)
+        }
+        return out
+    }
+}
+extend<T> Deque<T> :: FromIterator<T> {
+    static fn fromIter<I :: [Iterator<Item = T>]>(it: I): Deque<T> {
+        let out: Deque<T> = Deque { }
+        while (let x = it.next()) {
+            out.pushBack(x)
+        }
+        return out
+    }
+}
+extend<T :: [Equatable]> Deque<T> :: Equatable {
+    fn equals(o: Deque<T>): bool {
+        if (this.count != o.count) {
+            return false
+        }
+        var i = 0
+        while (i < this.count) {
+            if (this[i] != o[i]) {
+                return false
+            }
+            i += 1
+        }
+        return true
+    }
+}
+// a new deque of the values' clones, in their order
+extend<T :: [Clone]> Deque<T> :: Clone {
+    fn clone(): Deque<T> {
+        let out: Deque<T> = Deque { }
+        var i = 0
+        while (i < this.count) {
+            out.pushBack(this[i].clone())
+            i += 1
+        }
+        return out
+    }
+}
+
+// a binary min-heap: `peek()` and `pop()` give the least value (Lyric 5 12 §Collections; S7d4).
+// A binary tree laid out in a list: the children of `i` at `2i + 1` and `2i + 2`, no value less
+// than its parent.
+class Heap<T :: [TotalOrder]> {
+    items: T[] = []
+
+    static fn new(): Heap<T> = Heap { }
+    // an empty heap; a negative `n` panics (the room is the VM's to keep)
+    static fn withCapacity(n: int): Heap<T> {
+        if (n < 0) {
+            panic(f"a negative capacity: {n}")
+        }
+        return Heap { }
+    }
+    // a heap of the list's values, built in linear time: each parent sunk to its place, from the
+    // last one up (Floyd's method)
+    static fn of(xs: T[]): Heap<T> {
+        let heap: Heap<T> = Heap { }
+        heap.items.pushAll(xs)
+        var at = xs.length() / 2 - 1
+        while (at >= 0) {
+            heap.sink(at, xs.length())
+            at -= 1
+        }
+        return heap
+    }
+    fn length(): int = this.items.length()
+    fn isEmpty(): bool = this.items.isEmpty()
+    // the least value, `null` where there is none
+    fn peek(): ?T = this.items.get(0)
+    // adds `v`, letting it rise to its place
+    fn push(v: T) {
+        this.items.push(v)
+        var at = this.items.length() - 1
+        while (at > 0) {
+            let parent = (at - 1) / 2
+            if (this.items[at].totalCompare(this.items[parent]) != Ordering.Less) {
+                return
+            }
+            this.items.swap(at, parent)
+            at = parent
+        }
+    }
+    // the least value taken out, `null` where there is none: the last put at the top and sunk
+    fn pop(): ?T {
+        let n = this.items.length()
+        if (n == 0) {
+            return null
+        }
+        this.items.swap(0, n - 1)
+        let top = this.items.pop()
+        this.sink(0, n - 1)
+        return top
+    }
+    // the value at `from` sunk below every child less than it, among the first `m`
+    fn sink(from: int, m: int) {
+        var at = from
+        while (true) {
+            let left = 2 * at + 1
+            if (left >= m) {
+                return
+            }
+            var child = left
+            if (left + 1 < m
+                && this.items[left + 1].totalCompare(this.items[left]) == Ordering.Less) {
+                child = left + 1
+            }
+            if (this.items[child].totalCompare(this.items[at]) != Ordering.Less) {
+                return
+            }
+            this.items.swap(at, child)
+            at = child
+        }
+    }
+    // the values as the heap holds them, a list's form
+    fn debug(): string = __debugOf(this.items)
+}
+
+extend<T :: [TotalOrder]> Heap<T> :: FromArrayLiteral<T> {
+    static fn fromArrayLiteral(items: T[]): Heap<T> = Heap<T>.of(items)
+}
+extend<T :: [TotalOrder]> Heap<T> :: FromIterator<T> {
+    static fn fromIter<I :: [Iterator<Item = T>]>(it: I): Heap<T> {
+        let out: Heap<T> = Heap { }
+        while (let x = it.next()) {
+            out.push(x)
+        }
+        return out
+    }
+}
+// a new heap of the values' clones, in the same order
+extend<T :: [TotalOrder, Clone]> Heap<T> :: Clone {
+    fn clone(): Heap<T> {
+        let out: Heap<T> = Heap { }
+        for (x in this.items) {
+            out.items.push(x.clone())
+        }
+        return out
+    }
+}

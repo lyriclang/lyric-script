@@ -222,6 +222,12 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
                 file = i,
             };
             var j = indexOf(l.names, name);
+            // std.collections' names are the prelude's (S7d2): its import loads no module of its
+            // own, it adds the module to the prelude (S7d4, P28)
+            if (name == "std.collections") {
+                l.collections = true;
+                continue;
+            }
             if (j < 0 && (im.path[0] == "std" || l.pkgOf[i] == stdPackage)) {
                 // the standard library's modules come with the toolchain (S7a): `std` names no
                 // package of the program, and a module of it imports only its own
@@ -325,7 +331,7 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
         state.push(0);
     }
     visit(0, edges, edgeAt, state, List<int>.new(), l);
-    l.collections = namesCollections(l);
+    l.collections = l.collections || namesCollections(l);
     return l;
 }
 
@@ -334,7 +340,7 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
 /// holds a `:` of its own, `["a": 1]`, `[:]` (S7d2, S7d3). Too many is a cost, none too few.
 fn namesCollections(l: Loaded): bool {
     let words = List<char[]>.new();
-    for (w in ["Map", "Set", "groupBy", "toMap", "toSet"]) {
+    for (w in ["Map", "Set", "Deque", "Heap", "groupBy", "toMap", "toSet"]) {
         words.push(w.chars().toArray());
     }
     for (text in l.texts) {

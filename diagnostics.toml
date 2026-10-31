@@ -539,7 +539,7 @@ summary = "A module imports a name it declares itself, or two of its imports bin
 title = "an import of a module that does not exist"
 severity = "error"
 area = "04-modules"
-summary = "An `import a.b` names a module no file provides: without a manifest, no `a/b.lyrs` below the entry script's folder. Lyric 5's LYR-RES0003."
+summary = "An `import a.b` names a module no file provides: without a manifest, no `a/b.lyrs` below the entry script's folder; `import std.collections` names no module as a whole — its names are the prelude's, imported by name. Lyric 5's LYR-RES0003."
 
 [LYS-RES0004]
 title = "an imported name the module does not declare"

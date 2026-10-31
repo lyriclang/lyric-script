@@ -334,7 +334,10 @@ VM's call path, S7k measurement point 3.
 - **S7e4b done** — the format language in f-strings through Lyric 5's own formatting, checked
   where it is written (`LYS-SEM0164`); `Format`, the scalars conform; a spec read at run time
   panics in Script (`LYS-RT0008`), not in Lyric 5.
-- Next: **S7e4c** — `std.fmt.format`.
+- **S7e4c done — S7e4 done — S7e done** — `std.fmt.format(template, args: Display...)` in Script,
+  Lyric 5's panics. Found: the module named a `std.iter` adapter, which the CLI loader pulled in
+  and a module compiled alone did not have.
+- Next: **S7f** — numbers, `BigInt`, `Bytes` (cut first).
 
 ## Working mode
 

@@ -1887,3 +1887,13 @@ Format-Spec als NYI) ging mit seiner Uhr; er nimmt jetzt `toBytes()` (S7f). Kalt
 Runden im Wechsel: S7e4a ≈ 313 ms, S7e4b ≈ 328 ms; die fünf `Format`-Konformitäten ≈ 8 ms davon (A/B
 im Wechsel), P21. Spec 12 Regel 11 und Abweichungen; fünf Fälle, alle rot gegen S7e4a. Mutanten (acht): jeder traf genau die vorhergesagten Fälle.
 Fälle 553 → 558.
+
+**Ergebnis S7e4c (2026-10-31) — S7e fertig.** `std.fmt` ist ein Modul in Script (`std/fmt.lyrs`, ohne
+Recht): `format(template, args: Display...)` liest die Vorlage beim Lauf wie Lyric 5s `std.fmt`, mit
+dessen Paniktexten (`LYS-RT0008`); ein `Format` liest seine Spec selbst — die Skalare über die Natives
+aus S7e4b, geprüft vor Lyric 5 —, jeder andere Wert wird auf seinem Text gepolstert, `?` auf der
+Debug-Form, die in Script jeder Wert hat. Gefunden: das Modul las die Zeichen über
+`chars().toArray()`, einen Adapter aus `std.iter`, den der Lader im CLI nachzieht, weil der Text
+`.toArray` nennt — allein übersetzt (der Unit-Test jedes Moduls) war es ein Fehler; es sammelt die
+Zeichen jetzt selbst. Spec 12 Regeln 2 und 12; fünf Fälle, alle rot gegen S7e4b. Mutanten (acht): jeder traf genau die vorhergesagten Fälle.
+Fälle 558 → 563.

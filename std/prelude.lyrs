@@ -606,6 +606,61 @@ extend string :: Hashable {
     }
 }
 
+// a builder of text's natives (S7e3): Lyric 5's `StringBuilder` under them
+fn __sbNew(): Any = __builder_new()
+fn __sbAppendStr(b: Any, s: string): void = __builder_appendStr(b, s)
+fn __sbAppendChar(b: Any, c: char): void = __builder_appendChar(b, c)
+fn __sbLength(b: Any): int = __builder_length(b)
+fn __sbClear(b: Any): void = __builder_clear(b)
+fn __sbText(b: Any): string = __builder_text(b)
+
+// a text built a part at a time in one buffer that doubles, no chain of concatenations (Lyric 5
+// 12 §Strings; S7e3)
+class StringBuilder {
+    b: Any = __sbNew()
+
+    static fn new(): StringBuilder = StringBuilder { }
+    // its length in bytes
+    fn length(): int = __sbLength(this.b)
+    fn appendStr(s: string) = __sbAppendStr(this.b, s)
+    fn appendChar(c: char) = __sbAppendChar(this.b, c)
+    fn clear() = __sbClear(this.b)
+    fn toString(): string = __sbText(this.b)
+}
+
+// renders a value as text: `{x}` renders through `show()` where the value's type is one (Lyric 5
+// 05 §14, 12; S7e3) — every other value in its Debug form
+interface Display {
+    fn show(): string
+    // `show()` appended to `out`; a type that can write itself directly overrides it
+    fn showTo(out: StringBuilder) {
+        out.appendStr(this.show())
+    }
+}
+// renders a value for debugging: `P { x = 1, y = "a" }`, `E.B(3)`; every value has one, written
+// or synthesized
+interface Debug {
+    fn debug(): string
+    // `debug()` appended to `out` — the compiler's for every value, written or not: a default
+    // here would print through a table in every program (S7e3)
+    fn debugTo(out: StringBuilder)
+}
+extend int :: Display {
+    fn show(): string = f"{this}"
+}
+extend float :: Display {
+    fn show(): string = f"{this}"
+}
+extend bool :: Display {
+    fn show(): string = f"{this}"
+}
+extend char :: Display {
+    fn show(): string = f"{this}"
+}
+extend string :: Display {
+    fn show(): string = this
+}
+
 // a string's natives (S7e1): Lyric 5's string under them, its bytes and characters
 fn __strLen(s: string): int = __string_len(s)
 fn __strAt(s: string, i: int): char = __string_at(s, i)

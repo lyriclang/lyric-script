@@ -20,7 +20,7 @@ fn __hashOf<K :: [Hashable]>(k: K): int {
 
 // a map of keys to values: `m[k]` the value under `k` or `null`, `m[k] = v` puts `v` there,
 // `m[k] = null` takes `k` out; walked in the order the keys came
-class Map<K :: [Hashable], V> {
+class Map<K :: [Hashable], V> :: Debug {
     ks: K[] = []
     vs: V[] = []
     hs: int[] = []
@@ -334,7 +334,7 @@ extend<K :: [Hashable], V :: [Equatable]> Map<K, V> :: Equatable {
 
 // a set of values, each once, in the order they came: a map's keys (Lyric 5 12 §Collections;
 // S7d3); its operations are methods that make a new set, or answer a question
-class Set<T :: [Hashable]> {
+class Set<T :: [Hashable]> :: Debug {
     table: Map<T, bool> = Map { }
 
     static fn new(): Set<T> = Set { }
@@ -511,7 +511,7 @@ extend<I :: [Iterator<Item = T>], T :: [Hashable]> I {
 // The values lie in a ring: `count` of them from `head` on, wrapping at the slots' end; a full ring
 // is copied, in order, into one twice its size (at least 8); a slot no value holds is `null`.
 // `d[i]` counts from the front; it walks front to back.
-class Deque<T> {
+class Deque<T> :: Debug {
     var slots: (?T)[] = []
     var head: int = 0
     var count: int = 0
@@ -683,7 +683,7 @@ extend<T :: [Clone]> Deque<T> :: Clone {
 // a binary min-heap: `peek()` and `pop()` give the least value (Lyric 5 12 §Collections; S7d4).
 // A binary tree laid out in a list: the children of `i` at `2i + 1` and `2i + 2`, no value less
 // than its parent.
-class Heap<T :: [TotalOrder]> {
+class Heap<T :: [TotalOrder]> :: Debug {
     items: T[] = []
 
     static fn new(): Heap<T> = Heap { }

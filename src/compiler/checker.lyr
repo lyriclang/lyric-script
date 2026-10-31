@@ -342,6 +342,10 @@ class Synthesized {
     var defaultIx: int = -1,
     var hashableIx: int = -1,
     var hasherIx: int = -1,
+    // `Debug`, `Display` and the builder they write into (S7e3)
+    var debugIx: int = -1,
+    var displayIx: int = -1,
+    var builderIx: int = -1,
     fns: Map<string, int> = Map<string, int>.new(),
 }
 
@@ -1156,6 +1160,9 @@ class Checker {
         this.synth.defaultIx = this.typeIndex.get("Default") ?? -1;
         this.synth.hashableIx = this.typeIndex.get("Hashable") ?? -1;
         this.synth.hasherIx = this.typeIndex.get("Hasher") ?? -1;
+        this.synth.debugIx = this.typeIndex.get("Debug") ?? -1;
+        this.synth.displayIx = this.typeIndex.get("Display") ?? -1;
+        this.synth.builderIx = this.typeIndex.get("StringBuilder") ?? -1;
         this.orderedIndex = this.typeIndex.get("Ordered") ?? -1;
         this.totalOrderIndex = this.typeIndex.get("TotalOrder") ?? -1;
         this.orderingIndex = this.typeIndex.get("Ordering") ?? -1;
@@ -5008,6 +5015,11 @@ class Checker {
 
     /// `conformsTo` without the blanket blocks.
     mut fn conformsDirect(t: Ty, ii: int): bool {
+        // `Debug`: every value has one, written or synthesized — a type parameter's argument too
+        // (03 Eq; S7e3)
+        if (ii == this.synth.debugIx && ii >= 0) {
+            return t != .Void;
+        }
         // `Clone` and `Default`: a value whose parts clone, a type whose parts have a default
         // (S7c6c1) — a type parameter through its constraints, below
         if ((ii == this.synth.cloneIx || ii == this.synth.defaultIx) && ii >= 0) {
@@ -11770,7 +11782,8 @@ class Checker {
                 || ii == this.totalOrderIndex
                 || ii == this.synth.cloneIx
                 || ii == this.synth.defaultIx
-                || ii == this.synth.hashableIx);
+                || ii == this.synth.hashableIx
+                || ii == this.synth.debugIx);
     }
 
     /// `x.compare(y)` and `x.totalCompare(y)` of an `Ordered` or `TotalOrder` without its own
@@ -14799,6 +14812,10 @@ class Checker {
             _ => null,
         };
         if (native == null) {
+            // a value whose type is a `Display`: its `show()` (Lyric 5 05 §14; S7e3)
+            if (let shown = this.shownBy(v, t)) {
+                return shown;
+            }
             // a type parameter's value as its argument's text, in each copy (S3i)
             match (t) {
                 .Param(k) => {
@@ -14820,13 +14837,13 @@ class Checker {
 
     /// The Debug form of `v` (Lyric 5 05 §14 rule 2): `P { x = 1, y = "a" }`, `E.B(3)`,
     /// `E.R { w = 4 }`, `E.A`, `(1, "a")`, an optional's value or `null`, a string quoted, a
-    /// `char` in single quotes.
+    /// `char` in single quotes — a type's own `debug()` where it is a `Debug` (S7e3).
     mut fn debugText(v: TExpr, t: Ty, at: Span): TExpr {
         return match (t) {
-            .Str => concatAll([TExpr.Str("\""), v, TExpr.Str("\"")]),
-            .Char => concatAll(
-                [TExpr.Str("'"), TExpr.Native(Native.CharToStr, [v], Ty.Str), TExpr.Str("'")]
-            ),
+            // between its quotes and escaped as it would be written, Lyric 5's `escapeTo` (S7e3:
+            // since S3h only quoted)
+            .Str => this.stdNative("string.debug", [v], Ty.Str),
+            .Char => this.stdNative("char.debug", [v], Ty.Str),
             .Int => TExpr.Native(Native.IntToStr, [v], Ty.Str),
             .Float => TExpr.Native(Native.FloatToStr, [v], Ty.Str),
             .Bool => TExpr.Native(Native.BoolToStr, [v], Ty.Str),
@@ -14898,6 +14915,15 @@ class Checker {
                 TExpr.TextOf(boxE(v), t, true)
             }
             .Fn(_) => TExpr.Str("<fn>"),
+            // the one value of `void`, `()` — Lyric 5 has no empty tuple, `void` stands for it
+            // (03 M6-5); what gives it still runs (S7e3: a void task's `Done` could not print
+            // where anything printed through a table, since S6a)
+            .Void => match (v) {
+                .Local(_, _) | .Field(_, _, _) | .Elem(_, _, _) | .Payload(_, _, _, _, _) | .Unbox(_, _) | .Narrow(_, _) => TExpr.Str(
+                    "()"
+                ),
+                _ => TExpr.Block([TStmt.Expr(v, at.line)], boxE(TExpr.Str("()")), Ty.Str),
+            },
             .Unknown => v,
             // a list of a type parameter: the loop where it stands, each copy its own (S7c4a)
             .List(_) => if (hasParam(t)) this.listDebugInline(v, t, at)
@@ -14915,6 +14941,131 @@ class Checker {
             this.slotCount += 1;
         }
         return this.debugSlot;
+    }
+
+    /// A call of the VM's native `name`, as vm/native.lyr's table names it.
+    fn stdNative(name: string, args: TExpr[], t: Ty): TExpr {
+        let n = nativeNamed(name);
+        if (n == null) {
+            return TExpr.Unknown;
+        }
+        return TExpr.Native(Native.Std(nativeNumber(n)), args, t);
+    }
+
+    /// `{x}` of a value whose type is a `Display` (Lyric 5 05 §14; S7e3): its `show()` — the
+    /// type's own; an interface value's, a type parameter's, an associated type's bound by it
+    /// through the table. Null where it is none: the Debug form.
+    mut fn shownBy(v: TExpr, t: Ty): ?TExpr {
+        let di = this.synth.displayIx;
+        if (di < 0) {
+            return null;
+        }
+        let slot = this.slotIn(di, "show");
+        match (t) {
+            .Param(k) => {
+                let g = this.genericFn;
+                if (g >= 0 && k < this.functions[g].typeParams.length()) {
+                    for (c in this.functions[g].typeParams[k].constraints) {
+                        for (a in this.ancestry(c)) {
+                            if (a == di) {
+                                return TExpr.CallConstraint(k, di, "show", slot, [v], Ty.Str);
+                            }
+                        }
+                    }
+                }
+            }
+            .Assoc(_, ai, an) => {
+                for (b in this.boundsOf(ai, an)) {
+                    for (a in this.ancestry(b)) {
+                        if (a == di) {
+                            return TExpr.CallBound(t, di, "show", slot, [v], Ty.Str);
+                        }
+                    }
+                }
+            }
+            .Named(i) => {
+                if (!this.types[i].vmHeld && this.conformsTo(t, di)) {
+                    return this.memberCallOn(t, di, "show", slot, [v], Ty.Str);
+                }
+            }
+            _ => { }
+        }
+        return null;
+    }
+
+    /// `x.debug()` and `x.debugTo(out)` where `x`'s type writes neither (S7e3): every value is a
+    /// `Debug` (03 Eq), its Debug form — `debugTo` appends it to the builder; through a type
+    /// parameter or an interface value a type's own `debugTo` is not called (12 deviation). Null
+    /// for another call, or the type's own.
+    mut fn synthDebug(t: Ty, receiver: TExpr, method: string, args: Arg[], at: Span): ?TExpr {
+        let to = method == "debugTo" && args.length() == 1;
+        if (this.synth.debugIx < 0
+            || this.synth.builderIx < 0
+            || t == .Unknown
+            || !(to || (method == "debug" && args.length() == 0))
+            || this.writesMember(t, method)) {
+            return null;
+        }
+        if (!to) {
+            return this.debugText(receiver, t, at);
+        }
+        // the receiver first, as a call takes it
+        let h = this.hidden(t, at);
+        let sb = Ty.Named(this.synth.builderIx);
+        let out = this.coerce(this.expr(args[0].value, sb), sb, spanOf(args[0].value));
+        let append = this.types[this.synth.builderIx].methods.get("appendStr") ?? -1;
+        return TExpr.Block(
+            [TStmt.SetLocal(h, receiver, at.line)],
+            boxE(TExpr.Call(append, [out, this.debugText(TExpr.Local(h, t), t, at)], Ty.Void)),
+            Ty.Void
+        );
+    }
+
+    /// Whether `t` has a member `name` written for it — its own, an interface's but `Debug`'s, a
+    /// type parameter's constraint's, an associated type's bound's (S7e3).
+    mut fn writesMember(t: Ty, name: string): bool {
+        let di = this.synth.debugIx;
+        match (t) {
+            .Param(k) => {
+                let g = this.genericFn;
+                if (g >= 0 && k < this.functions[g].typeParams.length()) {
+                    for (c in this.functions[g].typeParams[k].constraints) {
+                        if (let found = this.ifaceMember(c, name)) {
+                            let (fi, _) = found;
+                            if (this.functions[fi].owner != di) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                return false;
+            }
+            .Assoc(_, ai, an) => {
+                for (b in this.boundsOf(ai, an)) {
+                    if (let found = this.ifaceMember(b, name)) {
+                        let (fi, _) = found;
+                        if (this.functions[fi].owner != di) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+            .Named(i) => {
+                if (this.types[i].kind == .Interface) {
+                    if (let found = this.ifaceMember(i, name)) {
+                        let (fi, _) = found;
+                        return this.functions[fi].owner != di;
+                    }
+                    return false;
+                }
+                return this.hasMember(t, name);
+            }
+            _ => {
+                let entry = this.entryOf(t);
+                return entry >= 0 && this.methodOf(entry, name) != null;
+            }
+        }
     }
 
     /// Every type's Debug form in its table's slot, where something prints through one: a
@@ -15014,10 +15165,11 @@ class Checker {
         let x = TExpr.Local(0, t);
         let name = declaredName(info.name);
         var body = TExpr.Str(name);
-        // a type of the prelude's that writes its own `debug()` (S7d2: a map, `{"a": 1}`); a
-        // program's type writes its form through `Debug`, which comes with S7e
-        let origin = if (info.template >= 0) this.types[info.template].mod else info.mod;
-        let ownDebug = if (origin < 0) this.methodOf(i, "debug") ?? -1 else -1;
+        // a type that is a `Debug` of its own writing: its `debug()` (S7e3; since S7d2 the
+        // prelude's types alone, a map's `{"a": 1}`)
+        let ownDebug = if (this.synth.debugIx >= 0
+            && this.saysItself(i, this.synth.debugIx)) this.methodOf(i, "debug") ?? -1
+            else -1;
         if (ownDebug >= 0
             && this.functions[ownDebug].params.length() == 0
             && !this.functions[ownDebug].isStatic) {
@@ -16161,6 +16313,9 @@ class Checker {
         this.callExpected = null;
         this.writtenArgs = [];
         let t = typeOf(receiver);
+        if (let d = this.synthDebug(t, receiver, method, args, at)) {
+            return d;
+        }
         // a clause's binding tells where the error was first thrown, where its type has no
         // member of the name (06 §4 rule 4)
         match (receiver) {
@@ -16654,13 +16809,6 @@ class Checker {
                                 return this.notYet(
                                     "a string's bytes",
                                     "S7f (numbers, BigInt, Bytes)",
-                                    memberAt
-                                );
-                            }
-                            "show" | "showTo" | "debug" | "debugTo" => {
-                                return this.notYet(
-                                    "Display and Debug",
-                                    "S7e3 (Display, Debug)",
                                     memberAt
                                 );
                             }

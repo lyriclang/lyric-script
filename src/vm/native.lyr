@@ -77,6 +77,17 @@ enum NativeFn :: [Equatable] {
     /// A float read from a text of a float's form (S7e2), Lyric 5's reading, correctly rounded;
     /// the form is the program's to check.
     FloatOfText,
+    /// A builder of text (S7e3): a new one; a string and a character appended; its length in
+    /// bytes; emptied; its text.
+    BuilderNew,
+    BuilderAppendStr,
+    BuilderAppendChar,
+    BuilderLength,
+    BuilderClear,
+    BuilderText,
+    /// A string's and a character's Debug form (S7e3): Lyric 5's, quoted and escaped.
+    StrDebug,
+    CharDebug,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -90,7 +101,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 43;
+let nativeCount: int = 51;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -137,7 +148,15 @@ fn nativeOf(n: int): NativeFn {
         39 => NativeFn.CharWhite,
         40 => NativeFn.CharUpper,
         41 => NativeFn.CharLower,
-        _ => NativeFn.FloatOfText,
+        42 => NativeFn.FloatOfText,
+        43 => NativeFn.BuilderNew,
+        44 => NativeFn.BuilderAppendStr,
+        45 => NativeFn.BuilderAppendChar,
+        46 => NativeFn.BuilderLength,
+        47 => NativeFn.BuilderClear,
+        48 => NativeFn.BuilderText,
+        49 => NativeFn.StrDebug,
+        _ => NativeFn.CharDebug,
     };
 }
 
@@ -187,6 +206,14 @@ fn nativeNumber(n: NativeFn): int {
         .CharUpper => 40,
         .CharLower => 41,
         .FloatOfText => 42,
+        .BuilderNew => 43,
+        .BuilderAppendStr => 44,
+        .BuilderAppendChar => 45,
+        .BuilderLength => 46,
+        .BuilderClear => 47,
+        .BuilderText => 48,
+        .StrDebug => 49,
+        .CharDebug => 50,
     };
 }
 
@@ -235,6 +262,14 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .CharUpper => sig("char.upper", 1, 0, true, false),
         .CharLower => sig("char.lower", 1, 0, true, false),
         .FloatOfText => sig("float.ofText", 0, 1, true, false),
+        .BuilderNew => sig("builder.new", 0, 0, false, true),
+        .BuilderAppendStr => sig("builder.appendStr", 0, 2, false, false),
+        .BuilderAppendChar => sig("builder.appendChar", 1, 1, false, false),
+        .BuilderLength => sig("builder.length", 0, 1, true, false),
+        .BuilderClear => sig("builder.clear", 0, 1, false, false),
+        .BuilderText => sig("builder.text", 0, 1, false, true),
+        .StrDebug => sig("string.debug", 0, 1, false, true),
+        .CharDebug => sig("char.debug", 1, 0, false, true),
     };
 }
 

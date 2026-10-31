@@ -3,6 +3,7 @@
 //! A string is wrapped once when it is made; converting a Lyric 5 string to an interface would
 //! box it at every conversion (value probe W1).
 import std.collections { List, Map };
+import std.core { StringBuilder };
 import lyric_script.vm.module { TypeDesc };
 
 /// A value in a reference register.
@@ -69,6 +70,15 @@ pub class ErrorRecord :: [HeapRef] {
 /// where each hash is.
 pub class ScriptIndex :: [HeapRef] {
     pub table: Map<uint64, List<int>>,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// A builder of text (S7e3): Lyric 5's `StringBuilder`, one buffer that doubles.
+pub class ScriptBuilder :: [HeapRef] {
+    pub sb: StringBuilder,
 
     pub fn desc(): ?TypeDesc {
         return null;

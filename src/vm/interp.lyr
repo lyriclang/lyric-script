@@ -29,6 +29,7 @@ import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
     ScriptArray,
     ScriptIndex,
+    ScriptBuilder,
     ErrorRecord,
     HeapRef,
     Nil,
@@ -3240,6 +3241,38 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     .CharWhite => s[x] = truth(charOfCode(s[x]).isWhitespace()),
                     .CharUpper => s[x] = (charOfCode(s[x]).toUpper() as uint32) as uint64,
                     .CharLower => s[x] = (charOfCode(s[x]).toLower() as uint32) as uint64,
+                    // a builder of text (S7e3)
+                    .BuilderNew => r[y] = ScriptBuilder { sb = StringBuilder.new() },
+                    .BuilderAppendStr => {
+                        let o = r[y];
+                        if (o is ScriptBuilder) {
+                            o.sb.appendStr(textOf(r[y + 1]));
+                        }
+                    }
+                    .BuilderAppendChar => {
+                        let o = r[y];
+                        if (o is ScriptBuilder) {
+                            o.sb.appendChar(charOfCode(s[x]));
+                        }
+                    }
+                    .BuilderLength => {
+                        let o = r[y];
+                        s[x] = (if (o is ScriptBuilder) o.sb.length() else 0) as uint64;
+                    }
+                    .BuilderClear => {
+                        let o = r[y];
+                        if (o is ScriptBuilder) {
+                            o.sb.clear();
+                        }
+                    }
+                    .BuilderText => {
+                        let o = r[y];
+                        r[y] = ScriptString {
+                            text = if (o is ScriptBuilder) o.sb.toString() else "",
+                        };
+                    }
+                    .StrDebug => r[y] = ScriptString { text = textOf(r[y]).debug() },
+                    .CharDebug => r[y] = ScriptString { text = charOfCode(s[x]).debug() },
                     .FloatOfText => {
                         let v = (try? float.parse(textOf(r[y]))) ?? 0.0;
                         s[x] = v.toBits();

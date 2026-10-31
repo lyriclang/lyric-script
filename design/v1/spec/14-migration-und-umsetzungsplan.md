@@ -1897,3 +1897,14 @@ Debug-Form, die in Script jeder Wert hat. Gefunden: das Modul las die Zeichen ü
 `.toArray` nennt — allein übersetzt (der Unit-Test jedes Moduls) war es ein Fehler; es sammelt die
 Zeichen jetzt selbst. Spec 12 Regeln 2 und 12; fünf Fälle, alle rot gegen S7e4b. Mutanten (acht): jeder traf genau die vorhergesagten Fälle.
 Fälle 558 → 563.
+
+**Ergebnis S7e4d (2026-10-31) — die Uhren, die S7e hinterließ.** Mit S7e fertig zeigten noch Uhren
+auf S7e: `laterClock` gab jedem Typ außer den Zahlen „S7e“ — ein unbekanntes Glied an `bool`, `char`,
+einem Tupel, einem Optional und einem Funktionswert war `LYS-NYI0001` statt `LYS-SEM0012`, und
+`[null]` druckte nicht („text of a null“). Jetzt `LYS-SEM0012`, und `null` druckt `null`; die Zahlen
+behalten ihre Uhr (S7f). Die Zweige über `Ty.Map` mit der Uhr S7d sind fort — `Ty.Map` entsteht
+seit S7d2 nicht mehr, die Maps sind Klassen —, ebenso `laterClock` und der Leise-Modus der
+Debug-Form (`quietDebug`): was der Rest-Zweig noch erreicht, `never` und eine Zelle, hält keinen
+Wert, den ein Programm druckt. Gefunden beim Abschluss von S7e, mit `grep` nach den Uhren im Code.
+Ein Fall neu, einer verstärkt, beide rot gegen S7e4c. Mutanten (zwei): beide trafen genau den vorhergesagten Fall.
+Fälle 563 → 564.

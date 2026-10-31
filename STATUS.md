@@ -337,6 +337,8 @@ VM's call path, S7k measurement point 3.
 - **S7e4c done — S7e4 done — S7e done** — `std.fmt.format(template, args: Display...)` in Script,
   Lyric 5's panics. Found: the module named a `std.iter` adapter, which the CLI loader pulled in
   and a module compiled alone did not have.
+- **S7e4d done** — the clocks S7e left: an unknown member of a `bool`, a `char`, a tuple, an
+  optional or a function value is `LYS-SEM0012`, no longer NYI; `[null]` prints.
 - Next: **S7f** — numbers, `BigInt`, `Bytes` (cut first).
 
 ## Working mode

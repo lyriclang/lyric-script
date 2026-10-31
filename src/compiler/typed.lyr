@@ -815,6 +815,8 @@ struct Program {
     // function a function value's table holds there (S3i)
     debugSlot: int = -1,
     fnDebug: int = -1,
+    // the slot of every type's text, -1 where nothing prints alone through a table (S7e3)
+    textSlot: int = -1,
     // the slots of `Error`'s `message` and `cause`, which report an error no frame takes (S4a)
     errorMessage: int = -1,
     errorCause: int = -1,

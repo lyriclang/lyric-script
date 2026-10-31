@@ -20,7 +20,7 @@ fn __hashOf<K :: [Hashable]>(k: K): int {
 
 // a map of keys to values: `m[k]` the value under `k` or `null`, `m[k] = v` puts `v` there,
 // `m[k] = null` takes `k` out; walked in the order the keys came
-class Map<K :: [Hashable], V> :: Debug {
+class Map<K :: [Hashable], V> :: [Debug, Display] {
     ks: K[] = []
     vs: V[] = []
     hs: int[] = []
@@ -191,6 +191,8 @@ class Map<K :: [Hashable], V> :: Debug {
     fn keys(): MapKeysIter<K, V> = MapKeysIter { map = this, changes = this.changes }
     fn values(): MapValuesIter<K, V> = MapValuesIter { map = this, changes = this.changes }
     // `{"a": 1, "b": 2}`: the entries in their order, each part in its Debug form
+    // its text is its Debug form, as Lyric 5's (S7e3b)
+    fn show(): string = this.debug()
     fn debug(): string {
         var s = "{"
         var first = true
@@ -334,7 +336,7 @@ extend<K :: [Hashable], V :: [Equatable]> Map<K, V> :: Equatable {
 
 // a set of values, each once, in the order they came: a map's keys (Lyric 5 12 §Collections;
 // S7d3); its operations are methods that make a new set, or answer a question
-class Set<T :: [Hashable]> :: Debug {
+class Set<T :: [Hashable]> :: [Debug, Display] {
     table: Map<T, bool> = Map { }
 
     static fn new(): Set<T> = Set { }
@@ -423,6 +425,8 @@ class Set<T :: [Hashable]> :: Debug {
         return true
     }
     // `{1, 2}`: the values in their order, each in its Debug form
+    // its text is its Debug form, as Lyric 5's (S7e3b)
+    fn show(): string = this.debug()
     fn debug(): string {
         var s = "{"
         var first = true
@@ -511,7 +515,7 @@ extend<I :: [Iterator<Item = T>], T :: [Hashable]> I {
 // The values lie in a ring: `count` of them from `head` on, wrapping at the slots' end; a full ring
 // is copied, in order, into one twice its size (at least 8); a slot no value holds is `null`.
 // `d[i]` counts from the front; it walks front to back.
-class Deque<T> :: Debug {
+class Deque<T> :: [Debug, Display] {
     var slots: (?T)[] = []
     var head: int = 0
     var count: int = 0
@@ -587,6 +591,8 @@ class Deque<T> :: Debug {
         this.head = 0
     }
     // `[1, 2]`: the values front to back, each in its Debug form
+    // its text is its Debug form, as Lyric 5's (S7e3b)
+    fn show(): string = this.debug()
     fn debug(): string {
         var s = "["
         var i = 0

@@ -311,11 +311,11 @@ struct Placement {
                     refFields = refs.toArray(),
                 };
                 // a function value prints `<fn>` through its table (S3i)
-                if (p.debugSlot >= 0) {
+                if (p.debugSlot >= 0 || p.textSlot >= 0) {
                     let row = List<int>.new();
                     var k = 0;
                     while (k < p.slots) {
-                        row.push(if (k == p.debugSlot) p.fnDebug else -1);
+                        row.push(if (k == p.debugSlot || k == p.textSlot) p.fnDebug else -1);
                         k += 1;
                     }
                     cd.methods = row.toArray();

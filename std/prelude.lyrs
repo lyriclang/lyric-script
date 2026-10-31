@@ -626,6 +626,10 @@ class StringBuilder :: Debug {
     fn appendChar(c: char) = __sbAppendChar(this.b, c)
     fn clear() = __sbClear(this.b)
     fn toString(): string = __sbText(this.b)
+    // `v`'s text, through its `showTo` (S7e3b)
+    fn append<T :: [Display]>(v: T) {
+        v.showTo(this)
+    }
     // the VM holds its text: its Debug form is its type, as a task's is (S7e3; its field printed
     // through no table)
     fn debug(): string = "<StringBuilder>"
@@ -662,6 +666,35 @@ extend char :: Display {
 }
 extend string :: Display {
     fn show(): string = this
+}
+// a tuple of `Display`s is one: its elements' texts between parentheses, `(1, a)` — its Debug
+// form `(1, "a")` (Lyric 5 12 §Strings; S7e3)
+extend<A :: [Display], B :: [Display]> (A, B) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display]> (A, B, C) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display]> (A, B, C, D) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display], E :: [Display]> (A, B, C, D, E) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ", " + this.4.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display], E :: [Display], F :: [Display]> (A, B, C, D, E, F) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ", " + this.4.show() + ", " + this.5.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display], E :: [Display], F :: [Display], G :: [Display]> (A, B, C, D, E, F, G) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ", " + this.4.show() + ", " + this.5.show() + ", " + this.6.show() + ")"
+}
+extend<A :: [Display], B :: [Display], C :: [Display], D :: [Display], E :: [Display], F :: [Display], G :: [Display], H :: [Display]> (A, B, C, D, E, F, G, H) :: Display {
+    fn show(): string = "(" + this.0.show() + ", " + this.1.show() + ", " + this.2.show() + ", " +
+        this.3.show() + ", " + this.4.show() + ", " + this.5.show() + ", " + this.6.show() + ", " +
+        this.7.show() + ")"
 }
 
 // a string's natives (S7e1): Lyric 5's string under them, its bytes and characters

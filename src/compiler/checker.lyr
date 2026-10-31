@@ -146,6 +146,7 @@ fn checkModule(parsed: Module, imported: ProgramUnit[] = [], collections: bool =
     c.checkBodies();
     c.unusedImports();
     c.checkThrows();
+    c.fillTextSlot();
     c.fillDebugSlot();
     c.instantiate();
     return Checked {
@@ -346,6 +347,8 @@ class Synthesized {
     var debugIx: int = -1,
     var displayIx: int = -1,
     var builderIx: int = -1,
+    // the slot of every type's text (S7e3), as `debugSlot` is of its Debug form
+    var textSlot: int = -1,
     fns: Map<string, int> = Map<string, int>.new(),
 }
 
@@ -552,6 +555,7 @@ class Checker {
             slots = this.slotCount,
             debugSlot = this.debugSlot,
             fnDebug = this.fnDebug,
+            textSlot = this.synth.textSlot,
             errorMessage = this.errorSlot("message"),
             errorCause = this.errorSlot("cause"),
             spawns = this.spawns,
@@ -5020,6 +5024,15 @@ class Checker {
         if (ii == this.synth.debugIx && ii >= 0) {
             return t != .Void;
         }
+        // `Display`: a list too, its text its Debug form (Lyric 5 12 §Collections; S7e3b)
+        if (ii == this.synth.displayIx && ii >= 0) {
+            match (t) {
+                .List(_) => {
+                    return true;
+                }
+                _ => { }
+            }
+        }
         // `Clone` and `Default`: a value whose parts clone, a type whose parts have a default
         // (S7c6c1) — a type parameter through its constraints, below
         if ((ii == this.synth.cloneIx || ii == this.synth.defaultIx) && ii >= 0) {
@@ -6844,13 +6857,19 @@ class Checker {
                     .Assoc(_, _, _) | .Param(_) | .Unknown => true,
                     _ => false,
                 };
-                if (still) TExpr.CallIface(this.debugSlotOf(), [v], Ty.Str)
+                if (still) TExpr.CallIface(
+                    if (debug) this.debugSlotOf() else this.textSlotOf(),
+                    [v],
+                    Ty.Str
+                )
                     else this.textInCopy(v, t, debug)
             }
             .TextParam(x, k, t) => {
                 let src = if (k < this.specDescs.length()) this.specDescs[k] else null;
                 if (src != null || k >= a.length()) {
-                    TExpr.CallIface(this.debugSlotOf(), [this.specExpr(x.value, a)], t)
+                    // a shared copy: the value's text through its table (S7e3; its Debug form
+                    // before, a `Display` printed as no `Display`)
+                    TExpr.CallIface(this.textSlotOf(), [this.specExpr(x.value, a)], t)
                 } else {
                     this.textInCopy(this.specExpr(x.value, a), a[k], false)
                 }
@@ -7016,6 +7035,21 @@ class Checker {
         // `Hashable.hash` of a type that hashes without one of its own (S7d1)
         if (this.functions[fi].owner == this.synth.hashableIx && this.functions[fi].abstract) {
             return TExpr.Call(this.hashFnOf(concrete), all, rt);
+        }
+        // `Display.show` and `showTo` of a list: its Debug form (S7e3b) — through a function of
+        // its own, as a copy takes no local of the context
+        if (this.functions[fi].owner == this.synth.displayIx && this.synth.displayIx >= 0) {
+            match (concrete) {
+                .List(_) => {
+                    let text = this.textInCopy(all[0], concrete, true);
+                    if (member == "show") {
+                        return text;
+                    }
+                    let append = this.types[this.synth.builderIx].methods.get("appendStr") ?? -1;
+                    return TExpr.Call(append, [all[1], text], Ty.Void);
+                }
+                _ => { }
+            }
         }
         let owner = this.functions[fi].owner;
         if ((owner == this.orderedIndex || owner == this.totalOrderIndex)
@@ -7402,7 +7436,34 @@ class Checker {
             && !info.witness.containsKey(this.debugSlot)) {
             let quiet = this.quietDebug;
             this.quietDebug = true;
-            info.witness.insert(this.debugSlot, this.debugBoxOf(i));
+            info.witness.insert(this.debugSlot, this.boxTextOf(i, false));
+            this.quietDebug = quiet;
+        }
+        // a list's `Display`, its Debug form, where a shared copy reaches it through the table
+        // (S7e3b); `showTo` the interface's default
+        let di = this.synth.displayIx;
+        if (di >= 0 && info.kind == .Builtin && tmpl.name == "List") {
+            let show = this.slotIn(di, "show");
+            if (show >= 0 && !info.witness.containsKey(show)) {
+                let quiet = this.quietDebug;
+                this.quietDebug = true;
+                info.witness.insert(show, this.boxTextOf(i, true));
+                this.quietDebug = quiet;
+            }
+            let showTo = this.slotIn(di, "showTo");
+            if (let found = this.ifaceMember(di, "showTo")) {
+                let (fi, _) = found;
+                if (showTo >= 0 && !info.witness.containsKey(showTo)) {
+                    info.witness.insert(showTo, fi);
+                }
+            }
+        }
+        // its text too (S7e3)
+        let ts = this.synth.textSlot;
+        if (ts >= 0 && (info.kind == .Builtin || info.vmHeld) && !info.witness.containsKey(ts)) {
+            let quiet = this.quietDebug;
+            this.quietDebug = true;
+            info.witness.insert(ts, this.boxTextOf(i, true));
             this.quietDebug = quiet;
         }
         // its template's conformances, and those a block on it alone gave (S7c4c3b) — a
@@ -14822,12 +14883,21 @@ class Checker {
             match (t) {
                 .Param(k) => {
                     this.debugSlotOf();
+                    this.textSlotOf();
                     return TExpr.TextParam(boxE(v), k, Ty.Str);
                 }
                 // an associated type of one, `I.Item`: its answer's text in each copy (S7c6b2)
                 .Assoc(_, _, _) => {
                     this.debugSlotOf();
+                    this.textSlotOf();
                     return TExpr.TextOf(boxE(v), t, false);
+                }
+                // an interface value's: the held value's text through its table — a string
+                // itself, a `Display`'s `show()` (S7e3; since S3i its Debug form, `"t"`)
+                .Named(i) => {
+                    if (this.types[i].kind == .Interface) {
+                        return TExpr.CallIface(this.textSlotOf(), [v], Ty.Str);
+                    }
                 }
                 _ => { }
             }
@@ -14986,8 +15056,33 @@ class Checker {
                 }
             }
             .Named(i) => {
-                if (!this.types[i].vmHeld && this.conformsTo(t, di)) {
-                    return this.memberCallOn(t, di, "show", slot, [v], Ty.Str);
+                let info = this.types[i];
+                if (!info.vmHeld && this.conformsTo(t, di)) {
+                    let tmpl = if (info.template >= 0) info.template else i;
+                    if (info.kind == .Interface) {
+                        // an interface value's through its table
+                        return TExpr.CallIface(slot, [v], Ty.Str);
+                    }
+                    if (!this.saysItself(tmpl, di) || this.methodOf(tmpl, "show") == null) {
+                        // a blanket block's
+                        return this.showCall(v);
+                    }
+                    // a type's own `show()` through a function of the type, as its Debug form is
+                    // reached — a generic type's its template's, copied for the arguments once
+                    // the bodies are checked (S7e3b: `memberCallOn` copied a generic class's
+                    // `show` while the top level was checked, before its body was: an empty copy)
+                    if (info.typeParams.length() > 0
+                        || (info.template >= 0 && this.anyParamIn(t))) {
+                        return TExpr.CallGeneric(this.showFnOf(tmpl), info.args, [v], Ty.Str);
+                    }
+                    return TExpr.Call(this.showFnOf(i), [v], Ty.Str);
+                }
+            }
+            // a tuple of `Display`s, through the prelude's block of its arity (S7e3b) — called as
+            // `x.show()` is written, whose copy waits for the block's body to be checked
+            .Tuple(_) => {
+                if (this.conformsTo(t, di)) {
+                    return this.showCall(v);
                 }
             }
             _ => { }
@@ -14995,16 +15090,34 @@ class Checker {
         return null;
     }
 
+    /// `v.show()` as it is written (S7e3b): a block's copy waits for the block's body to be
+    /// checked — `memberCallOn`, made for the copies, copied it at once, empty while the top level
+    /// was checked. The call in progress keeps what it expects.
+    mut fn showCall(v: TExpr): TExpr {
+        let expected = this.callExpected;
+        let written = this.writtenArgs;
+        let call = this.methodCall(v, "show", [], nowhereSpan, nowhereSpan);
+        this.callExpected = expected;
+        this.writtenArgs = written;
+        return call;
+    }
+
     /// `x.debug()` and `x.debugTo(out)` where `x`'s type writes neither (S7e3): every value is a
     /// `Debug` (03 Eq), its Debug form — `debugTo` appends it to the builder; through a type
     /// parameter or an interface value a type's own `debugTo` is not called (12 deviation). Null
     /// for another call, or the type's own.
     mut fn synthDebug(t: Ty, receiver: TExpr, method: string, args: Arg[], at: Span): ?TExpr {
-        let to = method == "debugTo" && args.length() == 1;
+        // a list's `show()` and `showTo(out)` alike: its text is its Debug form (S7e3b)
+        let list = match (t) {
+            .List(_) => true,
+            _ => false,
+        };
+        let to = (method == "debugTo" || (list && method == "showTo")) && args.length() == 1;
+        let one = (method == "debug" || (list && method == "show")) && args.length() == 0;
         if (this.synth.debugIx < 0
             || this.synth.builderIx < 0
             || t == .Unknown
-            || !(to || (method == "debug" && args.length() == 0))
+            || !(to || one)
             || this.writesMember(t, method)) {
             return null;
         }
@@ -15070,13 +15183,35 @@ class Checker {
         }
     }
 
+    /// The slot of every type's text (S7e3), given out the first time a value prints alone through
+    /// a table: an interface value's `{x}`, a type parameter's in a shared copy.
+    mut fn textSlotOf(): int {
+        if (this.synth.textSlot < 0) {
+            this.synth.textSlot = this.slotCount;
+            this.slotCount += 1;
+        }
+        return this.synth.textSlot;
+    }
+
+    /// Every type's text in the text slot (S7e3): a `Display`'s `show()`, a scalar's and a
+    /// string's own text out of their boxes, any other value's Debug form.
+    mut fn fillTextSlot(): void {
+        if (this.synth.textSlot >= 0) {
+            this.fillSlot(this.synth.textSlot, true);
+        }
+    }
+
     /// Every type's Debug form in its table's slot, where something prints through one: a
     /// generic type's its template's, which each instance copies; a scalar's, a string's and a
     /// plain enum's out of their boxes; a function value's `<fn>`.
     mut fn fillDebugSlot(): void {
-        if (this.debugSlot < 0) {
-            return;
+        if (this.debugSlot >= 0) {
+            this.fillSlot(this.debugSlot, false);
         }
+    }
+
+    /// Every type's text — its Debug form where not `text` — in table slot `slot`.
+    mut fn fillSlot(slot: int, text: bool): void {
         this.quietDebug = true;
         let n = this.types.length();
         var i = 0;
@@ -15086,17 +15221,95 @@ class Checker {
             // the lists' entry holds no list; each instance of it, its element's list (S7c3)
             let lists = info.kind == .Builtin && info.name == "List";
             if ((info.kind == .Builtin && instance) || info.vmHeld) {
-                info.witness.insert(this.debugSlot, this.debugBoxOf(i));
+                info.witness.insert(slot, this.boxTextOf(i, text));
             } else if (info.kind != .Interface && !instance && !lists) {
                 let f = if (info.kind == .Builtin
-                    || (info.kind == .Enum && !info.payload)) this.debugBoxOf(i)
-                    else this.debugFnOf(i, nowhereSpan);
-                info.witness.insert(this.debugSlot, f);
+                    || (info.kind == .Enum && !info.payload)) this.boxTextOf(i, text)
+                    else if (text) this.showFnOf(i) else this.debugFnOf(i, nowhereSpan);
+                info.witness.insert(slot, f);
             }
             i += 1;
         }
-        this.fnDebug = this.textFn("<fn>");
+        // a function value's, `<fn>` in either slot
+        if (this.fnDebug < 0) {
+            this.fnDebug = this.textFn("<fn>");
+        }
         this.quietDebug = false;
+    }
+
+    /// The text of a value of type `i` for the text slot (S7e3): its own `show()` where it is a
+    /// `Display` of its own writing — a method of the type, as a table's slot holds it —, else
+    /// its Debug form's function.
+    mut fn showFnOf(i: int): int {
+        let key = f"show:{i}";
+        if (let known = this.synth.fns.get(key)) {
+            return known;
+        }
+        let di = this.synth.displayIx;
+        let info = this.types[i];
+        let t = Ty.Named(i);
+        let own = if (di >= 0 && this.saysItself(i, di)) this.methodOf(i, "show") ?? -1 else -1;
+        // a `show()` a blanket block gives the type (the bodies are checked: its copy is whole)
+        let blanket = own < 0
+            && di >= 0
+            && info.typeParams.length() == 0
+            && this.blanketGives(t, di) >= 0;
+        if (!blanket
+            && (own < 0
+                || this.functions[own].params.length() != 0
+                || this.functions[own].isStatic)) {
+            return this.debugFnOf(i, nowhereSpan);
+        }
+        let index = this.functions.length();
+        this.functions.push(FnInfo { name = "#show", owner = i, isStatic = false, line = 1 });
+        this.fnDecls.push(null);
+        this.fnStates.push(FnState.Done);
+        this.synth.fns.insert(key, index);
+        let saved = this.ctx;
+        this.ctx = FnCtx.new(index, Ty.Str, false, false);
+        this.declareLocal("x", t, false, nowhereSpan);
+        let x = TExpr.Local(0, t);
+        // an instance's arguments, a template's own parameters, as `debugFnOf` takes them
+        let ps = List<Ty>.new();
+        if (info.template >= 0) {
+            for (a in info.args) {
+                ps.push(a);
+            }
+        } else {
+            var k = 0;
+            for (_ in info.typeParams) {
+                ps.push(Ty.Param(k));
+                k += 1;
+            }
+        }
+        let body = if (blanket) this.memberCallOn(
+            t,
+            di,
+            "show",
+            this.slotIn(di, "show"),
+            [x],
+            Ty.Str
+        )
+            else if (this.functions[own].typeParams.length() > 0) TExpr.CallGeneric(
+                own,
+                ps.toArray(),
+                [x],
+                Ty.Str
+            )
+                else TExpr.Call(own, [x], Ty.Str);
+        let f = this.functions[index];
+        f.returns = Ty.Str;
+        f.locals = this.ctx.locals.toArray();
+        f.boxed = this.ctx.boxed.toArray();
+        f.body = [TStmt.Return(body, 1)];
+        if (info.typeParams.length() > 0) {
+            // a template's: copied for each instance, as `debugFnOf`'s is
+            f.typeParams = info.typeParams;
+            f.template = f.body;
+            f.body = [];
+        }
+        this.ctx = saved;
+        return index;
     }
 
     /// A function of the table that gives `text` for any value: a function value's form.
@@ -15115,14 +15328,15 @@ class Checker {
         return index;
     }
 
-    /// The Debug form of a boxed value of type `i`, for its box's table: the value out of the box.
-    mut fn debugBoxOf(i: int): int {
+    /// The Debug form of a boxed value of type `i` — its text where `text` (S7e3) —, for its box's
+    /// table: the value out of the box.
+    mut fn boxTextOf(i: int, text: bool): int {
         let anyTy = Ty.Named(this.anyIndex);
         let t = this.selfTy(i);
         let index = this.functions.length();
         this.functions.push(
             FnInfo {
-                name = this.types[i].name + "#debugbox",
+                name = this.types[i].name + (if (text) "#textbox" else "#debugbox"),
                 owner = -1,
                 isStatic = true,
                 line = 1,
@@ -15133,7 +15347,9 @@ class Checker {
         let saved = this.ctx;
         this.ctx = FnCtx.new(index, Ty.Str, false, false);
         this.declareLocal("x", anyTy, false, nowhereSpan);
-        let body = this.debugText(TExpr.Unbox(boxE(TExpr.Local(0, anyTy)), t), t, nowhereSpan);
+        let held = TExpr.Unbox(boxE(TExpr.Local(0, anyTy)), t);
+        let body = if (text) this.stringOf(held, nowhereSpan)
+            else this.debugText(held, t, nowhereSpan);
         let f = this.functions[index];
         f.params = [ParamInfo { name = "x", ty = anyTy, default = null }];
         f.returns = Ty.Str;

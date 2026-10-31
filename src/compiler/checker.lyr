@@ -488,7 +488,6 @@ class Checker {
     // the tables are filled, a type without a form gets a placeholder, not an error
     var debugSlot: int = -1,
     var fnDebug: int = -1,
-    var quietDebug: bool = false,
     // what `Self` names where a type is resolved now: the type whose members these are, `null`
     // outside them (S3i, Lyric 5 05 §7 rule 1)
     var selfTyIs: ?Ty = null,
@@ -7471,10 +7470,7 @@ class Checker {
         if (this.debugSlot >= 0
             && (info.kind == .Builtin || info.vmHeld)
             && !info.witness.containsKey(this.debugSlot)) {
-            let quiet = this.quietDebug;
-            this.quietDebug = true;
             info.witness.insert(this.debugSlot, this.boxTextOf(i, false));
-            this.quietDebug = quiet;
         }
         // a list's `Display`, its Debug form, where a shared copy reaches it through the table
         // (S7e3b); `showTo` the interface's default
@@ -7482,10 +7478,7 @@ class Checker {
         if (di >= 0 && info.kind == .Builtin && tmpl.name == "List") {
             let show = this.slotIn(di, "show");
             if (show >= 0 && !info.witness.containsKey(show)) {
-                let quiet = this.quietDebug;
-                this.quietDebug = true;
                 info.witness.insert(show, this.boxTextOf(i, true));
-                this.quietDebug = quiet;
             }
             let showTo = this.slotIn(di, "showTo");
             if (let found = this.ifaceMember(di, "showTo")) {
@@ -7498,10 +7491,7 @@ class Checker {
         // its text too (S7e3)
         let ts = this.synth.textSlot;
         if (ts >= 0 && (info.kind == .Builtin || info.vmHeld) && !info.witness.containsKey(ts)) {
-            let quiet = this.quietDebug;
-            this.quietDebug = true;
             info.witness.insert(ts, this.boxTextOf(i, true));
-            this.quietDebug = quiet;
         }
         // its template's conformances, and those a block on it alone gave (S7c4c3b) — a
         // conditional one where its arguments meet the condition: what `is` asks at run time
@@ -11433,7 +11423,6 @@ class Checker {
         let ci = match (ht) {
             .Unknown => -2,
             .Str => -4,
-            .Map(_, _) => -3,
             // a list's, where its block admits the element
             .List(e) => {
                 let c = this.exactIface(this.typeIndex.get("Contains") ?? -1, [e.value]);
@@ -11444,10 +11433,6 @@ class Checker {
         if (ci == -2) {
             this.expr(l, null);
             return TExpr.Unknown;
-        }
-        if (ci == -3) {
-            this.expr(l, null);
-            return this.notYet(f"'{binaryText(op)}' over a {this.tyName(ht)}", laterClock(ht), at);
         }
         if (ci == -4) {
             // `c in s`: a character in a string, through its `contains` of a pattern (Lyric 5 12
@@ -12665,13 +12650,6 @@ class Checker {
                     .Unknown => {
                         return TExpr.Unknown;
                     }
-                    .Map(_, _) => {
-                        return this.notYet(
-                            f"indexing a {this.tyName(typeOf(lv))}",
-                            laterClock(typeOf(lv)),
-                            indexAt
-                        );
-                    }
                     _ => {
                         return this.indexWrite(lv, i.value, op, value, indexAt, at);
                     }
@@ -12866,10 +12844,6 @@ class Checker {
             // a string has methods and no fields (S7e1)
             .Str => {
                 this.error("LYS-SEM0012", f"'{this.tyName(t)}' has no field '{field}'", at);
-                return null;
-            }
-            .Map(_, _) => {
-                this.notYet(f"the members of {this.tyName(t)}", laterClock(t), at);
                 return null;
             }
             _ => { }
@@ -15090,8 +15064,11 @@ class Checker {
             // a list of a type parameter: the loop where it stands, each copy its own (S7c4a)
             .List(_) => if (hasParam(t)) this.listDebugInline(v, t, at)
                 else TExpr.Call(this.listDebugFnOf(t, at), [v], Ty.Str),
-            _ => if (this.quietDebug) TExpr.Str(f"<{this.tyName(t)}>")
-                else this.notYet(f"text of a {this.tyName(t)}", laterClock(t), at),
+            // a `null` no place has typed, `[null]` (S7e4d: a clock to S7e, past)
+            .NullLit => TExpr.Str("null"),
+            // what holds no value a program prints — `never`, a captured cell —: its type, where
+            // a table's slot is filled for every type
+            _ => TExpr.Str(f"<{this.tyName(t)}>"),
         };
     }
 
@@ -15301,7 +15278,6 @@ class Checker {
 
     /// Every type's text — its Debug form where not `text` — in table slot `slot`.
     mut fn fillSlot(slot: int, text: bool): void {
-        this.quietDebug = true;
         let n = this.types.length();
         var i = 0;
         while (i < n) {
@@ -15323,7 +15299,6 @@ class Checker {
         if (this.fnDebug < 0) {
             this.fnDebug = this.textFn("<fn>");
         }
-        this.quietDebug = false;
     }
 
     /// The text of a value of type `i` for the text slot (S7e3): its own `show()` where it is a
@@ -17171,7 +17146,17 @@ class Checker {
                     }
                     _ => { }
                 }
-                return this.notYet(f"the methods of {this.tyName(t)}", laterClock(t), memberAt);
+                // a number's come with S7f; any other value has its members by now (S7e4d: they
+                // too were clocked to S7e)
+                if (t == .Int || t == .Float) {
+                    return this.notYet(
+                        f"the methods of {this.tyName(t)}",
+                        "S7f (numbers)",
+                        memberAt
+                    );
+                }
+                this.error("LYS-SEM0012", f"'{this.tyName(t)}' has no method '{method}'", memberAt);
+                return TExpr.Unknown;
             }
         }
     }
@@ -18908,16 +18893,6 @@ fn operatorOf(op: BinaryOp): (string, string) {
 /// Whether a function's last parameter is variadic (S7e4a).
 fn variadicIn(params: ParamInfo[]): bool {
     return params.length() > 0 && params[params.length() - 1].variadic;
-}
-
-/// The slice that builds what a built-in type still lacks — a string's methods and indexing, a
-/// number's, a map's (plan 14).
-fn laterClock(t: Ty): string {
-    return match (t) {
-        .Int | .Float => "S7f (numbers)",
-        .Map(_, _) => "S7d (maps and sets)",
-        _ => "S7e (strings and formats)",
-    };
 }
 
 fn sameOrUnknown(a: Ty, b: Ty): bool {

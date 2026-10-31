@@ -315,7 +315,9 @@ VM's call path, S7k measurement point 3.
   fixed types (Lyric 5 05 §13 rule 6), `fn(char) -> bool` as a pattern.
 - **S7e2c done — S7e2 done** — blocks over a shape of their parameters (`extend<T> ?T`,
   `extend<A, B> (A, B)`, `extend<A, R> fn(A) -> R`), conditional conformances, defaults.
-- Next: **S7e3** — `Display` and `Debug` as prelude interfaces, `StringBuilder`.
+- **S7e3 cut in two** — a `StringBuilder`, `Display`/`Debug`, escaped Debug forms, every value
+  a `Debug`; b tuples' `Display`, `{x}` of a type parameter through a text slot.
+- Next: **S7e3a**.
 
 ## Working mode
 

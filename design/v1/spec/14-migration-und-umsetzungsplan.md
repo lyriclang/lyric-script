@@ -1772,3 +1772,16 @@ nun erst mit den Kopien (`instantiate`), die Instanz bekommt beim Prüfen nur ih
 Spec 05 Regel 3 und Abweichungen; zwei Fälle, beide rot gegen S7e2; der NYI-Fall von S7e2 ging mit
 seiner Regel. Mutanten: A 536, B 537, C 537 von 538 — je genau die vorhergesagten Fälle.
 Fälle 537 → 538.
+
+**S7e3, geschnitten (2026-10-31).** Lyric 5 rendert über `Display` (`show`, `showTo`) und `Debug`
+(`debug`, `debugTo`) in einen `StringBuilder`; Script druckt jeden Wert (03 Eq), `{x}` ohne
+`Display` in der Debug-Form. **S7e3a** `StringBuilder` (ein Objekt der VM über Lyric 5s Builder),
+`Display` und `Debug` in der Prelude, die Skalare und `string` konform; die Debug-Form eines Strings
+und eines Zeichens maskiert wie Lyric 5s `escapeTo` (`\"`, `\\`, `\n`, `\r`, `\t`, `\0`,
+`\u{…}` für nicht Druckbares) — Script setzte seit S3h nur Anführungszeichen; jeder Wert ist ein
+`Debug` (synthetisiert, `x.debug()`, `T :: [Debug]`); ein eigenes `Display` trägt `{x}`, ein eigenes
+`Debug` die Debug-Form — die Brücke aus S7d2 (ein `debug()` nur für Typen der Prelude) wird die
+Konformität der Collections. **S7e3b** Tupel als `Display` und `Debug` über Blöcke wie Lyric 5s
+(Stelligkeit 2–8; `{(1, "a")}` wird `(1, a)`, Ausgaben bestehender Fälle ändern sich), `{x}` eines
+Typparameters in einer geteilten Kopie über einen Text-Slot der Tabelle (`Display`, sonst `Debug`),
+`StringBuilder.append<T :: [Display]>`.

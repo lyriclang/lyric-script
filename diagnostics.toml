@@ -725,7 +725,7 @@ summary = "A generic body calls a method on a value of an associated type, `it.n
 title = "a type argument that does not satisfy its parameter's constraints"
 severity = "error"
 area = "03-types"
-summary = "An argument, written or inferred, conforms to every interface its type parameter's constraints name. Lyric 5's LYR-SEM0028."
+summary = "An argument, written or inferred, conforms to every interface its type parameter's constraints name. Lyric 5's LYR-SEM0028. `std.math`'s elementary functions compute in `float`: a program's own `Float` is refused where it reaches one."
 
 [LYS-PAR0033]
 title = "a malformed pattern"

@@ -62,32 +62,32 @@ fn signum<T :: [Signed]>(x: T): T {
 
 // the greatest integral value not above `x`, the least not below it, the nearest with a half away
 // from zero, the integral part
-fn floor<T :: [Float]>(x: T): T = T.fromBits(__math_one(0, x.toBits()))
-fn ceil<T :: [Float]>(x: T): T = T.fromBits(__math_one(1, x.toBits()))
-fn round<T :: [Float]>(x: T): T = T.fromBits(__math_one(2, x.toBits()))
-fn trunc<T :: [Float]>(x: T): T = T.fromBits(__math_one(3, x.toBits()))
+fn floor<T :: [Float]>(x: T): T = __math_one(0, x)
+fn ceil<T :: [Float]>(x: T): T = __math_one(1, x)
+fn round<T :: [Float]>(x: T): T = __math_one(2, x)
+fn trunc<T :: [Float]>(x: T): T = __math_one(3, x)
 // NaN below zero
-fn sqrt<T :: [Float]>(x: T): T = T.fromBits(__math_one(4, x.toBits()))
-fn cbrt<T :: [Float]>(x: T): T = T.fromBits(__math_one(5, x.toBits()))
+fn sqrt<T :: [Float]>(x: T): T = __math_one(4, x)
+fn cbrt<T :: [Float]>(x: T): T = __math_one(5, x)
 // *e* to the power `x`
-fn exp<T :: [Float]>(x: T): T = T.fromBits(__math_one(6, x.toBits()))
+fn exp<T :: [Float]>(x: T): T = __math_one(6, x)
 // NaN below zero, negative infinity at zero
-fn ln<T :: [Float]>(x: T): T = T.fromBits(__math_one(7, x.toBits()))
-fn log2<T :: [Float]>(x: T): T = T.fromBits(__math_one(8, x.toBits()))
-fn log10<T :: [Float]>(x: T): T = T.fromBits(__math_one(9, x.toBits()))
+fn ln<T :: [Float]>(x: T): T = __math_one(7, x)
+fn log2<T :: [Float]>(x: T): T = __math_one(8, x)
+fn log10<T :: [Float]>(x: T): T = __math_one(9, x)
 // in radians
-fn sin<T :: [Float]>(x: T): T = T.fromBits(__math_one(10, x.toBits()))
-fn cos<T :: [Float]>(x: T): T = T.fromBits(__math_one(11, x.toBits()))
-fn tan<T :: [Float]>(x: T): T = T.fromBits(__math_one(12, x.toBits()))
-fn asin<T :: [Float]>(x: T): T = T.fromBits(__math_one(13, x.toBits()))
-fn acos<T :: [Float]>(x: T): T = T.fromBits(__math_one(14, x.toBits()))
-fn atan<T :: [Float]>(x: T): T = T.fromBits(__math_one(15, x.toBits()))
-fn sinh<T :: [Float]>(x: T): T = T.fromBits(__math_one(16, x.toBits()))
-fn cosh<T :: [Float]>(x: T): T = T.fromBits(__math_one(17, x.toBits()))
-fn tanh<T :: [Float]>(x: T): T = T.fromBits(__math_one(18, x.toBits()))
+fn sin<T :: [Float]>(x: T): T = __math_one(10, x)
+fn cos<T :: [Float]>(x: T): T = __math_one(11, x)
+fn tan<T :: [Float]>(x: T): T = __math_one(12, x)
+fn asin<T :: [Float]>(x: T): T = __math_one(13, x)
+fn acos<T :: [Float]>(x: T): T = __math_one(14, x)
+fn atan<T :: [Float]>(x: T): T = __math_one(15, x)
+fn sinh<T :: [Float]>(x: T): T = __math_one(16, x)
+fn cosh<T :: [Float]>(x: T): T = __math_one(17, x)
+fn tanh<T :: [Float]>(x: T): T = __math_one(18, x)
 // the angle of the point (x, y) from the positive x axis, in radians from -π to π
-fn atan2<T :: [Float]>(y: T, x: T): T = T.fromBits(__math_two(0, y.toBits(), x.toBits()))
+fn atan2<T :: [Float]>(y: T, x: T): T = __math_two(0, y, x)
 // unlike `sqrt(x * x + y * y)`, it does not overflow in the squares
-fn hypot<T :: [Float]>(x: T, y: T): T = T.fromBits(__math_two(1, x.toBits(), y.toBits()))
+fn hypot<T :: [Float]>(x: T, y: T): T = __math_two(1, x, y)
 // for an integer's integer power, the integer's own `x.pow(n)`
-fn pow<T :: [Float]>(x: T, e: T): T = T.fromBits(__math_two(2, x.toBits(), e.toBits()))
+fn pow<T :: [Float]>(x: T, e: T): T = __math_two(2, x, e)

@@ -51,7 +51,7 @@ import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.compiler.throws { ThrowSets, Thrown };
 import lyric_script.stdsrc { collectionsText, numbersText, preludeText, stdPackage };
 import lyric_script.vm.fmt { FmtKind, fmtProblem };
-import lyric_script.vm.native { nativeNamed, nativeNumber };
+import lyric_script.vm.native { nativeInfo, nativeNamed, nativeNumber, nativeOf };
 import lyric_script.compiler.typed {
     FieldInfo,
     FixedTy,
@@ -357,6 +357,8 @@ class Synthesized {
     var defaultIx: int = -1,
     var hashableIx: int = -1,
     var hasherIx: int = -1,
+    // the generic whose copy is being made, for a refusal in it
+    var copying: Span = nowhereSpan,
     // `Debug`, `Display` and the builder they write into (S7e3)
     var debugIx: int = -1,
     var displayIx: int = -1,
@@ -6397,6 +6399,27 @@ class Checker {
         }
     }
 
+    /// A native in a copy (S7f2). One of scalars under a generic function is `std.math` over a
+    /// type parameter: a `float`'s register is the bits it computes with, and a program's own
+    /// `Float` has none to give (Lyric 5's conversion to `float` neither).
+    mut fn specNative(n: Native, xs: TExpr[], t: Ty): TExpr {
+        if (let k = stdNativeOf(n)) {
+            if (nativeInfo(nativeOf(k)).refs == 0) {
+                for (x in xs) {
+                    if (!isScalar(typeOf(x), this.types.toArray())) {
+                        this.error(
+                            "LYS-SEM0028",
+                            "a program's own Float cannot reach this: std.math computes in float",
+                            this.synth.copying
+                        );
+                        return TExpr.Unknown;
+                    }
+                }
+            }
+        }
+        return TExpr.Native(n, xs, t);
+    }
+
     /// Whether a value of `t` is an object of the VM: such type arguments share one copy.
     mut fn sharedShape(t: Ty): bool {
         return match (t) {
@@ -6524,7 +6547,13 @@ class Checker {
         info.captures = caps.toArray();
         let savedDescs = this.specDescs;
         this.specDescs = sources.toArray();
+        // where a copy's refusal points: its generic's line
+        let copying = this.synth.copying;
+        if (let decl = this.fnDecls[fi]) {
+            this.synth.copying = decl.span;
+        }
         info.body = this.specStmts(generic.template, a);
+        this.synth.copying = copying;
         this.specDescs = savedDescs;
         return index;
     }
@@ -6885,7 +6914,7 @@ class Checker {
             .ToFloat(x) => TExpr.ToFloat(this.specBox(x, a)),
             .Cast(x, t) => TExpr.Cast(this.specBox(x, a), this.subst(t, a)),
             .Call(fi, xs, t) => TExpr.Call(fi, this.specAll(xs, a), this.subst(t, a)),
-            .Native(n, xs, t) => TExpr.Native(n, this.specAll(xs, a), this.subst(t, a)),
+            .Native(n, xs, t) => this.specNative(n, this.specAll(xs, a), this.subst(t, a)),
             .ListOp(op, xs, t) => TExpr.ListOp(op, this.specAll(xs, a), this.subst(t, a)),
             // a generic type's instance with the arguments in place; in a shared copy built
             // with the descriptor of the type the arguments make (S3i)
@@ -19223,6 +19252,14 @@ struct StaticInit {
 
 /// The place of what the compiler makes without a source of its own.
 let nowhereSpan: Span = Span { start = 0, end = 0, line = 1, column = 1 };
+
+/// The number of a native of the standard library; `null` for the compiler's own.
+fn stdNativeOf(n: Native): ?int {
+    return match (n) {
+        .Std(k) => k,
+        _ => null,
+    };
+}
 
 /// The strings `parts` joined, left to right.
 fn concatAll(parts: TExpr[]): TExpr {

@@ -1937,3 +1937,19 @@ konformiert, seine Glieder aus derselben Liste, und der Typ antwortet wie fixier
 (`LYS-SEM0042`). **S7f1b** der Turm, **S7f1c** `clamp`, `sum`/`product` über `Num`. Spec 05
 Regel 22; zwei Fälle, beide rot gegen S7e4d. Mutanten (sechs): A, B, C, E und F trafen je genau die vorhergesagten Fälle; D (der Typ nimmt keinen Elternteil mit) traf auch den Lauffall — die Kopie ruft `add` nicht beim Namen, wie vorhergesagt, sondern über die Konformanz.
 Fälle 564 → 566.
+
+**Ergebnis S7f1b (2026-10-31).** Der Turm steht in der Prelude: `Num` mit `zero`, `one`,
+`isZero()` und den Operatoren `<Out = Self>` als Eltern (S7f1a trägt sie), `Signed`, `Integer`
+(`min`, `max`, `bitWidth`, `isSigned`, `checked…`, `saturating…`, `wrapping…`, `pow`, Bitzählungen,
+Rotationen), `Float` (`epsilon`, `infinity`, `nan`, `min`, `max`, `leastPositive`, `fromBits`, `isNan`
+…, `toBits`); `int` und `float` konform. Die Glieder schreibt `int` selbst, über `+%`, `-%`, `*%` in
+Script; Bitzählungen und Rotation über Natives auf Lyric 5s eigene `Integer`-Glieder, die Bits einer
+Gleitkommazahl über zwei Natives, die nichts tun — die VM hält sie als Bits (Format 32). Eine
+Konstante steht am Namen eines Skalars, `int.max` (`LYS-SEM0052` bis hier). Gefunden: der Durchgang,
+der „nur Einschränkung“ von den Eltern erbt, las jede Deklaration im Modul der letzten — das `Num`
+der Prelude machte ein eigenes `Num` eines Skripts zur bloßen Einschränkung (seit S7c4a, dessen
+Korrektur nur den ersten Durchgang traf). Zwei Fälle — einer aus S7f1a — und ein Unit-Test gaben
+`int` ein eigenes `zero`: jetzt das der Prelude (Lyric 5 lehnt das zweite ebenso ab), der Block leer. In der Prelude kostete der Turm einen kalten `hello` rund 74 ms (Median 367 → 441 ms, dreißig Runden im Wechsel) statt der vorhergesagten 15–30. Kein einzelner Schuldiger: Phasenzeiten zeigen 100 Funktionen und 37 Slots mehr, `declare` doppelt so lang; das Merken in `selfFirst` brachte nichts. Allein das Parsen der Prelude nimmt rund 140 von 430 ms. Also dasselbe wie bei `std.iter` (S7c6b1) und den Collections: `std/numbers.lyrs`, vom Lader dazugemischt, wo ein Modul einen Namen des Turms nennt, seine Namen die der Prelude — `hello` wieder gleichauf mit S7f1a (519 gegen 520 ms); ein Unit-Test pinnt die Erkennung in beide Richtungen.
+Spec 12 Regel 13 und Abweichungen; fünf Fälle neu, zwei angepasst, alle sieben rot gegen S7f1a.
+Mutanten (neun): B, C, D, F, G, H und J trafen je genau die vorhergesagten Fälle; I traf die Fälle, die den Turm nennen, bis auf `a_scalar_names_only_its_constants`, das auch ohne Turm `LYS-SEM0012` ist; A verfehlte die Vorhersage — die Prelude las `int.min` damals selbst, ohne die Konstante übersetzte nichts.
+Fälle 566 → 571, Tests 358 → 359.

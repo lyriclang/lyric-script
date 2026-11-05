@@ -40,7 +40,7 @@ fn theStandardLibrarysModulesAreInTheBinary(): void {
     }
     assertEq(stdSource("std.nothere"), null);
     assertEq(stdSource("std"), null);
-    assertEq(stdBelow("std"), ["fmt", "fs", "iter", "os"]);
+    assertEq(stdBelow("std"), ["fmt", "fs", "iter", "math", "os"]);
     assertEq(stdBelow("std.fs"), []);
 }
 
@@ -55,7 +55,8 @@ fn everyModuleOfTheStandardLibraryCompiles(): void {
             file = 1,
             package = stdPackage,
         };
-        let c = checkModule(parse(f"import {m}\n").module, [unit]);
+        // std.math stands on the number tower, which the loader adds
+        let c = checkModule(parse(f"import {m}\n").module, [unit], false, m == "std.math");
         assertEq(c.errors.length(), 0, m);
         generate(c.program, "t");
     }

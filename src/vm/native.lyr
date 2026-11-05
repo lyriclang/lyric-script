@@ -101,6 +101,8 @@ enum NativeFn :: [Equatable] {
     IntRotate,
     FloatFromBits,
     FloatToBits,
+    MathOne,
+    MathTwo,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -114,7 +116,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 60;
+let nativeCount: int = 62;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -178,7 +180,9 @@ fn nativeOf(n: int): NativeFn {
         56 => NativeFn.IntBits,
         57 => NativeFn.IntRotate,
         58 => NativeFn.FloatFromBits,
-        _ => NativeFn.FloatToBits,
+        59 => NativeFn.FloatToBits,
+        60 => NativeFn.MathOne,
+        _ => NativeFn.MathTwo,
     };
 }
 
@@ -245,6 +249,8 @@ fn nativeNumber(n: NativeFn): int {
         .IntRotate => 57,
         .FloatFromBits => 58,
         .FloatToBits => 59,
+        .MathOne => 60,
+        .MathTwo => 61,
     };
 }
 
@@ -310,6 +316,8 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .IntRotate => sig("int.rotate", 2, 0, true, false),
         .FloatFromBits => sig("float.fromBits", 1, 0, true, false),
         .FloatToBits => sig("float.toBits", 1, 0, true, false),
+        .MathOne => sig("math.one", 2, 0, true, false),
+        .MathTwo => sig("math.two", 3, 0, true, false),
     };
 }
 

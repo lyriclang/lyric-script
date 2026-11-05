@@ -1,0 +1,93 @@
+//! Computes with numbers (12; Lyric 5's `std.math`): free functions, generic over the number tower;
+//! the elementary ones are Lyric 5's own, the same bits on every platform. What describes a number
+//! type stands at that type: `float.epsilon`, `int.max`, `x.isNan()`.
+
+// a half turn in radians, the base of the natural logarithm, a full turn
+let pi: float = 3.141592653589793
+let e: float = 2.718281828459045
+let tau: float = 6.283185307179586
+
+// `a` where the two are equal or unordered, a NaN
+fn min<T :: [Ordered]>(a: T, b: T): T = if (b < a) b else a
+fn max<T :: [Ordered]>(a: T, b: T): T = if (b > a) b else a
+
+// never negative, `gcd(0, 0)` is `0`; a divisor whose magnitude does not fit overflows, as `abs` does
+fn gcd<T :: [Integer]>(a: T, b: T): T {
+    var x = a
+    var y = b
+    while (y != T.zero) {
+        let r = x.wrappingRem(y)
+        x = y
+        y = r
+    }
+    return if (x < T.zero) T.zero - x else x
+}
+// never negative, `0` where either is; a multiple that does not fit overflows
+fn lcm<T :: [Integer]>(a: T, b: T): T {
+    if (a == T.zero || b == T.zero) {
+        return T.zero
+    }
+    let m = (a / gcd(a, b)) * b
+    return if (m < T.zero) T.zero - m else m
+}
+
+// exactly `a` at `t = 0` and exactly `b` at `t = 1`; a `t` outside them extrapolates
+fn lerp<T :: [Float]>(a: T, b: T, t: T): T {
+    if (t + t < T.one) {
+        return a + (b - a) * t
+    }
+    return b - (b - a) * (T.one - t)
+}
+
+// the value without its sign, `-0.0` giving `0.0`; an integer's `min` has no magnitude and overflows
+fn abs<T :: [Signed]>(x: T): T {
+    if (x < T.zero) {
+        return -x
+    }
+    return if (x == T.zero) T.zero else x
+}
+// `-1`, `0` or `1` as a value of its type, a float's NaN staying NaN
+fn signum<T :: [Signed]>(x: T): T {
+    if (!(x == x)) {
+        return x
+    }
+    if (x < T.zero) {
+        return -T.one
+    }
+    if (x > T.zero) {
+        return T.one
+    }
+    return T.zero
+}
+
+// the greatest integral value not above `x`, the least not below it, the nearest with a half away
+// from zero, the integral part
+fn floor<T :: [Float]>(x: T): T = T.fromBits(__math_one(0, x.toBits()))
+fn ceil<T :: [Float]>(x: T): T = T.fromBits(__math_one(1, x.toBits()))
+fn round<T :: [Float]>(x: T): T = T.fromBits(__math_one(2, x.toBits()))
+fn trunc<T :: [Float]>(x: T): T = T.fromBits(__math_one(3, x.toBits()))
+// NaN below zero
+fn sqrt<T :: [Float]>(x: T): T = T.fromBits(__math_one(4, x.toBits()))
+fn cbrt<T :: [Float]>(x: T): T = T.fromBits(__math_one(5, x.toBits()))
+// *e* to the power `x`
+fn exp<T :: [Float]>(x: T): T = T.fromBits(__math_one(6, x.toBits()))
+// NaN below zero, negative infinity at zero
+fn ln<T :: [Float]>(x: T): T = T.fromBits(__math_one(7, x.toBits()))
+fn log2<T :: [Float]>(x: T): T = T.fromBits(__math_one(8, x.toBits()))
+fn log10<T :: [Float]>(x: T): T = T.fromBits(__math_one(9, x.toBits()))
+// in radians
+fn sin<T :: [Float]>(x: T): T = T.fromBits(__math_one(10, x.toBits()))
+fn cos<T :: [Float]>(x: T): T = T.fromBits(__math_one(11, x.toBits()))
+fn tan<T :: [Float]>(x: T): T = T.fromBits(__math_one(12, x.toBits()))
+fn asin<T :: [Float]>(x: T): T = T.fromBits(__math_one(13, x.toBits()))
+fn acos<T :: [Float]>(x: T): T = T.fromBits(__math_one(14, x.toBits()))
+fn atan<T :: [Float]>(x: T): T = T.fromBits(__math_one(15, x.toBits()))
+fn sinh<T :: [Float]>(x: T): T = T.fromBits(__math_one(16, x.toBits()))
+fn cosh<T :: [Float]>(x: T): T = T.fromBits(__math_one(17, x.toBits()))
+fn tanh<T :: [Float]>(x: T): T = T.fromBits(__math_one(18, x.toBits()))
+// the angle of the point (x, y) from the positive x axis, in radians from -π to π
+fn atan2<T :: [Float]>(y: T, x: T): T = T.fromBits(__math_two(0, y.toBits(), x.toBits()))
+// unlike `sqrt(x * x + y * y)`, it does not overflow in the squares
+fn hypot<T :: [Float]>(x: T, y: T): T = T.fromBits(__math_two(1, x.toBits(), y.toBits()))
+// for an integer's integer power, the integer's own `x.pow(n)`
+fn pow<T :: [Float]>(x: T, e: T): T = T.fromBits(__math_two(2, x.toBits(), e.toBits()))

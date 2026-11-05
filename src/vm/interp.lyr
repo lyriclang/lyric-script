@@ -781,384 +781,395 @@ fn callNative(
     shared: RunShared
 ): ?NativeFault {
     match (which) {
-            .Print => print(textOf(r[y])),
-            .Println => println(textOf(r[y])),
-            .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
-            .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
-            // Lyric 5's shortest text that reads back, `1.0` for an integral float
-            .FloatToStr => r[y] = ScriptString { text = f"{float.fromBits(s[x])}" },
-            .BoolToStr => r[y] = ScriptString { text = if (s[x] != 0) "true" else "false" },
-            .CharToStr => r[y] = ScriptString { text = f"{(s[x] as uint32) as char}" },
-            .StrEq => s[x] = truth(textOf(r[y]) == textOf(r[y + 1])),
-            .StrCmp => {
-                let p = textOf(r[y]);
-                let q = textOf(r[y + 1]);
-                s[x] = (if (p < q) -1 else if (p == q) 0 else 1) as uint64;
+        .Print => print(textOf(r[y])),
+        .Println => println(textOf(r[y])),
+        .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
+        .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
+        // Lyric 5's shortest text that reads back, `1.0` for an integral float
+        .FloatToStr => r[y] = ScriptString { text = f"{float.fromBits(s[x])}" },
+        .BoolToStr => r[y] = ScriptString { text = if (s[x] != 0) "true" else "false" },
+        .CharToStr => r[y] = ScriptString { text = f"{(s[x] as uint32) as char}" },
+        .StrEq => s[x] = truth(textOf(r[y]) == textOf(r[y + 1])),
+        .StrCmp => {
+            let p = textOf(r[y]);
+            let q = textOf(r[y + 1]);
+            s[x] = (if (p < q) -1 else if (p == q) 0 else 1) as uint64;
+        }
+        .TraceText => {
+            let lines = List<string>.new();
+            for (line in recordLines(shared.module, r[y])) {
+                lines.push(f"    {line}");
             }
-            .TraceText => {
-                let lines = List<string>.new();
-                for (line in recordLines(shared.module, r[y])) {
-                    lines.push(f"    {line}");
+            r[y] = ScriptString { text = lines.toArray().join("\n") };
+        }
+        .OsEnv => {
+            if (let v = env(textOf(r[y]))) {
+                r[y] = ScriptString { text = v };
+            } else {
+                r[y] = nil;
+            }
+        }
+        .FsExists => s[x] = truth(exists(textOf(r[y]))),
+        // the sign bit set: the other bits turned over, so the integers' order is the
+        // total order (S7c5b)
+        .FloatOrderKey => {
+            let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
+            let b = s[x];
+            s[x] = if ((b >> 63) != 0) b ^ mask else b;
+        }
+        // a hash's mixing (S7d1): SipHash-1-3 under the process's key, a word or a
+        // string's bytes into the state
+        .HashMixInt => {
+            var h = DefaultHasher.new();
+            h.writeUint(s[x]);
+            h.writeUint(s[x + 1]);
+            s[x] = h.finish();
+        }
+        .HashMixStr => {
+            var h = DefaultHasher.new();
+            h.writeUint(s[x]);
+            textOf(r[y]).hash(&h);
+            s[x] = h.finish();
+        }
+        // an object's number for a hash by identity, given at its first (01 S8); a
+        // value the VM holds otherwise has none of its own
+        .ObjectNumber => {
+            let o = r[y];
+            if (o is ScriptObject) {
+                if (o.number == 0) {
+                    shared.objects += 1;
+                    o.number = shared.objects;
                 }
-                r[y] = ScriptString { text = lines.toArray().join("\n") };
+                s[x] = o.number as uint64;
+            } else {
+                s[x] = 0;
             }
-            .OsEnv => {
-                if (let v = env(textOf(r[y]))) {
-                    r[y] = ScriptString { text = v };
+        }
+        // a map's index (S7d2): where each hash is, the places in the order they came
+        .IndexNew => {
+            r[y] = ScriptIndex { table = Map<uint64, List<int>>.new() };
+        }
+        .IndexAdd => {
+            let o = r[y];
+            if (o is ScriptIndex) {
+                if (let places = o.table.get(s[x])) {
+                    places.push(s[x + 1] as int);
                 } else {
-                    r[y] = nil;
+                    let places = List<int>.new();
+                    places.push(s[x + 1] as int);
+                    o.table.insert(s[x], places);
                 }
             }
-            .FsExists => s[x] = truth(exists(textOf(r[y]))),
-            // the sign bit set: the other bits turned over, so the integers' order is the
-            // total order (S7c5b)
-            .FloatOrderKey => {
-                let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
-                let b = s[x];
-                s[x] = if ((b >> 63) != 0) b ^ mask else b;
-            }
-            // a hash's mixing (S7d1): SipHash-1-3 under the process's key, a word or a
-            // string's bytes into the state
-            .HashMixInt => {
-                var h = DefaultHasher.new();
-                h.writeUint(s[x]);
-                h.writeUint(s[x + 1]);
-                s[x] = h.finish();
-            }
-            .HashMixStr => {
-                var h = DefaultHasher.new();
-                h.writeUint(s[x]);
-                textOf(r[y]).hash(&h);
-                s[x] = h.finish();
-            }
-            // an object's number for a hash by identity, given at its first (01 S8); a
-            // value the VM holds otherwise has none of its own
-            .ObjectNumber => {
-                let o = r[y];
-                if (o is ScriptObject) {
-                    if (o.number == 0) {
-                        shared.objects += 1;
-                        o.number = shared.objects;
+        }
+        .IndexFirst => {
+            let o = r[y];
+            var found = -1;
+            if (o is ScriptIndex) {
+                if (let places = o.table.get(s[x])) {
+                    if (places.length() > 0) {
+                        found = places[0];
                     }
-                    s[x] = o.number as uint64;
-                } else {
-                    s[x] = 0;
                 }
             }
-            // a map's index (S7d2): where each hash is, the places in the order they came
-            .IndexNew => {
-                r[y] = ScriptIndex { table = Map<uint64, List<int>>.new() };
+            s[x] = found as uint64;
+        }
+        .IndexNext => {
+            let o = r[y];
+            var found = -1;
+            if (o is ScriptIndex) {
+                if (let places = o.table.get(s[x])) {
+                    let at = s[x + 1] as int;
+                    var k = 0;
+                    while (k < places.length() - 1 && found < 0) {
+                        if (places[k] == at) {
+                            found = places[k + 1];
+                        }
+                        k += 1;
+                    }
+                }
             }
-            .IndexAdd => {
-                let o = r[y];
-                if (o is ScriptIndex) {
-                    if (let places = o.table.get(s[x])) {
-                        places.push(s[x + 1] as int);
+            s[x] = found as uint64;
+        }
+        .IndexRemove => {
+            let o = r[y];
+            if (o is ScriptIndex) {
+                if (let places = o.table.get(s[x])) {
+                    let at = s[x + 1] as int;
+                    let kept = List<int>.new();
+                    for (p in places) {
+                        if (p != at) {
+                            kept.push(p);
+                        }
+                    }
+                    if (kept.length() == 0) {
+                        o.table.remove(s[x]);
                     } else {
-                        let places = List<int>.new();
-                        places.push(s[x + 1] as int);
-                        o.table.insert(s[x], places);
-                    }
-                }
-            }
-            .IndexFirst => {
-                let o = r[y];
-                var found = -1;
-                if (o is ScriptIndex) {
-                    if (let places = o.table.get(s[x])) {
-                        if (places.length() > 0) {
-                            found = places[0];
-                        }
-                    }
-                }
-                s[x] = found as uint64;
-            }
-            .IndexNext => {
-                let o = r[y];
-                var found = -1;
-                if (o is ScriptIndex) {
-                    if (let places = o.table.get(s[x])) {
-                        let at = s[x + 1] as int;
-                        var k = 0;
-                        while (k < places.length() - 1 && found < 0) {
-                            if (places[k] == at) {
-                                found = places[k + 1];
-                            }
-                            k += 1;
-                        }
-                    }
-                }
-                s[x] = found as uint64;
-            }
-            .IndexRemove => {
-                let o = r[y];
-                if (o is ScriptIndex) {
-                    if (let places = o.table.get(s[x])) {
-                        let at = s[x + 1] as int;
-                        let kept = List<int>.new();
-                        for (p in places) {
-                            if (p != at) {
-                                kept.push(p);
-                            }
-                        }
-                        if (kept.length() == 0) {
-                            o.table.remove(s[x]);
-                        } else {
-                            o.table.insert(s[x], kept);
-                        }
-                    }
-                }
-            }
-            .IndexClear => {
-                let o = r[y];
-                if (o is ScriptIndex) {
-                    o.table.clear();
-                }
-            }
-            // the strings' members (S7e1): Lyric 5's string under them, its bytes read
-            // once for the bounds of the characters
-            .StrLen => s[x] = textOf(r[y]).length() as uint64,
-            .StrAt => {
-                let o = r[y];
-                let t = textOf(o);
-                let i = s[x] as int;
-                let n = t.length();
-                if (i < 0 || i >= n) {
-                    return NativeFault { code = "LYS-RT0003", message = f"index {i} out of bounds for length {n}" };
-                }
-                if (!beginsChar(o, i)) {
-                    return NativeFault { code = "LYS-RT0003", message = f"byte {i} does not begin a character" };
-                }
-                s[x] = (t[i] as uint32) as uint64;
-            }
-            .StrNext => {
-                let b = bytesOf(r[y]);
-                var i = (s[x] as int) + 1;
-                while (i < b.length() && (b[i] & 192) == 128) {
-                    i += 1;
-                }
-                s[x] = i as uint64;
-            }
-            .StrPrev => {
-                let b = bytesOf(r[y]);
-                var i = (s[x] as int) - 1;
-                while (i > 0 && (b[i] & 192) == 128) {
-                    i -= 1;
-                }
-                s[x] = i as uint64;
-            }
-            .StrSlice => {
-                let o = r[y];
-                let t = textOf(o);
-                let a = s[x] as int;
-                let e = s[x + 1] as int;
-                let n = t.length();
-                if (a < 0 || a > e || e > n) {
-                    return NativeFault { code = "LYS-RT0003", message = f"range {a}..{e} out of bounds for length {n}" };
-                }
-                for (at in [a, e]) {
-                    if (!beginsChar(o, at)) {
-                        return NativeFault { code = "LYS-RT0003", message = f"byte {at} does not begin a character" };
-                    }
-                }
-                r[y] = ScriptString { text = t[a..e].toString() };
-            }
-            .StrCharCount => s[x] = textOf(r[y]).charCount() as uint64,
-            .StrUpper => r[y] = ScriptString { text = textOf(r[y]).toUpper() },
-            .StrLower => r[y] = ScriptString { text = textOf(r[y]).toLower() },
-            .StrTrim => {
-                let t = textOf(r[y]);
-                let mode = s[x] as int;
-                let kept = if (mode == 1) t.trimStart()
-                    else if (mode == 2) t.trimEnd() else t.trim();
-                r[y] = ScriptString { text = kept.toString() };
-            }
-            .StrRepeat => {
-                let n = s[x] as int;
-                if (n < 0) {
-                    return NativeFault { code = "LYS-RT0007", message = f"repeat count {n} is negative" };
-                }
-                r[y] = ScriptString { text = textOf(r[y]) * n };
-            }
-            .StrFromChars => {
-                let o = r[y];
-                let out = StringBuilder.new();
-                if (o is ScriptArray) {
-                    var k = 0;
-                    while (k < o.n) {
-                        out.appendChar(charOfCode(o.s[k]));
-                        k += 1;
-                    }
-                }
-                r[y] = ScriptString { text = out.toString() };
-            }
-            .StrFind => {
-                let o = r[y];
-                let t = textOf(o);
-                let from = s[x] as int;
-                var found = -1;
-                if (from >= 0 && from <= t.length() && beginsChar(o, from)) {
-                    if (let k = t[from..t.length()].find(textOf(r[y + 1]))) {
-                        found = from + k;
-                    }
-                }
-                s[x] = found as uint64;
-            }
-            .StrMatchesAt => {
-                let o = r[y];
-                let t = textOf(o);
-                let at = s[x] as int;
-                s[x] = truth(
-                    at >= 0
-                        && at <= t.length()
-                        && beginsChar(o, at)
-                        && t[at..t.length()].startsWith(textOf(r[y + 1]))
-                );
-            }
-            .CharCategory => s[x] = categoryIndex(charOfCode(s[x]).category()) as uint64,
-            .CharWhite => s[x] = truth(charOfCode(s[x]).isWhitespace()),
-            .CharUpper => s[x] = (charOfCode(s[x]).toUpper() as uint32) as uint64,
-            .CharLower => s[x] = (charOfCode(s[x]).toLower() as uint32) as uint64,
-            // a builder of text (S7e3)
-            .BuilderNew => r[y] = ScriptBuilder { sb = StringBuilder.new() },
-            .BuilderAppendStr => {
-                let o = r[y];
-                if (o is ScriptBuilder) {
-                    o.sb.appendStr(textOf(r[y + 1]));
-                }
-            }
-            .BuilderAppendChar => {
-                let o = r[y];
-                if (o is ScriptBuilder) {
-                    o.sb.appendChar(charOfCode(s[x]));
-                }
-            }
-            .BuilderLength => {
-                let o = r[y];
-                s[x] = (if (o is ScriptBuilder) o.sb.length() else 0) as uint64;
-            }
-            .BuilderClear => {
-                let o = r[y];
-                if (o is ScriptBuilder) {
-                    o.sb.clear();
-                }
-            }
-            .BuilderText => {
-                let o = r[y];
-                r[y] = ScriptString {
-                    text = if (o is ScriptBuilder) o.sb.toString() else "",
-                };
-            }
-            .StrDebug => r[y] = ScriptString { text = textOf(r[y]).debug() },
-            .CharDebug => r[y] = ScriptString { text = charOfCode(s[x]).debug() },
-            // the format language (S7e4b): Lyric 5's own formatting, the spec checked
-            // before — by the compiler, or at run time through `fmt.problem`
-            .FmtInt => {
-                let b = StringBuilder.new();
-                fstringFormatted(b, s[x] as int, textOf(r[y]));
-                r[y] = ScriptString { text = b.toString() };
-            }
-            .FmtFloat => {
-                let b = StringBuilder.new();
-                fstringFormatted(b, float.fromBits(s[x]), textOf(r[y]));
-                r[y] = ScriptString { text = b.toString() };
-            }
-            .FmtStr => {
-                let b = StringBuilder.new();
-                fstringFormatted(b, textOf(r[y]), textOf(r[y + 1]));
-                r[y] = ScriptString { text = b.toString() };
-            }
-            .FmtPad => {
-                let b = StringBuilder.new();
-                fstringPadded(b, textOf(r[y]), textOf(r[y + 1]));
-                r[y] = ScriptString { text = b.toString() };
-            }
-            // an integer's bits (S7f1): Lyric 5's own `Integer` members; a float is its
-            // bits in a register already
-            .IntBits => {
-                let v = s[x] as int;
-                let k = s[x + 1] as int;
-                let n = if (k == 0) v.leadingZeros()
-                    else if (k == 1) v.trailingZeros() else v.popCount();
-                s[x] = n as uint64;
-            }
-            .IntRotate => s[x] = (s[x] as int).rotateLeft(s[x + 1] as int) as uint64,
-            .FloatFromBits | .FloatToBits => { }
-            .MathOne => s[x] = mathOne(s[x] as int, float.fromBits(s[x + 1])).toBits(),
-            .MathTwo => s[x] = mathTwo(
-                s[x] as int,
-                float.fromBits(s[x + 1]),
-                float.fromBits(s[x + 2])
-            )
-                .toBits(),
-            .FmtProblem => {
-                let problem = fmtProblem(textOf(r[y]), fmtKindOf(s[x] as int));
-                r[y] = ScriptString { text = problem ?? "" };
-            }
-            .FloatOfText => {
-                let v = (try? float.parse(textOf(r[y]))) ?? 0.0;
-                s[x] = v.toBits();
-            }
-            // a list sorted in place (S7c6c2): its length unchanged, a walk goes on
-            .ListSortInts => {
-                let o = r[y];
-                if (o is ScriptArray) {
-                    let keys = List<int>.new();
-                    var k = 0;
-                    while (k < o.n) {
-                        keys.push(o.s[k] as int);
-                        k += 1;
-                    }
-                    let sorted = keys.toArray();
-                    sorted.sort();
-                    k = 0;
-                    while (k < o.n) {
-                        o.s[k] = sorted[k] as uint64;
-                        k += 1;
-                    }
-                }
-            }
-            // a float's place in the total order as an int, and back
-            .ListSortFloats => {
-                let o = r[y];
-                if (o is ScriptArray) {
-                    let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
-                    let keys = List<int>.new();
-                    var k = 0;
-                    while (k < o.n) {
-                        let b = o.s[k];
-                        keys.push((if ((b >> 63) != 0) b ^ mask else b) as int);
-                        k += 1;
-                    }
-                    let sorted = keys.toArray();
-                    sorted.sort();
-                    k = 0;
-                    while (k < o.n) {
-                        let key = sorted[k] as uint64;
-                        o.s[k] = if ((key >> 63) != 0) key ^ mask else key;
-                        k += 1;
-                    }
-                }
-            }
-            .ListSortStrings => {
-                let o = r[y];
-                if (o is ScriptArray) {
-                    let items = List<HeapRef>.new();
-                    var k = 0;
-                    while (k < o.n) {
-                        items.push(o.r[k]);
-                        k += 1;
-                    }
-                    let sorted = items.toArray();
-                    sorted.sortByKey((h) => textOf(h));
-                    k = 0;
-                    while (k < o.n) {
-                        o.r[k] = sorted[k];
-                        k += 1;
+                        o.table.insert(s[x], kept);
                     }
                 }
             }
         }
+        .IndexClear => {
+            let o = r[y];
+            if (o is ScriptIndex) {
+                o.table.clear();
+            }
+        }
+        // the strings' members (S7e1): Lyric 5's string under them, its bytes read
+        // once for the bounds of the characters
+        .StrLen => s[x] = textOf(r[y]).length() as uint64,
+        .StrAt => {
+            let o = r[y];
+            let t = textOf(o);
+            let i = s[x] as int;
+            let n = t.length();
+            if (i < 0 || i >= n) {
+                return NativeFault {
+                    code = "LYS-RT0003",
+                    message = f"index {i} out of bounds for length {n}",
+                };
+            }
+            if (!beginsChar(o, i)) {
+                return NativeFault {
+                    code = "LYS-RT0003",
+                    message = f"byte {i} does not begin a character",
+                };
+            }
+            s[x] = (t[i] as uint32) as uint64;
+        }
+        .StrNext => {
+            let b = bytesOf(r[y]);
+            var i = (s[x] as int) + 1;
+            while (i < b.length() && (b[i] & 192) == 128) {
+                i += 1;
+            }
+            s[x] = i as uint64;
+        }
+        .StrPrev => {
+            let b = bytesOf(r[y]);
+            var i = (s[x] as int) - 1;
+            while (i > 0 && (b[i] & 192) == 128) {
+                i -= 1;
+            }
+            s[x] = i as uint64;
+        }
+        .StrSlice => {
+            let o = r[y];
+            let t = textOf(o);
+            let a = s[x] as int;
+            let e = s[x + 1] as int;
+            let n = t.length();
+            if (a < 0 || a > e || e > n) {
+                return NativeFault {
+                    code = "LYS-RT0003",
+                    message = f"range {a}..{e} out of bounds for length {n}",
+                };
+            }
+            for (at in [a, e]) {
+                if (!beginsChar(o, at)) {
+                    return NativeFault {
+                        code = "LYS-RT0003",
+                        message = f"byte {at} does not begin a character",
+                    };
+                }
+            }
+            r[y] = ScriptString { text = t[a..e].toString() };
+        }
+        .StrCharCount => s[x] = textOf(r[y]).charCount() as uint64,
+        .StrUpper => r[y] = ScriptString { text = textOf(r[y]).toUpper() },
+        .StrLower => r[y] = ScriptString { text = textOf(r[y]).toLower() },
+        .StrTrim => {
+            let t = textOf(r[y]);
+            let mode = s[x] as int;
+            let kept = if (mode == 1) t.trimStart() else if (mode == 2) t.trimEnd() else t.trim();
+            r[y] = ScriptString { text = kept.toString() };
+        }
+        .StrRepeat => {
+            let n = s[x] as int;
+            if (n < 0) {
+                return NativeFault {
+                    code = "LYS-RT0007",
+                    message = f"repeat count {n} is negative",
+                };
+            }
+            r[y] = ScriptString { text = textOf(r[y]) * n };
+        }
+        .StrFromChars => {
+            let o = r[y];
+            let out = StringBuilder.new();
+            if (o is ScriptArray) {
+                var k = 0;
+                while (k < o.n) {
+                    out.appendChar(charOfCode(o.s[k]));
+                    k += 1;
+                }
+            }
+            r[y] = ScriptString { text = out.toString() };
+        }
+        .StrFind => {
+            let o = r[y];
+            let t = textOf(o);
+            let from = s[x] as int;
+            var found = -1;
+            if (from >= 0 && from <= t.length() && beginsChar(o, from)) {
+                if (let k = t[from..t.length()].find(textOf(r[y + 1]))) {
+                    found = from + k;
+                }
+            }
+            s[x] = found as uint64;
+        }
+        .StrMatchesAt => {
+            let o = r[y];
+            let t = textOf(o);
+            let at = s[x] as int;
+            s[x] = truth(
+                at >= 0
+                    && at <= t.length()
+                    && beginsChar(o, at)
+                    && t[at..t.length()].startsWith(textOf(r[y + 1]))
+            );
+        }
+        .CharCategory => s[x] = categoryIndex(charOfCode(s[x]).category()) as uint64,
+        .CharWhite => s[x] = truth(charOfCode(s[x]).isWhitespace()),
+        .CharUpper => s[x] = (charOfCode(s[x]).toUpper() as uint32) as uint64,
+        .CharLower => s[x] = (charOfCode(s[x]).toLower() as uint32) as uint64,
+        // a builder of text (S7e3)
+        .BuilderNew => r[y] = ScriptBuilder { sb = StringBuilder.new() },
+        .BuilderAppendStr => {
+            let o = r[y];
+            if (o is ScriptBuilder) {
+                o.sb.appendStr(textOf(r[y + 1]));
+            }
+        }
+        .BuilderAppendChar => {
+            let o = r[y];
+            if (o is ScriptBuilder) {
+                o.sb.appendChar(charOfCode(s[x]));
+            }
+        }
+        .BuilderLength => {
+            let o = r[y];
+            s[x] = (if (o is ScriptBuilder) o.sb.length() else 0) as uint64;
+        }
+        .BuilderClear => {
+            let o = r[y];
+            if (o is ScriptBuilder) {
+                o.sb.clear();
+            }
+        }
+        .BuilderText => {
+            let o = r[y];
+            r[y] = ScriptString { text = if (o is ScriptBuilder) o.sb.toString() else "" };
+        }
+        .StrDebug => r[y] = ScriptString { text = textOf(r[y]).debug() },
+        .CharDebug => r[y] = ScriptString { text = charOfCode(s[x]).debug() },
+        // the format language (S7e4b): Lyric 5's own formatting, the spec checked
+        // before — by the compiler, or at run time through `fmt.problem`
+        .FmtInt => {
+            let b = StringBuilder.new();
+            fstringFormatted(b, s[x] as int, textOf(r[y]));
+            r[y] = ScriptString { text = b.toString() };
+        }
+        .FmtFloat => {
+            let b = StringBuilder.new();
+            fstringFormatted(b, float.fromBits(s[x]), textOf(r[y]));
+            r[y] = ScriptString { text = b.toString() };
+        }
+        .FmtStr => {
+            let b = StringBuilder.new();
+            fstringFormatted(b, textOf(r[y]), textOf(r[y + 1]));
+            r[y] = ScriptString { text = b.toString() };
+        }
+        .FmtPad => {
+            let b = StringBuilder.new();
+            fstringPadded(b, textOf(r[y]), textOf(r[y + 1]));
+            r[y] = ScriptString { text = b.toString() };
+        }
+        // an integer's bits (S7f1): Lyric 5's own `Integer` members; a float is its
+        // bits in a register already
+        .IntBits => {
+            let v = s[x] as int;
+            let k = s[x + 1] as int;
+            let n = if (k == 0) v.leadingZeros()
+                else if (k == 1) v.trailingZeros() else v.popCount();
+            s[x] = n as uint64;
+        }
+        .IntRotate => s[x] = (s[x] as int).rotateLeft(s[x + 1] as int) as uint64,
+        .FloatFromBits | .FloatToBits => { }
+        .MathOne => s[x] = mathOne(s[x] as int, float.fromBits(s[x + 1])).toBits(),
+        .MathTwo => s[x] = mathTwo(
+            s[x] as int,
+            float.fromBits(s[x + 1]),
+            float.fromBits(s[x + 2])
+        ).toBits(),
+        .FmtProblem => {
+            let problem = fmtProblem(textOf(r[y]), fmtKindOf(s[x] as int));
+            r[y] = ScriptString { text = problem ?? "" };
+        }
+        .FloatOfText => {
+            let v = (try? float.parse(textOf(r[y]))) ?? 0.0;
+            s[x] = v.toBits();
+        }
+        // a list sorted in place (S7c6c2): its length unchanged, a walk goes on
+        .ListSortInts => {
+            let o = r[y];
+            if (o is ScriptArray) {
+                let keys = List<int>.new();
+                var k = 0;
+                while (k < o.n) {
+                    keys.push(o.s[k] as int);
+                    k += 1;
+                }
+                let sorted = keys.toArray();
+                sorted.sort();
+                k = 0;
+                while (k < o.n) {
+                    o.s[k] = sorted[k] as uint64;
+                    k += 1;
+                }
+            }
+        }
+        // a float's place in the total order as an int, and back
+        .ListSortFloats => {
+            let o = r[y];
+            if (o is ScriptArray) {
+                let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
+                let keys = List<int>.new();
+                var k = 0;
+                while (k < o.n) {
+                    let b = o.s[k];
+                    keys.push((if ((b >> 63) != 0) b ^ mask else b) as int);
+                    k += 1;
+                }
+                let sorted = keys.toArray();
+                sorted.sort();
+                k = 0;
+                while (k < o.n) {
+                    let key = sorted[k] as uint64;
+                    o.s[k] = if ((key >> 63) != 0) key ^ mask else key;
+                    k += 1;
+                }
+            }
+        }
+        .ListSortStrings => {
+            let o = r[y];
+            if (o is ScriptArray) {
+                let items = List<HeapRef>.new();
+                var k = 0;
+                while (k < o.n) {
+                    items.push(o.r[k]);
+                    k += 1;
+                }
+                let sorted = items.toArray();
+                sorted.sortByKey((h) => textOf(h));
+                k = 0;
+                while (k < o.n) {
+                    o.r[k] = sorted[k];
+                    k += 1;
+                }
+            }
+        }
+    }
     return null;
 }
 

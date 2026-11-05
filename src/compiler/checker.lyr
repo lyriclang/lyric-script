@@ -49,7 +49,7 @@ import lyric_script.compiler.ast {
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.compiler.throws { ThrowSets, Thrown };
-import lyric_script.stdsrc { collectionsText, preludeText, stdPackage };
+import lyric_script.stdsrc { collectionsText, numbersText, preludeText, stdPackage };
 import lyric_script.vm.fmt { FmtKind, fmtProblem };
 import lyric_script.vm.native { nativeNamed, nativeNumber };
 import lyric_script.compiler.typed {
@@ -100,7 +100,12 @@ struct ProgramUnit {
 
 /// Checks a program: its entry, file 0, with the modules it imports, given in the order their
 /// imports need — each module before the modules that import it (07 V5).
-fn checkModule(parsed: Module, imported: ProgramUnit[] = [], collections: bool = false): Checked {
+fn checkModule(
+    parsed: Module,
+    imported: ProgramUnit[] = [],
+    collections: bool = false,
+    numbers: bool = false
+): Checked {
     let c = Checker.new();
     // the prelude's declarations before the program's, parsed as no file of it; the entry's last
     let items = List<Item>.new();
@@ -113,6 +118,14 @@ fn checkModule(parsed: Module, imported: ProgramUnit[] = [], collections: bool =
     if (collections) {
         let parsed = parse(collectionsText(), -1);
         c.stdParses(parsed, "std.collections");
+        for (item in parsed.module.items) {
+            items.push(item);
+        }
+    }
+    // the number tower where the program names it: its names the prelude's (S7f1b)
+    if (numbers) {
+        let parsed = parse(numbersText(), -1);
+        c.stdParses(parsed, "the number tower");
         for (item in parsed.module.items) {
             items.push(item);
         }

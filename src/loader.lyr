@@ -29,7 +29,7 @@ import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.cache { cacheRoot };
 import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
 import lyric_script.rights { classOf };
-import lyric_script.stdsrc { stdBelow, stdPackage, stdSource };
+import lyric_script.stdsrc { numbersText, stdBelow, stdPackage, stdSource };
 import lyric_script.vm.module { RightUse };
 import lyric_script.package {
     Dep,
@@ -87,6 +87,8 @@ class Loaded {
     // whether a module names a map or writes a map literal: std.collections is added, its names the
     // prelude's (S7d2)
     var collections: bool = false,
+    // whether a module names the number tower: it is added, its names the prelude's (S7f1b)
+    var numbers: bool = false,
     // the lock as read, its manifest index, and what this build read from git (S5c2)
     var lockOld: LockEntry[] = [],
     var lockDoc: int = -1,
@@ -332,6 +334,7 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
     }
     visit(0, edges, edgeAt, state, List<int>.new(), l);
     l.collections = l.collections || namesCollections(l);
+    l.numbers = namesNumbers(l);
     return l;
 }
 
@@ -426,6 +429,39 @@ fn namesIter(l: Loaded): bool {
     for (text in l.texts) {
         for (m in members) {
             if (text.contains(m)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Whether a module loaded names the number tower (S7f1b): one of its interfaces, or a member or
+/// a constant of them after a dot, read off its text. Too many is a cost, none too few: `.min`
+/// of an iterator adds it too.
+fn namesNumbers(l: Loaded): bool {
+    let names = List<string>.new();
+    for (line in numbersText().split("\n")) {
+        if (line.startsWith("interface ")) {
+            var end = 10;
+            while (end < line.length() && line[end] != ' ') {
+                end += 1;
+            }
+            names.push(line[10..end].toString());
+        }
+        for (lead in ["    fn ", "    static fn ", "    static let "]) {
+            if (line.startsWith(lead)) {
+                var end = lead.length();
+                while (end < line.length() && line[end] != '(' && line[end] != ':') {
+                    end += 1;
+                }
+                names.push("." + line[lead.length()..end].toString());
+            }
+        }
+    }
+    for (text in l.texts) {
+        for (n in names) {
+            if (text.contains(n)) {
                 return true;
             }
         }

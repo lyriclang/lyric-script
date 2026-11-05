@@ -44,6 +44,11 @@ fn collectionsText(): string {
     return string.fromUtf8Lossy(comptime embed("../std/collections.lyrs"));
 }
 
+/// The number tower's text (S7f1b): its names the prelude's, added where a program names one.
+fn numbersText(): string {
+    return string.fromUtf8Lossy(comptime embed("../std/numbers.lyrs"));
+}
+
 /// The prelude's text (07 V3 I8): what every module names without an import.
 fn preludeText(): string {
     return string.fromUtf8Lossy(comptime embed("../std/prelude.lyrs"));

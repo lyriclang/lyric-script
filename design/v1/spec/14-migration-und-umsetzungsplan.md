@@ -1964,3 +1964,27 @@ Zweig für benannte Typen hatte den Fall „der Empfänger, wie er ist“, der f
 Register, still (seit S7c1b); `5.clamp(1, 3)` panikte. Spec 12 Regeln 4 und 13, eine Abweichung
 weniger; vier Fälle, alle rot gegen S7f1b. Mutanten (sechs): jeder traf genau den vorhergesagten Fall.
 Fälle 571 → 575.
+
+**Ergebnis S7f2 (2026-11-05).** `std.math` ist ein Modul in Script: `min`/`max`, `gcd`/`lcm`, `lerp`,
+`abs`/`signum` über den Turm wie in Lyric 5 geschrieben, die Elementarfunktionen über zwei Natives
+(`math.one`, `math.two`, Format 33) auf Lyric 5s `std.math`: die Ausgabe zweier Programme ist
+bytegleich mit dem, was Lyric 5 selbst druckt, und daraus stammen die Sollwerte der Fälle. Geplant
+war `float` statt `T :: [Float]`, weil Script nur einen Float hat; das wäre eine Abweichung gewesen,
+und ein generisches Programm wäre abgelehnt worden. `T.fromBits(native(x.toBits()))` hält sie auf,
+kostet aber das Dreifache des Aufrufs (14,0 µs gegen 4,4 µs, Debug, abwechselnd gemessen). Der Native
+nimmt die Bits darum direkt aus dem Register, der Aufruf kostet so viel wie der über `float`; ein
+eigener `Float` eines Programms erreicht, was über den Turm geschrieben ist, und ist an einer
+Elementarfunktion `LYS-SEM0028`, dort, wo die Kopie entsteht.
+
+**Gefunden, weil die Messung ein Release-Binary brauchte: es lief nicht.** Die CI und jeder Lauf
+hier bauen Debug. (a) Seit S7e1 endete das Release-Binary schon bei `println("hi")` mit `LYR-RT0006`:
+Lyric 5 prüft beim Eintritt das Doppelte aller IR-Slots einer Funktion, bei `runTask` 265 KB gegen die
+256 KiB eines Tasks in Release, bei einem realen Frame von rund 4 KB. Die Natives stehen jetzt in
+`callNative` (`runTask` fragt noch 217 KB, das bleibt knapp); lyric#668. (b) Unter `-O2` zerlegt SROA
+einen Zeiger im Keller, wo eine Enum-Variante am selben Offset ein Byte hat; der konservative Scan
+liest ausgerichtete Worte und sieht ihn nicht, die Zeile gilt als frei, und `memset` trifft das
+lebende Objekt. Belegt an `parseIf` mit Hardware-Watchpoint und Keller-Dump: Release 543/582, Debug
+582/582; `opt = 1` ist schlechter, Boehm auch kaputt, nachbauen ließ es sich klein nicht; lyric#667.
+Das ist in Lyric 5 zu beheben, Script läuft bis dahin auf Debug (P31). Spec 12 Regeln 2 und 14; sieben
+Fälle, alle rot gegen S7f1c. Mutanten (acht): sieben wie vorhergesagt; der achte, `lerp` naiv am fernen Ende, überlebte, weil `lerp(0.1, 0.3, 1.0)` auch naiv exakt ist: der Fall prüfte die Grenze nicht und nimmt jetzt `lerp(0.7, 0.1, 1.0)`, naiv 0.09999999999999998; danach getroffen.
+Fälle 575 → 582.

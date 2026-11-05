@@ -458,6 +458,20 @@ enum Ordering {
 }
 interface Ordered :: Equatable {
     fn compare(o: Self): ?Ordering
+    // this held to `lo`…`hi`: `lo` below it, `hi` above it, a value unordered with them as it is;
+    // `lo` above `hi` panics (Lyric 5 12 §Numbers; S7f1c)
+    fn clamp(lo: Self, hi: Self): Self {
+        if (hi < lo) {
+            panic("clamp: lo is above hi")
+        }
+        if (this < lo) {
+            return lo
+        }
+        if (this > hi) {
+            return hi
+        }
+        return this
+    }
 }
 interface TotalOrder :: Ordered {
     fn totalCompare(o: Self): Ordering

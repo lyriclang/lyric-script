@@ -172,3 +172,22 @@ extend float :: [Num, Signed, Float] {
     static fn fromBits(b: int): float = __floatFromBits(b)
     fn toBits(): int = __floatToBits(this)
 }
+
+// the sum and the product of an iterator's numbers: zero and one where there is no value (Lyric 5
+// std.iter; S7f1c, P25: on `int` and `float` items alone until here)
+extend<I :: [Iterator<Item = T>], T :: [Num]> I {
+    fn sum(): T {
+        var s = T.zero
+        while (let x = this.next()) {
+            s = s + x
+        }
+        return s
+    }
+    fn product(): T {
+        var p = T.one
+        while (let x = this.next()) {
+            p = p * x
+        }
+        return p
+    }
+}

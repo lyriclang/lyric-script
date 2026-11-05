@@ -28,6 +28,9 @@ fn theNumberTowerComesWhereAModuleNamesIt(): void {
     assertTrue(loadProgram("t.lyrs", "println(int.max)").numbers);
     assertTrue(loadProgram("t.lyrs", "println(2.pow(3))").numbers);
     assertTrue(loadProgram("t.lyrs", "fn f<T :: [Num]>(x: T): T = x").numbers);
+    // an adapter adds std.iter, and std.iter's own text adds no tower (S7f1c); `sum` is the tower's
+    assertTrue(!loadProgram("t.lyrs", "println([1].iter().map((x: int) => x).toArray())").numbers);
+    assertTrue(loadProgram("t.lyrs", "println([1].iter().sum())").numbers);
 }
 
 @Test

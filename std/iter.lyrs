@@ -719,23 +719,9 @@ extend<I :: [Iterator]> I {
     }
 }
 
-// the terminators of the numbers, Script's two (02 T1): zero and one where there is no value,
-// the average a `float`, `null` without a value
+// the average of the numbers, Script's two (02 T1), a `float`, `null` without a value; their `sum`
+// and `product` stand on `Num`, in the number tower's file (S7f1c)
 extend<I :: [Iterator<Item = int>]> I {
-    fn sum(): int {
-        var s = 0
-        while (let x = this.next()) {
-            s += x
-        }
-        return s
-    }
-    fn product(): int {
-        var p = 1
-        while (let x = this.next()) {
-            p *= x
-        }
-        return p
-    }
     fn average(): ?float {
         var s = 0.0
         var n = 0
@@ -750,20 +736,6 @@ extend<I :: [Iterator<Item = int>]> I {
     }
 }
 extend<I :: [Iterator<Item = float>]> I {
-    fn sum(): float {
-        var s = 0.0
-        while (let x = this.next()) {
-            s += x
-        }
-        return s
-    }
-    fn product(): float {
-        var p = 1.0
-        while (let x = this.next()) {
-            p *= x
-        }
-        return p
-    }
     fn average(): ?float {
         var s = 0.0
         var n = 0

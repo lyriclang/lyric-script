@@ -438,7 +438,8 @@ fn namesIter(l: Loaded): bool {
 
 /// Whether a module loaded names the number tower (S7f1b): one of its interfaces, or a member or
 /// a constant of them after a dot, read off its text. Too many is a cost, none too few: `.min`
-/// of an iterator adds it too.
+/// of an iterator adds it too. std.iter's own text does not count: its `.min` is its declaration, and
+/// a program with an adapter does not pay for the tower (S7f1c).
 fn namesNumbers(l: Loaded): bool {
     let names = List<string>.new();
     for (line in numbersText().split("\n")) {
@@ -459,12 +460,16 @@ fn namesNumbers(l: Loaded): bool {
             }
         }
     }
+    var k = 0;
     for (text in l.texts) {
-        for (n in names) {
-            if (text.contains(n)) {
-                return true;
+        if (l.names[k] != "std.iter") {
+            for (n in names) {
+                if (text.contains(n)) {
+                    return true;
+                }
             }
         }
+        k += 1;
     }
     return false;
 }

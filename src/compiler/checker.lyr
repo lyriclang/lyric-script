@@ -17306,6 +17306,23 @@ class Checker {
                         let found = this.ifaceMember(ii, method);
                         if (found != null) {
                             let (fi, _) = found;
+                            // a default generic over `Self`: its copy for the scalar, the receiver
+                            // as it is (S7f1c: boxed, the copy read past its registers, since
+                            // S7c1b — `5.clamp(1, 3)`)
+                            if (!this.functions[fi].abstract && this.selfGeneric(fi)) {
+                                this.presetBinds = this.bindsOf(fi, ii, t);
+                                let call = this.callExpecting(
+                                    posTy,
+                                    writtenTys,
+                                    method,
+                                    [fi],
+                                    receiver,
+                                    args,
+                                    at
+                                );
+                                this.presetBinds = [];
+                                return call;
+                            }
                             if (!this.functions[fi].abstract) {
                                 // a generic interface's default: at its instance's arguments,
                                 // the receiver a value of the instance (S7c1b)

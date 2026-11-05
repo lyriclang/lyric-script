@@ -1953,3 +1953,14 @@ Korrektur nur den ersten Durchgang traf). Zwei Fälle — einer aus S7f1a — un
 Spec 12 Regel 13 und Abweichungen; fünf Fälle neu, zwei angepasst, alle sieben rot gegen S7f1a.
 Mutanten (neun): B, C, D, F, G, H und J trafen je genau die vorhergesagten Fälle; I traf die Fälle, die den Turm nennen, bis auf `a_scalar_names_only_its_constants`, das auch ohne Turm `LYS-SEM0012` ist; A verfehlte die Vorhersage — die Prelude las `int.min` damals selbst, ohne die Konstante übersetzte nichts.
 Fälle 566 → 571, Tests 358 → 359.
+
+**Ergebnis S7f1c (2026-11-05) — S7f1 fertig.** `clamp` ist eine Vorgabe von `Ordered` in der
+Prelude. `sum` und `product` stehen auf `Num`, in `std/numbers.lyrs`, nicht in `std.iter`: ein
+Programm mit einem Adapter zahlt so den Turm nicht mit, und die Erkennung liest `std.iter`s eigenen
+Text nicht mehr; `average` bleibt in `std.iter`, Scripts Zugabe über `int` und `float`. Gefunden: eine
+Vorgabe, die generisch über `Self` ist, bekam an einem Skalar den Empfänger in einer Box — der
+Zweig für benannte Typen hatte den Fall „der Empfänger, wie er ist“, der für Skalare nicht. Mit zwei
+`Self`-Parametern war das fehlerhafter Bytecode (`LYS-ICE0002`), mit einem las die Kopie falsche
+Register, still (seit S7c1b); `5.clamp(1, 3)` panikte. Spec 12 Regeln 4 und 13, eine Abweichung
+weniger; vier Fälle, alle rot gegen S7f1b. Mutanten (sechs): jeder traf genau den vorhergesagten Fall.
+Fälle 571 → 575.

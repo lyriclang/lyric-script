@@ -1169,7 +1169,7 @@ summary = "A type has a member of its own — written, from another extend block
 title = "an extend block's type parameter bound by nothing"
 severity = "error"
 area = "05-interfaces"
-summary = "A blanket block declares a type parameter that its target does not name and no constraint's fixation names, as `X` in `extend<I :: [Iterator], X> I`: the block reaches no type. Lyric 5's LYR-SEM0170."
+summary = "A blanket block declares a type parameter that its target does not name and no constraint's fixation names, as `X` in `extend<I :: [Iterator], X> I`: the block reaches no type. A parameter its conformance names is bound by what asks for that instance (`extend<T, U :: [From<T>]> T :: [Into<U>]`). Lyric 5's LYR-SEM0170."
 
 [LYS-SEM0176]
 title = "a name bound twice in one scope"

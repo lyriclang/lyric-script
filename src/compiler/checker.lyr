@@ -3270,10 +3270,12 @@ class Checker {
             if (this.functions[fi].isStatic != statics) {
                 continue;
             }
-            let e = this.functions[fi].owner;
-            let found = if (this.types[e].openAt.length() > 0) this.openCallBinds(e, t)
-                else this.blanketBinds(fi, t);
-            if (let b = found) {
+            // a block with a parameter only its conformance names reaches no type yet: it is
+            // asked below, where no other does (05 §13 rule 9)
+            if (this.types[this.functions[fi].owner].openAt.length() > 0) {
+                continue;
+            }
+            if (let b = this.blanketBinds(fi, t)) {
                 if (pick >= 0) {
                     this.error(
                         "LYS-SEM0121",
@@ -3284,6 +3286,26 @@ class Checker {
                 }
                 pick = fi;
                 binds = b;
+            }
+        }
+        if (pick < 0) {
+            for (fi in fns) {
+                let e = this.functions[fi].owner;
+                if (this.functions[fi].isStatic != statics || this.types[e].openAt.length() == 0) {
+                    continue;
+                }
+                if (let b = this.openCallBinds(e, t)) {
+                    if (pick >= 0) {
+                        this.error(
+                            "LYS-SEM0121",
+                            f"two blanket blocks give {this.tyName(t)} a member '{method}'",
+                            at
+                        );
+                        return (-1, binds);
+                    }
+                    pick = fi;
+                    binds = b;
+                }
             }
         }
         if (pick < 0) {
@@ -6903,7 +6925,10 @@ class Checker {
                     || (x == this.synth.cloneIx && x >= 0)
                     || (x == this.synth.defaultIx && x >= 0)
                     || (x == this.synth.hashableIx && x >= 0)
-                    || this.instanceOverParams(x)) {
+                    // an instance of a generic interface: the callee this copy hands it to may
+                    // need a copy for it (`U :: [From<int>]` calling `into`, whose `U` names its
+                    // `T`), and a shared argument would reach it as `Any` (S7f3)
+                    || this.ifaceBase(x) != x) {
                     return true;
                 }
             }
@@ -16147,6 +16172,36 @@ class Checker {
         return r;
     }
 
+    /// `f<int>(x)`: the one of `candidates` that takes the type arguments written, the trailing ones
+    /// it leaves out their defaults (S7c5c1), bound before the arguments are checked.
+    mut fn callWritten(
+        name: string,
+        candidates: List<int>,
+        tys: Ty[],
+        args: Arg[],
+        at: Span,
+        iat: Span
+    ): TExpr {
+        let fitting = List<int>.new();
+        var filled: Ty[] = tys;
+        for (c in candidates) {
+            if (let all = this.withDefaults(this.functions[c].typeParams, tys, null)) {
+                if (all.length() == this.functions[c].typeParams.length()) {
+                    fitting.push(c);
+                    filled = all;
+                }
+            }
+        }
+        if (fitting.length() == 0) {
+            this.error("LYS-SEM0026", f"no '{name}' takes {tys.length()} type arguments", iat);
+            return TExpr.Unknown;
+        }
+        this.presetBinds = filled;
+        let call = this.callAmong(name, fitting.toArray(), null, args, at);
+        this.presetBinds = [];
+        return call;
+    }
+
     mut fn call(callee: Expr, args: Arg[], expected: ?Ty, at: Span): TExpr {
         match (callee) {
             // `.Num(3)`: a variant of the enum the position expects
@@ -16160,33 +16215,7 @@ class Checker {
                     .Name(name, _) => {
                         let candidates = this.fnByName.get(this.q(name));
                         if (candidates != null) {
-                            let fitting = List<int>.new();
-                            var filled: Ty[] = tys.toArray();
-                            for (c in candidates) {
-                                // the trailing ones it leaves out, their defaults (S7c5c1)
-                                if (let all = this.withDefaults(
-                                    this.functions[c].typeParams,
-                                    tys.toArray(),
-                                    null
-                                )) {
-                                    if (all.length() == this.functions[c].typeParams.length()) {
-                                        fitting.push(c);
-                                        filled = all;
-                                    }
-                                }
-                            }
-                            if (fitting.length() == 0) {
-                                this.error(
-                                    "LYS-SEM0026",
-                                    f"no '{name}' takes {tys.length()} type arguments",
-                                    iat
-                                );
-                                return TExpr.Unknown;
-                            }
-                            this.presetBinds = filled;
-                            let call = this.callAmong(name, fitting.toArray(), null, args, at);
-                            this.presetBinds = [];
-                            return call;
+                            return this.callWritten(name, candidates, tys.toArray(), args, at, iat);
                         }
                     }
                     // `it.collect<int[]>()`: at a method of a value (Lyric 5 §9.2 rule 4)
@@ -16196,6 +16225,26 @@ class Checker {
                                 || this.globalIndex.containsKey(this.q(n)),
                             _ => true,
                         };
+                        // `util.f<int>(x)`: at a function through its module's name (S7f3)
+                        match (object.value) {
+                            .Name(n, _) if (!isValue) => {
+                                if (let target = this.moduleNamed(n)) {
+                                    let key = this.exportKey(target, method);
+                                    if (let candidates = this.fnByName.get(key)) {
+                                        this.maySee(key, method, target, memberAt);
+                                        return this.callWritten(
+                                            method,
+                                            candidates,
+                                            tys.toArray(),
+                                            args,
+                                            at,
+                                            iat
+                                        );
+                                    }
+                                }
+                            }
+                            _ => { }
+                        }
                         if (isValue) {
                             let recv = this.expr(object.value, null);
                             this.callExpected = expected;
@@ -16338,6 +16387,8 @@ class Checker {
                             && !this.globalIndex.containsKey(this.q(typeName))) {
                             // `util.f(x)`, `util.Point(1, 2)`: through a module's name
                             if (let target = this.moduleNamed(typeName)) {
+                                // a generic's parameter from the position, as on a bare name
+                                this.callExpected = expected;
                                 return this.moduleCall(target, method, args, at, memberAt);
                             }
                             let pk = this.typeParams.get(typeName);

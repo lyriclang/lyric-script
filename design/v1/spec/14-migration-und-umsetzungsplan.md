@@ -2054,3 +2054,39 @@ vorhergesagt. Mutanten (29): alle getötet. **Drei davon erst im Nachlauf:** `mu
 315 → 328 ms, also auch wer `Bytes` nicht nennt, zahlt etwas, in dieser Streuung (302–485) nicht sicher
 von null zu trennen; mit `b"a"` 380 ms.
 Fälle 623 → 656, Tests 362 → 364.
+
+**Ergebnis S7f6 (2026-11-06).** `std.random` hält `class Random` über Lyric 5s Generator: `Random.seeded(n)`
+gibt **denselben Strom** wie Lyric 5, der Fall `random_is_lyric_5s_stream` vergleicht gegen die Ausgabe
+desselben Programms dort, auch wie viele Züge jede Operation nimmt. Das Modul fragt nach keinem Recht.
+Was aus dem System zieht, steht in **`std.random.system`**, Recht `os`: `fresh()` und die freien
+`nextInRange`, `nextFloat`, `shuffle` über den einen Generator des Programms. Lyric 5 hat beides in einem
+Modul, Rechte hängen hier aber am Modul (P35). `nextBytes`, `shuffle`, `choice`, `sample` sind Script.
+Gefunden, und im Prüflauf nicht sichtbar: **`import std.random` kostete +204 ms kalt**, weit über der
+Vorhersage. `namesNumbers` prüfte Teilstrings, `nextFloat` enthält `Float`, jeder Nutzer lud den Turm;
+auch ein eigenes `nextFloat` im Skript hätte das getan. `holdsName` prüft jetzt ganze Namen: rund +80 ms
+(`println(1)` 300 ms, mit `import std.random` 380 ms; `Bytes` bleibt, wegen `nextBytes`). `println(1)` selbst
+4,5 ms teurer, in der Streuung. `everyModuleOfTheStandardLibraryCompiles` geht jetzt durch den Loader: es
+kannte nur den Turm als Abhängigkeit.
+Rot-Lauf: 10 von 10 rot gegen S7f5. Mutanten (22): 21 getötet. **SH überlebte zuerst:** `k` über der Länge
+panikt auch ungeprüft mit `RT0008`, im nächsten Zug; der Fall prüft jetzt den Text. **SU überlebt** (ein
+geseedetes `own` in `std.random.system`): dazu müsste ein Fall zwei Läufe vergleichen, und das kann der
+Runner nicht; mit `std.process` (S7h) lässt es sich nachholen, dort als Fall vorgemerkt.
+Fälle 656 → 666, Tests 364.
+
+**S7f fertig.** `int`/`float`-Turm, `std.math`, `From`/`Into`, `BigInt`, `Bytes`, `std.random`.
+
+**S7g, neu geschnitten (2026-11-06).** Zu groß für einen Schritt; der Reihe nach, jeder mit Spec, Fällen,
+Rot-Lauf und Mutanten:
+- **S7g1** `std.io` über Speicher, ganz in Script: `IoError`, `IoErrorKind` (in die Prelude, weil `readLine`
+  sie wirft), `Reader`/`Writer`/`Seek` als Interfaces mit Vorgabe-Methoden statt `extend<R>`, `copy`,
+  `ByteReader`, `ByteBuffer`, `BufReader`, `BufWriter`, `TextReader`, `TextWriter`. Go-Form über `Bytes`:
+  `read(into)` füllt von vorn, einen Slice-Typ gibt es nicht. Ein Native `bytes.copy`, das nach Bytes bucht.
+- **S7g2** Die Konsole: `stdin()`, `stdout()`, `stderr()`, `flush()`, `eprint`; `readLine()` wirft `IoError` statt
+  `null` zu geben. Der Weg dafür ist der allgemeine aus S7g4, hier mit einem Nutzer.
+- **S7g3** `std.path` in Script, keine Natives außer dem Trenner; ohne Recht.
+- **S7g4** Wartende Natives allgemein: `read.line` aus S6e wird ein Op für jedes Native, das in einer
+  Lyric-5-Task läuft, gebucht vor dem Start, mit einem Ergebnis, das Wert oder Fehler sein kann. Darauf
+  `std.fs`: `File`, die Bequemen (`readText`, `readBytes`, `writeText`, `writeBytes`, `appendText`, `lines`).
+- **S7g5** `std.fs`, Verzeichnisse: `metadata`, `createDir`, `remove`, `rename`, `readDir`, `canonicalize`,
+  `absolute`, `createDirAll`, `removeAll`, `copy`, `walk`, `tempDir`, `tempFile`.
+- **S7g6** `fs.glob` in Script (12 Um).

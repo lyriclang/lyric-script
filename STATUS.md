@@ -363,7 +363,10 @@ VM's call path, S7k measurement point 3.
 - **S7f5 done** — `Bytes`, `b"…"`, `toBytes()`, `string.fromUtf8`, 17 natives that charge by their
   bytes; a loop over them costs about 1.45 times a list's. `fs.readBytes`/`writeBytes` come with S7g.
   Found: the VM's objects behind a readable field reached an ICE from a script, now `LYS-RT0007`.
-- Next: **S7f6** — `std.random`, seeded without a right, unseeded with `os`.
+- **S7f6 done, S7f done** — `std.random` gives Lyric 5's stream for a seed and asks for no right;
+  `std.random.system` draws from the system with `os` (P35). Found: `import std.random` cost 204 ms cold,
+  since `nextFloat` holds `Float` and so loaded the number tower; names are whole now, about 80 ms.
+- Next: **S7g1** — `std.io` over memory, in Script. S7g is cut in six, see 14.
 
 ## Working mode
 
@@ -432,4 +435,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P32 | **`x + 1` on a `BigInt` is refused** (`LYS-SEM0003`): an operand is no place with a target type (03 Lit), so a literal there stays an `int`, and `BigInt` takes only `BigInt`. It is what the design says and it is written in spec 12 rule 16, pinned by `an_int_is_no_operand_of_a_big_int`; the cost is `x + BigInt.one`, or `x + BigInt.from(1)` for any other number. A literal past `int64` stays `LYS-PAR0007`; `BigInt.parse` is the way. Widening later is additive. **For you:** is that the 1.0 you want? I would keep it. | S7f4 |
 | P33 | **No older heavy native charges the budget.** 01 S5c and the plan say a native knows its cost and charges it first; only `BigInt` does. `sort`, `repeat`, `replace`, `split` and their kin run to the end on any budget, so a sandboxed script can spend far more than it was given in one call. Proposal: audit them with S8, which builds `resume`, using `charge`. | S7f4 |
 | P34 | **An operation dearer than one `resume` gives never gets through.** A native stops before it works, so a loop of `resume` with a small grant repeats the stop forever. S8 has to say what happens: the grant accumulates, or the host gets told how much the call asks. | S7f4 |
+| P35 | **`std.random.system` is a module Lyric 5 does not have.** Rights hang on a module, and 01 S8 wants the seeded generator free and the system's behind `os`, so the free `nextInRange`, `nextFloat`, `shuffle` and `Random.fresh()` left `std.random` for it: code moved from Lyric 5 changes an import, and `fresh` is a free function there. The alternative is rights per member, which 01 S1 does not have. I'd keep it. |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

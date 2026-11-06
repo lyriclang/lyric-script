@@ -466,12 +466,39 @@ fn namesNumbers(l: Loaded): bool {
     for (text in l.texts) {
         if (l.names[k] != "std.iter") {
             for (n in names) {
-                if (text.contains(n)) {
+                if (holdsName(text, n)) {
                     return true;
                 }
             }
         }
         k += 1;
+    }
+    return false;
+}
+
+/// Whether `text` holds `name` as a name of its own, `nextFloat` not naming `Float` nor `.power`
+/// `.pow`; `.pow` starts with its dot, so what stands before it is its receiver.
+fn holdsName(text: string, name: string): bool {
+    if (!text.contains(name)) {
+        return false;
+    }
+    let b = text.toBytes();
+    let w = name.toBytes();
+    let member = w[0] == 46;
+    var from = 0;
+    while (from + w.length() <= b.length()) {
+        if (b[from] == w[0]
+            && (member || from == 0 || !wordByte(b[from - 1]))
+            && (from + w.length() == b.length() || !wordByte(b[from + w.length()]))) {
+            var k = 1;
+            while (k < w.length() && b[from + k] == w[k]) {
+                k += 1;
+            }
+            if (k == w.length()) {
+                return true;
+            }
+        }
+        from += 1;
     }
     return false;
 }

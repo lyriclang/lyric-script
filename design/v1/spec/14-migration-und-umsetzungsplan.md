@@ -1988,3 +1988,25 @@ lebende Objekt. Belegt an `parseIf` mit Hardware-Watchpoint und Keller-Dump: Rel
 Das ist in Lyric 5 zu beheben, Script läuft bis dahin auf Debug (P31). Spec 12 Regeln 2 und 14; sieben
 Fälle, alle rot gegen S7f1c. Mutanten (acht): sieben wie vorhergesagt; der achte, `lerp` naiv am fernen Ende, überlebte, weil `lerp(0.1, 0.3, 1.0)` auch naiv exakt ist: der Fall prüfte die Grenze nicht und nimmt jetzt `lerp(0.7, 0.1, 1.0)`, naiv 0.09999999999999998; danach getroffen.
 Fälle 575 → 582.
+
+**Ergebnis S7f3 (2026-11-06).** `From<T>` und `Into<T>` stehen in der Prelude, `Into` als Block
+`extend<T, U :: [From<T>]> T :: [Into<U>]`: `U` nennt nur die Konformanz (05 §13 Regel 9, Spec 05
+Regel 23). So ein offener Block fragt zur Übersetzung erst, wo eine Instanz verlangt wird, und ein
+Block, der ohne Annahme reicht, geht ihm vor (`blanketPick` in zwei Stufen; zwei offene sind
+SEM0121). Was keine Stelle fragt, aber `is` zur Laufzeit sucht, gibt `conformOpen` vorab durch
+Aufzählen der Typen, die `From` an sich tragen. P22 mit: ein Block auf einer Instanz hält mehrere
+Glieder eines Namens (`anotherOnInstance`, `setOf`), und ein abgelehntes Glied wählt nichts mehr.
+Dazu `util.f<int>(x)` durch den Modulnamen und der Positionstyp an einem Modulaufruf.
+Stiller Fehlschlag unterwegs: `fn twice2<U :: [From<Meters>]>(m) = m.into()` druckte 2 statt 3, weil
+ein geteilter Aufrufer `Any` an die exakte Kopie von `into` gab. Jede Instanz eines generischen
+Interfaces ist jetzt exakt, festgehalten von `a_conversion_handed_on_by_a_generic`.
+Drei Fehler in Lyric 5, wo Script der Spec folgt: lyric#670 (ein Wert `Into<X>` → ICE), lyric#671
+(ein Block auf einer Instanz hält keine zwei Glieder zweier Instanzen), lyric#672 (die Beschränkung
+einer generischen Methode, die den Parameter des Typs nennt). Spec 05 Regeln 12, 18, 23; 12 Regel 15.
+Rot-Lauf: 15 von 19 rot gegen S7f2; zwei Vorhersagen falsch, weil der Runner überzählige Codes nicht
+bemängelt. Mutanten (15): 13 treffen wie vorhergesagt oder mehr, zwei Lücken. Der Mutant „eigenes
+`into` antwortet in der Kopie" ließ den dafür geschriebenen Fall grün: ein Struct läuft über die
+Tabelle, nur eine Kopie am Skalar erreicht den direkten Aufruf; neuer Fall
+`a_values_own_into_at_another_instance`, an Lyric 5 geprüft. Der Mutant „ein abgelehntes Glied wählt
+mit" überlebte, weil überzählige Codes nicht zählen; neuer Test `aRefusedMemberChoosesNothing`.
+Fälle 582 → 602, Tests 359 → 360.

@@ -2010,3 +2010,27 @@ Tabelle, nur eine Kopie am Skalar erreicht den direkten Aufruf; neuer Fall
 `a_values_own_into_at_another_instance`, an Lyric 5 geprüft. Der Mutant „ein abgelehntes Glied wählt
 mit" überlebte, weil überzählige Codes nicht zählen; neuer Test `aRefusedMemberChoosesNothing`.
 Fälle 582 → 602, Tests 359 → 360.
+
+**Ergebnis S7f4 (2026-11-06).** `BigInt` steht in `std.math`: ein `Signed`, `TotalOrder`, `Hashable`,
+`Clone`, `From<int>`, `FromIntLiteral`, `Shl`, `Shr`, kein `Integer`, denn das ist eine feste Breite.
+Die Zahl selbst ist `src/vm/bigint.lyr` in Lyric 5, 32-Bit-Wörter mit Vorzeichen, Division nach
+Knuth D; 17 neue Natives (`big.*`, 62–78), Format 34. Die Kostenregeln (01 S5c) gelten erstmals für
+ein Native: `charge` nimmt die Kosten aus den Operanden **vor** der Arbeit, und reicht das Budget
+nicht, hält `.CallN` die Instanz an dieser Stelle an, ohne dass gerechnet wurde. Spec 12 Regel 16
+nennt die Formeln, `theNativesOfABigIntChargeByTheirOperands` prüft jede genau: mit der Summe läuft
+es durch, mit einer Einheit weniger hält es an. Die Grenze von 2^31 Bits fragt Shift und Produkt vor
+dem Anlegen (`LYS-RT0002`). `x + 1` bleibt `LYS-SEM0003` (ein Operand ist keine Stelle mit Zieltyp,
+03 Lit) und ein Literal jenseits von `int` `LYS-PAR0007`: P32.
+Zwei Fehler im Compiler dabei gefunden, beide von `std.math` selbst ausgelöst. Ein Struct mit eigenem
+`equals` und einem `Any`-Feld war `LYS-SEM0059`, gegen die Spec und gegen Lyric 5: `notEquatable`
+fragt das eigene `equals` jetzt vor den Feldern. Und **still falsch**: der Wert eines `static let`
+wurde im Namensraum des Importeurs geprüft, der das Skript ausführt; `fn helper(): int = 99` im
+Importeur machte aus `P.one.v` 99 statt 1. `staticInitStmts` prüft ihn jetzt im Modul, das ihn
+erklärt; `a_types_constant_reads_its_modules_names` hält es fest. Gefunden, weil ein nacktes
+`import std.math` plötzlich SEM0002 auf `BigInt` meldete, in `everyModuleOfTheStandardLibraryCompiles`.
+Kein älteres schweres Native bucht seine Kosten (`sort`, `repeat`, `replace`, `split`): P33.
+Rot-Lauf: 20 von 21 rot gegen S7f3, grün nur `a_big_int_literal_is_an_ints`, wie vorhergesagt.
+Mutanten (21): alle getötet. Mutant Q und R treffen mehr als vorhergesagt, auch die älteren
+`std.math`-Fälle, weil das Modul jetzt `BigInt` lädt. Kaltstart von `import std.math`: 582 → 623 ms;
+wer es nicht nennt, zahlt nichts.
+Fälle 602 → 623, Tests 360 → 362.

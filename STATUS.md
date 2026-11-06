@@ -360,7 +360,10 @@ VM's call path, S7k measurement point 3.
 - **S7f4 done** — `BigInt`, a Lyric 5 module behind 17 natives, the first natives to charge the
   budget before they work. Found: an own `equals` did not answer for a struct's fields, and a type's
   constant read the importer's names (silently wrong), both fixed and pinned. P32–P34.
-- Next: **S7f5** — `Bytes`, `b"…"`, `toBytes()`, `string.fromUtf8`.
+- **S7f5 done** — `Bytes`, `b"…"`, `toBytes()`, `string.fromUtf8`, 17 natives that charge by their
+  bytes; a loop over them costs about 1.45 times a list's. `fs.readBytes`/`writeBytes` come with S7g.
+  Found: the VM's objects behind a readable field reached an ICE from a script, now `LYS-RT0007`.
+- Next: **S7f6** — `std.random`, seeded without a right, unseeded with `os`.
 
 ## Working mode
 

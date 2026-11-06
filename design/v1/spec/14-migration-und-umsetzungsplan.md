@@ -2034,3 +2034,23 @@ Mutanten (21): alle getötet. Mutant Q und R treffen mehr als vorhergesagt, auch
 `std.math`-Fälle, weil das Modul jetzt `BigInt` lädt. Kaltstart von `import std.math`: 582 → 623 ms;
 wer es nicht nennt, zahlt nichts.
 Fälle 602 → 623, Tests 360 → 362.
+
+**Ergebnis S7f5 (2026-11-06).** `std/bytes.lyrs`, geladen, wo ein Modul `Bytes`, `fromUtf8`, `Utf8Error`
+oder ein `b"…"` nennt; ein String, der auf `b` endet, nennt nichts. Hinter der Klasse 17 Natives über
+`ScriptBytes`, die wie `BigInt` vor der Arbeit buchen: `1 + n / 32`, eine Scheibe, was sie kopiert. Ein
+`b"…"` wird eine Textkonstante mit einem Zeichen je Byte (Latin-1) und bei jeder Auswertung neu.
+`string.fromUtf8` wirft `Utf8Error` mit dem Offset, `fromUtf8Lossy` ersetzt. Eine Schleife über eine
+Million Bytes braucht im Debug-Bau rund das 1,45-fache einer Liste (17–18 s gegen 12 s). Zwei Dinge
+stehen noch aus und kommen mit S7g: `fs.readBytes`, `fs.writeBytes`.
+Gefunden: `{b:?}` war `LYS-ICE0001`, weil `Bytes` `Debug` nicht sagte, und damit das Allgemeine dahinter:
+`{x.v:?}` auf einem `BigInt` erreichte aus einem Skript den ICE, denn das Feld ist lesbar. Jetzt
+`LYS-RT0007` („an object of the VM has no members“), zwei Fälle, ein Satz in Regel 17.
+Der Fall `string_members_to_come` verlangte `NYI0001` für `toBytes` und fiel erst im Prüflauf auf: auf
+`SEM0012` gekürzt, `a_member_no_string_has`.
+Rot-Lauf: 30 von 33 rot gegen S7f4, grün die zwei des Lexers und der Fall zu `^n` auf fremdem Typ, wie
+vorhergesagt. Mutanten (29): alle getötet. **Drei davon erst im Nachlauf:** `mutS7f5A.py` und
+`mutS7f5a.py` sind unter Windows eine Datei, im ersten Lauf waren die Zeilen A, B, C in Wahrheit `a`,
+`b`, `c`; auffällig, weil ihre Treffer nicht zur Vorhersage passten. Kaltstart (Median aus 20): `println(1)`
+315 → 328 ms, also auch wer `Bytes` nicht nennt, zahlt etwas, in dieser Streuung (302–485) nicht sicher
+von null zu trennen; mit `b"a"` 380 ms.
+Fälle 623 → 656, Tests 362 → 364.

@@ -1,0 +1,19 @@
+//! Random numbers from the system (12 rule 18; 01 S8): a module of the right `os`, since a stream no
+//! run repeats ends a program's determinism. The free forms draw from the program's one generator.
+import std.random { Random }
+
+fn __randomFresh(): Any = __random_fresh()
+
+/// A generator keyed from 32 of the system's random bytes.
+fn fresh(): Random = Random { g = __randomFresh() }
+
+let own: Random = fresh()
+
+/// An integer of `r`, each alike; an empty range panics.
+fn nextInRange(r: Range<int>): int = own.nextInRange(r)
+
+/// A float in [0, 1).
+fn nextFloat(): float = own.nextFloat()
+
+/// Puts `s` in an order each of its orders alike.
+fn shuffle<T>(s: T[]) = own.shuffle(s)

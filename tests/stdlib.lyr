@@ -48,23 +48,33 @@ fn theStandardLibrarysModulesAreInTheBinary(): void {
     }
     assertEq(stdSource("std.nothere"), null);
     assertEq(stdSource("std"), null);
-    assertEq(stdBelow("std"), ["fmt", "fs", "iter", "math", "os"]);
+    assertEq(stdBelow("std"), ["fmt", "fs", "iter", "math", "os", "random"]);
+    assertEq(stdBelow("std.random"), ["system"]);
     assertEq(stdBelow("std.fs"), []);
 }
 
 @Test
 fn everyModuleOfTheStandardLibraryCompiles(): void {
-    // its natives' slots meet the VM's table, or the code generator stops
+    // its natives' slots meet the VM's table, or the code generator stops; through the loader, which
+    // knows what a module stands on: the number tower, `Bytes`, another module
     for (m in stdModules) {
-        let text = stdSource(m) ?? "";
-        let unit = ProgramUnit {
-            name = m,
-            module = parse(text, 1).module,
-            file = 1,
-            package = stdPackage,
-        };
-        // std.math stands on the number tower, which the loader adds
-        let c = checkModule(parse(f"import {m}\n").module, [unit], false, m == "std.math");
+        let l = loadProgram("t.lyrs", f"import {m}");
+        assertEq(l.errors.length(), 0, m);
+        let units = List<ProgramUnit>.new();
+        for (k in l.order) {
+            if (k != 0) {
+                units.push(
+                    ProgramUnit {
+                        name = l.names[k],
+                        module = l.parses[k].module,
+                        file = k,
+                        submodules = l.subs[k],
+                        package = l.pkgOf[k],
+                    }
+                );
+            }
+        }
+        let c = checkModule(l.parses[0].module, units.toArray(), l.collections, l.numbers, l.bytes);
         assertEq(c.errors.length(), 0, m);
         generate(c.program, "t");
     }

@@ -11,7 +11,15 @@ import std.core { embed };
 let stdPackage: int = -1;
 
 /// The modules of the standard library, by their names.
-let stdModules: string[] = ["std.fmt", "std.fs", "std.iter", "std.math", "std.os"];
+let stdModules: string[] = [
+    "std.fmt",
+    "std.fs",
+    "std.iter",
+    "std.math",
+    "std.os",
+    "std.random",
+    "std.random.system",
+];
 
 /// The text of the standard library's module `name`, `null` where there is none of that name.
 fn stdSource(name: string): ?string {
@@ -21,6 +29,8 @@ fn stdSource(name: string): ?string {
         "std.iter" => string.fromUtf8Lossy(comptime embed("../std/iter.lyrs")),
         "std.math" => string.fromUtf8Lossy(comptime embed("../std/math.lyrs")),
         "std.os" => string.fromUtf8Lossy(comptime embed("../std/os.lyrs")),
+        "std.random" => string.fromUtf8Lossy(comptime embed("../std/random.lyrs")),
+        "std.random.system" => string.fromUtf8Lossy(comptime embed("../std/random/system.lyrs")),
         _ => null,
     };
 }
@@ -45,11 +55,12 @@ fn collectionsText(): string {
     return string.fromUtf8Lossy(comptime embed("../std/collections.lyrs"));
 }
 
-/// The number tower's text (S7f1b): its names the prelude's, added where a program names one.
+/// `Bytes`' text (S7f5): its names the prelude's, added where a program names one.
 fn bytesText(): string {
     return string.fromUtf8Lossy(comptime embed("../std/bytes.lyrs"));
 }
 
+/// The number tower's text (S7f1b): its names the prelude's, added where a program names one.
 fn numbersText(): string {
     return string.fromUtf8Lossy(comptime embed("../std/numbers.lyrs"));
 }

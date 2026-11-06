@@ -24,8 +24,8 @@ fn classOf(module: string): ?string {
 }
 
 /// The standard library's table (12 Rechte, fixed in S7a): files, the network, processes, the
-/// system's environment and signals, its clock and unseeded randomness. `std.random` asks for
-/// `os` until S7f parts the seeded generator from the system's.
+/// system's environment and signals, its clock and unseeded randomness: a seeded generator is
+/// `std.random`'s and asks for nothing (S7f6, 01 S8).
 fn stdTable(): (string, string)[] {
     return [
         ("std.fs", "file"),
@@ -34,7 +34,7 @@ fn stdTable(): (string, string)[] {
         ("std.process", "process"),
         ("std.os", "os"),
         ("std.time", "os"),
-        ("std.random", "os"),
+        ("std.random.system", "os"),
     ];
 }
 

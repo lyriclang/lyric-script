@@ -137,6 +137,12 @@ enum NativeFn :: [Equatable] {
     BytesFill,
     BytesBadUtf8,
     BytesText,
+    RandomSeeded,
+    RandomFresh,
+    RandomInt,
+    RandomInRange,
+    RandomFloat,
+    RandomNormal,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -150,7 +156,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 96;
+let nativeCount: int = 102;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -250,7 +256,13 @@ fn nativeOf(n: int): NativeFn {
         92 => NativeFn.BytesMix,
         93 => NativeFn.BytesFill,
         94 => NativeFn.BytesBadUtf8,
-        _ => NativeFn.BytesText,
+        95 => NativeFn.BytesText,
+        96 => NativeFn.RandomSeeded,
+        97 => NativeFn.RandomFresh,
+        98 => NativeFn.RandomInt,
+        99 => NativeFn.RandomInRange,
+        100 => NativeFn.RandomFloat,
+        _ => NativeFn.RandomNormal,
     };
 }
 
@@ -353,6 +365,12 @@ fn nativeNumber(n: NativeFn): int {
         .BytesFill => 93,
         .BytesBadUtf8 => 94,
         .BytesText => 95,
+        .RandomSeeded => 96,
+        .RandomFresh => 97,
+        .RandomInt => 98,
+        .RandomInRange => 99,
+        .RandomFloat => 100,
+        .RandomNormal => 101,
     };
 }
 
@@ -454,6 +472,12 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .BytesFill => sig("bytes.fill", 1, 1, false, false),
         .BytesBadUtf8 => sig("bytes.badUtf8", 0, 1, true, false),
         .BytesText => sig("bytes.text", 0, 1, false, true),
+        .RandomSeeded => sig("random.seeded", 1, 0, false, true),
+        .RandomFresh => sig("random.fresh", 0, 0, false, true),
+        .RandomInt => sig("random.int", 0, 1, true, false),
+        .RandomInRange => sig("random.inRange", 2, 1, true, false),
+        .RandomFloat => sig("random.float", 0, 1, true, false),
+        .RandomNormal => sig("random.normal", 2, 1, true, false),
     };
 }
 

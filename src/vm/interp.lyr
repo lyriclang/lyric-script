@@ -53,6 +53,7 @@ import lyric_script.vm.heap {
     ScriptArray,
     ScriptIndex,
     ScriptBigInt,
+    ScriptBytes,
     ScriptBuilder,
     ErrorRecord,
     HeapRef,
@@ -1120,6 +1121,9 @@ fn callNative(
         .BigFromInt | .BigAdd | .BigSub | .BigMul | .BigDiv | .BigRem | .BigNeg | .BigCmp | .BigText | .BigParse | .BigFitsInt | .BigToInt | .BigToFloat | .BigShl | .BigShr | .BigBitLength | .BigHash => {
             return bigNative(which, s, r, x, y, shared);
         }
+        .BytesNew | .BytesOfText | .BytesOfLatin1 | .BytesOfList | .BytesToList | .BytesLen | .BytesGet | .BytesSet | .BytesPush | .BytesTruncate | .BytesSlice | .BytesAppend | .BytesCmp | .BytesMix | .BytesFill | .BytesBadUtf8 | .BytesText => {
+            return bytesNative(which, s, r, x, y, shared);
+        }
         .MathOne => s[x] = mathOne(s[x] as int, float.fromBits(s[x + 1])).toBits(),
         .MathTwo => s[x] = mathTwo(
             s[x] as int,
@@ -1788,6 +1792,21 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     }
                 }
                 if (target < 0 || target >= module.functions.length()) {
+                    // a field of the standard library's holds the VM's own object, and a script
+                    // can read the field: that is no fault of the compiler's
+                    if (recv is ScriptBigInt
+                        || recv is ScriptBytes
+                        || recv is ScriptBuilder
+                        || recv is ScriptIndex) {
+                        return panicOut(
+                            module,
+                            frames,
+                            fi,
+                            pc,
+                            "LYS-RT0007",
+                            "an object of the VM has no members"
+                        );
+                    }
                     return panicOut(
                         module,
                         frames,
@@ -3623,6 +3642,225 @@ fn charge(shared: RunShared, n: int): bool {
     }
     shared.budget -= n;
     return true;
+}
+
+/// What a native of `Bytes` costs for `n` bytes (12 rule 17): a unit for every 32 and one for the call.
+fn bytesCost(n: int): int {
+    return 1 + n / 32;
+}
+
+fn bytesFault(code: string, message: string): NativeFault {
+    return NativeFault { code = code, message = message };
+}
+
+fn notAByte(v: int): NativeFault {
+    return bytesFault("LYS-RT0002", f"{v} is no byte: a byte holds 0 to 255");
+}
+
+/// The natives of `Bytes` (S7f5). Those that walk the bytes charge first: where the budget does
+/// not cover them they leave everything as it is, and the instance stops at the call.
+fn bytesNative(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    shared: RunShared
+): ?NativeFault {
+    match (which) {
+        .BytesNew => {
+            let n = s[x] as int;
+            if (n < 0) {
+                return bytesFault("LYS-RT0003", f"a length of {n}: a length is never negative");
+            }
+            if (charge(shared, bytesCost(n))) {
+                let data = List<uint8>.withCapacity(n);
+                var k = 0;
+                while (k < n) {
+                    data.push(0);
+                    k += 1;
+                }
+                r[y] = ScriptBytes { data = data };
+            }
+            return null;
+        }
+        .BytesOfText => {
+            let t = textOf(r[y]);
+            if (charge(shared, bytesCost(t.length()))) {
+                r[y] = ScriptBytes { data = List<uint8>.of(t.toBytes()) };
+            }
+            return null;
+        }
+        .BytesOfLatin1 => {
+            let t = textOf(r[y]);
+            if (charge(shared, bytesCost(t.length()))) {
+                let data = List<uint8>.withCapacity(t.length());
+                for (c in t.chars()) {
+                    data.push((c as uint32) as uint8);
+                }
+                r[y] = ScriptBytes { data = data };
+            }
+            return null;
+        }
+        .BytesOfList => {
+            let o = r[y];
+            if (!(o is ScriptArray)) {
+                return bytesFault("LYS-RT0007", "a list of bytes is no list");
+            }
+            if (charge(shared, bytesCost(o.n))) {
+                let data = List<uint8>.withCapacity(o.n);
+                var k = 0;
+                while (k < o.n) {
+                    let v = o.s[k] as int;
+                    if (v < 0 || v > 255) {
+                        return notAByte(v);
+                    }
+                    data.push(v as uint8);
+                    k += 1;
+                }
+                r[y] = ScriptBytes { data = data };
+            }
+            return null;
+        }
+        _ => { }
+    }
+    let o = r[y];
+    if (!(o is ScriptBytes)) {
+        return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
+    let data = o.data;
+    let n = data.length();
+    match (which) {
+        .BytesToList => {
+            if (charge(shared, bytesCost(n))) {
+                let out = List<uint64>.withCapacity(n);
+                var k = 0;
+                while (k < n) {
+                    out.push(data[k] as uint64);
+                    k += 1;
+                }
+                r[y] = ScriptArray { ns = 1, nr = 0, s = out, r = List<HeapRef>.new(), n = n };
+            }
+        }
+        .BytesLen => s[x] = n as uint64,
+        .BytesGet => {
+            let i = s[x] as int;
+            if (i < 0 || i >= n) {
+                return bytesFault("LYS-RT0003", f"index {i} out of bounds for length {n}");
+            }
+            s[x] = data[i] as uint64;
+        }
+        .BytesSet => {
+            let i = s[x] as int;
+            let v = s[x + 1] as int;
+            if (i < 0 || i >= n) {
+                return bytesFault("LYS-RT0003", f"index {i} out of bounds for length {n}");
+            }
+            if (v < 0 || v > 255) {
+                return notAByte(v);
+            }
+            data[i] = v as uint8;
+        }
+        .BytesPush => {
+            let v = s[x] as int;
+            if (v < 0 || v > 255) {
+                return notAByte(v);
+            }
+            data.push(v as uint8);
+        }
+        .BytesTruncate => data.truncate(s[x] as int),
+        .BytesSlice => {
+            let a = s[x] as int;
+            let e = s[x + 1] as int;
+            if (a < 0 || a > e || e > n) {
+                return bytesFault("LYS-RT0003", f"range {a}..{e} out of bounds for length {n}");
+            }
+            if (charge(shared, bytesCost(e - a))) {
+                let out = List<uint8>.withCapacity(e - a);
+                var k = a;
+                while (k < e) {
+                    out.push(data[k]);
+                    k += 1;
+                }
+                r[y] = ScriptBytes { data = out };
+            }
+        }
+        .BytesAppend => {
+            let p = r[y + 1];
+            if (!(p is ScriptBytes)) {
+                return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+            }
+            // its own length first: a value may be appended to itself
+            let m = p.data.length();
+            if (charge(shared, bytesCost(m))) {
+                var k = 0;
+                while (k < m) {
+                    data.push(p.data[k]);
+                    k += 1;
+                }
+            }
+        }
+        .BytesCmp => {
+            let p = r[y + 1];
+            if (!(p is ScriptBytes)) {
+                return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+            }
+            let m = p.data.length();
+            let least = if (n < m) n else m;
+            if (charge(shared, bytesCost(least))) {
+                var k = 0;
+                var c = if (n < m) -1 else if (n > m) 1 else 0;
+                while (k < least) {
+                    if (data[k] != p.data[k]) {
+                        c = if (data[k] < p.data[k]) -1 else 1;
+                        break;
+                    }
+                    k += 1;
+                }
+                s[x] = c as uint64;
+            }
+        }
+        .BytesMix => {
+            if (charge(shared, bytesCost(n))) {
+                var h = DefaultHasher.new();
+                h.writeUint(s[x]);
+                var k = 0;
+                while (k < n) {
+                    h.writeByte(data[k]);
+                    k += 1;
+                }
+                s[x] = h.finish();
+            }
+        }
+        .BytesFill => {
+            let v = s[x] as int;
+            if (v < 0 || v > 255) {
+                return notAByte(v);
+            }
+            if (charge(shared, bytesCost(n))) {
+                var k = 0;
+                while (k < n) {
+                    data[k] = v as uint8;
+                    k += 1;
+                }
+            }
+        }
+        .BytesBadUtf8 => {
+            if (charge(shared, bytesCost(n))) {
+                let _ = try string.fromUtf8(data.asSlice()) catch (e) {
+                    s[x] = e.offset as uint64;
+                    return null;
+                };
+                s[x] = (-1) as uint64;
+            }
+        }
+        _ => {
+            if (charge(shared, bytesCost(n))) {
+                r[y] = ScriptString { text = string.fromUtf8Lossy(data.asSlice()) };
+            }
+        }
+    }
+    return null;
 }
 
 /// The most words a `BigInt` holds, 2^31 bits: past it a program's shift or product would end the

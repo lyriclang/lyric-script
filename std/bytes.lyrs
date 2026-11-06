@@ -1,0 +1,207 @@
+//! `Bytes` (02 T1, 09 Y7, S7f5): binary data, a list of bytes that grows, an element an `int` from 0
+//! to 255. Loaded where a program names it, as the number tower is: a program without it pays
+//! nothing. Its natives know their cost and charge it before they work (spec 12 rule 17).
+
+fn __bytesNew(n: int): Any = __bytes_new(n)
+fn __bytesOfText(s: string): Any = __bytes_ofText(s)
+fn __bytesOfLatin1(s: string): Any = __bytes_ofLatin1(s)
+fn __bytesOfList(xs: int[]): Any = __bytes_ofList(xs)
+fn __bytesToList(b: Any): int[] = __bytes_toList(b)
+fn __bytesLength(b: Any): int = __bytes_len(b)
+fn __bytesGet(b: Any, i: int): int = __bytes_get(i, b)
+fn __bytesSet(b: Any, i: int, v: int): void = __bytes_set(i, v, b)
+fn __bytesPush(b: Any, v: int): void = __bytes_push(v, b)
+fn __bytesTruncate(b: Any, n: int): void = __bytes_truncate(n, b)
+fn __bytesSliceOf(b: Any, from: int, to: int): Any = __bytes_slice(from, to, b)
+fn __bytesAppend(b: Any, o: Any): void = __bytes_append(b, o)
+fn __bytesCmp(a: Any, b: Any): int = __bytes_cmp(a, b)
+fn __bytesMix(state: int, b: Any): int = __bytes_mix(state, b)
+fn __bytesFill(b: Any, v: int): void = __bytes_fill(v, b)
+fn __bytesBadUtf8(b: Any): int = __bytes_badUtf8(b)
+fn __bytesText(b: Any): string = __bytes_text(b)
+
+// what the compiler calls: a byte string's constant holds each byte as the character of that
+// number; a slice and a length, `^n` counting from the end as on a list
+fn __bytesLit(s: string): Bytes = Bytes { v = __bytesOfLatin1(s) }
+fn __bytesSlice(b: Bytes, from: int, to: int): Bytes = Bytes { v = __bytesSliceOf(b.v, from, to) }
+fn __bytesLen(b: Bytes): int = __bytesLength(b.v)
+fn __bytesAt(b: Bytes, i: int): int = __bytesGet(b.v, i)
+fn __bytesPut(b: Bytes, i: int, v: int): void = __bytesSet(b.v, i, v)
+
+class BytesIter :: [Iterator, DoubleEnded, Clone] {
+    type Item = int
+    b: Any
+    var at: int = 0
+    var end: int
+
+    fn next(): ?int {
+        if (this.at >= this.end) {
+            return null
+        }
+        let x = __bytesGet(this.b, this.at)
+        this.at += 1
+        return x
+    }
+    fn nextBack(): ?int {
+        if (this.at >= this.end) {
+            return null
+        }
+        this.end -= 1
+        return __bytesGet(this.b, this.end)
+    }
+    fn sizeHint(): (int, ?int) = (this.end - this.at, this.end - this.at)
+    fn clone(): BytesIter = BytesIter { b = this.b, at = this.at, end = this.end }
+}
+
+class Bytes :: [IndexSet<int>, Iterable, Contains<int>, Add, TotalOrder, Hashable, Clone, Default, FromArrayLiteral<int>, Display, Debug] {
+    v: Any
+
+    /// No bytes.
+    static fn new(): Bytes = Bytes { v = __bytesNew(0) }
+    /// No bytes (Lyric 5's `List.withCapacity`: the room is the VM's to keep); a negative `n` panics.
+    static fn withCapacity(n: int): Bytes {
+        if (n < 0) {
+            panic(f"a negative capacity: {n}")
+        }
+        return Bytes.new()
+    }
+    /// `n` bytes of 0: a buffer to read into.
+    static fn zeroed(n: int): Bytes = Bytes { v = __bytesNew(n) }
+    /// The bytes of `xs`; an element outside 0 to 255 panics.
+    static fn of(xs: int[]): Bytes = Bytes { v = __bytesOfList(xs) }
+    /// The values of an iterator, in order; a value outside 0 to 255 panics.
+    static fn from<I :: [Iterator<Item = int>]>(it: I): Bytes {
+        let out = Bytes.new()
+        while (let x = it.next()) {
+            out.push(x)
+        }
+        return out
+    }
+    static fn fromArrayLiteral(items: int[]): Bytes = Bytes.of(items)
+    static fn default(): Bytes = Bytes.new()
+
+    fn length(): int = __bytesLength(this.v)
+    fn isEmpty(): bool = __bytesLength(this.v) == 0
+
+    type Output = int
+    /// The byte at `i`, an `int` from 0 to 255; outside, a panic.
+    fn index(i: int): int = __bytesGet(this.v, i)
+    /// A value outside 0 to 255 panics.
+    fn setIndex(i: int, v: int) = __bytesSet(this.v, i, v)
+    /// The byte at `i`, `null` outside.
+    fn get(i: int): ?int {
+        if (i < 0 || i >= this.length()) {
+            return null
+        }
+        return __bytesGet(this.v, i)
+    }
+    fn first(): ?int = this.get(0)
+    fn last(): ?int = this.get(this.length() - 1)
+
+    /// A value outside 0 to 255 panics.
+    fn push(v: int) = __bytesPush(this.v, v)
+    fn pop(): ?int {
+        let n = this.length()
+        if (n == 0) {
+            return null
+        }
+        let x = __bytesGet(this.v, n - 1)
+        __bytesTruncate(this.v, n - 1)
+        return x
+    }
+    fn pushAll(o: Bytes) = __bytesAppend(this.v, o.v)
+    fn clear() = __bytesTruncate(this.v, 0)
+    /// Keeps the first `n`: an `n` at or past the length keeps all, a negative one panics.
+    fn truncate(n: int) {
+        if (n < 0) {
+            panic(f"a negative length: {n}")
+        }
+        if (n < this.length()) {
+            __bytesTruncate(this.v, n)
+        }
+    }
+    fn fill(v: int) = __bytesFill(this.v, v)
+    fn reverse() {
+        var i = 0
+        var j = this.length() - 1
+        while (i < j) {
+            let x = __bytesGet(this.v, i)
+            __bytesSet(this.v, i, __bytesGet(this.v, j))
+            __bytesSet(this.v, j, x)
+            i += 1
+            j -= 1
+        }
+    }
+    fn reversed(): Bytes {
+        let out = this.clone()
+        out.reverse()
+        return out
+    }
+    fn indexOf(x: int): ?int {
+        let n = this.length()
+        var i = 0
+        while (i < n) {
+            if (__bytesGet(this.v, i) == x) {
+                return i
+            }
+            i += 1
+        }
+        return null
+    }
+    fn contains(x: int): bool = this.indexOf(x) != null
+    fn startsWith(o: Bytes): bool {
+        let m = o.length()
+        return m <= this.length() && __bytesCmp(__bytesSliceOf(this.v, 0, m), o.v) == 0
+    }
+    fn endsWith(o: Bytes): bool {
+        let n = this.length()
+        let m = o.length()
+        return m <= n && __bytesCmp(__bytesSliceOf(this.v, n - m, n), o.v) == 0
+    }
+
+    type Iter = BytesIter
+    fn iter(): BytesIter = BytesIter { b = this.v, end = this.length() }
+    fn toList(): int[] = __bytesToList(this.v)
+
+    type Out = Bytes
+    fn add(o: Bytes): Bytes {
+        let out = this.clone()
+        out.pushAll(o)
+        return out
+    }
+    fn equals(o: Bytes): bool = __bytesCmp(this.v, o.v) == 0
+    fn compare(o: Bytes): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: Bytes): Ordering {
+        let c = __bytesCmp(this.v, o.v)
+        return if (c < 0) Ordering.Less else if (c > 0) Ordering.Greater else Ordering.Equal
+    }
+    fn hash(h: Hasher) {
+        h.state = __bytesMix(h.state, this.v)
+    }
+    fn clone(): Bytes = Bytes { v = __bytesSliceOf(this.v, 0, this.length()) }
+    // as a list of its numbers: a byte has no text
+    fn show(): string = this.toList().show()
+    fn debug(): string = this.toList().debug()
+}
+
+// bytes that are no well-formed UTF-8: from `offset` on they hold an overlong form, a surrogate, a
+// value beyond U+10FFFF, a byte that begins nothing, or a sequence cut short (Lyric 5 12 §Strings)
+struct Utf8Error :: Error {
+    offset: int
+    fn message(): string = f"the bytes are no UTF-8 from byte {this.offset} on"
+}
+
+extend string {
+    /// The bytes, a new `Bytes`.
+    fn toBytes(): Bytes = Bytes { v = __bytesOfText(this) }
+    /// The text the bytes are; a `Utf8Error` where they are not well-formed.
+    static fn fromUtf8(bytes: Bytes): string {
+        let bad = __bytesBadUtf8(bytes.v)
+        if (bad >= 0) {
+            throw Utf8Error { offset = bad }
+        }
+        return __bytesText(bytes.v)
+    }
+    /// The text with each maximal part that is not well-formed replaced by U+FFFD.
+    static fn fromUtf8Lossy(bytes: Bytes): string = __bytesText(bytes.v)
+}

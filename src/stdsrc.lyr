@@ -46,6 +46,10 @@ fn collectionsText(): string {
 }
 
 /// The number tower's text (S7f1b): its names the prelude's, added where a program names one.
+fn bytesText(): string {
+    return string.fromUtf8Lossy(comptime embed("../std/bytes.lyrs"));
+}
+
 fn numbersText(): string {
     return string.fromUtf8Lossy(comptime embed("../std/numbers.lyrs"));
 }

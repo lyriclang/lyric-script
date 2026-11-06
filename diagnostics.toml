@@ -41,13 +41,13 @@ summary = "An integer `/` or `%` has a zero divisor. The code and its meaning ar
 title = "integer overflow"
 severity = "panic"
 area = "08-expressions"
-summary = "An `int` operation's result does not fit 64 bits. The code and its meaning are Lyric 5's LYR-RT0002."
+summary = "An `int` operation's result does not fit 64 bits; a `BigInt`'s past 2^31 bits, or a shift of it by a negative count; a value outside 0 to 255 given to a `Bytes`. The code and its meaning are Lyric 5's LYR-RT0002."
 
 [LYS-RT0003]
 title = "an index or a range out of bounds"
 severity = "panic"
 area = "08-expressions"
-summary = "A list read or written at an index it does not have: below 0, or at its length or above. The code and its meaning are Lyric 5's LYR-RT0003."
+summary = "A list or a `Bytes` read or written at an index it does not have: below 0, or at its length or above; a slice outside, or a negative length of a `Bytes`. The code and its meaning are Lyric 5's LYR-RT0003."
 
 [LYS-RT0004]
 title = "a null value used"
@@ -65,7 +65,7 @@ summary = "The script's calls nest deeper than the VM runs (10 000 frames). The 
 title = "a precondition from the program text"
 severity = "panic"
 area = "03-types"
-summary = "A value the program gives breaks what the operation asks of it: a negative count to repeat a list or a string, `xs * n` and `s * n`. The code and its meaning are Lyric 5's LYR-RT0007."
+summary = "A value the program gives breaks what the operation asks of it: a negative count to repeat a list or a string, `xs * n` and `s * n`; a field of a `BigInt` or a `Bytes` that holds no such thing, or the VM's object behind one asked for anything. The code and its meaning are Lyric 5's LYR-RT0007."
 
 [LYS-RT0008]
 title = "panic called by the script"

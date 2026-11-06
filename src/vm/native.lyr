@@ -120,6 +120,23 @@ enum NativeFn :: [Equatable] {
     BigShr,
     BigBitLength,
     BigHash,
+    BytesNew,
+    BytesOfText,
+    BytesOfLatin1,
+    BytesOfList,
+    BytesToList,
+    BytesLen,
+    BytesGet,
+    BytesSet,
+    BytesPush,
+    BytesTruncate,
+    BytesSlice,
+    BytesAppend,
+    BytesCmp,
+    BytesMix,
+    BytesFill,
+    BytesBadUtf8,
+    BytesText,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -133,7 +150,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 79;
+let nativeCount: int = 96;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -216,7 +233,24 @@ fn nativeOf(n: int): NativeFn {
         75 => NativeFn.BigShl,
         76 => NativeFn.BigShr,
         77 => NativeFn.BigBitLength,
-        _ => NativeFn.BigHash,
+        78 => NativeFn.BigHash,
+        79 => NativeFn.BytesNew,
+        80 => NativeFn.BytesOfText,
+        81 => NativeFn.BytesOfLatin1,
+        82 => NativeFn.BytesOfList,
+        83 => NativeFn.BytesToList,
+        84 => NativeFn.BytesLen,
+        85 => NativeFn.BytesGet,
+        86 => NativeFn.BytesSet,
+        87 => NativeFn.BytesPush,
+        88 => NativeFn.BytesTruncate,
+        89 => NativeFn.BytesSlice,
+        90 => NativeFn.BytesAppend,
+        91 => NativeFn.BytesCmp,
+        92 => NativeFn.BytesMix,
+        93 => NativeFn.BytesFill,
+        94 => NativeFn.BytesBadUtf8,
+        _ => NativeFn.BytesText,
     };
 }
 
@@ -302,6 +336,23 @@ fn nativeNumber(n: NativeFn): int {
         .BigShr => 76,
         .BigBitLength => 77,
         .BigHash => 78,
+        .BytesNew => 79,
+        .BytesOfText => 80,
+        .BytesOfLatin1 => 81,
+        .BytesOfList => 82,
+        .BytesToList => 83,
+        .BytesLen => 84,
+        .BytesGet => 85,
+        .BytesSet => 86,
+        .BytesPush => 87,
+        .BytesTruncate => 88,
+        .BytesSlice => 89,
+        .BytesAppend => 90,
+        .BytesCmp => 91,
+        .BytesMix => 92,
+        .BytesFill => 93,
+        .BytesBadUtf8 => 94,
+        .BytesText => 95,
     };
 }
 
@@ -386,6 +437,23 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .BigShr => sig("big.shr", 1, 1, false, true),
         .BigBitLength => sig("big.bitLength", 0, 1, true, false),
         .BigHash => sig("big.hash", 0, 1, true, false),
+        .BytesNew => sig("bytes.new", 1, 0, false, true),
+        .BytesOfText => sig("bytes.ofText", 0, 1, false, true),
+        .BytesOfLatin1 => sig("bytes.ofLatin1", 0, 1, false, true),
+        .BytesOfList => sig("bytes.ofList", 0, 1, false, true),
+        .BytesToList => sig("bytes.toList", 0, 1, false, true),
+        .BytesLen => sig("bytes.len", 0, 1, true, false),
+        .BytesGet => sig("bytes.get", 1, 1, true, false),
+        .BytesSet => sig("bytes.set", 2, 1, false, false),
+        .BytesPush => sig("bytes.push", 1, 1, false, false),
+        .BytesTruncate => sig("bytes.truncate", 1, 1, false, false),
+        .BytesSlice => sig("bytes.slice", 2, 1, false, true),
+        .BytesAppend => sig("bytes.append", 0, 2, false, false),
+        .BytesCmp => sig("bytes.cmp", 0, 2, true, false),
+        .BytesMix => sig("bytes.mix", 1, 1, true, false),
+        .BytesFill => sig("bytes.fill", 1, 1, false, false),
+        .BytesBadUtf8 => sig("bytes.badUtf8", 0, 1, true, false),
+        .BytesText => sig("bytes.text", 0, 1, false, true),
     };
 }
 

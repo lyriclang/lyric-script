@@ -89,6 +89,7 @@ class Loaded {
     var collections: bool = false,
     // whether a module names the number tower: it is added, its names the prelude's (S7f1b)
     var numbers: bool = false,
+    var bytes: bool = false,
     // the lock as read, its manifest index, and what this build read from git (S5c2)
     var lockOld: LockEntry[] = [],
     var lockDoc: int = -1,
@@ -335,6 +336,7 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
     visit(0, edges, edgeAt, state, List<int>.new(), l);
     l.collections = l.collections || namesCollections(l);
     l.numbers = namesNumbers(l);
+    l.bytes = namesBytes(l);
     return l;
 }
 
@@ -472,6 +474,33 @@ fn namesNumbers(l: Loaded): bool {
         k += 1;
     }
     return false;
+}
+
+/// Whether a module loaded names `Bytes` (S7f5): the type, its error, a string's way there and
+/// back, or a byte string. Too many is a cost, none too few; a `b"` after a letter ends a string.
+fn namesBytes(l: Loaded): bool {
+    for (text in l.texts) {
+        for (n in ["Bytes", "fromUtf8", "Utf8Error"]) {
+            if (text.contains(n)) {
+                return true;
+            }
+        }
+        if (text.contains("b\"")) {
+            var from = 0;
+            let b = text.toBytes();
+            while (from + 1 < b.length()) {
+                if (b[from] == 98 && b[from + 1] == 34 && (from == 0 || !wordByte(b[from - 1]))) {
+                    return true;
+                }
+                from += 1;
+            }
+        }
+    }
+    return false;
+}
+
+fn wordByte(b: uint8): bool {
+    return b == 95 || b >= 48 && b <= 57 || b >= 65 && b <= 90 || b >= 97 && b <= 122;
 }
 
 /// A single script's frontmatter (07 Dep, 09 Hd): where it names dependencies, the script is

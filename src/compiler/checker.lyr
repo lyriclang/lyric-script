@@ -11,6 +11,7 @@
 //! at 0900. `LYS-NYI0001` names what the plan builds later: it
 //! leaves the toolchain before 1.0.
 import std.collections { List, Map, Set };
+import std.core { StringBuilder };
 import lyric_script.compiler.ast {
     AliasDecl,
     Arg,
@@ -49,7 +50,7 @@ import lyric_script.compiler.ast {
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.compiler.throws { ThrowSets, Thrown };
-import lyric_script.stdsrc { collectionsText, numbersText, preludeText, stdPackage };
+import lyric_script.stdsrc { bytesText, collectionsText, numbersText, preludeText, stdPackage };
 import lyric_script.vm.fmt { FmtKind, fmtProblem };
 import lyric_script.vm.native { nativeInfo, nativeNamed, nativeNumber, nativeOf };
 import lyric_script.compiler.typed {
@@ -104,7 +105,8 @@ fn checkModule(
     parsed: Module,
     imported: ProgramUnit[] = [],
     collections: bool = false,
-    numbers: bool = false
+    numbers: bool = false,
+    bytes: bool = false
 ): Checked {
     let c = Checker.new();
     // the prelude's declarations before the program's, parsed as no file of it; the entry's last
@@ -126,6 +128,14 @@ fn checkModule(
     if (numbers) {
         let parsed = parse(numbersText(), -1);
         c.stdParses(parsed, "the number tower");
+        for (item in parsed.module.items) {
+            items.push(item);
+        }
+    }
+    // `Bytes` where the program names it (S7f5)
+    if (bytes) {
+        let parsed = parse(bytesText(), -1);
+        c.stdParses(parsed, "Bytes");
         for (item in parsed.module.items) {
             items.push(item);
         }
@@ -11447,7 +11457,19 @@ class Checker {
                 "fromStringLiteral",
                 expected
             ),
-            .Bytes(_, at) => this.notYet("a byte string", "S7f (Bytes)", at),
+            .Bytes(bs, _) => {
+                // a constant holds text: each byte as the character of its number, read back by
+                // the native; a new `Bytes` each time it is evaluated (Lyric 5 §4.5)
+                let text = StringBuilder.new();
+                for (b in bs) {
+                    text.appendChar(char.fromUint32(b as uint32) ?? '?');
+                }
+                return this.preludeCall(
+                    "__bytesLit",
+                    [TExpr.Str(text.toString())],
+                    Ty.Named(this.typeIndex.get("Bytes") ?? -1)
+                );
+            }
             .Interpolated(segments, _) => this.interpolated(segments),
             .Null(_) => {
                 let t = expected ?? Ty.NullLit;
@@ -13993,6 +14015,9 @@ class Checker {
                 return this.notYet(f"indexing a {this.tyName(t)}", "S7 (the core collections)", at);
             }
             _ => {
+                if (this.isBytes(t) && (countsFromEnd(i) || isRange(i))) {
+                    return this.bytesIndex(lv, i, t, at);
+                }
                 // a type of one's own (03 Index, S7c2): `x[k]` is `x.index(k)`
                 if (!this.indexable(t, "Index", at)) {
                     return TExpr.Unknown;
@@ -14004,6 +14029,55 @@ class Checker {
                 return this.methodCall(lv, "index", [Arg { name = null, value = i }], at, at);
             }
         }
+    }
+
+    /// Whether `t` is the standard library's `Bytes`.
+    fn isBytes(t: Ty): bool {
+        return match (t) {
+            .Named(i) => i == (this.typeIndex.get("Bytes") ?? -1),
+            _ => false,
+        };
+    }
+
+    /// `b[a..b]`, a new `Bytes`, and `b[^n]` of a `Bytes` (S7f5): its bounds count from its end as
+    /// a list's do — the value held once, where `^n` reads its length.
+    mut fn bytesIndex(b: TExpr, i: Expr, t: Ty, at: Span): TExpr {
+        var lv = b;
+        var hold: ?int = null;
+        if (countsFromEnd(i)) {
+            let h = this.hidden(t, at);
+            lv = TExpr.Block([TStmt.SetLocal(h, b, at.line)], boxE(TExpr.Local(h, t)), t);
+            hold = h;
+        }
+        match (i) {
+            .Range(from, to, inclusive, _) => {
+                let low = this.bytesBound(from.value, hold, t);
+                let high = this.bytesBound(to.value, hold, t);
+                let end = if (inclusive) TExpr.Binary(
+                    boxE(high),
+                    BinaryOp.Add,
+                    boxE(TExpr.Int(1)),
+                    Ty.Int
+                )
+                    else high;
+                return this.preludeCall("__bytesSlice", [lv, low, end], t);
+            }
+            _ => { }
+        }
+        return this.preludeCall("__bytesAt", [lv, this.bytesBound(i, hold, t)], Ty.Int);
+    }
+
+    /// A bound of a `Bytes`: an `int`, or `^n`, its length less `n`.
+    mut fn bytesBound(i: Expr, hold: ?int, t: Ty): TExpr {
+        match (i) {
+            .FromEnd(n, _) => {
+                let k = this.coerce(this.expr(n.value, Ty.Int), Ty.Int, spanOf(n.value));
+                let len = this.preludeCall("__bytesLen", [TExpr.Local(hold ?? 0, t)], Ty.Int);
+                return TExpr.Binary(boxE(len), BinaryOp.Sub, boxE(k), Ty.Int);
+            }
+            _ => { }
+        }
+        return this.coerce(this.expr(i, Ty.Int), Ty.Int, spanOf(i));
     }
 
     /// `s[i]` and `s[a..b]` of a string (Lyric 5 12 §Strings rules 2–3; S7e1): the character that
@@ -14122,12 +14196,12 @@ class Checker {
         if (!this.indexable(t, "IndexSet", indexAt)) {
             return TExpr.Unknown;
         }
-        if (countsFromEnd(k)) {
+        if (countsFromEnd(k) && !this.isBytes(t)) {
             this.error("LYS-SEM0007", "'^' counts from the end of a list alone", indexAt);
             return TExpr.Unknown;
         }
-        let kv = this.expr(k, null);
         let hx = this.hidden(t, at);
+        let kv = if (countsFromEnd(k)) this.bytesBound(k, hx, t) else this.expr(k, null);
         let hk = this.hidden(typeOf(kv), at);
         let x = Expr.Name(this.ctx.localNames[hx], at);
         let key = Expr.Name(this.ctx.localNames[hk], at);
@@ -17776,13 +17850,6 @@ class Checker {
                 match (t) {
                     .Str => {
                         match (method) {
-                            "toBytes" => {
-                                return this.notYet(
-                                    "a string's bytes",
-                                    "S7f (numbers, BigInt, Bytes)",
-                                    memberAt
-                                );
-                            }
                             _ => {
                                 this.error(
                                     "LYS-SEM0012",
@@ -19210,6 +19277,13 @@ fn dropCopies(m: Map<string, int>, n: int): void {
 fn isEmptyList(e: Expr): bool {
     return match (e) {
         .List(items, _) => items.length() == 0,
+        _ => false,
+    };
+}
+
+fn isRange(i: Expr): bool {
+    return match (i) {
+        .Range(_, _, _, _) => true,
         _ => false,
     };
 }

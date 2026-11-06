@@ -24,6 +24,14 @@ fn codesWith(entry: string, name: string, text: string, pkg: int): string[] {
 fn theNumberTowerComesWhereAModuleNamesIt(): void {
     // what most scripts never reach, none pays for (S7f1b; P21): no name of it, no tower
     assertTrue(!loadProgram("t.lyrs", "println(1 + 2)").numbers);
+    // `Bytes` comes the same way (S7f5): its names, a byte string; a string that ends in b is none
+    assertTrue(!loadProgram("t.lyrs", "println(\"ab\")").bytes);
+    assertTrue(!loadProgram("t.lyrs", "let b_ = 1").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = b\"a\"").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = [b\"a\"]").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = \"a\".toBytes()").bytes);
+    assertTrue(loadProgram("t.lyrs", "fn f(x: Bytes) { }").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = string.fromUtf8Lossy(y)").bytes);
     // a constant, a member after a dot, an interface
     assertTrue(loadProgram("t.lyrs", "println(int.max)").numbers);
     assertTrue(loadProgram("t.lyrs", "println(2.pow(3))").numbers);

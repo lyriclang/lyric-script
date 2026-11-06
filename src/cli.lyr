@@ -425,7 +425,13 @@ fn compile(l: Loaded, json: bool): Compiled {
             );
         }
     }
-    let checked = checkModule(l.parses[0].module, imported.toArray(), l.collections, l.numbers);
+    let checked = checkModule(
+        l.parses[0].module,
+        imported.toArray(),
+        l.collections,
+        l.numbers,
+        l.bytes
+    );
     r.all(checked.errors, checked.warnings);
     r.summary();
     if (checked.errors.length() > 0) {

@@ -189,6 +189,8 @@ class TypeInfo {
     // a blanket block's entry (05 §13 rule 7; S7c4c2): which of its parameters the receiver is;
     // -1 for any other type
     var blanketAt: int = -1,
+    // a blanket block's parameters only its conformance names (05 §13 rule 9; S7f3)
+    var openAt: int[] = [],
     // an instance's members and conformances a block on it alone gave (05 §13 rule 1; S7c4c3b):
     // its `methods` are its template's, shared
     var ownMethods: Map<string, int> = Map<string, int>.new(),

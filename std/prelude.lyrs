@@ -1485,6 +1485,17 @@ extend char {
 interface Clone {
     fn clone(): Self
 }
+// `From` is what a type writes, `Into` follows from it (Lyric 5 12 §Numbers; 05 §13 rule 9): the type
+// a position expects, or the instance a constraint asks, chooses the target
+interface From<T> {
+    static fn from(v: T): Self
+}
+interface Into<T> {
+    fn into(): T
+}
+extend<T, U :: [From<T>]> T :: [Into<U>] {
+    fn into(): U = U.from(this)
+}
 interface Default {
     static fn default(): Self
 }

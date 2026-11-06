@@ -359,6 +359,10 @@ class Synthesized {
     var hasherIx: int = -1,
     // the generic whose copy is being made, for a refusal in it
     var copying: Span = nowhereSpan,
+    // what a block with a parameter only its conformance names gave so far, by entry and
+    // interface instance; the table entries still to copy (05 §13 rule 9; S7f3)
+    openGiven: Set<string> = Set<string>.new(),
+    openPending: List<OpenEntry> = List<OpenEntry>.new(),
     // `Debug`, `Display` and the builder they write into (S7e3)
     var debugIx: int = -1,
     var displayIx: int = -1,
@@ -2993,13 +2997,49 @@ class Checker {
         this.declareAnswers(inst, x.answers);
         this.declareStatics(inst, x.statics);
         for (m in x.methods) {
-            // one member of a name: a block on one instance holds no set (S7c5d2; P22)
-            if (this.methodOf(inst, m.name) != null) {
-                this.error("LYS-SEM0121", f"'{info.name}' has a second member '{m.name}'", m.span);
-                continue;
+            let fi = this.declareFn(m, inst);
+            // a conformance block's member answers its block's conformances (05 §3 rule 4)
+            if (x.conforms.length() > 0) {
+                this.memberSite.insert(fi, f"{x.span.file}:{x.span.start}");
             }
-            info.ownMethods.insert(m.name, this.declareFn(m, inst));
+            if (let first = this.methodOf(inst, m.name)) {
+                this.anotherOnInstance(inst, m.name, first, fi);
+            }
+            if (!info.ownMethods.containsKey(m.name)) {
+                info.ownMethods.insert(m.name, fi);
+            }
         }
+    }
+
+    /// Adds `fi` to the members of `name` instance `inst` has: those of its template, which a set
+    /// of the instance's holds too, and its own blocks' (05 §3 rule 5, 08 §1.2; S7f3, P22).
+    /// `checkSets` refuses one that stands apart from none.
+    mut fn anotherOnInstance(inst: int, name: string, first: int, fi: int): void {
+        let info = this.types[inst];
+        if (let set = info.sets.get(name)) {
+            set.push(fi);
+            return;
+        }
+        let set = List<int>.new();
+        if (let shared = this.types[info.template].sets.get(name)) {
+            for (c in shared) {
+                set.push(c);
+            }
+        } else {
+            set.push(first);
+        }
+        set.push(fi);
+        info.sets.insert(name, set);
+        info.setNames.push(name);
+    }
+
+    /// The members of `name` type `i` has several of: an instance's own set, else its template's.
+    fn setOf(i: int, name: string): ?List<int> {
+        let info = this.types[i];
+        if (let own = info.sets.get(name)) {
+            return own;
+        }
+        return if (info.template >= 0) this.types[info.template].sets.get(name) else null;
     }
 
     /// Method `name` of type `i`: one a block on the instance alone gave it (S7c4c3b), else its
@@ -3038,13 +3078,25 @@ class Checker {
         let savedDeclaring = this.declaringParams;
         this.enterGenericType(index, x.typeParams);
         this.declareAnswers(index, x.answers);
-        // a parameter neither the target nor a fixation names: the block reaches no type
+        // a parameter neither the target nor a fixation names: the block reaches no type — unless
+        // its conformance names it, and what asks for an instance or calls binds it (rule 9)
+        let open = List<int>.new();
         var k = 0;
         for (tp in x.typeParams) {
             var named = k == at;
             for (other in info.typeParams) {
                 for (f in other.fixed) {
                     named = named || this.namesParam(f.ty, k);
+                }
+            }
+            if (!named) {
+                for (c in x.conforms) {
+                    for (arg in c.args) {
+                        named = named || typeExprNames(arg, tp.name);
+                    }
+                }
+                if (named) {
+                    open.push(k);
                 }
             }
             if (!named) {
@@ -3056,6 +3108,7 @@ class Checker {
             }
             k += 1;
         }
+        info.openAt = open.toArray();
         for (m in x.methods) {
             if (info.methods.containsKey(m.name)) {
                 this.error("LYS-SEM0121", f"the block has a second member '{m.name}'", m.span);
@@ -3217,7 +3270,10 @@ class Checker {
             if (this.functions[fi].isStatic != statics) {
                 continue;
             }
-            if (let b = this.blanketBinds(fi, t)) {
+            let e = this.functions[fi].owner;
+            let found = if (this.types[e].openAt.length() > 0) this.openCallBinds(e, t)
+                else this.blanketBinds(fi, t);
+            if (let b = found) {
                 if (pick >= 0) {
                     this.error(
                         "LYS-SEM0121",
@@ -3280,6 +3336,65 @@ class Checker {
             for (f in tp.fixed) {
                 let got = this.answerThroughAt(bound[k], f.iface, f.name, nowhereSpan);
                 if (!sameOrUnknown(got, this.subst(f.ty, bound))) {
+                    return null;
+                }
+            }
+            k += 1;
+        }
+        return bound;
+    }
+
+    /// What a call on a receiver of type `t` binds of block `e`, which has a parameter only its
+    /// conformance names (05 §13 rule 9; S7f3): the target, a hole for the call to fill from its
+    /// arguments and the position, which also asks that parameter's constraints.
+    mut fn openCallBinds(e: int, t: Ty): ?Ty[] {
+        let entry = this.types[e];
+        let out = List<Ty>.new();
+        var k = 0;
+        for (_ in entry.typeParams) {
+            out.push(if (k == entry.blanketAt) t else Ty.Param(-1));
+            k += 1;
+        }
+        for (c in entry.typeParams[entry.blanketAt].constraints) {
+            if (!this.conformsTo(t, this.constraintAt(c, out.toArray()))) {
+                return null;
+            }
+        }
+        return out.toArray();
+    }
+
+    /// The parameters of block `e`, which has a parameter only its conformance names, for a
+    /// receiver of type `t` asked for interface instance `ii`: the target `t`, the others what the
+    /// instance says (05 §13 rule 9; S7f3); null where its constraints are not met.
+    mut fn openBinds(e: int, t: Ty, ii: int): ?Ty[] {
+        let entry = this.types[e];
+        let binds = List<?Ty>.new();
+        for (_ in entry.typeParams) {
+            binds.push(null);
+        }
+        binds[entry.blanketAt] = t;
+        var asked = false;
+        for (a in this.chainOf(e)) {
+            if (this.ifaceBase(a) == this.ifaceBase(ii) && ii != this.ifaceBase(ii)) {
+                this.bind(Ty.Named(a), Ty.Named(ii), binds);
+                asked = true;
+            }
+        }
+        if (!asked) {
+            return null;
+        }
+        let out = List<Ty>.new();
+        for (b in binds) {
+            if (b == null) {
+                return null;
+            }
+            out.push(b);
+        }
+        let bound = out.toArray();
+        var k = 0;
+        for (tp in entry.typeParams) {
+            for (c in tp.constraints) {
+                if (!this.conformsTo(bound[k], this.constraintAt(c, bound))) {
                     return null;
                 }
             }
@@ -4143,6 +4258,10 @@ class Checker {
         }
         let n = this.types.length();
         for (e in this.blanketConfs) {
+            if (this.types[e].openAt.length() > 0) {
+                this.conformOpen(e, n);
+                continue;
+            }
             var i = 0;
             while (i < n) {
                 let info = this.types[i];
@@ -4159,6 +4278,142 @@ class Checker {
                 i += 1;
             }
         }
+    }
+
+    /// What block `e`, with a parameter only its conformance names, gives: a type's conformance of
+    /// its own stands, unless the block reaches the type at that very instance (`LYS-SEM0133`);
+    /// each type whose constraint the block asks of that parameter gives the source type the
+    /// instance (05 §13 rule 9; S7f3). A generic type's conformance at its own parameters names no
+    /// source yet: `blanketGives` gives that one where it is asked.
+    mut fn conformOpen(e: int, n: int): void {
+        let entry = this.types[e];
+        var i = 0;
+        while (i < n) {
+            let info = this.types[i];
+            if (info.kind == .Interface || info.blanketAt >= 0) {
+                i += 1;
+                continue;
+            }
+            let self = this.selfTy(i);
+            for (x in this.ownIfaces(i)) {
+                for (a in this.ancestry(x)) {
+                    for (c in this.chainOf(e)) {
+                        // (what the block gave already is no conformance of the type's own)
+                        if (this.ifaceBase(a) == this.ifaceBase(c)
+                            && !this.synth.openGiven.contains(f"{i}:{a}")
+                            && !this.anyParamIn(Ty.Named(a))
+                            && !this.anyParamIn(self)
+                            && this.openBinds(e, self, a) != null) {
+                            let shown = this.types[this.ifaceBase(a)].name;
+                            this.error(
+                                "LYS-SEM0133",
+                                f"'{info.name}' conforms to '{this.types[a].name}' itself, which a blanket block gives it too",
+                                this.conformedAt.get(f"{i}:{shown}") ?? this.blanketSpan(e)
+                            );
+                        }
+                    }
+                }
+            }
+            for (k in entry.openAt) {
+                for (c in entry.typeParams[k].constraints) {
+                    for (x in this.ownIfaces(i)) {
+                        if (this.ifaceBase(x) == this.ifaceBase(c)) {
+                            this.conformOpenThrough(e, k, c, self, x);
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+
+    /// Type `self`, which conforms to `x`, an instance of constraint `c` of block `e`'s open
+    /// parameter `k`: the source that instance names gets the block's interface at `self`.
+    mut fn conformOpenThrough(e: int, k: int, c: int, self: Ty, x: int): void {
+        if (this.anyParamIn(self) || this.anyParamIn(Ty.Named(x))) {
+            return;
+        }
+        let entry = this.types[e];
+        let binds = List<?Ty>.new();
+        for (_ in entry.typeParams) {
+            binds.push(null);
+        }
+        binds[k] = self;
+        this.bind(Ty.Named(c), Ty.Named(x), binds);
+        let source = binds[entry.blanketAt];
+        if (source == null) {
+            return;
+        }
+        let out = List<Ty>.new();
+        for (b in binds) {
+            if (b == null) {
+                return;
+            }
+            out.push(b);
+        }
+        let bound = out.toArray();
+        for (a in this.chainOf(e)) {
+            this.giveOpen(e, source, bound, this.constraintAt(a, bound));
+        }
+    }
+
+    /// The interfaces type `i` wrote itself: its list's, and for an instance a block's on it alone.
+    fn ownIfaces(i: int): int[] {
+        let info = this.types[i];
+        return if (info.template >= 0 && info.template != i) info.instIfaces else info.ifaces;
+    }
+
+    /// The type `t` given interface instance `a` by block `e` at its parameters `bound` (05 §13
+    /// rule 9; S7f3): in its list, so `is` finds it, and its table; the copies are made with the
+    /// rest (`instantiate`). Once per type and instance; a type that names a parameter has no table.
+    mut fn giveOpen(e: int, t: Ty, bound: Ty[], a: int): void {
+        if (this.anyParamIn(t) || this.anyParamIn(Ty.Named(a))) {
+            return;
+        }
+        let i = this.entryOf(t);
+        if (i < 0 || this.synth.openGiven.contains(f"{i}:{a}")) {
+            return;
+        }
+        this.synth.openGiven.insert(f"{i}:{a}");
+        let info = this.types[i];
+        let entry = this.types[e];
+        if (info.template >= 0 && info.template != i) {
+            info.instIfaces = withInt(info.instIfaces, a);
+            // an instance's list is its template's and these (`tableInstance`), read at once too
+            if (info.tabled) {
+                info.ifaces = withInt(info.ifaces, a);
+            }
+        } else {
+            info.ifaces = withInt(info.ifaces, a);
+        }
+        let iface = this.types[this.ifaceBase(a)];
+        for (member in iface.memberNames) {
+            let slot = this.slotIn(a, member);
+            info.slotArgs.insert(slot, this.types[a].args);
+            if (let own = entry.methods.get(member)) {
+                this.synth.openPending.push(
+                    OpenEntry { entry = i, slot = slot, fi = own, binds = bound, iface = a, self = t }
+                );
+            } else if (let declared = iface.methods.get(member)) {
+                if (!this.functions[declared].abstract) {
+                    info.witness.insert(slot, declared);
+                }
+            }
+        }
+    }
+
+    /// The table entry `giveOpen` asked for: a copy at what the instance binds.
+    mut fn fillOpenEntry(o: OpenEntry): void {
+        let copy = this.selfCopyIn(o.fi, o.binds);
+        this.types[o.entry].witness.insert(
+            o.slot,
+            if (this.boxed(o.self) && !this.functions[o.fi].isStatic) this.unboxer(
+                copy,
+                o.self,
+                Ty.Named(o.iface)
+            )
+                else copy
+        );
     }
 
     /// The condition on generic type `i`'s arguments under which it meets blanket block `e`'s
@@ -4316,9 +4571,14 @@ class Checker {
                 continue;
             }
             this.blanketVisiting.push(e);
-            let b = this.blanketBindsAt(e, t);
+            let b = if (this.types[e].openAt.length() > 0) this.openBinds(e, t, ii)
+                else this.blanketBindsAt(e, t);
             this.blanketVisiting.pop();
             if (let bound = b) {
+                if (this.types[e].openAt.length() > 0) {
+                    this.giveOpen(e, t, bound, ii);
+                    return e;
+                }
                 for (a in this.chainOf(e)) {
                     let at = this.constraintAt(a, bound);
                     if (this.isOf(at, ii) || at == ii || this.isOf(a, ii)) {
@@ -6383,11 +6643,18 @@ class Checker {
         // a type made at run time takes, S3i), and an instance's table makes copies
         var ti = 0;
         var k = 0;
-        while (ti < this.types.length() || k < this.functions.length()) {
+        var given = 0;
+        while (ti < this.types.length()
+            || k < this.functions.length()
+            || given < this.synth.openPending.length()) {
             while (ti < this.types.length()) {
                 this.tableInstance(ti);
                 this.tableSelf(ti);
                 ti += 1;
+            }
+            while (given < this.synth.openPending.length()) {
+                this.fillOpenEntry(this.synth.openPending[given]);
+                given += 1;
             }
             while (k < this.functions.length()) {
                 let info = this.functions[k];
@@ -6610,6 +6877,21 @@ class Checker {
         let tps = this.functions[fi].typeParams;
         if (k >= tps.length()) {
             return false;
+        }
+        // an argument another's constraint names, `U :: [From<T>]`: that instance's slots and
+        // member are found through it, so a copy for it too (05 §13 rule 9; S7f3)
+        for (tp in tps) {
+            for (c in tp.constraints) {
+                for (x in this.ancestry(c)) {
+                    if (this.instanceOverParams(x)) {
+                        for (t in this.types[x].args) {
+                            if (this.namesParam(t, k)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
         }
         for (c in tps[k].constraints) {
             for (x in this.ancestry(c)) {
@@ -7099,7 +7381,8 @@ class Checker {
                 }
                 let concrete = if (k < a.length()) a[k] else Ty.Unknown;
                 let entry = this.entryOf(concrete);
-                let own = if (entry >= 0) this.methodOf(entry, member) else null;
+                // of several members of the name, the one of the instance the arguments make
+                let own = if (entry >= 0) this.memberFor(entry, this.constraintAt(ii, a), member) else null;
                 if (own != null && this.functions[own].isStatic) {
                     // a static generic of its own (S7c4c2: `fromIter<I>`): its copy, its owner's
                     // parameters the entry's arguments, its own the arguments' types
@@ -7209,7 +7492,7 @@ class Checker {
                 let concrete = this.subst(bt, a);
                 this.memberCallOn(
                     concrete,
-                    ii,
+                    this.constraintAt(ii, a),
                     member,
                     this.slotAt(ii, member, a, slot),
                     this.specAll(xs, a),
@@ -7228,7 +7511,7 @@ class Checker {
                 if (this.sharedShape(concrete) && !this.synthesizedMember(ii, member)) {
                     return TExpr.CallIface(at, all, rt);
                 }
-                this.memberCallOn(concrete, ii, member, at, all, rt)
+                this.memberCallOn(concrete, this.constraintAt(ii, a), member, at, all, rt)
             }
         };
     }
@@ -7254,6 +7537,16 @@ class Checker {
                 }
             }
             _ => { }
+        }
+        // an instance a block gives through a parameter only its conformance names: the type's own
+        // member of the name answers another instance (05 §13 rule 9; S7f3)
+        let open = this.blanketGives(concrete, ii);
+        if (open >= 0 && this.types[open].openAt.length() > 0) {
+            if (let bfi = this.types[open].methods.get(member)) {
+                if (let b = this.openBinds(open, concrete, ii)) {
+                    return TExpr.Call(this.selfCopyIn(bfi, b), all, rt);
+                }
+            }
         }
         // a copy of its own: the type's own method, or the interface's default
         let entry = this.entryOf(concrete);
@@ -7920,8 +8213,6 @@ class Checker {
     /// Makes a generic type a template: its parameters in scope for what follows.
     mut fn enterGenericType(index: int, params: TypeParam[]): void {
         let info = this.types[index];
-        info.typeParams = this.typeParamsOf(params);
-        this.declaringParams = info.typeParams;
         let fixScope = Map<string, int>.new();
         var j = 0;
         for (tp in params) {
@@ -7929,7 +8220,10 @@ class Checker {
             j += 1;
         }
         let outerScope = this.typeParams;
+        // a constraint may name the other parameters, `U :: [From<T>]` (05 §13 rule 9; S7f3)
         this.typeParams = fixScope;
+        info.typeParams = this.typeParamsOf(params);
+        this.declaringParams = info.typeParams;
         info.typeParams = this.withFixations(params, info.typeParams);
         this.declaringParams = info.typeParams;
         this.typeParams = outerScope;
@@ -17270,7 +17564,23 @@ class Checker {
                 // a block on this list type alone, `extend int[] { … }` (S7c4c3b)
                 let inst = this.entryOf(t);
                 if (i >= 0 && inst >= 0 && inst != i) {
-                    let own = this.types[inst].ownMethods.get(method);
+                    var own = this.types[inst].ownMethods.get(method);
+                    // of several, the one the arguments choose; a template's goes on below
+                    if (this.types[inst].sets.containsKey(method)) {
+                        let picked = this.pickMember(inst, method, args, at);
+                        if ((picked ?? 0) < 0) {
+                            return TExpr.Unknown;
+                        }
+                        own = picked;
+                        if (let p = picked) {
+                            if (this.functions[p].owner != inst) {
+                                own = null;
+                            } else {
+                                this.preChecked = this.pickedArgs;
+                            }
+                        }
+                        this.pickedArgs = [];
+                    }
                     if (own != null) {
                         return this.callExpecting(
                             posTy,
@@ -17618,15 +17928,17 @@ class Checker {
     /// 4, `LYS-SEM0122`). Null where the type has one member of the name; -1 after an error.
     mut fn pickMember(i: int, name: string, args: Arg[], at: Span): ?int {
         let info = this.types[i];
-        let home = if (info.template >= 0) info.template else i;
-        let set = this.types[home].sets.get(name);
+        let set = this.setOf(i, name);
         if (set == null) {
             return null;
         }
         let byCount = List<int>.new();
         for (c in set) {
             let (low, high) = this.countRange(c);
-            if (args.length() >= low && args.length() <= high) {
+            // (one refused where it is declared chooses nothing)
+            if (args.length() >= low
+                && args.length() <= high
+                && !this.refusedMembers.containsKey(c)) {
                 byCount.push(c);
             }
         }
@@ -17892,6 +18204,17 @@ class Checker {
         let info = this.types[entry];
         let home = if (info.template >= 0) info.template else entry;
         let tmpl = this.types[home];
+        // a set on the instance alone: what its block's conformance answers, else the template's
+        if (home != entry && info.sets.containsKey(member)) {
+            for (a in this.ancestry(ii)) {
+                if (let fi = info.setWitness.get(f"{a}.{member}")) {
+                    return fi;
+                }
+            }
+            if (!tmpl.sets.containsKey(member)) {
+                return info.methods.get(member);
+            }
+        }
         if (!tmpl.sets.containsKey(member)) {
             return this.methodOf(entry, member);
         }
@@ -17917,8 +18240,7 @@ class Checker {
     /// refused (`LYS-SEM0089`). Null where the type has one member of the name; -1 after an error.
     mut fn pickBound(i: int, name: string, want: ?Ty, at: Span): ?int {
         let info = this.types[i];
-        let home = if (info.template >= 0) info.template else i;
-        let set = this.types[home].sets.get(name);
+        let set = this.setOf(i, name);
         if (set == null) {
             return null;
         }
@@ -18488,6 +18810,54 @@ class Checker {
 }
 
 /// Whether `t` is the placeholder `_` written among type arguments (S7c6d): the inference fills it.
+/// A table entry a blanket block's parameter only its conformance names gives (05 §13 rule 9).
+struct OpenEntry {
+    entry: int,
+    slot: int,
+    fi: int,
+    binds: Ty[],
+    iface: int,
+    self: Ty,
+}
+
+/// `xs` and `x`.
+fn withInt(xs: int[], x: int): int[] {
+    let out = List<int>.new();
+    for (y in xs) {
+        out.push(y);
+    }
+    out.push(x);
+    return out.toArray();
+}
+
+/// Whether written type `x` names `name`.
+fn typeExprNames(x: TypeExpr, name: string): bool {
+    return match (x) {
+        .Named(n, args, _) => {
+            var found = n == name;
+            for (a in args) {
+                found = found || typeExprNames(a, name);
+            }
+            found
+        }
+        .List(inner, _) | .Optional(inner, _) => typeExprNames(inner.value, name),
+        .Tuple(elems, _, _) => {
+            var found = false;
+            for (a in elems) {
+                found = found || typeExprNames(a, name);
+            }
+            found
+        }
+        .Fn(params, result, _) => {
+            var found = typeExprNames(result.value, name);
+            for (a in params) {
+                found = found || typeExprNames(a, name);
+            }
+            found
+        }
+    };
+}
+
 fn isHole(t: Ty): bool {
     return match (t) {
         .Param(k) => k == -1,

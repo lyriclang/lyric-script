@@ -4414,7 +4414,14 @@ class Checker {
             info.slotArgs.insert(slot, this.types[a].args);
             if (let own = entry.methods.get(member)) {
                 this.synth.openPending.push(
-                    OpenEntry { entry = i, slot = slot, fi = own, binds = bound, iface = a, self = t }
+                    OpenEntry {
+                        entry = i,
+                        slot = slot,
+                        fi = own,
+                        binds = bound,
+                        iface = a,
+                        self = t,
+                    }
                 );
             } else if (let declared = iface.methods.get(member)) {
                 if (!this.functions[declared].abstract) {
@@ -6925,10 +6932,11 @@ class Checker {
                     || (x == this.synth.cloneIx && x >= 0)
                     || (x == this.synth.defaultIx && x >= 0)
                     || (x == this.synth.hashableIx && x >= 0)
+                    || this.ifaceBase(x) != x) {
                     // an instance of a generic interface: the callee this copy hands it to may
                     // need a copy for it (`U :: [From<int>]` calling `into`, whose `U` names its
                     // `T`), and a shared argument would reach it as `Any` (S7f3)
-                    || this.ifaceBase(x) != x) {
+
                     return true;
                 }
             }
@@ -7407,7 +7415,8 @@ class Checker {
                 let concrete = if (k < a.length()) a[k] else Ty.Unknown;
                 let entry = this.entryOf(concrete);
                 // of several members of the name, the one of the instance the arguments make
-                let own = if (entry >= 0) this.memberFor(entry, this.constraintAt(ii, a), member) else null;
+                let own = if (entry >= 0) this.memberFor(entry, this.constraintAt(ii, a), member)
+                    else null;
                 if (own != null && this.functions[own].isStatic) {
                     // a static generic of its own (S7c4c2: `fromIter<I>`): its copy, its owner's
                     // parameters the entry's arguments, its own the arguments' types

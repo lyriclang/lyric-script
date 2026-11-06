@@ -103,6 +103,23 @@ enum NativeFn :: [Equatable] {
     FloatToBits,
     MathOne,
     MathTwo,
+    BigFromInt,
+    BigAdd,
+    BigSub,
+    BigMul,
+    BigDiv,
+    BigRem,
+    BigNeg,
+    BigCmp,
+    BigText,
+    BigParse,
+    BigFitsInt,
+    BigToInt,
+    BigToFloat,
+    BigShl,
+    BigShr,
+    BigBitLength,
+    BigHash,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -116,7 +133,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 62;
+let nativeCount: int = 79;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -182,7 +199,24 @@ fn nativeOf(n: int): NativeFn {
         58 => NativeFn.FloatFromBits,
         59 => NativeFn.FloatToBits,
         60 => NativeFn.MathOne,
-        _ => NativeFn.MathTwo,
+        61 => NativeFn.MathTwo,
+        62 => NativeFn.BigFromInt,
+        63 => NativeFn.BigAdd,
+        64 => NativeFn.BigSub,
+        65 => NativeFn.BigMul,
+        66 => NativeFn.BigDiv,
+        67 => NativeFn.BigRem,
+        68 => NativeFn.BigNeg,
+        69 => NativeFn.BigCmp,
+        70 => NativeFn.BigText,
+        71 => NativeFn.BigParse,
+        72 => NativeFn.BigFitsInt,
+        73 => NativeFn.BigToInt,
+        74 => NativeFn.BigToFloat,
+        75 => NativeFn.BigShl,
+        76 => NativeFn.BigShr,
+        77 => NativeFn.BigBitLength,
+        _ => NativeFn.BigHash,
     };
 }
 
@@ -251,6 +285,23 @@ fn nativeNumber(n: NativeFn): int {
         .FloatToBits => 59,
         .MathOne => 60,
         .MathTwo => 61,
+        .BigFromInt => 62,
+        .BigAdd => 63,
+        .BigSub => 64,
+        .BigMul => 65,
+        .BigDiv => 66,
+        .BigRem => 67,
+        .BigNeg => 68,
+        .BigCmp => 69,
+        .BigText => 70,
+        .BigParse => 71,
+        .BigFitsInt => 72,
+        .BigToInt => 73,
+        .BigToFloat => 74,
+        .BigShl => 75,
+        .BigShr => 76,
+        .BigBitLength => 77,
+        .BigHash => 78,
     };
 }
 
@@ -318,6 +369,23 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .FloatToBits => sig("float.toBits", 1, 0, true, false),
         .MathOne => sig("math.one", 2, 0, true, false),
         .MathTwo => sig("math.two", 3, 0, true, false),
+        .BigFromInt => sig("big.fromInt", 1, 0, false, true),
+        .BigAdd => sig("big.add", 0, 2, false, true),
+        .BigSub => sig("big.sub", 0, 2, false, true),
+        .BigMul => sig("big.mul", 0, 2, false, true),
+        .BigDiv => sig("big.div", 0, 2, false, true),
+        .BigRem => sig("big.rem", 0, 2, false, true),
+        .BigNeg => sig("big.neg", 0, 1, false, true),
+        .BigCmp => sig("big.cmp", 0, 2, true, false),
+        .BigText => sig("big.text", 1, 1, false, true),
+        .BigParse => sig("big.parse", 1, 1, false, true),
+        .BigFitsInt => sig("big.fitsInt", 0, 1, true, false),
+        .BigToInt => sig("big.toInt", 0, 1, true, false),
+        .BigToFloat => sig("big.toFloat", 0, 1, true, false),
+        .BigShl => sig("big.shl", 1, 1, false, true),
+        .BigShr => sig("big.shr", 1, 1, false, true),
+        .BigBitLength => sig("big.bitLength", 0, 1, true, false),
+        .BigHash => sig("big.hash", 0, 1, true, false),
     };
 }
 

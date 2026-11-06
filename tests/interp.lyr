@@ -64,6 +64,63 @@ let sum: string = """
     end
     """;
 
+// What the natives of a `BigInt` cost (12 rule 16): `s0` a shift, so that `1 << s0` has `s0 / 32 + 1`
+// words. The shift costs `1 + (w + 1) / 8`, the operation after it as its rule says; nothing else
+// here takes budget. With exactly the sum it finishes, with a unit less it stops at the operation.
+fn bigProgram(op: string): string {
+    return f"""
+    fn p(s) -> s regs 2 2
+        load.i s1, 1
+        call.n big.fromInt, s1, r0
+        call.n big.shl, s0, r0
+        move.r r1, r0
+        {op}
+        load.i s0, 7
+        ret.s s0
+    end
+    """;
+}
+
+fn bigCosts(op: string, cost: int): void {
+    let text = bigProgram(op);
+    // 1001 words: the shift's cost is 1 + 1002 / 8
+    let shift = 1 + 1002 / 8;
+    assertEq(scalar(runText(text, "p", [32000], shift + cost)), 7);
+    assertTrue(suspended(runText(text, "p", [32000], shift + cost - 1)));
+    assertTrue(suspended(runText(text, "p", [32000], shift - 1)));
+    assertEq(scalar(runText(text, "p", [32000], -1)), 7);
+}
+
+@Test
+fn theNativesOfABigIntChargeByTheirOperands(): void {
+    bigCosts("call.n big.add, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.sub, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.cmp, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.neg, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.hash, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.mul, s1, r0", 1 + 1001 * 1001 / 8);
+    // a quotient one word long walks the divisor once
+    bigCosts("call.n big.div, s1, r0", 1 + 1 * 1001 / 8);
+    bigCosts("call.n big.rem, s1, r0", 1 + 1 * 1001 / 8);
+    bigCosts("load.i s1, 10\n        call.n big.text, s1, r0", 1 + 1001 * 1001 / 4);
+    bigCosts("load.i s1, 5\n        call.n big.shr, s1, r0", 1 + 1001 / 8);
+    bigCosts("load.i s1, 3200\n        call.n big.shl, s1, r0", 1 + (100 + 1001 + 1) / 8);
+    // a length, a sign's room, a conversion: what they read does not grow with the number
+    bigCosts("call.n big.bitLength, s1, r0", 0);
+    bigCosts("call.n big.fitsInt, s1, r0", 0);
+    bigCosts("call.n big.toInt, s1, r0", 0);
+    bigCosts("call.n big.toFloat, s1, r0", 0);
+}
+
+@Test
+fn aBigIntProductTheBudgetDoesNotCoverIsNotStarted(): void {
+    // half a million words: a square would take minutes; a unit too few returns at once
+    let text = bigProgram("call.n big.mul, s1, r0");
+    let words = 524288;
+    let shift = 1 + (words + 1) / 8;
+    assertTrue(suspended(runText(text, "p", [((words - 1) * 32) as uint64], shift)));
+}
+
 @Test
 fn aLoopSums(): void {
     assertEq(scalar(runText(sum, "sum", [1000], -1)), 500500);

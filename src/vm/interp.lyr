@@ -25,6 +25,26 @@ import std.io { print, println, stdin };
 import std.os { env };
 import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
 import std.time { Duration, Monotonic };
+import lyric_script.vm.bigint {
+    Big,
+    add as bigAdd,
+    bitLength as bigBitLength,
+    cmp as bigCmp,
+    divRem as bigDivRem,
+    fitsInt as bigFitsInt,
+    fromInt as bigFromInt,
+    hashOf as bigHash,
+    isZero as bigIsZero,
+    mul as bigMul,
+    neg as bigNeg,
+    parse as bigParse,
+    shl as bigShl,
+    shr as bigShr,
+    sub as bigSub,
+    text as bigText,
+    toFloat as bigToFloat,
+    toInt as bigToInt,
+};
 import lyric_script.vm.elementary { mathOne, mathTwo };
 import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
 import lyric_script.vm.op { Instr };
@@ -32,6 +52,7 @@ import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
     ScriptArray,
     ScriptIndex,
+    ScriptBigInt,
     ScriptBuilder,
     ErrorRecord,
     HeapRef,
@@ -1096,6 +1117,9 @@ fn callNative(
         }
         .IntRotate => s[x] = (s[x] as int).rotateLeft(s[x + 1] as int) as uint64,
         .FloatFromBits | .FloatToBits => { }
+        .BigFromInt | .BigAdd | .BigSub | .BigMul | .BigDiv | .BigRem | .BigNeg | .BigCmp | .BigText | .BigParse | .BigFitsInt | .BigToInt | .BigToFloat | .BigShl | .BigShr | .BigBitLength | .BigHash => {
+            return bigNative(which, s, r, x, y, shared);
+        }
         .MathOne => s[x] = mathOne(s[x] as int, float.fromBits(s[x + 1])).toBits(),
         .MathTwo => s[x] = mathTwo(
             s[x] as int,
@@ -3382,6 +3406,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (let fault = callNative(nativeOf(a), s, r, bs + b, br + c, shared)) {
                     return panicOut(module, frames, fi, pc, fault.code, fault.message);
                 }
+                // a native the budget does not cover did nothing: this call again on `resume`,
+                // as a backward jump is taken again (01 S5c; S7f4)
+                if (shared.budget == -2) {
+                    return Outcome.Suspended;
+                }
                 pc += 1;
             }
         }
@@ -3579,6 +3608,184 @@ fn descIn(v: HeapRef): ?TypeDesc {
 
 fn truth(b: bool): uint64 {
     return if (b) 1 else 0;
+}
+
+/// `n` units of budget taken before a native's work: false where they are not there, and the
+/// budget is out then — what a native costs is known from its operands, so it never starts what it
+/// cannot pay (01 S5c).
+fn charge(shared: RunShared, n: int): bool {
+    if (shared.budget < 0) {
+        return shared.budget == -1;
+    }
+    if (shared.budget < n) {
+        shared.budget = -2;
+        return false;
+    }
+    shared.budget -= n;
+    return true;
+}
+
+/// The most words a `BigInt` holds, 2^31 bits: past it a program's shift or product would end the
+/// process for want of memory, where a script's fault is due.
+let bigMaxWords: int = 67108864;
+
+fn bigFault(code: string, message: string): ?NativeFault {
+    return NativeFault { code = code, message = message };
+}
+
+/// The natives of a `BigInt` (S7f4), each charging before it works (12 rule 16): one unit stands for
+/// about eight words, as a backward jump's cost stands for a few instructions; a product or quotient
+/// is the product of the lengths it walks, a text the square of its length.
+fn bigNative(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    shared: RunShared
+): ?NativeFault {
+    match (which) {
+        .BigFromInt => {
+            r[y] = ScriptBigInt { big = bigFromInt(s[x] as int) };
+            return null;
+        }
+        .BigParse => {
+            let radix = s[x] as int;
+            if (radix < 2 || radix > 36) {
+                return bigFault("LYS-RT0007", f"radix {radix} is outside 2..36");
+            }
+            let text = textOf(r[y]);
+            let w = text.length() / 8 + 1;
+            if (!charge(shared, 1 + w * w / 4)) {
+                return null;
+            }
+            if (let v = bigParse(text, radix)) {
+                r[y] = ScriptBigInt { big = v };
+            } else {
+                r[y] = nilRef();
+            }
+            return null;
+        }
+        _ => { }
+    }
+    let o = r[y];
+    if (!(o is ScriptBigInt)) {
+        return bigFault("LYS-RT0007", "a BigInt's field holds no number");
+    }
+    let a = o.big;
+    let n = a.mag.length();
+    let cheap = 1 + n / 8;
+    match (which) {
+        .BigNeg => {
+            if (charge(shared, cheap)) {
+                r[y] = ScriptBigInt { big = bigNeg(a) };
+            }
+        }
+        .BigText => {
+            let radix = s[x] as int;
+            if (radix < 2 || radix > 36) {
+                return bigFault("LYS-RT0007", f"radix {radix} is outside 2..36");
+            }
+            if (charge(shared, 1 + n * n / 4)) {
+                r[y] = ScriptString { text = bigText(a, radix) };
+            }
+        }
+        .BigFitsInt => s[x] = truth(bigFitsInt(a)),
+        .BigToInt => s[x] = bigToInt(a) as uint64,
+        .BigToFloat => s[x] = bigToFloat(a).toBits(),
+        .BigBitLength => s[x] = bigBitLength(a) as uint64,
+        .BigHash => {
+            if (charge(shared, cheap)) {
+                s[x] = bigHash(a);
+            }
+        }
+        .BigShl => {
+            let count = s[x] as int;
+            if (count < 0) {
+                return bigFault("LYS-RT0002", f"shift by {count}: a count is never negative");
+            }
+            if (bigIsZero(a)) {
+                r[y] = o;
+                return null;
+            }
+            let words = count / 32 + n + 1;
+            if (words > bigMaxWords) {
+                return bigFault("LYS-RT0002", "integer overflow: a BigInt holds at most 2^31 bits");
+            }
+            if (charge(shared, 1 + words / 8)) {
+                r[y] = ScriptBigInt { big = bigShl(a, count) };
+            }
+        }
+        .BigShr => {
+            let count = s[x] as int;
+            if (count < 0) {
+                return bigFault("LYS-RT0002", f"shift by {count}: a count is never negative");
+            }
+            if (charge(shared, cheap)) {
+                r[y] = ScriptBigInt { big = bigShr(a, count) };
+            }
+        }
+        _ => {
+            let p = r[y + 1];
+            if (!(p is ScriptBigInt)) {
+                return bigFault("LYS-RT0007", "a BigInt's field holds no number");
+            }
+            return bigTwo(which, s, r, x, y, a, p.big, shared);
+        }
+    }
+    return null;
+}
+
+/// The natives of two `BigInt`s (S7f4).
+fn bigTwo(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    a: Big,
+    b: Big,
+    shared: RunShared
+): ?NativeFault {
+    let n = a.mag.length();
+    let m = b.mag.length();
+    let cheap = 1 + (if (n > m) n else m) / 8;
+    match (which) {
+        .BigAdd => {
+            if (charge(shared, cheap)) {
+                r[y] = ScriptBigInt { big = bigAdd(a, b) };
+            }
+        }
+        .BigSub => {
+            if (charge(shared, cheap)) {
+                r[y] = ScriptBigInt { big = bigSub(a, b) };
+            }
+        }
+        .BigCmp => {
+            if (charge(shared, cheap)) {
+                s[x] = bigCmp(a, b) as uint64;
+            }
+        }
+        .BigMul => {
+            if (n + m > bigMaxWords) {
+                return bigFault("LYS-RT0002", "integer overflow: a BigInt holds at most 2^31 bits");
+            }
+            if (charge(shared, 1 + n * m / 8)) {
+                r[y] = ScriptBigInt { big = bigMul(a, b) };
+            }
+        }
+        _ => {
+            if (bigIsZero(b)) {
+                return bigFault("LYS-RT0001", "integer division by zero");
+            }
+            let span = if (n >= m) n - m + 1 else 1;
+            if (charge(shared, 1 + span * m / 8)) {
+                let (q, rem) = bigDivRem(a, b);
+                r[y] = ScriptBigInt { big = if (which == .BigDiv) q else rem };
+            }
+        }
+    }
+    return null;
 }
 
 /// One unit of budget spent: the budget left, `-1` for none, `-2` once it ran out.

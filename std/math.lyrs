@@ -91,3 +91,121 @@ fn atan2<T :: [Float]>(y: T, x: T): T = __math_two(0, y, x)
 fn hypot<T :: [Float]>(x: T, y: T): T = __math_two(1, x, y)
 // for an integer's integer power, the integer's own `x.pow(n)`
 fn pow<T :: [Float]>(x: T, e: T): T = __math_two(2, x, e)
+
+// the VM's natives of a `BigInt`
+fn __bigFromInt(v: int): Any = __big_fromInt(v)
+fn __bigAdd(a: Any, b: Any): Any = __big_add(a, b)
+fn __bigSub(a: Any, b: Any): Any = __big_sub(a, b)
+fn __bigMul(a: Any, b: Any): Any = __big_mul(a, b)
+fn __bigDiv(a: Any, b: Any): Any = __big_div(a, b)
+fn __bigRem(a: Any, b: Any): Any = __big_rem(a, b)
+fn __bigNeg(a: Any): Any = __big_neg(a)
+fn __bigCmp(a: Any, b: Any): int = __big_cmp(a, b)
+fn __bigText(a: Any, radix: int): string = __big_text(radix, a)
+fn __bigParse(s: string, radix: int): ?Any = __big_parse(radix, s)
+fn __bigFitsInt(a: Any): bool = __big_fitsInt(a)
+fn __bigToInt(a: Any): int = __big_toInt(a)
+fn __bigToFloat(a: Any): float = __big_toFloat(a)
+fn __bigShl(a: Any, n: int): Any = __big_shl(n, a)
+fn __bigShr(a: Any, n: int): Any = __big_shr(n, a)
+fn __bigBitLength(a: Any): int = __big_bitLength(a)
+fn __bigHash(a: Any): int = __big_hash(a)
+
+// a whole number of any size, its arithmetic the VM's (02 T1; Lyric 5 has none). A `Signed`, not an
+// `Integer`: that one is a fixed width. `/` truncates and `%` takes the dividend's sign, as `int`'s
+// do; a literal in a place of the type is `int`'s range, a longer number comes from `parse`
+struct BigInt :: [Signed, TotalOrder, Hashable, Clone, From<int>, FromIntLiteral, Shl, Shr] {
+    v: Any
+
+    static let zero: BigInt = BigInt.from(0)
+    static let one: BigInt = BigInt.from(1)
+
+    static fn from(v: int): BigInt = BigInt { v = __bigFromInt(v) }
+    static fn fromIntLiteral(v: int): BigInt = BigInt.from(v)
+    static fn default(): BigInt = BigInt.zero
+    static fn parse(s: string): BigInt = BigInt.parse(s, 10)
+    // an optional `+` or `-`, digits of base `radix`, `_` between two of them; a radix outside 2–36
+    // panics
+    static fn parse(s: string, radix: int): BigInt {
+        if (radix < 2 || radix > 36) {
+            panic(f"radix {radix} is outside 2..36")
+        }
+        if (s.isEmpty()) {
+            throw ParseError { kind = ParseErrorKind.Empty }
+        }
+        if (let n = __bigParse(s, radix)) {
+            return BigInt { v = n }
+        }
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+
+    fn add(o: BigInt): BigInt = BigInt { v = __bigAdd(this.v, o.v) }
+    fn sub(o: BigInt): BigInt = BigInt { v = __bigSub(this.v, o.v) }
+    fn mul(o: BigInt): BigInt = BigInt { v = __bigMul(this.v, o.v) }
+    fn div(o: BigInt): BigInt = BigInt { v = __bigDiv(this.v, o.v) }
+    fn rem(o: BigInt): BigInt = BigInt { v = __bigRem(this.v, o.v) }
+    fn neg(): BigInt = BigInt { v = __bigNeg(this.v) }
+    // an arithmetic shift: a negative number rounds toward negative infinity; a negative count panics
+    fn shl(n: int): BigInt = BigInt { v = __bigShl(this.v, n) }
+    fn shr(n: int): BigInt = BigInt { v = __bigShr(this.v, n) }
+
+    fn equals(o: BigInt): bool = __bigCmp(this.v, o.v) == 0
+    fn compare(o: BigInt): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: BigInt): Ordering {
+        let c = __bigCmp(this.v, o.v)
+        return if (c < 0) Ordering.Less else if (c > 0) Ordering.Greater else Ordering.Equal
+    }
+    fn hash(h: Hasher) {
+        h.writeInt(__bigHash(this.v))
+    }
+    fn clone(): BigInt = this
+
+    // the number where it fits an `int`
+    fn toInt(): ?int = if (__bigFitsInt(this.v)) __bigToInt(this.v) else null
+    // the nearest float, a tie to the even one; beyond the range an infinity
+    fn toFloat(): float = __bigToFloat(this.v)
+    fn toString(): string = __bigText(this.v, 10)
+    // lowercase digits; a radix outside 2–36 panics
+    fn toString(radix: int): string {
+        if (radix < 2 || radix > 36) {
+            panic(f"radix {radix} is outside 2..36")
+        }
+        return __bigText(this.v, radix)
+    }
+    fn show(): string = this.toString()
+    fn debug(): string = this.toString()
+    // the bits of its magnitude, `0` for zero
+    fn bitLength(): int = __bigBitLength(this.v)
+    // quotient and remainder, as `/` and `%` give them
+    fn divRem(o: BigInt): (BigInt, BigInt) = (this / o, this % o)
+    // never negative, `0` where both are
+    fn gcd(o: BigInt): BigInt {
+        var x = this
+        var y = o
+        while (!y.isZero()) {
+            let r = x % y
+            x = y
+            y = r
+        }
+        return if (x < BigInt.zero) -x else x
+    }
+    // a negative exponent panics
+    fn pow(e: int): BigInt {
+        if (e < 0) {
+            panic("pow: the exponent is negative")
+        }
+        var base = this
+        var left = e
+        var out = BigInt.one
+        while (left > 0) {
+            if (left % 2 == 1) {
+                out = out * base
+            }
+            left = left / 2
+            if (left > 0) {
+                base = base * base
+            }
+        }
+        return out
+    }
+}

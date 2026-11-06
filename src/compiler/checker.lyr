@@ -2836,8 +2836,12 @@ class Checker {
         let out = List<TStmt>.new();
         for (si in this.staticInits) {
             let saved = this.selfTyIs;
+            let savedMod = this.mod;
             this.selfTyIs = this.selfTy(si.owner);
+            // its names are its module's, not the importer's, which runs them (S7f4)
+            this.mod = fileModule(spanOf(si.value).file);
             let v = this.coerce(this.expr(si.value, si.ty), si.ty, spanOf(si.value));
+            this.mod = savedMod;
             this.selfTyIs = saved;
             out.push(TStmt.SetGlobal(si.global, v, spanOf(si.value).line));
         }
@@ -12642,6 +12646,17 @@ class Checker {
                         return f"{info.name} values are not compared";
                     }
                     _ => { }
+                }
+                // a type's own `equals` is what `==` asks, whatever its fields hold (05 rule 1):
+                // the type's, or a block's where the instance meets its condition (S7f4)
+                if (let own = this.methodOf(i, "equals")) {
+                    if (!this.functions[own].isStatic
+                        && this.functions[own].params.length() == 1
+                        && (this.functions[own].owner == i
+                            || this.functions[own].owner == info.template
+                            || this.saysEquatable(i))) {
+                        return null;
+                    }
                 }
                 for (f in info.fields) {
                     let m = this.notEquatable(f.ty, seen);

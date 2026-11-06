@@ -886,6 +886,16 @@ class Checker {
         }
         if (im.selective) {
             for (it in im.items) {
+                // the prelude's since `readLine()` throws them (12 rule 19): as with std.collections
+                if (path == "std.io" && (it.name == "IoError" || it.name == "IoErrorKind")) {
+                    if (let alias = it.alias) {
+                        if (this.noteImport(alias, it.span, im.isPub)) {
+                            this.viewOf(this.mod).insert(alias, it.name);
+                            this.notASubmodule(alias, it.span);
+                        }
+                    }
+                    continue;
+                }
                 let key = this.exportKey(target, it.name);
                 let bound = it.alias ?? it.name;
                 if (!this.noteImport(bound, it.span, im.isPub)) {

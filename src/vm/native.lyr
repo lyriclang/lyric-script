@@ -143,6 +143,10 @@ enum NativeFn :: [Equatable] {
     RandomInRange,
     RandomFloat,
     RandomNormal,
+    /// `b.copyInto(into, at, from, to)`: `s[x]` is `at`, then `from`, `to`; `r[y]` the bytes, `r[y + 1]` `into`.
+    BytesCopy,
+    /// The first `s[x]` in `s[x + 1]..s[x + 2]` of `r[y]`, into `s[x]`; -1 for none.
+    BytesFind,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -156,7 +160,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 102;
+let nativeCount: int = 104;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -262,7 +266,9 @@ fn nativeOf(n: int): NativeFn {
         98 => NativeFn.RandomInt,
         99 => NativeFn.RandomInRange,
         100 => NativeFn.RandomFloat,
-        _ => NativeFn.RandomNormal,
+        101 => NativeFn.RandomNormal,
+        102 => NativeFn.BytesCopy,
+        _ => NativeFn.BytesFind,
     };
 }
 
@@ -371,6 +377,8 @@ fn nativeNumber(n: NativeFn): int {
         .RandomInRange => 99,
         .RandomFloat => 100,
         .RandomNormal => 101,
+        .BytesCopy => 102,
+        .BytesFind => 103,
     };
 }
 
@@ -478,6 +486,8 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .RandomInRange => sig("random.inRange", 2, 1, true, false),
         .RandomFloat => sig("random.float", 0, 1, true, false),
         .RandomNormal => sig("random.normal", 2, 1, true, false),
+        .BytesCopy => sig("bytes.copy", 3, 2, false, false),
+        .BytesFind => sig("bytes.find", 3, 1, true, false),
     };
 }
 

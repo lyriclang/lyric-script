@@ -1123,7 +1123,7 @@ fn callNative(
         .BigFromInt | .BigAdd | .BigSub | .BigMul | .BigDiv | .BigRem | .BigNeg | .BigCmp | .BigText | .BigParse | .BigFitsInt | .BigToInt | .BigToFloat | .BigShl | .BigShr | .BigBitLength | .BigHash => {
             return bigNative(which, s, r, x, y, shared);
         }
-        .BytesNew | .BytesOfText | .BytesOfLatin1 | .BytesOfList | .BytesToList | .BytesLen | .BytesGet | .BytesSet | .BytesPush | .BytesTruncate | .BytesSlice | .BytesAppend | .BytesCmp | .BytesMix | .BytesFill | .BytesBadUtf8 | .BytesText => {
+        .BytesCopy | .BytesFind | .BytesNew | .BytesOfText | .BytesOfLatin1 | .BytesOfList | .BytesToList | .BytesLen | .BytesGet | .BytesSet | .BytesPush | .BytesTruncate | .BytesSlice | .BytesAppend | .BytesCmp | .BytesMix | .BytesFill | .BytesBadUtf8 | .BytesText => {
             return bytesNative(which, s, r, x, y, shared);
         }
         .RandomSeeded => r[y] = ScriptRandom { gen = Random.seeded(s[x]) },
@@ -3803,6 +3803,66 @@ fn bytesNative(
                     k += 1;
                 }
                 r[y] = ScriptBytes { data = out };
+            }
+        }
+        .BytesCopy => {
+            let p = r[y + 1];
+            if (!(p is ScriptBytes)) {
+                return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+            }
+            let at = s[x] as int;
+            let from = s[x + 1] as int;
+            let to = s[x + 2] as int;
+            if (from < 0 || from > to || to > n) {
+                return bytesFault(
+                    "LYS-RT0003",
+                    f"the range {from}..{to} out of bounds for length {n}"
+                );
+            }
+            let m = to - from;
+            if (at < 0 || at > p.data.length() - m) {
+                return bytesFault(
+                    "LYS-RT0003",
+                    f"{m} bytes at {at} out of bounds for length {p.data.length()}"
+                );
+            }
+            if (charge(shared, bytesCost(m))) {
+                // from the back where the bytes may be one and the target stands behind the source
+                if (at > from) {
+                    var k = m - 1;
+                    while (k >= 0) {
+                        p.data[at + k] = data[from + k];
+                        k -= 1;
+                    }
+                } else {
+                    var k = 0;
+                    while (k < m) {
+                        p.data[at + k] = data[from + k];
+                        k += 1;
+                    }
+                }
+            }
+        }
+        .BytesFind => {
+            let v = s[x] as int;
+            let from = s[x + 1] as int;
+            let to = s[x + 2] as int;
+            if (from < 0 || from > to || to > n) {
+                return bytesFault(
+                    "LYS-RT0003",
+                    f"the range {from}..{to} out of bounds for length {n}"
+                );
+            }
+            if (charge(shared, bytesCost(to - from))) {
+                var found = -1;
+                var k = from;
+                while (k < to && found < 0) {
+                    if (data[k] as int == v) {
+                        found = k;
+                    }
+                    k += 1;
+                }
+                s[x] = found as uint64;
             }
         }
         .BytesAppend => {

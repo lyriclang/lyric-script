@@ -14,6 +14,7 @@ let stdPackage: int = -1;
 let stdModules: string[] = [
     "std.fmt",
     "std.fs",
+    "std.io",
     "std.iter",
     "std.math",
     "std.os",
@@ -28,6 +29,7 @@ fn stdSource(name: string): ?string {
         "std.fs" => string.fromUtf8Lossy(comptime embed("../std/fs.lyrs")),
         "std.iter" => string.fromUtf8Lossy(comptime embed("../std/iter.lyrs")),
         "std.math" => string.fromUtf8Lossy(comptime embed("../std/math.lyrs")),
+        "std.io" => string.fromUtf8Lossy(comptime embed("../std/io.lyrs")),
         "std.os" => string.fromUtf8Lossy(comptime embed("../std/os.lyrs")),
         "std.random" => string.fromUtf8Lossy(comptime embed("../std/random.lyrs")),
         "std.random.system" => string.fromUtf8Lossy(comptime embed("../std/random/system.lyrs")),

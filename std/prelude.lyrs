@@ -31,6 +31,60 @@ struct Backtrace {
 interface Closeable {
     fn close()
 }
+// What went wrong in an input or an output (12 rule 19): the prelude's, since `readLine()` throws it;
+// `import std.io { IoError }` names what every module sees, as Lyric 5's modules write it.
+enum IoErrorKind :: [Equatable] {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    IsDirectory,
+    NotDirectory,
+    InvalidInput,
+    InvalidData,
+    UnexpectedEof,
+    TimedOut,
+    ConnectionRefused,
+    ConnectionReset,
+    AddrInUse,
+    BrokenPipe,
+    Closed,
+    Unsupported,
+    Other { code: int },
+}
+struct IoError :: Error {
+    kind: IoErrorKind
+    path: ?string = null
+    detail: string = ""
+    inner: ?Error = null
+    fn message(): string {
+        var text = match (this.kind) {
+            .NotFound => "not found",
+            .PermissionDenied => "permission denied",
+            .AlreadyExists => "already exists",
+            .IsDirectory => "is a directory",
+            .NotDirectory => "not a directory",
+            .InvalidInput => "invalid input",
+            .InvalidData => "invalid data",
+            .UnexpectedEof => "unexpected end of input",
+            .TimedOut => "timed out",
+            .ConnectionRefused => "connection refused",
+            .ConnectionReset => "connection reset",
+            .AddrInUse => "address in use",
+            .BrokenPipe => "broken pipe",
+            .Closed => "closed",
+            .Unsupported => "unsupported",
+            .Other { code } => f"system error {code}",
+        }
+        if (let p = this.path) {
+            text = f"{text}: {p}"
+        }
+        if (!this.detail.isEmpty()) {
+            text = f"{text} ({this.detail})"
+        }
+        return text
+    }
+    fn cause(): ?Error = this.inner
+}
 interface FromIntLiteral {
     static fn fromIntLiteral(v: int): Self
 }

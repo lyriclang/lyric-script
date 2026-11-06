@@ -1,0 +1,409 @@
+//! Input and output over bytes (12 rule 19; Lyric 5's `std.io`, its Go form over `Bytes`): `Reader`,
+//! `Writer`, `Seek`, what every reader and writer can do with them, the streams over memory, the
+//! buffers and the text. `IoError` is the prelude's, since `readLine()` throws it. No right: what
+//! touches a file is `std.fs`.
+
+/// A source of bytes. `read` fills `into` from the front and answers how many bytes it put there:
+/// 0 only at the end, and at once for empty bytes; fewer than `into` holds is no end.
+interface Reader {
+    fn read(into: Bytes): int throws [IoError, Cancelled]
+
+    /// Fills `into` whole, reading as often as it takes; `UnexpectedEof` where the source ends before.
+    fn readExact(into: Bytes): void throws [IoError, Cancelled] {
+        let n = into.length()
+        if (n == 0) {
+            return
+        }
+        var at = this.read(into)
+        while (at < n) {
+            let rest = Bytes.zeroed(n - at)
+            let k = this.read(rest)
+            if (k == 0) {
+                throw IoError { kind = IoErrorKind.UnexpectedEof, detail = f"{at} of {n} bytes" }
+            }
+            rest.copyInto(into, at, 0, k)
+            at += k
+        }
+    }
+
+    /// Everything to the end, in new bytes.
+    fn readToEnd(): Bytes throws [IoError, Cancelled] {
+        let held = Bytes.new()
+        let chunk = Bytes.zeroed(8192)
+        loop {
+            let n = this.read(chunk)
+            if (n == 0) {
+                return held
+            }
+            if (n == 8192) {
+                held.pushAll(chunk)
+            } else {
+                held.pushAll(chunk[0..n])
+            }
+        }
+    }
+
+    /// Everything to the end as UTF-8; `InvalidData`, the decoder's error as the cause, where it is none.
+    fn readToString(): string throws [IoError, Cancelled] {
+        let bytes = this.readToEnd()
+        return try string.fromUtf8(bytes) catch (e: Utf8Error) throw IoError {
+            kind = IoErrorKind.InvalidData,
+            detail = "the bytes are no UTF-8",
+            inner = e,
+        }
+    }
+}
+
+/// A sink of bytes. `write` takes from the front of `from` and answers how many bytes it took, maybe
+/// fewer than `from` holds. `flush` hands on what it holds back.
+interface Writer {
+    fn write(from: Bytes): int throws [IoError, Cancelled]
+
+    fn flush(): void throws [IoError, Cancelled] { }
+
+    /// Writes all of `from`, as often as it takes; `Other { code = 0 }` where the writer takes no byte.
+    fn writeAll(from: Bytes): void throws [IoError, Cancelled] {
+        let n = from.length()
+        var at = 0
+        while (at < n) {
+            let k = this.write(if (at == 0) from else from[at..n])
+            if (k == 0) {
+                throw IoError {
+                    kind = IoErrorKind.Other { code = 0 },
+                    detail = f"the writer took none of {n - at} bytes",
+                }
+            }
+            at += k
+        }
+    }
+
+    /// Writes the bytes of `s`, its UTF-8.
+    fn writeString(s: string): void throws [IoError, Cancelled] {
+        this.writeAll(s.toBytes())
+    }
+}
+
+/// Where a position moves to: from the start, from the end, from where it stands.
+enum SeekFrom :: [Equatable] {
+    Start(int),
+    End(int),
+    Current(int),
+}
+
+/// A stream with a position: `seek` moves it and answers where it stands, counted from the start.
+interface Seek {
+    fn seek(to: SeekFrom): int throws IoError
+}
+
+/// Copies everything `r` holds into `w` and answers how many bytes.
+fn copy(r: Reader, w: Writer): int throws [IoError, Cancelled] {
+    let chunk = Bytes.zeroed(8192)
+    var total = 0
+    loop {
+        let n = r.read(chunk)
+        if (n == 0) {
+            return total
+        }
+        w.writeAll(if (n == 8192) chunk else chunk[0..n])
+        total += n
+    }
+}
+
+/// A reader over bytes in memory, which it does not copy: a position past the end reads nothing, one
+/// before the start panics.
+class ByteReader :: [Reader, Seek] {
+    bytes: Bytes
+    var at: int = 0
+
+    static fn new(bytes: Bytes): ByteReader = ByteReader { bytes = bytes }
+
+    fn read(into: Bytes): int throws IoError {
+        let rest = this.bytes.length() - this.at
+        let n = if (into.length() < rest) into.length() else rest
+        if (n <= 0) {
+            return 0
+        }
+        this.bytes.copyInto(into, 0, this.at, this.at + n)
+        this.at += n
+        return n
+    }
+
+    fn seek(to: SeekFrom): int throws IoError {
+        let target = match (to) {
+            .Start(n) => n,
+            .End(n) => this.bytes.length() + n,
+            .Current(n) => this.at + n,
+        }
+        if (target < 0) {
+            panic(f"a seek to {target}, before the start")
+        }
+        this.at = target
+        return target
+    }
+
+    fn position(): int = this.at
+}
+
+/// Appends what is written, reads from the front what was written and not yet read.
+class ByteBuffer :: [Reader, Writer] {
+    data: Bytes = Bytes.new()
+    var start: int = 0
+
+    static fn new(): ByteBuffer = ByteBuffer { }
+
+    fn write(from: Bytes): int throws IoError {
+        this.data.pushAll(from)
+        return from.length()
+    }
+
+    fn read(into: Bytes): int throws IoError {
+        let held = this.length()
+        let n = if (into.length() < held) into.length() else held
+        this.data.copyInto(into, 0, this.start, this.start + n)
+        this.start += n
+        return n
+    }
+
+    /// What it holds, in new bytes.
+    fn toBytes(): Bytes = this.data[this.start..this.data.length()]
+
+    /// How many bytes it holds.
+    fn length(): int = this.data.length() - this.start
+}
+
+/// A reader that reads `inner` a buffer at a time; a read at least as large as the buffer, while it
+/// is empty, goes to `inner` directly.
+class BufReader<R :: [Reader]> :: [Reader] {
+    inner: R
+    held: Bytes
+    var start: int = 0
+    var end: int = 0
+
+    static fn new(inner: R): BufReader<R> = BufReader { inner = inner, held = Bytes.zeroed(8192) }
+
+    fn read(into: Bytes): int throws [IoError, Cancelled] {
+        if (into.isEmpty()) {
+            return 0
+        }
+        if (this.start == this.end) {
+            if (into.length() >= this.held.length()) {
+                return this.inner.read(into)
+            }
+            if (this.more() == 0) {
+                return 0
+            }
+        }
+        let held = this.end - this.start
+        let n = if (into.length() < held) into.length() else held
+        this.held.copyInto(into, 0, this.start, this.start + n)
+        this.start += n
+        return n
+    }
+
+    fn more(): int throws [IoError, Cancelled] {
+        if (this.start > 0) {
+            this.held.copyInto(this.held, 0, this.start, this.end)
+            this.end -= this.start
+            this.start = 0
+        }
+        if (this.end == 0) {
+            this.end = this.inner.read(this.held)
+            return this.end
+        }
+        let tail = Bytes.zeroed(this.held.length() - this.end)
+        let n = this.inner.read(tail)
+        tail.copyInto(this.held, this.end, 0, n)
+        this.end += n
+        return n
+    }
+
+    fn hold(n: int): bool throws [IoError, Cancelled] {
+        while (this.end - this.start < n) {
+            if (this.more() == 0) {
+                return false
+            }
+        }
+        return true
+    }
+}
+
+/// A writer that holds back what it is handed until its buffer is full, a `flush()` or a `close()`; a
+/// write at least as large goes to `inner` directly, after what is held. A flush that throws keeps
+/// what `inner` did not take. `close()` flushes and leaves `inner` open.
+class BufWriter<W :: [Writer]> :: [Writer, Closeable] {
+    inner: W
+    held: Bytes
+    var used: int = 0
+    var sent: int = 0
+
+    static fn new(inner: W): BufWriter<W> = BufWriter { inner = inner, held = Bytes.zeroed(8192) }
+
+    fn write(from: Bytes): int throws [IoError, Cancelled] {
+        let n = from.length()
+        if (this.used + n > this.held.length()) {
+            this.handOn()
+        }
+        if (n >= this.held.length()) {
+            return this.inner.write(from)
+        }
+        from.copyInto(this.held, this.used, 0, n)
+        this.used += n
+        return n
+    }
+
+    fn flush(): void throws [IoError, Cancelled] {
+        this.handOn()
+        this.inner.flush()
+    }
+
+    fn close() throws [IoError, Cancelled] {
+        this.flush()
+    }
+
+    private fn handOn(): void throws [IoError, Cancelled] {
+        while (this.sent < this.used) {
+            let n = this.inner.write(this.held[this.sent..this.used])
+            if (n == 0) {
+                throw IoError {
+                    kind = IoErrorKind.Other { code = 0 },
+                    detail = f"the writer took none of {this.used - this.sent} bytes",
+                }
+            }
+            this.sent += n
+        }
+        this.sent = 0
+        this.used = 0
+    }
+}
+
+private fn invalidAt(offset: int): IoError = IoError {
+    kind = IoErrorKind.InvalidData,
+    detail = "the bytes are no UTF-8",
+    inner = Utf8Error { offset = offset },
+}
+
+/// UTF-8 text through a buffer of its own. A line ends in `\n` or `\r\n`, a `\r` alone is text; a last
+/// line without an end is a line. A codepoint split between two reads waits for its rest. A byte
+/// order mark is text unless `skipBom` drops it from the front.
+class TextReader<R :: [Reader]> {
+    source: BufReader<R>
+    var bom: bool
+    var taken: int = 0
+
+    static fn new(inner: R, skipBom: bool = false): TextReader<R> = TextReader { source = BufReader.new(inner), bom = skipBom }
+
+    /// The next line without its end, `null` at the end.
+    fn readLine(): ?string throws [IoError, Cancelled] {
+        this.dropBom()
+        let s = this.source
+        var line: ?Bytes = null
+        loop {
+            if (s.start == s.end && s.more() == 0) {
+                if (let l = line) {
+                    return this.text(l, 0)
+                }
+                return null
+            }
+            let i = __bytesFind(s.held.v, 10, s.start, s.end)
+            if (i >= 0) {
+                let part = s.held[s.start..i]
+                s.start = i + 1
+                if (let l = line) {
+                    l.pushAll(part)
+                    return this.text(l, 1)
+                }
+                return this.text(part, 1)
+            }
+            let l = line ?? Bytes.new()
+            l.pushAll(s.held[s.start..s.end])
+            line = l
+            s.start = s.end
+        }
+    }
+
+    /// The lines, as `readLine` gives them.
+    fn lines(): TextLinesIter<R> = TextLinesIter { reader = this }
+
+    /// The codepoints.
+    fn chars(): TextCharsIter<R> = TextCharsIter { reader = this }
+
+    /// The rest.
+    fn readToEnd(): string throws [IoError, Cancelled] {
+        this.dropBom()
+        return this.text(this.source.readToEnd(), 0)
+    }
+
+    fn readChar(): ?char throws [IoError, Cancelled] {
+        this.dropBom()
+        let s = this.source
+        if (!s.hold(1)) {
+            return null
+        }
+        let lead = s.held[s.start]
+        let size = if (lead < 0x80) 1
+            else if (lead < 0xC0) 0
+                else if (lead < 0xE0) 2 else if (lead < 0xF0) 3 else if (lead < 0xF8) 4 else 0
+        if (size == 0 || !s.hold(size)) {
+            throw invalidAt(this.taken)
+        }
+        let t = try string.fromUtf8(s.held[s.start..s.start + size]) catch (e: Utf8Error) throw invalidAt(this.taken)
+        s.start += size
+        this.taken += size
+        for (c in t.chars()) {
+            return c
+        }
+        return null
+    }
+
+    private fn text(bytes: Bytes, ends: int): string throws IoError {
+        let at = this.taken
+        let n = bytes.length()
+        this.taken = at + n + ends
+        if (ends > 0 && n > 0 && bytes[n - 1] == 13) {
+            bytes.truncate(n - 1)
+        }
+        return try string.fromUtf8(bytes) catch (e: Utf8Error) throw invalidAt(at + e.offset)
+    }
+
+    private fn dropBom(): void throws [IoError, Cancelled] {
+        if (!this.bom) {
+            return
+        }
+        this.bom = false
+        let s = this.source
+        if (s.hold(3) && s.held[s.start] == 0xEF && s.held[s.start + 1] == 0xBB && s.held[s.start + 2] == 0xBF) {
+            s.start += 3
+            this.taken = 3
+        }
+    }
+}
+
+class TextLinesIter<R :: [Reader]> :: [Iterator] {
+    type Item = string
+    reader: TextReader<R>
+
+    fn next(): ?string = this.reader.readLine()
+}
+
+class TextCharsIter<R :: [Reader]> :: [Iterator] {
+    type Item = char
+    reader: TextReader<R>
+
+    fn next(): ?char = this.reader.readChar()
+}
+
+/// Writes text's UTF-8; `writeLine` and a `\n`, on every system. It holds nothing back.
+class TextWriter<W :: [Writer]> {
+    inner: W
+
+    static fn new(inner: W): TextWriter<W> = TextWriter { inner = inner }
+
+    fn write(s: string): void throws [IoError, Cancelled] {
+        this.inner.writeString(s)
+    }
+
+    fn writeLine(s: string): void throws [IoError, Cancelled] {
+        this.inner.writeString(s)
+        this.inner.writeString("\n")
+    }
+}

@@ -125,7 +125,7 @@ fn aBigIntProductTheBudgetDoesNotCoverIsNotStarted(): void {
 // for `1 + n / 32`, and the operation after it costs as its rule says.
 fn bytesProgram(op: string): string {
     return f"""
-    fn p(s) -> s regs 3 2
+    fn p(s) -> s regs 4 2
         call.n bytes.new, s0, r0
         call.n bytes.len, s1, r0
         move.r r1, r0
@@ -158,6 +158,23 @@ fn theNativesOfBytesChargeByTheirBytes(): void {
     // a slice costs what it copies
     bytesCosts("load.i s1, 0\n        load.i s2, 3200\n        call.n bytes.slice, s1, r0", walk);
     bytesCosts("load.i s1, 100\n        load.i s2, 164\n        call.n bytes.slice, s1, r0", 3);
+    // a copy and a search cost what they walk
+    bytesCosts(
+        "load.i s1, 0\n        load.i s2, 0\n        load.i s3, 3200\n        call.n bytes.copy, s1, r0",
+        walk
+    );
+    bytesCosts(
+        "load.i s1, 0\n        load.i s2, 100\n        load.i s3, 164\n        call.n bytes.copy, s1, r0",
+        3
+    );
+    bytesCosts(
+        "load.i s1, 300\n        load.i s2, 0\n        load.i s3, 3200\n        call.n bytes.find, s1, r0",
+        walk
+    );
+    bytesCosts(
+        "load.i s1, 300\n        load.i s2, 100\n        load.i s3, 164\n        call.n bytes.find, s1, r0",
+        3
+    );
     // what makes them from a text or a list: what gives the operand, then the same again
     bytesCosts("call.n bytes.toList, s1, r0\n        call.n bytes.ofList, s1, r0", walk + walk);
     bytesCosts("call.n bytes.text, s1, r0\n        call.n bytes.ofText, s1, r0", walk + walk);

@@ -8,6 +8,8 @@ fn __bytesOfLatin1(s: string): Any = __bytes_ofLatin1(s)
 fn __bytesOfList(xs: int[]): Any = __bytes_ofList(xs)
 fn __bytesToList(b: Any): int[] = __bytes_toList(b)
 fn __bytesLength(b: Any): int = __bytes_len(b)
+fn __bytesCopy(b: Any, into: Any, at: int, from: int, to: int): void = __bytes_copy(at, from, to, b, into)
+fn __bytesFind(b: Any, x: int, from: int, to: int): int = __bytes_find(x, from, to, b)
 fn __bytesGet(b: Any, i: int): int = __bytes_get(i, b)
 fn __bytesSet(b: Any, i: int, v: int): void = __bytes_set(i, v, b)
 fn __bytesPush(b: Any, v: int): void = __bytes_push(v, b)
@@ -138,16 +140,11 @@ class Bytes :: [IndexSet<int>, Iterable, Contains<int>, Add, TotalOrder, Hashabl
         return out
     }
     fn indexOf(x: int): ?int {
-        let n = this.length()
-        var i = 0
-        while (i < n) {
-            if (__bytesGet(this.v, i) == x) {
-                return i
-            }
-            i += 1
-        }
-        return null
+        let i = __bytesFind(this.v, x, 0, this.length())
+        return if (i >= 0) i else null
     }
+    /// Copies the bytes `from..to` of these to `at` in `into`, which does not grow; the two may be one.
+    fn copyInto(into: Bytes, at: int, from: int, to: int) = __bytesCopy(this.v, into.v, at, from, to)
     fn contains(x: int): bool = this.indexOf(x) != null
     fn startsWith(o: Bytes): bool {
         let m = o.length()

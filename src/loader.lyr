@@ -430,7 +430,7 @@ fn namesIter(l: Loaded): bool {
     }
     for (text in l.texts) {
         for (m in members) {
-            if (holdsName(text, m)) {
+            if (holdsName(text, m) && holdsBeyond(text, m, wholeModules(text))) {
                 return true;
             }
         }
@@ -476,16 +476,72 @@ fn namesNumbers(l: Loaded): bool {
     return false;
 }
 
-/// Whether `text` holds `name` as a name of its own, `nextFloat` not naming `Float` nor `.power`
-/// `.pow`; `.pow` starts with its dot, so what stands before it is its receiver.
-fn holdsName(text: string, name: string): bool {
-    if (!text.contains(name)) {
-        return false;
+/// The last segments of the modules `text` imports whole and names only in front of a dot: `path.join`
+/// is then no iterator's `.join`, and did cost 340 ms (S7g3). Any other use of the word, a `let path`,
+/// a parameter, a field `x.path`, leaves the module out, which is only a cost: none too few.
+fn wholeModules(text: string): string[] {
+    let out = List<string>.new();
+    let code = List<string>.new();
+    let imported = List<string>.new();
+    for (line in text.split("\n")) {
+        if (line.startsWith("import ")) {
+            // a list or an alias leaves a text no name equals, so no receiver is taken for the module
+            let at = line.rfind(".") ?? 6;
+            imported.push(line[at + 1..].trim().toString());
+        } else {
+            code.push(line.toString());
+        }
     }
+    let rest = code.toArray()[..].join("\n").toBytes();
+    for (word in imported) {
+        if (onlyBeforeADot(rest, word.toBytes())) {
+            out.push(word);
+        }
+    }
+    return out.toArray();
+}
+
+/// Whether every whole `w` in `b` stands right before a dot, and after none.
+fn onlyBeforeADot(b: uint8[], w: uint8[]): bool {
+    var from = nameAt(b, w, 0);
+    while (from >= 0) {
+        let after = from + w.length();
+        if (after == b.length() || b[after] != 46 || (from > 0 && b[from - 1] == 46)) {
+            return false;
+        }
+        from = nameAt(b, w, from + 1);
+    }
+    return true;
+}
+
+/// Whether `text` holds the member `name` after a receiver that is none of `modules`.
+fn holdsBeyond(text: string, name: string, modules: string[]): bool {
     let b = text.toBytes();
     let w = name.toBytes();
+    var from = nameAt(b, w, 0);
+    while (from >= 0) {
+        var start = from;
+        while (start > 0 && wordByte(b[start - 1])) {
+            start -= 1;
+        }
+        let receiver = string.fromUtf8Lossy(b[start..from]);
+        var theirs = false;
+        for (m in modules) {
+            theirs = theirs || m == receiver;
+        }
+        if (!theirs) {
+            return true;
+        }
+        from = nameAt(b, w, from + 1);
+    }
+    return false;
+}
+
+/// Where `w` next stands in `b` from `from` as a name of its own, -1 where it does not: a member,
+/// which starts with its dot, whatever its receiver.
+fn nameAt(b: uint8[], w: uint8[], start: int): int {
     let member = w[0] == 46;
-    var from = 0;
+    var from = start;
     while (from + w.length() <= b.length()) {
         if (b[from] == w[0]
             && (member || from == 0 || !wordByte(b[from - 1]))
@@ -495,12 +551,21 @@ fn holdsName(text: string, name: string): bool {
                 k += 1;
             }
             if (k == w.length()) {
-                return true;
+                return from;
             }
         }
         from += 1;
     }
-    return false;
+    return -1;
+}
+
+/// Whether `text` holds `name` as a name of its own, `nextFloat` not naming `Float` nor `.power`
+/// `.pow`; `.pow` starts with its dot, so what stands before it is its receiver.
+fn holdsName(text: string, name: string): bool {
+    if (!text.contains(name)) {
+        return false;
+    }
+    return nameAt(text.toBytes(), name.toBytes(), 0) >= 0;
 }
 
 /// Whether a module loaded names `Bytes` (S7f5): the type, its error, a string's way there and

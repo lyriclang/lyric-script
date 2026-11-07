@@ -20,6 +20,7 @@ fn theStandardLibrarysModulesAskForTheirClass(): void {
     assertEq(classOf("std.random"), null);
     assertEq(classOf("std.net"), "net");
     assertEq(classOf("std.io"), null);
+    assertEq(classOf("std.path"), null);
     assertEq(classOf("std.fs.walk"), "file");
     assertEq(classOf("std.http"), "net");
     assertEq(classOf("std.process"), "process");

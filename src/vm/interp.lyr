@@ -23,6 +23,7 @@ import std.fs { exists };
 import std.hash { DefaultHasher };
 import std.io { IoError, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
 import std.os { env };
+import std.path { separator as pathSeparator };
 import std.random { Random };
 import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
 import std.time { Duration, Monotonic };
@@ -824,6 +825,7 @@ fn callNative(
         .ConsoleLine | .ConsoleRead => {
             return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
         }
+        .PathSeparator => r[y] = ScriptString { text = pathSeparator },
         .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
         .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
         // Lyric 5's shortest text that reads back, `1.0` for an integral float

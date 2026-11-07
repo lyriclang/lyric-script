@@ -18,6 +18,7 @@ let stdModules: string[] = [
     "std.iter",
     "std.math",
     "std.os",
+    "std.path",
     "std.random",
     "std.random.system",
 ];
@@ -31,6 +32,7 @@ fn stdSource(name: string): ?string {
         "std.math" => string.fromUtf8Lossy(comptime embed("../std/math.lyrs")),
         "std.io" => string.fromUtf8Lossy(comptime embed("../std/io.lyrs")),
         "std.os" => string.fromUtf8Lossy(comptime embed("../std/os.lyrs")),
+        "std.path" => string.fromUtf8Lossy(comptime embed("../std/path.lyrs")),
         "std.random" => string.fromUtf8Lossy(comptime embed("../std/random.lyrs")),
         "std.random.system" => string.fromUtf8Lossy(comptime embed("../std/random/system.lyrs")),
         _ => null,

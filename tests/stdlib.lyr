@@ -31,6 +31,20 @@ fn theNumberTowerComesWhereAModuleNamesIt(): void {
     assertTrue(loadProgram("t.lyrs", "fn f<T :: [Float]>(x: T) { }").numbers);
     assertTrue(loadProgram("t.lyrs", "let x = y.pow(2)").numbers);
     assertTrue(!loadProgram("t.lyrs", "import std.random { Random }").numbers);
+    // `.join` after a module's name is the module's, while the word is nothing else (S7g3)
+    let iterIn = (src: string) => loadProgram("t.lyrs", src).names.toArray()[..].contains(
+        "std.iter"
+    );
+    assertTrue(!iterIn("import std.path\nprintln(path.join(\"a\"))"));
+    assertTrue(iterIn("println(path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path\nlet path = [1].iter()\nprintln(path.join(\",\"))"));
+    assertTrue(iterIn("import std.path\nfn f(path: string) {\n}\nprintln(path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path\nprintln(this.path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path\nprintln(path.join(\"a\"))\nprintln(x.join(\"a\"))"));
+    assertTrue(iterIn("import std.path as p\nprintln(path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path { join }\nprintln(path.join(\"a\"))"));
+    assertTrue(!iterIn("import a.b.path\nprintln(path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path\nprintln(path.join(\"a\"))\nlet q = path"));
     // `Bytes` comes the same way (S7f5): its names, a byte string; a string that ends in b is none
     assertTrue(!loadProgram("t.lyrs", "println(\"ab\")").bytes);
     assertTrue(!loadProgram("t.lyrs", "let b_ = 1").bytes);
@@ -58,7 +72,7 @@ fn theStandardLibrarysModulesAreInTheBinary(): void {
     }
     assertEq(stdSource("std.nothere"), null);
     assertEq(stdSource("std"), null);
-    assertEq(stdBelow("std"), ["fmt", "fs", "io", "iter", "math", "os", "random"]);
+    assertEq(stdBelow("std"), ["fmt", "fs", "io", "iter", "math", "os", "path", "random"]);
     assertEq(stdBelow("std.random"), ["system"]);
     assertEq(stdBelow("std.fs"), []);
 }

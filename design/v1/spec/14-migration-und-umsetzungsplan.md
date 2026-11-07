@@ -2133,3 +2133,25 @@ abzufangen ändert nichts, der Zweig ist weg, Fall `stdin_read_into_nothing_take
 der Lauf verweigert, konnte der Runner nicht herstellen; jetzt `stdin-refuses`, Fall
 `an_input_that_refuses_throws`. **LE:** `fn eprintln` warnte vor dem Verdecken in keinem Test; jetzt Unit-Zeile.
 Fälle 692 → 721, Tests 366.
+
+**Ergebnis S7g3 (2026-11-07).** `std/path.lyrs`, 260 Zeilen Script, ein Native für den Trenner, kein Recht (Format 39).
+Lyric 5 rechnet auf Bytes über `Slice<uint8>`; hier liest `scan` den Pfad mit `/` an jeder Stelle, jeder Offset bleibt
+gültig. **Differential gegen Lyric 5:** dieselben rund 80 Pfade durch jede Funktion, 31 × 31 Paare durch `relative`,
+1956 Zeilen, 0 Unterschiede. Die Windows-Formen laufen dabei auf Linux, mit eingesetztem Trenner auf beiden Seiten;
+der Kontrolllauf gegen ein veraltetes Binary gab 1538 Unterschiede, die Probe sieht also etwas. Dieselbe Technik
+trägt die Mutanten: `std.path` als Nutzermodul neben dem Fall, je Mutant beide Formen, in Minuten statt in einer Stunde.
+Die Fälle laufen auf jedem System: Was die Formen trennt, geht durch `show`, was nur eine Form hat, vergleicht
+`path_forms_of_the_system` im Skript unter dem Trenner des Systems.
+**Gefunden beim Messen:** `import std.path` mit `path.join` kostete kalt 330 ms, vorhergesagt waren 10 bis 30. Meine
+erste Erklärung war falsch: `.find` im Modul lud zwar `std.iter`, nach dem Umbau auf `nextIn` blieb die Zeit gleich.
+Der Bisekt zeigte `.join` im Text des Nutzers: Der Loader hielt es für die Methode eines Iterators. Jetzt zählt
+ein Modulname als Empfänger, wenn der Text das Wort nur vor einem Punkt und nach keinem benutzt; jede andere
+Verwendung (`let path`, ein Parameter, `x.path`) lädt wie bisher, das kostet nur Zeit und fehlt nie. Danach, in
+Ruhe, 20 Runden, CPU: `println(1)` 311 ms, `path.join` 446, also +135. Das meiste davon sind die generischen
+`Pattern`-Aufrufe, `startsWith` allein bringt schon rund +100 (Debug-Build). Offen bleibt: `"abc".find("b")` lädt
+weiter `std.iter`, `.find` ist beides.
+Mutanten (32 über `std.path`, 6 über den Loader): getötet außer MM (die Abkürzung am Anfang von `relative` war
+wirkungslos, gestrichen), WC und WP (`1:a` normalisiert mit und ohne Volumen gleich, jetzt über `parent`). MP überlebt
+nur auf POSIX, dort gleichwertig. Eine Vorhersage war falsch: `stem("")` ist leer, nicht `.`; das Differential
+bestätigt das. Rot-Lauf: 13 von 14 rot gegen S7g2, `path_lives_in_its_module` grün, `join` war schon unbekannt.
+Fälle 721 → 735, Tests 366.

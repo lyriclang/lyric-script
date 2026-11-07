@@ -368,7 +368,11 @@ VM's call path, S7k measurement point 3.
   since `nextFloat` holds `Float` and so loaded the number tower; names are whole now, about 80 ms.
 - **S7g1 done** — `std.io` over memory, in Script; `IoError` in the prelude; `bytes.copy`, `bytes.find`. Found:
   the field `this.taken` holds `.take`, which loaded `std.iter` and cost 200 ms; every such check is by whole names now.
-- Next: **S7g3** — `std.path` in Script, no native but the separator, no right. S7g is cut in six, see 14.
+- **S7g2 done** — the console over `call.w`, the general way a native waits, charged before it starts; `readLine`
+  throws `[IoError, Cancelled]`. Found: a report stood before the output still buffered; `finish` flushes first.
+- **S7g3 done** — `std.path` in Script, no right, differential against Lyric 5 clean on both systems' forms. Found:
+  `path.join` in a script loaded `std.iter`, +340 ms cold; a module's name is a receiver now where the word is nothing else.
+- Next: **S7g4** — `std.fs`: `File` and the conveniences over the same way. S7g is cut in six, see 14.
 
 ## Working mode
 

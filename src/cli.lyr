@@ -3,7 +3,7 @@
 //! its text form.
 import std.collections { List };
 import std.fs { exists, readText };
-import std.io { eprintln, println, stdin };
+import std.io { eprintln, flush, println, stdin };
 import std.os { args };
 import std.term { StdStream, isTerminal };
 import lyric_script { version };
@@ -425,7 +425,13 @@ fn compile(l: Loaded, json: bool): Compiled {
             );
         }
     }
-    let checked = checkModule(l.parses[0].module, imported.toArray());
+    let checked = checkModule(
+        l.parses[0].module,
+        imported.toArray(),
+        l.collections,
+        l.numbers,
+        l.bytes
+    );
     r.all(checked.errors, checked.warnings);
     r.summary();
     if (checked.errors.length() > 0) {
@@ -498,11 +504,12 @@ class Reporter {
 }
 
 /// The exit code of a run: 0 at its end, 1 for an error that left it and 101 for a panic, each
-/// reported with its frames.
+/// reported with its frames, after what the script printed (12 rule 20).
 fn finish(outcome: Outcome): int {
     return match (outcome) {
         .Void | .Scalar(_) | .Ref(_) | .Slots(_, _) => 0,
         .Error(e) => {
+            flush();
             eprintln(f"error: {e.message}");
             for (cause in e.causes) {
                 eprintln(f"  caused by: {cause}");
@@ -516,6 +523,7 @@ fn finish(outcome: Outcome): int {
             1
         }
         .Panic(p) => {
+            flush();
             eprintln(f"panic [{p.code}]: {p.message}");
             for (frame in p.trace) {
                 eprintln(f"    {frame}");

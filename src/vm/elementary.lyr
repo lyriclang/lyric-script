@@ -1,0 +1,37 @@
+//! The elementary functions behind `std.math` (S7f2): Lyric 5's own, so a script computes the bits a
+//! compiled program does, on every platform. The module's text names a function by its number here.
+import std.math;
+
+/// The function `kind` of one argument: the numbers `std/math.lyrs` writes.
+fn mathOne(kind: int, x: float): float {
+    return match (kind) {
+        0 => math.floor(x),
+        1 => math.ceil(x),
+        2 => math.round(x),
+        3 => math.trunc(x),
+        4 => math.sqrt(x),
+        5 => math.cbrt(x),
+        6 => math.exp(x),
+        7 => math.ln(x),
+        8 => math.log2(x),
+        9 => math.log10(x),
+        10 => math.sin(x),
+        11 => math.cos(x),
+        12 => math.tan(x),
+        13 => math.asin(x),
+        14 => math.acos(x),
+        15 => math.atan(x),
+        16 => math.sinh(x),
+        17 => math.cosh(x),
+        _ => math.tanh(x),
+    };
+}
+
+/// The function `kind` of two arguments.
+fn mathTwo(kind: int, x: float, y: float): float {
+    return match (kind) {
+        0 => math.atan2(x, y),
+        1 => math.hypot(x, y),
+        _ => math.pow(x, y),
+    };
+}

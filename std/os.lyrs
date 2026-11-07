@@ -1,0 +1,5 @@
+//! The system the script runs on (12; Lyric 5's `std.os`): its environment. A module of the right
+//! `os` (01 S1).
+
+/// The value of the environment variable `name`, `null` where it is not set.
+fn env(name: string): ?string = __os_env(name)

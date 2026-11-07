@@ -1,6 +1,7 @@
 // The interpreter: hand-written programs run to their results; overflow, division by zero, null,
 // a too deep recursion and `panic` end as the script's panics with their codes and frames; the
 // fuel stops a loop deterministically.
+import std.fs { readBytes, remove, tempFile, writeBytes };
 import std.test { assertEq, assertTrue };
 import lyric_script.vm.asm { assemble };
 import lyric_script.vm.heap { ScriptString };
@@ -63,6 +64,197 @@ let sum: string = """
         ret.s s1
     end
     """;
+
+// What the natives of a `BigInt` cost (12 rule 16): `s0` a shift, so that `1 << s0` has `s0 / 32 + 1`
+// words. The shift costs `1 + (w + 1) / 8`, the operation after it as its rule says; nothing else
+// here takes budget. With exactly the sum it finishes, with a unit less it stops at the operation.
+fn bigProgram(op: string): string {
+    return f"""
+    fn p(s) -> s regs 2 2
+        load.i s1, 1
+        call.n big.fromInt, s1, r0
+        call.n big.shl, s0, r0
+        move.r r1, r0
+        {op}
+        load.i s0, 7
+        ret.s s0
+    end
+    """;
+}
+
+fn bigCosts(op: string, cost: int): void {
+    let text = bigProgram(op);
+    // 1001 words: the shift's cost is 1 + 1002 / 8
+    let shift = 1 + 1002 / 8;
+    assertEq(scalar(runText(text, "p", [32000], shift + cost)), 7);
+    assertTrue(suspended(runText(text, "p", [32000], shift + cost - 1)));
+    assertTrue(suspended(runText(text, "p", [32000], shift - 1)));
+    assertEq(scalar(runText(text, "p", [32000], -1)), 7);
+}
+
+@Test
+fn theNativesOfABigIntChargeByTheirOperands(): void {
+    bigCosts("call.n big.add, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.sub, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.cmp, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.neg, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.hash, s1, r0", 1 + 1001 / 8);
+    bigCosts("call.n big.mul, s1, r0", 1 + 1001 * 1001 / 8);
+    // a quotient one word long walks the divisor once
+    bigCosts("call.n big.div, s1, r0", 1 + 1 * 1001 / 8);
+    bigCosts("call.n big.rem, s1, r0", 1 + 1 * 1001 / 8);
+    bigCosts("load.i s1, 10\n        call.n big.text, s1, r0", 1 + 1001 * 1001 / 4);
+    bigCosts("load.i s1, 5\n        call.n big.shr, s1, r0", 1 + 1001 / 8);
+    bigCosts("load.i s1, 3200\n        call.n big.shl, s1, r0", 1 + (100 + 1001 + 1) / 8);
+    // a length, a sign's room, a conversion: what they read does not grow with the number
+    bigCosts("call.n big.bitLength, s1, r0", 0);
+    bigCosts("call.n big.fitsInt, s1, r0", 0);
+    bigCosts("call.n big.toInt, s1, r0", 0);
+    bigCosts("call.n big.toFloat, s1, r0", 0);
+}
+
+@Test
+fn aBigIntProductTheBudgetDoesNotCoverIsNotStarted(): void {
+    // half a million words: a square would take minutes; a unit too few returns at once
+    let text = bigProgram("call.n big.mul, s1, r0");
+    let words = 524288;
+    let shift = 1 + (words + 1) / 8;
+    assertTrue(suspended(runText(text, "p", [((words - 1) * 32) as uint64], shift)));
+}
+
+// What the natives of `Bytes` cost (12 rule 17): `s0` their number, so the first native makes them
+// for `1 + n / 32`, and the operation after it costs as its rule says.
+fn bytesProgram(op: string): string {
+    return f"""
+    fn p(s) -> s regs 4 2
+        call.n bytes.new, s0, r0
+        call.n bytes.len, s1, r0
+        move.r r1, r0
+        {op}
+        load.i s0, 7
+        ret.s s0
+    end
+    """;
+}
+
+fn bytesCosts(op: string, cost: int): void {
+    let text = bytesProgram(op);
+    let made = 1 + 3200 / 32;
+    assertEq(scalar(runText(text, "p", [3200], made + cost)), 7);
+    assertTrue(suspended(runText(text, "p", [3200], made + cost - 1)));
+    assertTrue(suspended(runText(text, "p", [3200], made - 1)));
+    assertEq(scalar(runText(text, "p", [3200], -1)), 7);
+}
+
+@Test
+fn aNativeThatWaitsDoesNotStartWithoutItsBudget(): void {
+    // only the side that does not start: the other would read this test's standard input
+    let made = 1 + 3200 / 32;
+    assertTrue(
+        suspended(runText(bytesProgram("call.w console.read, s1, r0"), "p", [3200], made + 100))
+    );
+    let line = """
+    fn p(s) -> s regs 2 1
+        call.w console.line, s1, r0
+        ret.s s1
+    end
+    """;
+    assertTrue(suspended(runText(line, "p", [1], 0)));
+    // a write to the console too: charged by its bytes, and none of them written
+    let put = bytesProgram("load.i s1, 1\n        call.n console.put, s1, r0");
+    assertTrue(suspended(runText(put, "p", [3200], made + 100)));
+}
+
+/// The handle in r0, the file open as `how` says, the 3200 bytes in r1, then `op`.
+fn fileProgram(path: string, how: int, op: string): string {
+    return f"""
+    fn p(s) -> s regs 4 3
+        call.n bytes.new, s0, r2
+        call.n fs.file, s1, r0
+        load.str r1, "{path}"
+        load.i s1, {how}
+        call.w fs.open, s1, r0
+        move.r r1, r2
+        {op}
+        load.i s0, 7
+        ret.s s0
+    end
+    """;
+}
+
+fn fileCosts(path: string, how: int, op: string, cost: int): void {
+    let text = fileProgram(path, how, op);
+    let before = 1 + 3200 / 32 + 1 + path.length() / 32;
+    assertEq(scalar(runText(text, "p", [3200], before + cost)), 7);
+    assertTrue(suspended(runText(text, "p", [3200], before + cost - 1)));
+}
+
+@Test
+fn aFilesCallsChargeBeforeTheyStart(): void {
+    let path = try! tempFile();
+    defer {
+        try! remove(path);
+    }
+    try! writeBytes(path, [0 as uint8] * 3200);
+    let walk = 1 + 3200 / 32;
+    fileCosts(path, 1, "", 0);
+    fileCosts(path, 1, "call.w fs.read, s1, r0", walk);
+    fileCosts(path, 2, "call.w fs.write, s1, r0", walk);
+    fileCosts(path, 1, "load.i s1, 0\n        load.i s2, 0\n        call.w fs.seek, s1, r0", 1);
+    fileCosts(path, 1, "call.w fs.close, s1, r0", 1);
+    // what the budget does not cover has not happened: the bytes are still there
+    assertTrue(suspended(runText(fileProgram(path, 2, "call.w fs.write, s1, r0"), "p", [3200], 1)));
+    assertEq((try! readBytes(path)).length(), 3200);
+}
+
+@Test
+fn theNativesOfBytesChargeByTheirBytes(): void {
+    let walk = 1 + 3200 / 32;
+    bytesCosts("call.n bytes.toList, s1, r0", walk);
+    bytesCosts("call.n bytes.text, s1, r0", walk);
+    bytesCosts("call.n bytes.badUtf8, s1, r0", walk);
+    bytesCosts("call.n bytes.cmp, s1, r0", walk);
+    bytesCosts("call.n bytes.append, s1, r0", walk);
+    bytesCosts("load.i s1, 0\n        call.n bytes.mix, s1, r0", walk);
+    bytesCosts("load.i s1, 0\n        call.n bytes.fill, s1, r0", walk);
+    // a slice costs what it copies
+    bytesCosts("load.i s1, 0\n        load.i s2, 3200\n        call.n bytes.slice, s1, r0", walk);
+    bytesCosts("load.i s1, 100\n        load.i s2, 164\n        call.n bytes.slice, s1, r0", 3);
+    // a copy and a search cost what they walk
+    bytesCosts(
+        "load.i s1, 0\n        load.i s2, 0\n        load.i s3, 3200\n        call.n bytes.copy, s1, r0",
+        walk
+    );
+    bytesCosts(
+        "load.i s1, 0\n        load.i s2, 100\n        load.i s3, 164\n        call.n bytes.copy, s1, r0",
+        3
+    );
+    bytesCosts(
+        "load.i s1, 300\n        load.i s2, 0\n        load.i s3, 3200\n        call.n bytes.find, s1, r0",
+        walk
+    );
+    bytesCosts(
+        "load.i s1, 300\n        load.i s2, 100\n        load.i s3, 164\n        call.n bytes.find, s1, r0",
+        3
+    );
+    // what makes them from a text or a list: what gives the operand, then the same again
+    bytesCosts("call.n bytes.toList, s1, r0\n        call.n bytes.ofList, s1, r0", walk + walk);
+    bytesCosts("call.n bytes.text, s1, r0\n        call.n bytes.ofText, s1, r0", walk + walk);
+    bytesCosts("call.n bytes.text, s1, r0\n        call.n bytes.ofLatin1, s1, r0", walk + walk);
+    // one byte at a time: what they do does not grow with the bytes
+    bytesCosts("call.n bytes.len, s1, r0", 0);
+    bytesCosts("load.i s1, 5\n        call.n bytes.get, s1, r0", 0);
+    bytesCosts("load.i s1, 5\n        load.i s2, 9\n        call.n bytes.set, s1, r0", 0);
+    bytesCosts("load.i s1, 9\n        call.n bytes.push, s1, r0", 0);
+    bytesCosts("load.i s1, 9\n        call.n bytes.truncate, s1, r0", 0);
+}
+
+@Test
+fn bytesTheBudgetDoesNotCoverAreNotMade(): void {
+    // a program that makes more than memory holds, a unit too few returns at once
+    let text = "fn p(s) -> s regs 1 1\n    call.n bytes.new, s0, r0\n    ret.s s0\nend\n";
+    assertTrue(suspended(runText(text, "p", [1 << 50], 1000)));
+}
 
 @Test
 fn aLoopSums(): void {

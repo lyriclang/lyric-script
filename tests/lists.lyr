@@ -1,0 +1,149 @@
+// Lists in the VM (S7b1; Script 03 S, 11 Gen): hand-written programs build lists of one and of
+// several slots, read and write their elements over the bases, take the last one off, and run
+// past the end.
+import std.test { assertEq };
+import lyric_script.vm.asm { assemble };
+import lyric_script.vm.interp { Outcome, ScriptPanic, execute };
+
+fn runText(text: string): Outcome {
+    return execute(try! assemble(text, "t"), "main", [], -1);
+}
+
+fn scalar(o: Outcome): int {
+    return match (o) {
+        .Scalar(bits) => bits as int,
+        _ => -999999,
+    };
+}
+
+fn panicOf(o: Outcome): ScriptPanic {
+    return match (o) {
+        .Panic(p) => p,
+        _ => ScriptPanic { code = "none", message = "", trace = [] },
+    };
+}
+
+@Test
+fn anElementOfSeveralSlotsKeepsItsOwn(): void {
+    // elements of two scalars and a reference (shape 2 × 256 + 1): element 1 read, element 0
+    // written and read back, the length — 4, 8 and 2 as 482
+    let text = """
+        fn main() -> s regs 8 4
+            list.new r0, 513
+            load.i s0, 1
+            load.i s1, 2
+            load.null r1
+            list.push s0, r0, r1
+            load.i s0, 3
+            load.i s1, 4
+            list.push s0, r0, r1
+            load.i s3, 1
+            move.r r2, r0
+            list.get.n s3, r2
+            move.s s6, s4
+            load.i s3, 0
+            move.r r2, r0
+            load.i s4, 7
+            load.i s5, 8
+            load.null r3
+            list.set.n s3, r2
+            load.i s3, 0
+            move.r r2, r0
+            list.get.n s3, r2
+            load.i s7, 10
+            mul.i s6, s6, s7
+            add.i s6, s6, s4
+            mul.i s6, s6, s7
+            list.len s5, r0
+            add.i s6, s6, s5
+            ret.s s6
+        end
+        """;
+    assertEq(scalar(runText(text)), 482);
+}
+
+@Test
+fn anIndexPastTheEndPanicsWithTheLength(): void {
+    let text = """
+        fn main() -> s regs 2 1
+            list.new r0, 256
+            load.i s0, 5
+            list.push s0, r0, r0
+            load.i s1, 3
+            list.get.s s0, r0, s1
+            ret.s s0
+        end
+        """;
+    let p = panicOf(runText(text));
+    assertEq(p.code, "LYS-RT0003");
+    assertEq(p.message, "index 3 out of bounds for length 1");
+}
+
+@Test
+fn popTellsAnEmptyListByItsPresence(): void {
+    // a pop of an empty list leaves the presence 0, of one element gives it and 1: 9, 1, 0 as 910
+    let text = """
+        fn main() -> s regs 4 2
+            list.new r0, 256
+            move.r r1, r0
+            list.pop s0, r1, 0
+            move.s s3, s1
+            load.i s0, 9
+            list.push s0, r0, r0
+            move.r r1, r0
+            list.pop s0, r1, 0
+            load.i s2, 10
+            mul.i s1, s1, s2
+            mul.i s2, s2, s2
+            mul.i s0, s0, s2
+            add.i s0, s0, s1
+            add.i s0, s0, s3
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text)), 910);
+}
+
+@Test
+fn aWalkNoticesAChangeOfTheLength(): void {
+    // a push counts one change, a truncate another; a check against the first count panics
+    let text = """
+        fn main() -> s regs 4 1
+            list.new r0, 256
+            load.i s0, 5
+            list.push s0, r0, r0
+            list.changes s1, r0
+            list.check r0, s1
+            load.i s2, 0
+            list.trunc r0, s2
+            list.changes s3, r0
+            list.check r0, s1
+            ret.s s3
+        end
+        """;
+    let p = panicOf(runText(text));
+    assertEq(p.code, "LYS-RT0016");
+    assertEq(p.message, "List: changed while it was walked");
+}
+
+@Test
+fn aTruncatePastTheLengthChangesNothing(): void {
+    // the count stays 1 where nothing is cut: 1 × 10 + the length 1
+    let text = """
+        fn main() -> s regs 4 1
+            list.new r0, 256
+            load.i s0, 5
+            list.push s0, r0, r0
+            load.i s2, 9
+            list.trunc r0, s2
+            list.changes s1, r0
+            list.check r0, s1
+            load.i s2, 10
+            mul.i s1, s1, s2
+            list.len s3, r0
+            add.i s1, s1, s3
+            ret.s s1
+        end
+        """;
+    assertEq(scalar(runText(text)), 11);
+}

@@ -29,6 +29,7 @@ import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.cache { cacheRoot };
 import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
 import lyric_script.rights { classOf };
+import lyric_script.stdsrc { numbersText, stdBelow, stdPackage, stdSource };
 import lyric_script.vm.module { RightUse };
 import lyric_script.package {
     Dep,
@@ -83,6 +84,12 @@ class Loaded {
     // `--offline`: nothing is fetched (S5c)
     var offline: bool = false,
     var how: LoadOptions = LoadOptions { },
+    // whether a module names a map or writes a map literal: std.collections is added, its names the
+    // prelude's (S7d2)
+    var collections: bool = false,
+    // whether a module names the number tower: it is added, its names the prelude's (S7f1b)
+    var numbers: bool = false,
+    var bytes: bool = false,
     // the lock as read, its manifest index, and what this build read from git (S5c2)
     var lockOld: LockEntry[] = [],
     var lockDoc: int = -1,
@@ -218,6 +225,31 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
                 file = i,
             };
             var j = indexOf(l.names, name);
+            // std.collections' names are the prelude's (S7d2): its import loads no module of its
+            // own, it adds the module to the prelude (S7d4, P28)
+            if (name == "std.collections") {
+                l.collections = true;
+                continue;
+            }
+            if (j < 0 && (im.path[0] == "std" || l.pkgOf[i] == stdPackage)) {
+                // the standard library's modules come with the toolchain (S7a): `std` names no
+                // package of the program, and a module of it imports only its own
+                let text = if (im.path[0] == "std") stdSource(name) else null;
+                if (text == null) {
+                    l.errors.push(
+                        where with {
+                            message = f"no module '{name}': the standard library has none of that name",
+                        }
+                    );
+                    continue;
+                }
+                j = l.paths.length();
+                l.paths.push(f"<{name}>");
+                l.texts.push(text);
+                l.names.push(name);
+                l.pkgOf.push(stdPackage);
+                l.subs.push(stdBelow(name));
+            }
             if (j < 0) {
                 // a script's own modules keep the path rule; its dependencies, by their names
                 let byPath = l.pkgs.length() == 0
@@ -264,6 +296,35 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
             deps.push(j);
             at.push(where);
         }
+        // the prelude names std.iter: its blocks reach every module without an import (Lyric 5 04
+        // rule 5; S7c6b), so the entry depends on it — where a module names a member of them: a
+        // program that names none reaches none, and does not pay for checking the module (P21)
+        if (i == l.paths.length() - 1 && indexOf(l.names, "std.iter") < 0 && namesIter(l)) {
+            var j = indexOf(l.names, "std.iter");
+            if (j < 0) {
+                j = l.paths.length();
+                l.paths.push("<std.iter>");
+                l.texts.push(stdSource("std.iter") ?? "");
+                l.names.push("std.iter");
+                l.pkgOf.push(stdPackage);
+                l.subs.push(stdBelow("std.iter"));
+            }
+            let first = if (i == 0) deps else edges[0];
+            let firstAt = if (i == 0) at else edgeAt[0];
+            first.push(j);
+            firstAt.push(
+                Diagnostic {
+                    code = "LYS-RES0003",
+                    message = "",
+                    start = 0,
+                    end = 0,
+                    line = 1,
+                    column = 1,
+                    help = null,
+                    file = 0,
+                }
+            );
+        }
         edges.push(deps);
         edgeAt.push(at);
         i += 1;
@@ -273,7 +334,265 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
         state.push(0);
     }
     visit(0, edges, edgeAt, state, List<int>.new(), l);
+    l.collections = l.collections || namesCollections(l);
+    l.numbers = namesNumbers(l);
+    l.bytes = namesBytes(l);
     return l;
+}
+
+/// Whether a module loaded names one of std.collections' types or its iterators' members as a
+/// word — `Map`, `Set`, `groupBy`, `toMap`, `toSet` — or writes a map literal, a `[` whose bracket
+/// holds a `:` of its own, `["a": 1]`, `[:]` (S7d2, S7d3). Too many is a cost, none too few.
+fn namesCollections(l: Loaded): bool {
+    let words = List<char[]>.new();
+    for (w in ["Map", "Set", "Deque", "Heap", "groupBy", "toMap", "toSet"]) {
+        words.push(w.chars().toArray());
+    }
+    for (text in l.texts) {
+        let cs = text.chars().toArray();
+        let n = cs.length();
+        var k = 0;
+        while (k < n) {
+            let c = cs[k];
+            if (isWordChar(c) && (k == 0 || !isWordChar(cs[k - 1]))) {
+                var end = k;
+                while (end < n && isWordChar(cs[end])) {
+                    end += 1;
+                }
+                for (w in words) {
+                    if (wordIs(cs, k, end, w)) {
+                        return true;
+                    }
+                }
+                k = end;
+                continue;
+            }
+            if (c == '[') {
+                var depth = 0;
+                var j = k + 1;
+                while (j < n && depth >= 0) {
+                    let d = cs[j];
+                    if (d == '[' || d == '(' || d == '{') {
+                        depth += 1;
+                    } else if (d == ']' || d == ')' || d == '}') {
+                        depth -= 1;
+                    } else if (d == ':' && depth == 0) {
+                        return true;
+                    } else if (d == '\n' && depth == 0) {
+                        j = n;
+                    }
+                    j += 1;
+                }
+            }
+            k += 1;
+        }
+    }
+    return false;
+}
+
+/// Whether `cs[from..to]` is the word `w`.
+fn wordIs(cs: char[], from: int, to: int, w: char[]): bool {
+    if (to - from != w.length()) {
+        return false;
+    }
+    var i = 0;
+    while (i < w.length()) {
+        if (cs[from + i] != w[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+fn isWordChar(c: char): bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+/// Whether a module loaded names a member of std.iter's blocks over every iterator (S7c6b): `.map`,
+/// `.filter` and the others, read off the module's text — a name of a function of a block
+/// `extend<I :: [...]> I` there. A whole name: a field `.taken` is no `.take`, and cost 200 ms.
+fn namesIter(l: Loaded): bool {
+    let members = List<string>.new();
+    var inBlock = false;
+    for (line in (stdSource("std.iter") ?? "").split("\n")) {
+        if (line.startsWith("extend<") && line.endsWith("> I {")) {
+            inBlock = true;
+        } else if (line == "}") {
+            inBlock = false;
+        } else if (inBlock && line.startsWith("    fn ")) {
+            var end = 7;
+            while (end < line.length() && line[end] != '(' && line[end] != '<') {
+                end += 1;
+            }
+            members.push("." + line[7..end].toString());
+        }
+    }
+    for (text in l.texts) {
+        for (m in members) {
+            if (holdsName(text, m) && holdsBeyond(text, m, wholeModules(text))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Whether a module loaded names the number tower (S7f1b): one of its interfaces, or a member or
+/// a constant of them after a dot, read off its text. Too many is a cost, none too few: `.min`
+/// of an iterator adds it too. std.iter's own text does not count: its `.min` is its declaration, and
+/// a program with an adapter does not pay for the tower (S7f1c).
+fn namesNumbers(l: Loaded): bool {
+    let names = List<string>.new();
+    for (line in numbersText().split("\n")) {
+        if (line.startsWith("interface ")) {
+            var end = 10;
+            while (end < line.length() && line[end] != ' ') {
+                end += 1;
+            }
+            names.push(line[10..end].toString());
+        }
+        for (lead in ["    fn ", "    static fn ", "    static let "]) {
+            if (line.startsWith(lead)) {
+                var end = lead.length();
+                while (end < line.length() && line[end] != '(' && line[end] != ':') {
+                    end += 1;
+                }
+                names.push("." + line[lead.length()..end].toString());
+            }
+        }
+    }
+    var k = 0;
+    for (text in l.texts) {
+        if (l.names[k] != "std.iter") {
+            for (n in names) {
+                if (holdsName(text, n)) {
+                    return true;
+                }
+            }
+        }
+        k += 1;
+    }
+    return false;
+}
+
+/// The last segments of the modules `text` imports whole and names only in front of a dot: `path.join`
+/// is then no iterator's `.join`, and did cost 340 ms (S7g3). Any other use of the word, a `let path`,
+/// a parameter, a field `x.path`, leaves the module out, which is only a cost: none too few.
+fn wholeModules(text: string): string[] {
+    let out = List<string>.new();
+    let code = List<string>.new();
+    let imported = List<string>.new();
+    for (line in text.split("\n")) {
+        if (line.startsWith("import ")) {
+            // a list or an alias leaves a text no name equals, so no receiver is taken for the module
+            let at = line.rfind(".") ?? 6;
+            imported.push(line[at + 1..].trim().toString());
+        } else {
+            code.push(line.toString());
+        }
+    }
+    let rest = code.toArray()[..].join("\n").toBytes();
+    for (word in imported) {
+        if (onlyBeforeADot(rest, word.toBytes())) {
+            out.push(word);
+        }
+    }
+    return out.toArray();
+}
+
+/// Whether every whole `w` in `b` stands right before a dot, and after none.
+fn onlyBeforeADot(b: uint8[], w: uint8[]): bool {
+    var from = nameAt(b, w, 0);
+    while (from >= 0) {
+        let after = from + w.length();
+        if (after == b.length() || b[after] != 46 || (from > 0 && b[from - 1] == 46)) {
+            return false;
+        }
+        from = nameAt(b, w, from + 1);
+    }
+    return true;
+}
+
+/// Whether `text` holds the member `name` after a receiver that is none of `modules`.
+fn holdsBeyond(text: string, name: string, modules: string[]): bool {
+    let b = text.toBytes();
+    let w = name.toBytes();
+    var from = nameAt(b, w, 0);
+    while (from >= 0) {
+        var start = from;
+        while (start > 0 && wordByte(b[start - 1])) {
+            start -= 1;
+        }
+        let receiver = string.fromUtf8Lossy(b[start..from]);
+        var theirs = false;
+        for (m in modules) {
+            theirs = theirs || m == receiver;
+        }
+        if (!theirs) {
+            return true;
+        }
+        from = nameAt(b, w, from + 1);
+    }
+    return false;
+}
+
+/// Where `w` next stands in `b` from `from` as a name of its own, -1 where it does not: a member,
+/// which starts with its dot, whatever its receiver.
+fn nameAt(b: uint8[], w: uint8[], start: int): int {
+    let member = w[0] == 46;
+    var from = start;
+    while (from + w.length() <= b.length()) {
+        if (b[from] == w[0]
+            && (member || from == 0 || !wordByte(b[from - 1]))
+            && (from + w.length() == b.length() || !wordByte(b[from + w.length()]))) {
+            var k = 1;
+            while (k < w.length() && b[from + k] == w[k]) {
+                k += 1;
+            }
+            if (k == w.length()) {
+                return from;
+            }
+        }
+        from += 1;
+    }
+    return -1;
+}
+
+/// Whether `text` holds `name` as a name of its own, `nextFloat` not naming `Float` nor `.power`
+/// `.pow`; `.pow` starts with its dot, so what stands before it is its receiver.
+fn holdsName(text: string, name: string): bool {
+    if (!text.contains(name)) {
+        return false;
+    }
+    return nameAt(text.toBytes(), name.toBytes(), 0) >= 0;
+}
+
+/// Whether a module loaded names `Bytes` (S7f5): the type, its error, a string's way there and
+/// back, or a byte string. Too many is a cost, none too few; a `b"` after a letter ends a string.
+fn namesBytes(l: Loaded): bool {
+    for (text in l.texts) {
+        for (n in ["Bytes", "Utf8Error", "fromUtf8", "fromUtf8Lossy", "toBytes"]) {
+            if (holdsName(text, n)) {
+                return true;
+            }
+        }
+        if (text.contains("b\"")) {
+            var from = 0;
+            let b = text.toBytes();
+            while (from + 1 < b.length()) {
+                if (b[from] == 98 && b[from + 1] == 34 && (from == 0 || !wordByte(b[from - 1]))) {
+                    return true;
+                }
+                from += 1;
+            }
+        }
+    }
+    return false;
+}
+
+fn wordByte(b: uint8): bool {
+    return b == 95 || b >= 48 && b <= 57 || b >= 65 && b <= 90 || b >= 97 && b <= 122;
 }
 
 /// A single script's frontmatter (07 Dep, 09 Hd): where it names dependencies, the script is

@@ -113,3 +113,15 @@ fn aHandlerReadsBackToTheSameModule(): void {
     assertTrue(once.contains("    catch @L0, @L2, @L2, r0, r1\n"), once);
     assertEq(disassemble(try! assemble(once, "demo")), once);
 }
+
+@Test
+fn aNativeIsCalledByTheOpOfItsKind(): void {
+    let called = (op: string) => check(
+        try! assemble(f"fn f() -> s regs 1 1\n    {op}, s0, r0\n    ret.s s0\nend\n", "m")
+    );
+    assertEq(called("call.w console.line").length(), 0);
+    assertEq(called("call.w console.read").length(), 0);
+    assertTrue(called("call.n console.line")[0].message.contains("'console.line' waits"));
+    assertTrue(called("call.n console.read")[0].message.contains("'console.read' waits"));
+    assertTrue(called("call.w bytes.len")[0].message.contains("'bytes.len' does not wait"));
+}

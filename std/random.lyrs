@@ -1,0 +1,90 @@
+//! Random numbers (12 rule 18; Lyric 5's `std.random`): `Random`, a generator its seed names, the
+//! stream Lyric 5's is, ChaCha8 under it. Not for secrets. It asks for no right: a seeded stream
+//! is determinism's own (01 S8). What draws from the system is `std.random.system`, of the right
+//! `os`.
+
+fn __randomSeeded(seed: int): Any = __random_seeded(seed)
+fn __randomInt(g: Any): int = __random_int(g)
+fn __randomInRange(g: Any, from: int, to: int): int = __random_inRange(from, to, g)
+fn __randomFloat(g: Any): float = __random_float(g)
+fn __randomNormal(g: Any, mean: float, stdDev: float): float = __random_normal(mean, stdDev, g)
+
+class Random {
+    g: Any
+
+    /// The generator whose stream `seed` names: the same in every 1.x, and Lyric 5's.
+    static fn seeded(seed: int): Random = Random { g = __randomSeeded(seed) }
+
+    /// The next 64 bits of the stream as an `int`, each value alike.
+    fn nextInt(): int = __randomInt(this.g)
+
+    /// An integer of `r`, each alike; an empty range panics.
+    fn nextInRange(r: Range<int>): int {
+        if (r.end <= r.start) {
+            panic(f"a number from the empty range {r.start}..{r.end}")
+        }
+        return __randomInRange(this.g, r.start, r.end)
+    }
+
+    /// A float in [0, 1), from the high 53 bits of a draw.
+    fn nextFloat(): float = __randomFloat(this.g)
+
+    /// `true` or `false`, alike: the high bit of a draw, an `int`'s sign.
+    fn nextBool(): bool = this.nextInt() < 0
+
+    /// Fills `into`: eight bytes a draw, the low byte first; a tail takes a draw's low bytes.
+    fn nextBytes(into: Bytes) {
+        let n = into.length()
+        var i = 0
+        while (i < n) {
+            let x = this.nextInt()
+            var k = 0
+            while (k < 8 && i < n) {
+                into[i] = (x >> (8 * k)) & 255
+                i += 1
+                k += 1
+            }
+        }
+    }
+
+    /// A normally distributed float, by Marsaglia's polar method.
+    fn nextNormal(mean: float = 0.0, stdDev: float = 1.0): float = __randomNormal(this.g, mean, stdDev)
+
+    /// Puts `s` in an order each of its orders alike (Fisher–Yates, from the back).
+    fn shuffle<T>(s: T[]) {
+        var i = s.length() - 1
+        while (i > 0) {
+            s.swap(i, this.nextInRange(0..i + 1))
+            i -= 1
+        }
+    }
+
+    /// An element of `s`, each alike; `null` for an empty list, which draws nothing.
+    fn choice<T>(s: T[]): ?T {
+        if (s.isEmpty()) {
+            return null
+        }
+        return s[this.nextInRange(0..s.length())]
+    }
+
+    /// `k` elements from `k` different places, in a random order; `k` outside `0..=s.length()` panics.
+    fn sample<T>(s: T[], k: int): T[] {
+        if (k < 0 || k > s.length()) {
+            panic(f"a sample of {k} from {s.length()}")
+        }
+        let places: int[] = []
+        var at = 0
+        while (at < s.length()) {
+            places.push(at)
+            at += 1
+        }
+        let out: T[] = []
+        var i = 0
+        while (i < k) {
+            places.swap(i, this.nextInRange(i..s.length()))
+            out.push(s[places[i]])
+            i += 1
+        }
+        return out
+    }
+}

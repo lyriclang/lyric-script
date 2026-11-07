@@ -1,0 +1,211 @@
+//! Computes with numbers (12; Lyric 5's `std.math`): free functions, generic over the number tower;
+//! the elementary ones are Lyric 5's own, the same bits on every platform. What describes a number
+//! type stands at that type: `float.epsilon`, `int.max`, `x.isNan()`.
+
+// a half turn in radians, the base of the natural logarithm, a full turn
+let pi: float = 3.141592653589793
+let e: float = 2.718281828459045
+let tau: float = 6.283185307179586
+
+// `a` where the two are equal or unordered, a NaN
+fn min<T :: [Ordered]>(a: T, b: T): T = if (b < a) b else a
+fn max<T :: [Ordered]>(a: T, b: T): T = if (b > a) b else a
+
+// never negative, `gcd(0, 0)` is `0`; a divisor whose magnitude does not fit overflows, as `abs` does
+fn gcd<T :: [Integer]>(a: T, b: T): T {
+    var x = a
+    var y = b
+    while (y != T.zero) {
+        let r = x.wrappingRem(y)
+        x = y
+        y = r
+    }
+    return if (x < T.zero) T.zero - x else x
+}
+// never negative, `0` where either is; a multiple that does not fit overflows
+fn lcm<T :: [Integer]>(a: T, b: T): T {
+    if (a == T.zero || b == T.zero) {
+        return T.zero
+    }
+    let m = (a / gcd(a, b)) * b
+    return if (m < T.zero) T.zero - m else m
+}
+
+// exactly `a` at `t = 0` and exactly `b` at `t = 1`; a `t` outside them extrapolates
+fn lerp<T :: [Float]>(a: T, b: T, t: T): T {
+    if (t + t < T.one) {
+        return a + (b - a) * t
+    }
+    return b - (b - a) * (T.one - t)
+}
+
+// the value without its sign, `-0.0` giving `0.0`; an integer's `min` has no magnitude and overflows
+fn abs<T :: [Signed]>(x: T): T {
+    if (x < T.zero) {
+        return -x
+    }
+    return if (x == T.zero) T.zero else x
+}
+// `-1`, `0` or `1` as a value of its type, a float's NaN staying NaN
+fn signum<T :: [Signed]>(x: T): T {
+    if (!(x == x)) {
+        return x
+    }
+    if (x < T.zero) {
+        return -T.one
+    }
+    if (x > T.zero) {
+        return T.one
+    }
+    return T.zero
+}
+
+// the greatest integral value not above `x`, the least not below it, the nearest with a half away
+// from zero, the integral part
+fn floor<T :: [Float]>(x: T): T = __math_one(0, x)
+fn ceil<T :: [Float]>(x: T): T = __math_one(1, x)
+fn round<T :: [Float]>(x: T): T = __math_one(2, x)
+fn trunc<T :: [Float]>(x: T): T = __math_one(3, x)
+// NaN below zero
+fn sqrt<T :: [Float]>(x: T): T = __math_one(4, x)
+fn cbrt<T :: [Float]>(x: T): T = __math_one(5, x)
+// *e* to the power `x`
+fn exp<T :: [Float]>(x: T): T = __math_one(6, x)
+// NaN below zero, negative infinity at zero
+fn ln<T :: [Float]>(x: T): T = __math_one(7, x)
+fn log2<T :: [Float]>(x: T): T = __math_one(8, x)
+fn log10<T :: [Float]>(x: T): T = __math_one(9, x)
+// in radians
+fn sin<T :: [Float]>(x: T): T = __math_one(10, x)
+fn cos<T :: [Float]>(x: T): T = __math_one(11, x)
+fn tan<T :: [Float]>(x: T): T = __math_one(12, x)
+fn asin<T :: [Float]>(x: T): T = __math_one(13, x)
+fn acos<T :: [Float]>(x: T): T = __math_one(14, x)
+fn atan<T :: [Float]>(x: T): T = __math_one(15, x)
+fn sinh<T :: [Float]>(x: T): T = __math_one(16, x)
+fn cosh<T :: [Float]>(x: T): T = __math_one(17, x)
+fn tanh<T :: [Float]>(x: T): T = __math_one(18, x)
+// the angle of the point (x, y) from the positive x axis, in radians from -π to π
+fn atan2<T :: [Float]>(y: T, x: T): T = __math_two(0, y, x)
+// unlike `sqrt(x * x + y * y)`, it does not overflow in the squares
+fn hypot<T :: [Float]>(x: T, y: T): T = __math_two(1, x, y)
+// for an integer's integer power, the integer's own `x.pow(n)`
+fn pow<T :: [Float]>(x: T, e: T): T = __math_two(2, x, e)
+
+// the VM's natives of a `BigInt`
+fn __bigFromInt(v: int): Any = __big_fromInt(v)
+fn __bigAdd(a: Any, b: Any): Any = __big_add(a, b)
+fn __bigSub(a: Any, b: Any): Any = __big_sub(a, b)
+fn __bigMul(a: Any, b: Any): Any = __big_mul(a, b)
+fn __bigDiv(a: Any, b: Any): Any = __big_div(a, b)
+fn __bigRem(a: Any, b: Any): Any = __big_rem(a, b)
+fn __bigNeg(a: Any): Any = __big_neg(a)
+fn __bigCmp(a: Any, b: Any): int = __big_cmp(a, b)
+fn __bigText(a: Any, radix: int): string = __big_text(radix, a)
+fn __bigParse(s: string, radix: int): ?Any = __big_parse(radix, s)
+fn __bigFitsInt(a: Any): bool = __big_fitsInt(a)
+fn __bigToInt(a: Any): int = __big_toInt(a)
+fn __bigToFloat(a: Any): float = __big_toFloat(a)
+fn __bigShl(a: Any, n: int): Any = __big_shl(n, a)
+fn __bigShr(a: Any, n: int): Any = __big_shr(n, a)
+fn __bigBitLength(a: Any): int = __big_bitLength(a)
+fn __bigHash(a: Any): int = __big_hash(a)
+
+// a whole number of any size, its arithmetic the VM's (02 T1; Lyric 5 has none). A `Signed`, not an
+// `Integer`: that one is a fixed width. `/` truncates and `%` takes the dividend's sign, as `int`'s
+// do; a literal in a place of the type is `int`'s range, a longer number comes from `parse`
+struct BigInt :: [Signed, TotalOrder, Hashable, Clone, From<int>, FromIntLiteral, Shl, Shr] {
+    v: Any
+
+    static let zero: BigInt = BigInt.from(0)
+    static let one: BigInt = BigInt.from(1)
+
+    static fn from(v: int): BigInt = BigInt { v = __bigFromInt(v) }
+    static fn fromIntLiteral(v: int): BigInt = BigInt.from(v)
+    static fn default(): BigInt = BigInt.zero
+    static fn parse(s: string): BigInt = BigInt.parse(s, 10)
+    // an optional `+` or `-`, digits of base `radix`, `_` between two of them; a radix outside 2–36
+    // panics
+    static fn parse(s: string, radix: int): BigInt {
+        if (radix < 2 || radix > 36) {
+            panic(f"radix {radix} is outside 2..36")
+        }
+        if (s.isEmpty()) {
+            throw ParseError { kind = ParseErrorKind.Empty }
+        }
+        if (let n = __bigParse(s, radix)) {
+            return BigInt { v = n }
+        }
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+
+    fn add(o: BigInt): BigInt = BigInt { v = __bigAdd(this.v, o.v) }
+    fn sub(o: BigInt): BigInt = BigInt { v = __bigSub(this.v, o.v) }
+    fn mul(o: BigInt): BigInt = BigInt { v = __bigMul(this.v, o.v) }
+    fn div(o: BigInt): BigInt = BigInt { v = __bigDiv(this.v, o.v) }
+    fn rem(o: BigInt): BigInt = BigInt { v = __bigRem(this.v, o.v) }
+    fn neg(): BigInt = BigInt { v = __bigNeg(this.v) }
+    // an arithmetic shift: a negative number rounds toward negative infinity; a negative count panics
+    fn shl(n: int): BigInt = BigInt { v = __bigShl(this.v, n) }
+    fn shr(n: int): BigInt = BigInt { v = __bigShr(this.v, n) }
+
+    fn equals(o: BigInt): bool = __bigCmp(this.v, o.v) == 0
+    fn compare(o: BigInt): ?Ordering = this.totalCompare(o)
+    fn totalCompare(o: BigInt): Ordering {
+        let c = __bigCmp(this.v, o.v)
+        return if (c < 0) Ordering.Less else if (c > 0) Ordering.Greater else Ordering.Equal
+    }
+    fn hash(h: Hasher) {
+        h.writeInt(__bigHash(this.v))
+    }
+    fn clone(): BigInt = this
+
+    // the number where it fits an `int`
+    fn toInt(): ?int = if (__bigFitsInt(this.v)) __bigToInt(this.v) else null
+    // the nearest float, a tie to the even one; beyond the range an infinity
+    fn toFloat(): float = __bigToFloat(this.v)
+    fn toString(): string = __bigText(this.v, 10)
+    // lowercase digits; a radix outside 2–36 panics
+    fn toString(radix: int): string {
+        if (radix < 2 || radix > 36) {
+            panic(f"radix {radix} is outside 2..36")
+        }
+        return __bigText(this.v, radix)
+    }
+    fn show(): string = this.toString()
+    fn debug(): string = this.toString()
+    // the bits of its magnitude, `0` for zero
+    fn bitLength(): int = __bigBitLength(this.v)
+    // quotient and remainder, as `/` and `%` give them
+    fn divRem(o: BigInt): (BigInt, BigInt) = (this / o, this % o)
+    // never negative, `0` where both are
+    fn gcd(o: BigInt): BigInt {
+        var x = this
+        var y = o
+        while (!y.isZero()) {
+            let r = x % y
+            x = y
+            y = r
+        }
+        return if (x < BigInt.zero) -x else x
+    }
+    // a negative exponent panics
+    fn pow(e: int): BigInt {
+        if (e < 0) {
+            panic("pow: the exponent is negative")
+        }
+        var base = this
+        var left = e
+        var out = BigInt.one
+        while (left > 0) {
+            if (left % 2 == 1) {
+                out = out * base
+            }
+            left = left / 2
+            if (left > 0) {
+                base = base * base
+            }
+        }
+        return out
+    }
+}

@@ -1,0 +1,257 @@
+//! Lexical operations on paths held as strings (12; Lyric 5's `std.path`). A path is the text the
+//! system takes, and none of these asks the file system, so the module asks for no right. On Windows
+//! both `\` and `/` separate, a path may start with a volume, a drive `C:` or a share `\\server\share`,
+//! names compare without regard to the case of ASCII letters, and what these build they build with `\`.
+
+private fn systemSeparator(): string = __path_separator()
+
+/// The separator the system writes: `\` on Windows, `/` elsewhere.
+let separator: string = systemSeparator()
+
+private fn onWindows(): bool = separator == "\\"
+
+/// The path to read: its separators all `/`, each byte where it was, so that an offset in it is one in `p`.
+private fn scan(p: string): string = if (onWindows()) p.replace("\\", "/") else p
+
+/// A volume's text with the system's separator in it.
+private fn withSeparators(v: string): string = if (onWindows()) v.replace("/", "\\") else v
+
+private fn isLetter(c: char): bool = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+
+/// The length of the volume at the front of a scanned path: 0 on other systems and where there is none.
+/// By `nextIn`, not `find`: a name that is also an iterator's would load `std.iter` for every importer.
+private fn volumeLength(s: string): int {
+    if (!onWindows()) {
+        return 0
+    }
+    if (":".nextIn(s, 0) == 1 && isLetter(s[0])) {
+        return 2
+    }
+    if (s.length() < 5 || !s.startsWith("//") || s.startsWith("///") || s[2] == '.') {
+        return 0
+    }
+    if (let h = "/".nextIn(s, 2)) {
+        let at = h + 1
+        if (at == s.length() || s[at] == '/') {
+            return 0
+        }
+        return "/".nextIn(s, at) ?? s.length()
+    }
+    return 0
+}
+
+/// The elements between separators of a scanned path, without the empty ones and `.`.
+private fn elementsOf(s: string): string[] {
+    let out: string[] = []
+    for (e in s.split("/")) {
+        if (!e.isEmpty() && e != ".") {
+            out.push(e)
+        }
+    }
+    return out
+}
+
+private fn joined(parts: string[], from: int): string {
+    var out = ""
+    var k = from
+    while (k < parts.length()) {
+        out = if (k == from) parts[k] else out + separator + parts[k]
+        k += 1
+    }
+    return out
+}
+
+private fn lower(c: char): int = if (c >= 'A' && c <= 'Z') (c as int) + 32 else c as int
+
+/// Whether two names are alike: exactly, and on Windows without regard to the case of ASCII letters.
+private fn sameWord(a: string, b: string): bool {
+    if (!onWindows()) {
+        return a == b
+    }
+    if (a.length() != b.length()) {
+        return false
+    }
+    let other = b.chars()
+    for (c in a.chars()) {
+        let d = other.next()
+        if (d == null || lower(c) != lower(d)) {
+            return false
+        }
+    }
+    return true
+}
+
+/// The parts that are not empty, joined by the separator and normalized; empty for no such part. On
+/// Windows a drive alone joins without a separator: `C:a`.
+fn join(parts: string...): string {
+    var all = ""
+    var any = false
+    for (part in parts) {
+        if (part.isEmpty()) {
+            continue
+        }
+        if (!any) {
+            all = part
+        } else if (onWindows() && volumeLength(scan(all)) == 2 && all.length() == 2) {
+            all = all + part
+        } else {
+            all = all + separator + part
+        }
+        any = true
+    }
+    return if (any) normalize(all) else ""
+}
+
+/// The shortest path that names what `p` names, lexically; `.` for an empty one.
+fn normalize(p: string): string {
+    let s = scan(p)
+    let vol = volumeLength(s)
+    let volume = withSeparators(s[..vol])
+    let rest = s[vol..]
+    if (rest.isEmpty()) {
+        // a share alone is a path; a drive alone, or nothing, names its current directory
+        return if (vol > 2) volume else volume + "."
+    }
+    let rooted = rest.startsWith("/")
+    let kept: string[] = []
+    for (e in elementsOf(rest)) {
+        if (e == "..") {
+            if (kept.length() > 0 && kept[kept.length() - 1] != "..") {
+                kept.pop()
+            } else if (!rooted) {
+                kept.push(e)
+            }
+        } else {
+            kept.push(e)
+        }
+    }
+    let out = volume + (if (rooted) separator else "") + joined(kept, 0)
+    return if (out.isEmpty()) "." else out
+}
+
+/// The last element, after dropping trailing separators; `.` for an empty path, the separator for one
+/// of separators alone.
+fn fileName(p: string): string {
+    if (p.isEmpty()) {
+        return "."
+    }
+    let s = scan(p).trimEndMatches("/")
+    let start = volumeLength(s)
+    let at = s.rfind("/") ?? -1
+    let from = if (at >= start) at + 1 else start
+    let name = s[from..]
+    return if (name.isEmpty()) separator else name
+}
+
+/// All but the last element, normalized: `.` where no directory precedes it, the root for an element
+/// directly under the root.
+fn parent(p: string): string {
+    let s = scan(p)
+    let vol = volumeLength(s)
+    let at = s.rfind("/") ?? -1
+    let end = if (at >= vol) at + 1 else vol
+    let dir = normalize(s[vol..end])
+    let volume = withSeparators(s[..vol])
+    if (dir == "." && vol > 2) {
+        // a share and an element under it: the share
+        return volume
+    }
+    return volume + dir
+}
+
+/// The extension of the last element with its dot, from its last dot, or the empty string.
+fn extension(p: string): string {
+    let s = scan(p)
+    let from = (s.rfind("/") ?? -1) + 1
+    if (let d = s[from..].rfind(".")) {
+        return s[from + d..]
+    }
+    return ""
+}
+
+/// The last element without its extension.
+fn stem(p: string): string {
+    let name = fileName(p)
+    return name[..name.length() - extension(name).length()]
+}
+
+/// `p` with another extension: a dot added to `ext` where it has none, the extension dropped for an empty one.
+fn withExtension(p: string, ext: string): string {
+    let base = p[..p.length() - extension(p).length()]
+    if (ext.isEmpty()) {
+        return base
+    }
+    return if (ext.startsWith(".")) base + ext else base + "." + ext
+}
+
+/// Whether `p` names the same place from every working directory: it starts with the root; on Windows
+/// with a drive and the root, or with a share.
+fn isAbsolute(p: string): bool {
+    let s = scan(p)
+    if (!onWindows()) {
+        return s.startsWith("/")
+    }
+    let vol = volumeLength(s)
+    if (vol == 0) {
+        return false
+    }
+    return vol > 2 || s[vol..].startsWith("/")
+}
+
+/// The path that names `target` from `base`, lexically, `.` for the same place; `null` where there is
+/// none: one absolute and the other not, two volumes, a base that climbs above where the target is.
+fn relative(base: string, target: string): ?string {
+    let bs = scan(base)
+    let ts = scan(target)
+    let baseVolume = withSeparators(bs[..volumeLength(bs)])
+    let targetVolume = withSeparators(ts[..volumeLength(ts)])
+    let b = normalize(base)
+    let t = normalize(target)
+    if (!sameWord(baseVolume, targetVolume)) {
+        return null
+    }
+    let bRest = scan(b)[baseVolume.length()..]
+    let tRest = scan(t)[targetVolume.length()..]
+    if (bRest.startsWith("/") != tRest.startsWith("/") && baseVolume.length() <= 2) {
+        return null
+    }
+    let bParts = elementsOf(bRest)
+    let tParts = elementsOf(tRest)
+    var k = 0
+    while (k < bParts.length() && k < tParts.length() && sameWord(bParts[k], tParts[k])) {
+        k += 1
+    }
+    if (k < bParts.length() && bParts[k] == "..") {
+        return null
+    }
+    let out: string[] = []
+    var up = k
+    while (up < bParts.length()) {
+        out.push("..")
+        up += 1
+    }
+    var down = k
+    while (down < tParts.length()) {
+        out.push(tParts[down])
+        down += 1
+    }
+    return if (out.isEmpty()) "." else joined(out, 0)
+}
+
+/// The parts in order, nothing normalized: the root first where there is one, on Windows the volume with
+/// it, then each element, without the empty ones and `.`, keeping `..`.
+fn components(p: string): string[] {
+    let s = scan(p)
+    let vol = volumeLength(s)
+    let rest = s[vol..]
+    let out: string[] = []
+    if (rest.startsWith("/")) {
+        out.push(withSeparators(s[..vol]) + separator)
+    } else if (vol > 0) {
+        out.push(withSeparators(s[..vol]))
+    }
+    for (e in elementsOf(rest)) {
+        out.push(e)
+    }
+    return out
+}

@@ -1,6 +1,7 @@
 // The code generator: checked programs run in the VM and give what the language says — the
 // arithmetic, the widening, the loops, short-circuits, structs and classes, the globals, the
 // natives, and the script's panics — with the registers given back as the S1 convention needs.
+import std.collections { List };
 import std.test { assertEq, assertTrue };
 import lyric_script.compiler.checker { checkModule };
 import lyric_script.compiler.codegen { generate };
@@ -203,4 +204,21 @@ fn registersAreGivenBack(): void {
         ),
         text
     );
+}
+
+@Test
+fn aMatchOfManyArmsRuns(): void {
+    // its arms lower to a chain of conditions the code generator walks in one frame (S7e1: four
+    // hundred overflowed a thread's stack, a frame for each), in a copy of a generic too
+    let parts = List<string>.new();
+    parts.push("fn arm<T>(x: T, n: int): int = match (n) {");
+    var k = 0;
+    while (k < 400) {
+        parts.push("    " + f"{k}" + " => " + f"{k}" + ",");
+        k += 1;
+    }
+    parts.push("    _ => -1,");
+    parts.push("}");
+    parts.push("fn f(): int = arm(1, 399) + arm(\"s\", 398)");
+    assertEq(value(parts.toArray().join("\n"), "f"), 797);
 }

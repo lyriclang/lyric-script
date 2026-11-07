@@ -1,0 +1,251 @@
+//! The file system (12; Lyric 5's `std.fs`). A module of the right `file` (01 S1). A file's call runs
+//! on a task of the host: the other tasks go on, and in a cancelled task it runs to its end, so that it
+//! declares `IoError` alone, as the conveniences do (12 rule 22).
+
+import std.io { Reader, Seek, SeekFrom, TextReader, Writer }
+
+private fn fileNew(): Any = __fs_file()
+private fn fileOpen(how: int, file: Any, path: string): int = __fs_open(how, file, path)
+private fn fileRead(file: Any, into: Any): int = __fs_read(file, into)
+private fn fileWrite(file: Any, from: Any): int = __fs_write(file, from)
+private fn fileSeek(offset: int, whence: int, file: Any): int = __fs_seek(offset, whence, file)
+private fn fileClose(file: Any): int = __fs_close(file)
+
+/// Whether something — a file, a folder — is at `path`.
+fn exists(path: string): bool = __fs_exists(path)
+
+/// How a file is opened: to read, to write, to append at its end, created where it is not there, cut to
+/// nothing where it is. `File.openWith` refuses with `InvalidInput` a file opened neither to read nor to
+/// write, one cut without being written from the start, and one created without being written.
+struct OpenOptions {
+    read: bool = false
+    write: bool = false
+    append: bool = false
+    create: bool = false
+    truncate: bool = false
+}
+
+/// A handle on a file, its position moved by what is read and written.
+class File :: [Reader, Writer, Seek, Closeable] {
+    handle: Any
+    name: string
+    var closed: bool = false
+
+    /// Opens `path` to read.
+    static fn open(path: string): File throws IoError = File.openWith(path, OpenOptions { read = true })
+
+    /// Opens `path` to write: made where it is not there, cut to nothing where it is.
+    static fn create(path: string): File throws IoError {
+        return File.openWith(path, OpenOptions { write = true, create = true, truncate = true })
+    }
+
+    /// Opens `path` as `options` say.
+    static fn openWith(path: string, options: OpenOptions): File throws IoError {
+        if (!options.read && !options.write && !options.append) {
+            throw IoError { kind = IoErrorKind.InvalidInput, path = path, detail = "opened neither to read nor to write" }
+        }
+        if (options.truncate && (!options.write || options.append)) {
+            throw IoError {
+                kind = IoErrorKind.InvalidInput,
+                path = path,
+                detail = "cut to nothing without being written from the start",
+            }
+        }
+        if (options.create && !options.write && !options.append) {
+            throw IoError { kind = IoErrorKind.InvalidInput, path = path, detail = "created without being written" }
+        }
+        var how = 0
+        if (options.read) {
+            how = how | 1
+        }
+        if (options.write) {
+            how = how | 2
+        }
+        if (options.append) {
+            how = how | 4
+        }
+        if (options.create) {
+            how = how | 8
+        }
+        if (options.truncate) {
+            how = how | 16
+        }
+        let handle = fileNew()
+        let n = fileOpen(how, handle, path)
+        if (n < 0) {
+            throw __ioFailure(n, path, if (options.write || options.append) "opened to write" else "opened to read")
+        }
+        return File { handle = handle, name = path }
+    }
+
+    /// Reads into `into` from the position and answers how many bytes; 0 at the end.
+    fn read(into: Bytes): int throws IoError {
+        let n = fileRead(this.handle, into.v)
+        if (n < 0) {
+            throw __ioFailure(n, this.name, "read")
+        }
+        return n
+    }
+
+    /// Writes from `from` at the position and answers how many bytes.
+    fn write(from: Bytes): int throws IoError {
+        let n = fileWrite(this.handle, from.v)
+        if (n < 0) {
+            throw __ioFailure(n, this.name, "written")
+        }
+        return n
+    }
+
+    /// Moves the position as `to` says and answers the new one from the start.
+    fn seek(to: SeekFrom): int throws IoError {
+        let (offset, whence) = match (to) {
+            .Start(n) => (n, 0),
+            .Current(n) => (n, 1),
+            .End(n) => (n, 2),
+        }
+        let at = fileSeek(offset, whence, this.handle)
+        if (at < 0) {
+            throw __ioFailure(at, this.name, "sought")
+        }
+        return at
+    }
+
+    /// Closes the file. A second close does nothing.
+    fn close(): void throws IoError {
+        this.closed = true
+        let n = fileClose(this.handle)
+        if (n < 0) {
+            throw __ioFailure(n, this.name, "closed")
+        }
+    }
+
+    /// Everything to the end, in new bytes: `Reader`'s, without the `Cancelled` a reader may throw.
+    fn readToEnd(): Bytes throws IoError {
+        let held = Bytes.new()
+        let chunk = Bytes.zeroed(8192)
+        loop {
+            let n = this.read(chunk)
+            if (n == 0) {
+                return held
+            }
+            if (n == 8192) {
+                held.pushAll(chunk)
+            } else {
+                held.pushAll(chunk[0..n])
+            }
+        }
+    }
+
+    /// Everything to the end as UTF-8; `InvalidData` with the path, the decoder's error as the cause.
+    fn readToString(): string throws IoError {
+        let bytes = this.readToEnd()
+        return try string.fromUtf8(bytes) catch (e: Utf8Error) throw IoError {
+            kind = IoErrorKind.InvalidData,
+            path = this.name,
+            detail = "the bytes are no UTF-8",
+            inner = e,
+        }
+    }
+
+    /// Writes all of `from`, as often as it takes: `Writer`'s, without the `Cancelled`.
+    fn writeAll(from: Bytes): void throws IoError {
+        let n = from.length()
+        var at = 0
+        while (at < n) {
+            let k = this.write(if (at == 0) from else from[at..n])
+            if (k == 0) {
+                throw IoError {
+                    kind = IoErrorKind.Other { code = 0 },
+                    path = this.name,
+                    detail = f"the file took none of {n - at} bytes",
+                }
+            }
+            at += k
+        }
+    }
+
+    /// Writes the bytes of `s`, its UTF-8.
+    fn writeString(s: string): void throws IoError {
+        this.writeAll(s.toBytes())
+    }
+}
+
+/// The whole file at `path` as UTF-8 text; a byte order mark is text like any other.
+fn readText(path: string): string throws IoError {
+    using let f = File.open(path)
+    return f.readToString()
+}
+
+/// The whole file at `path` as bytes.
+fn readBytes(path: string): Bytes throws IoError {
+    using let f = File.open(path)
+    return f.readToEnd()
+}
+
+/// Writes `text` as the file at `path`, made where it is not there, cut where it is.
+fn writeText(path: string, text: string): void throws IoError {
+    using let f = File.create(path)
+    f.writeString(text)
+}
+
+/// Writes `bytes` as the file at `path`, made where it is not there, cut where it is.
+fn writeBytes(path: string, bytes: Bytes): void throws IoError {
+    using let f = File.create(path)
+    f.writeAll(bytes)
+}
+
+/// Appends `text` at the end of the file at `path`, made where it is not there.
+fn appendText(path: string, text: string): void throws IoError {
+    using let f = File.openWith(path, OpenOptions { append = true, create = true })
+    f.writeString(text)
+}
+
+/// The lines of the file at `path`, as `TextReader.readLine` gives them. The iterator closes the file
+/// at its end and at an error; a `for` that leaves it early closes it, and so does `close()`.
+fn lines(path: string): FileLinesIter throws IoError {
+    let f = File.open(path)
+    return FileLinesIter { file = f, reader = TextReader.new(f) }
+}
+
+/// The lines of a file, from `lines`. After its end or an error it gives no more; after `close()` a call
+/// throws `Closed`, as the file's would, and what it had read ahead is not given.
+class FileLinesIter :: [Iterator, Closeable] {
+    type Item = string
+    file: File
+    reader: TextReader<File>
+    var done: bool = false
+
+    /// The next line, `null` at the end.
+    fn next(): ?string throws IoError {
+        if (this.done) {
+            return null
+        }
+        // the reader holds what it read ahead: a closed file is seen here, not at its next read
+        if (this.file.closed) {
+            throw IoError { kind = IoErrorKind.Closed, path = this.file.name, detail = "read" }
+        }
+        var line: ?string = null
+        try {
+            line = this.reader.readLine()
+        } catch (e: IoError) {
+            this.done = true
+            // the first error wins, the close's is attached to it
+            defer {
+                this.file.close()
+            }
+            throw if (e.path == null) e with { path = this.file.name } else e
+        } catch (e: Cancelled) {
+            unreachable("a file's call is not cancelled")
+        }
+        if (line == null) {
+            this.done = true
+            this.file.close()
+        }
+        return line
+    }
+
+    /// Closes the file before the end. A second close does nothing.
+    fn close(): void throws IoError {
+        this.file.close()
+    }
+}

@@ -149,7 +149,9 @@ fn bytesCosts(op: string, cost: int): void {
 fn aNativeThatWaitsDoesNotStartWithoutItsBudget(): void {
     // only the side that does not start: the other would read this test's standard input
     let made = 1 + 3200 / 32;
-    assertTrue(suspended(runText(bytesProgram("call.w console.read, s1, r0"), "p", [3200], made + 100)));
+    assertTrue(
+        suspended(runText(bytesProgram("call.w console.read, s1, r0"), "p", [3200], made + 100))
+    );
     let line = """
     fn p(s) -> s regs 2 1
         call.w console.line, s1, r0

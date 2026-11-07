@@ -434,9 +434,6 @@ class Stdin :: [Reader] {
 
     /// What a line's read left in the buffer first.
     fn read(into: Bytes): int throws [IoError, Cancelled] {
-        if (into.isEmpty()) {
-            return 0
-        }
         let n = consoleRead(into.v)
         if (n < 0) {
             throw __ioFailure(n, null, "read from the standard input")

@@ -2082,11 +2082,10 @@ Rot-Lauf und Mutanten:
   `ByteReader`, `ByteBuffer`, `BufReader`, `BufWriter`, `TextReader`, `TextWriter`. Go-Form über `Bytes`:
   `read(into)` füllt von vorn, einen Slice-Typ gibt es nicht. Ein Native `bytes.copy`, das nach Bytes bucht.
 - **S7g2** Die Konsole: `stdin()`, `stdout()`, `stderr()`, `flush()`, `eprint`; `readLine()` wirft `IoError` statt
-  `null` zu geben. Der Weg dafür ist der allgemeine aus S7g4, hier mit einem Nutzer.
+  `null` zu geben. Der allgemeine Weg, auf dem ein Native wartet, entsteht hier mit seinem ersten Nutzer.
 - **S7g3** `std.path` in Script, keine Natives außer dem Trenner; ohne Recht.
-- **S7g4** Wartende Natives allgemein: `read.line` aus S6e wird ein Op für jedes Native, das in einer
-  Lyric-5-Task läuft, gebucht vor dem Start, mit einem Ergebnis, das Wert oder Fehler sein kann. Darauf
-  `std.fs`: `File`, die Bequemen (`readText`, `readBytes`, `writeText`, `writeBytes`, `appendText`, `lines`).
+- **S7g4** Auf dem Weg aus S7g2 `std.fs`: `File`, die Bequemen (`readText`, `readBytes`, `writeText`,
+  `writeBytes`, `appendText`, `lines`).
 - **S7g5** `std.fs`, Verzeichnisse: `metadata`, `createDir`, `remove`, `rename`, `readDir`, `canonicalize`,
   `absolute`, `createDirAll`, `removeAll`, `copy`, `walk`, `tempDir`, `tempFile`.
 - **S7g6** `fs.glob` in Script (12 Um).
@@ -2110,3 +2109,27 @@ Rot-Lauf: 26 von 26 rot gegen S7f6. Mutanten (39): alle getötet außer IV (Kont
 Byte unter `0xC0` mit Größe 1 statt 0 ändert nichts, weil `fromUtf8` es genauso ablehnt. Der Zweig war tot und ist
 weg. Dass ein Byte ab `0xF8` nicht auf drei weitere wartet, prüft kein Fall: `ByteReader` wartet nie, sichtbar wäre
 es erst an einer Konsole. Fälle 666 → 692, Tests 364.
+
+**Ergebnis S7g2 (2026-11-07).** `stdin()`, `stdout()`, `stderr()`, `flush()`, `eprint`; `eprintln` und `readLine`
+sind Prelude und zugleich aus `std.io` importierbar, auch unter anderem Namen. `readLine` wirft jetzt
+`[IoError, Cancelled]`. **Der allgemeine Weg:** `Op.CallW` ersetzt `Op.ReadLine` an derselben Stelle (Format 38);
+`nativeWaits` sagt, welches Native wartet, der Verifier lehnt ein Native am falschen Op ab. Gebucht wird vor dem
+Start, das Native läuft in einer Lyric-5-Task, die Antwort landet wie ein Rückgabewert. Ein Fehler kommt als Zahl
+`-(art << 32 | code)` zurück und wird in Script zum `IoError` (`__ioFailure`), ein Text über ein Halter-Argument:
+So baut die VM kein Script-Objekt, Vorbild sind die Task-Zustände. Gelesen wird in ein eigenes Feld und erst bei der
+Ablieferung kopiert, gekürzt auf das, was die `Bytes` dann noch sind (Fall `bytes_cut_while_a_read_waits`). Ausgabe
+wartet nicht: Wie `print` hält eine volle Pipe die Instanz auf, gebucht nach Bytes.
+**Echter Fehler, gefunden durch die neue Richtlinie `merge-streams`:** Der Bericht eines Panics oder Fehlers stand
+vor der noch gepufferten Ausgabe. `finish` leert jetzt zuerst.
+Abweichung von Lyric 5: Dort bricht `cancel` die Konsole nicht ab, hier schon (10 Regel 18), daher `Cancelled`.
+Von Hand, ohne Fall: `stdout().flush()` in `| head -1` gibt `broken pipe (written to the standard output)`; ein
+bloßes `println` dort endet mit Status 141, kein Weiterlaufen.
+Runner: `stdin-hex`, `merge-streams`, `stdout-gone`, `stdin-refuses`; ein Lauf liest Bytes statt Text.
+Kaltstart in Ruhe, `println(1)`, 20 Runden, CPU: 303 → 311 ms im Minimum, 308 → 320 im Median, also etwa +10.
+Das ist die Prelude mit `__ioFailure`. Die Sorge aus S7g1 war Last, nicht Kosten.
+Rot-Lauf: 23 von 27 rot gegen S7g1; grün bleiben, was zu Recht schon stimmte (zwei Ablehnungen ohne den Namen,
+`readLine` ohne Fehler, beide Zeilenenden). Mutanten (36): alle getötet außer drei. **KP:** ein leeres `into` vorab
+abzufangen ändert nichts, der Zweig ist weg, Fall `stdin_read_into_nothing_takes_nothing`. **KQ:** eine Eingabe, die
+der Lauf verweigert, konnte der Runner nicht herstellen; jetzt `stdin-refuses`, Fall
+`an_input_that_refuses_throws`. **LE:** `fn eprintln` warnte vor dem Verdecken in keinem Test; jetzt Unit-Zeile.
+Fälle 692 → 721, Tests 366.

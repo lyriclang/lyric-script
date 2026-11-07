@@ -368,7 +368,7 @@ VM's call path, S7k measurement point 3.
   since `nextFloat` holds `Float` and so loaded the number tower; names are whole now, about 80 ms.
 - **S7g1 done** — `std.io` over memory, in Script; `IoError` in the prelude; `bytes.copy`, `bytes.find`. Found:
   the field `this.taken` holds `.take`, which loaded `std.iter` and cost 200 ms; every such check is by whole names now.
-- Next: **S7g2** — the console, and the general way a native waits. S7g is cut in six, see 14.
+- Next: **S7g3** — `std.path` in Script, no native but the separator, no right. S7g is cut in six, see 14.
 
 ## Working mode
 

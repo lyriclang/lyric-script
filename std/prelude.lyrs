@@ -1909,3 +1909,21 @@ extend<T :: [Ordered]> Range<T> :: Contains<T> {
 extend<T :: [Ordered]> RangeInclusive<T> :: Contains<T> {
     fn contains(x: T): bool = this.start <= x && x <= this.end
 }
+
+/// What follows the script's file on the command line (02 K1a, 14 rule 4); nothing for an instance whose host
+/// gave none.
+let args: string[] = __scriptArgs()
+fn __argCount(): int = __os_argCount()
+fn __argAt(k: int): string = __os_arg(k)
+fn __scriptArgs(): string[] {
+    let out: string[] = []
+    var k = 1
+    while (k < __argCount()) {
+        out.push(__argAt(k))
+        k += 1
+    }
+    return out
+}
+/// Ends the run at once with the code `code`: what the console holds is written, but no `defer` or `using` runs
+/// and no other task is waited for (12 rule 25).
+fn exit(code: int): never = __os_exit(code)

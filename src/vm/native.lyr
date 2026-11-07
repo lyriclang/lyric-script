@@ -188,6 +188,9 @@ enum NativeFn :: [Equatable] {
     FsDirOpen,
     FsDirNext,
     FsDirClose,
+    OsArgCount,
+    OsArg,
+    OsExit,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -201,7 +204,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 130;
+let nativeCount: int = 133;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -335,7 +338,10 @@ fn nativeOf(n: int): NativeFn {
         126 => NativeFn.FsDir,
         127 => NativeFn.FsDirOpen,
         128 => NativeFn.FsDirNext,
-        _ => NativeFn.FsDirClose,
+        129 => NativeFn.FsDirClose,
+        130 => NativeFn.OsArgCount,
+        131 => NativeFn.OsArg,
+        _ => NativeFn.OsExit,
     };
 }
 
@@ -472,6 +478,9 @@ fn nativeNumber(n: NativeFn): int {
         .FsDirOpen => 127,
         .FsDirNext => 128,
         .FsDirClose => 129,
+        .OsArgCount => 130,
+        .OsArg => 131,
+        .OsExit => 132,
     };
 }
 
@@ -607,6 +616,9 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .FsDirOpen => sig("fs.dirOpen", 0, 2, true, false),
         .FsDirNext => sig("fs.dirNext", 0, 2, true, false),
         .FsDirClose => sig("fs.dirClose", 0, 1, true, false),
+        .OsArgCount => sig("os.argCount", 0, 0, true, false),
+        .OsArg => sig("os.arg", 1, 0, false, true),
+        .OsExit => sig("os.exit", 1, 0, false, false),
     };
 }
 

@@ -263,6 +263,50 @@ fn whatAPathNamesIsChargedBeforeItIsAsked(): void {
     dirCosts(t, open + "call.w fs.dirClose, s1, r0", opened + 1);
 }
 
+fn exitCode(o: Outcome): int {
+    return match (o) {
+        .Exit(code) => code,
+        _ => -999999,
+    };
+}
+
+@Test
+fn anExitIsTheRunsOutcome(): void {
+    let text = """
+    fn p() -> s regs 2 1
+        load.i s0, 7
+        call.n os.exit, s0, r0
+        load.i s0, 8
+        ret.s s0
+    end
+    """;
+    assertEq(exitCode(runText(text, "p", [], -1)), 7);
+    // it asks nothing of the budget
+    assertEq(exitCode(runText(text, "p", [], 0)), 7);
+}
+
+@Test
+fn aRunsArgumentsAreTheHostsToGive(): void {
+    let module = try! assemble(
+        """
+        fn p() -> s regs 2 1
+            call.n os.argCount, s0, r0
+            ret.s s0
+        end
+        fn q() -> s regs 2 1
+            load.i s0, 1
+            call.n os.arg, s0, r0
+            load.i s1, 0
+            ret.s s1
+        end
+        """,
+        "t"
+    );
+    assertEq(scalar(execute(module, "p", [], -1)), 0);
+    assertEq(scalar(execute(module, "p", [], -1, ["tool", "a", "b"])), 3);
+    assertEq(scalar(execute(module, "q", [], -1, ["tool", "a"])), 0);
+}
+
 @Test
 fn theNativesOfBytesChargeByTheirBytes(): void {
     let walk = 1 + 3200 / 32;

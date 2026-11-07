@@ -103,6 +103,8 @@ pub enum Outcome {
     Error(ScriptError),
     /// The fuel ran out (design/v1, 01 S5); the run stopped at a backward jump or a call.
     Suspended,
+    /// The script called `exit` with this code: no defer ran and no other task (12 rule 25).
+    Exit(int),
     /// A task waits or gave way (S6a): the scheduler runs another; never the outcome of a run.
     Switch,
 }
@@ -156,8 +158,14 @@ struct CallFrame {
 /// Runs `entry` of `module` with `args` in its first scalar registers, with `fuel` units of
 /// budget (a backward jump or a call costs one; `-1` runs without a limit), on a task of its
 /// own: a panic of the VM itself becomes `Outcome.Panic` with the code `LYS-ICE0001`.
-pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
-    let task = spawn(() => run(module, entry, args, fuel));
+pub fn execute(
+    module: Module,
+    entry: string,
+    args: uint64[],
+    fuel: int,
+    argv: string[] = []
+): Outcome {
+    let task = spawn(() => run(module, entry, args, fuel, argv));
     while (!task.isDone()) {
         try? yieldNow();
         // a VM that sleeps until a timer leaves this task nothing to wait for: no spinning (S6d3)
@@ -371,6 +379,10 @@ class RunShared {
     gr: HeapRef[],
     interning: Interning,
     var budget: int,
+    // what the run was started with, its own name first; a sandbox's are its host's to give
+    argv: string[],
+    // the code of an `exit`, which ends the run where a budget ends it
+    var exitCode: ?int = null,
     // the tasks ready to run, from `head` on; every task spawned, in order (S6a)
     queue: List<TaskState>,
     var head: int = 0,
@@ -457,7 +469,7 @@ fn earliestDeadline(shared: RunShared): int {
 }
 
 /// Runs `entry` of `module` on the current task; see `execute`.
-pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
+pub fn run(module: Module, entry: string, args: uint64[], fuel: int, argv: string[] = []): Outcome {
     var fi = -1;
     var i = 0;
     while (i < module.functions.length()) {
@@ -491,6 +503,7 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
         gr = refArray(module.globalsR),
         interning = Interning.of(module),
         budget = fuel,
+        argv = argv,
         queue = List<TaskState>.new(),
         tasks = List<ScriptTask>.new(),
     };
@@ -533,8 +546,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
         let out = runTask(t, shared);
         match (out) {
             .Switch => { }
-            // the budget holds the whole instance (N8, 01 S5b)
-            .Suspended => {
+            // the budget holds the whole instance (N8, 01 S5b), and `exit` ends it, from any task
+            .Suspended | .Exit(_) => {
                 return out;
             }
             _ => {
@@ -863,6 +876,16 @@ fn callNative(
                 lines.push(f"    {line}");
             }
             r[y] = ScriptString { text = lines.toArray().join("\n") };
+        }
+        .OsArgCount => {
+            s[x] = shared.argv.length() as uint64;
+        }
+        .OsArg => {
+            r[y] = ScriptString { text = shared.argv[s[x] as int] };
+        }
+        .OsExit => {
+            shared.exitCode = s[x] as int;
+            shared.budget = -2;
         }
         .OsEnv => {
             if (let v = env(textOf(r[y]))) {
@@ -3488,8 +3511,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     return panicOut(module, frames, fi, pc, fault.code, fault.message);
                 }
                 // a native the budget does not cover did nothing: this call again on `resume`,
-                // as a backward jump is taken again (01 S5c; S7f4)
+                // as a backward jump is taken again (01 S5c; S7f4); `exit` leaves the same way
                 if (shared.budget == -2) {
+                    if (let code = shared.exitCode) {
+                        return Outcome.Exit(code);
+                    }
                     return Outcome.Suspended;
                 }
                 pc += 1;

@@ -2226,3 +2226,18 @@ Mutanten (38 über `std.fs`): Überlebt haben GE, GG (nur auf Windows sichtbar),
 Zeit), GX, KB (ein anderer Fehler als „nicht da“ lässt sich nicht portabel erzeugen) und KC, das ich falsch vorhergesagt
 hatte: `NotFound` hat keine unteren Bits, der Wächter zählt also nur bei anderen Fehlern. KM überlebte zuerst
 unvorhergesehen; `ab*b.txt` auf `ab.txt` tötet ihn jetzt. Rot-Lauf gegen S7g5: 0 von 9 grün. Fälle 774 → 783, Tests 368.
+
+**Ergebnis S7h1 (2026-11-07).** S7h ist vor dem Bau in sechs Teile geschnitten, nicht in die zuerst notierten drei:
+S7h1 `args`, `exit` und das CLI; S7h2 der Rest von `std.os`; S7h3 `os.signals`; S7h4 `std.process`; S7h5 `std.time`
+ohne Zonen, dazu `Metadata.modified` und der Fall für `std.random.system`; S7h6 Zonen und Muster.
+`args` und `exit(n)` stehen in der Prelude (Format 42, Natives `os.argCount`, `os.arg`, `os.exit`). Was hinter der Datei
+steht, gehört dem Skript, auch was wie eine Option aussieht; ein Paket nennt keine Datei und trennt mit `--`; `check`
+führt nichts aus und lehnt alles hinter seiner Datei ab (§14 Regeln 1, 2, 4; §12 Regel 25). `exit` ist ein eigenes
+Ergebnis des Laufs, `Outcome.Exit`: Es läuft durch denselben Weg wie die Ohnmacht der `budget`-Marke `-2`, beendet jede
+Task, führt kein `defer` aus und schreibt, was die Konsole hält.
+**Vorhersage daneben:** Ich hatte erwartet, das CLI müsse Lyric 5s `exit` rufen, weil das Ende von `main` auf einen
+Lesejob warte. Mutant LL (der Code wird einfach zurückgegeben) blieb grün, und mit offen gehaltener Eingabe endete der
+Lauf nach 0,3 s. Der direkte Aufruf ist gestrichen.
+Mutanten (12): alle getötet außer LL, der zur Änderung führte. LF baute zuerst nicht (`found` war verengt), LF2 stirbt
+wie vorhergesagt. Rot-Lauf gegen S7g6: 10 von 11 rot; `check_takes_one_file` war schon grün, die Regel ist neu
+aufgeschrieben, nicht neu gebaut. Fälle 783 → 794, Tests 368 → 370.

@@ -381,7 +381,10 @@ VM's call path, S7k measurement point 3.
   `import std.fs` cold 521 → 694 ms. 774 cases, 368 tests; see 14.
 - **S7g6 done** — `fs.glob`, whose API is mine since Lyric 5 has none (§12 rule 24; P39 asks for a look). 783 cases,
   368 tests. With it **S7g is done**, see 14.
-- Next: **S7h** — cut in three before it is built: `std.os`, `std.process`, `std.time`.
+- **S7h1 done** — `args` and `exit` in the prelude, what follows the file is the script's, `--` for a package's
+  program (format 42). S7h is cut in six: `args`/`exit`, the rest of `std.os`, `os.signals`, `std.process`, `std.time`
+  without zones, zones and patterns. 794 cases, 370 tests; see 14.
+- Next: **S7h2** — the rest of `std.os`.
 
 ## Working mode
 

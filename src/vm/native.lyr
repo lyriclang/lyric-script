@@ -191,6 +191,16 @@ enum NativeFn :: [Equatable] {
     OsArgCount,
     OsArg,
     OsExit,
+    OsEnvs,
+    OsSetEnv,
+    OsCwd,
+    OsSetCwd,
+    OsHostname,
+    OsPlatform,
+    OsArch,
+    OsTempRoot,
+    OsCpuCount,
+    OsPid,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -204,7 +214,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 133;
+let nativeCount: int = 143;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -341,7 +351,17 @@ fn nativeOf(n: int): NativeFn {
         129 => NativeFn.FsDirClose,
         130 => NativeFn.OsArgCount,
         131 => NativeFn.OsArg,
-        _ => NativeFn.OsExit,
+        132 => NativeFn.OsExit,
+        133 => NativeFn.OsEnvs,
+        134 => NativeFn.OsSetEnv,
+        135 => NativeFn.OsCwd,
+        136 => NativeFn.OsSetCwd,
+        137 => NativeFn.OsHostname,
+        138 => NativeFn.OsPlatform,
+        139 => NativeFn.OsArch,
+        140 => NativeFn.OsTempRoot,
+        141 => NativeFn.OsCpuCount,
+        _ => NativeFn.OsPid,
     };
 }
 
@@ -481,6 +501,16 @@ fn nativeNumber(n: NativeFn): int {
         .OsArgCount => 130,
         .OsArg => 131,
         .OsExit => 132,
+        .OsEnvs => 133,
+        .OsSetEnv => 134,
+        .OsCwd => 135,
+        .OsSetCwd => 136,
+        .OsHostname => 137,
+        .OsPlatform => 138,
+        .OsArch => 139,
+        .OsTempRoot => 140,
+        .OsCpuCount => 141,
+        .OsPid => 142,
     };
 }
 
@@ -619,6 +649,16 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .OsArgCount => sig("os.argCount", 0, 0, true, false),
         .OsArg => sig("os.arg", 1, 0, false, true),
         .OsExit => sig("os.exit", 1, 0, false, false),
+        .OsEnvs => sig("os.envs", 0, 0, false, true),
+        .OsSetEnv => sig("os.setEnv", 0, 2, false, false),
+        .OsCwd => sig("os.cwd", 0, 1, true, false),
+        .OsSetCwd => sig("os.setCwd", 0, 1, true, false),
+        .OsHostname => sig("os.hostname", 0, 1, true, false),
+        .OsPlatform => sig("os.platform", 0, 0, true, false),
+        .OsArch => sig("os.arch", 0, 0, true, false),
+        .OsTempRoot => sig("os.tempRoot", 0, 0, false, true),
+        .OsCpuCount => sig("os.cpuCount", 0, 0, true, false),
+        .OsPid => sig("os.pid", 0, 0, true, false),
     };
 }
 
@@ -631,6 +671,7 @@ fn nativeWaits(n: NativeFn): bool {
         .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename => true,
         .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile => true,
         .FsDirOpen | .FsDirNext | .FsDirClose => true,
+        .OsCwd | .OsSetCwd | .OsHostname => true,
         _ => false,
     };
 }

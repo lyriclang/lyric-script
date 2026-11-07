@@ -658,6 +658,10 @@ class Checker {
     }
 
     mut fn hidesPrelude(name: string, at: Span): void {
+        // `os.exit` beside the prelude's `exit` is the library's choice, not a reader's surprise
+        if ((this.modNames.get(this.mod) ?? "").startsWith("std.")) {
+            return;
+        }
         this.warn(
             "LYS-SEM0153",
             f"'{name}' hides the prelude's: in this module the name is its own",

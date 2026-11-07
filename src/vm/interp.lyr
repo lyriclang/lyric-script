@@ -36,7 +36,19 @@ import std.fs {
 };
 import std.hash { DefaultHasher };
 import std.io { IoError, SeekFrom, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
-import std.os { env };
+import std.os {
+    arch as osArch,
+    cpuCount as osCpuCount,
+    cwd as osCwd,
+    env,
+    envs as osEnvs,
+    hostname as osHostname,
+    pid as osPid,
+    platform as osPlatform,
+    setCwd as osSetCwd,
+    setEnv as osSetEnv,
+    tempDir as osTempRoot,
+};
 import std.path { separator as pathSeparator };
 import std.random { Random };
 import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
@@ -852,7 +864,7 @@ fn callNative(
         }
         .ConsoleFlush => s[x] = consoleFlush(s[x] as int) as uint64,
         // the verifier keeps these to `call.w`
-        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose => {
+        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose | .OsCwd | .OsSetCwd | .OsHostname => {
             return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
         }
         .FsFile => r[y] = ScriptFile { },
@@ -886,6 +898,51 @@ fn callNative(
         .OsExit => {
             shared.exitCode = s[x] as int;
             shared.budget = -2;
+        }
+        // the whole environment, `name=value` each and a NUL after it (S7h2)
+        .OsEnvs => {
+            let out = StringBuilder.new();
+            for ((name, value) in osEnvs()) {
+                out.appendStr(name);
+                out.appendChar('=');
+                out.appendStr(value);
+                out.appendChar('\0');
+            }
+            let text = out.toString();
+            if (charge(shared, bytesCost(text.length()))) {
+                r[y] = ScriptString { text = text };
+            }
+        }
+        .OsSetEnv => {
+            let name = textOf(r[y]);
+            let value = textOf(r[y + 1]);
+            if (charge(shared, bytesCost(name.length() + value.length()))) {
+                osSetEnv(name, value);
+            }
+        }
+        .OsPlatform => {
+            s[x] = match (osPlatform()) {
+                .Linux => 1 as uint64,
+                .MacOS => 2 as uint64,
+                .Windows => 3 as uint64,
+                _ => 0 as uint64,
+            };
+        }
+        .OsArch => {
+            s[x] = match (osArch()) {
+                .X86_64 => 1 as uint64,
+                .Aarch64 => 2 as uint64,
+                _ => 0 as uint64,
+            };
+        }
+        .OsTempRoot => {
+            r[y] = ScriptString { text = osTempRoot() };
+        }
+        .OsCpuCount => {
+            s[x] = osCpuCount() as uint64;
+        }
+        .OsPid => {
+            s[x] = osPid() as uint64;
         }
         .OsEnv => {
             if (let v = env(textOf(r[y]))) {
@@ -3816,6 +3873,18 @@ fn waitJob(
         .FsAbsolute => {
             let name = pathCharged(r[y + 1], shared);
             return () => pathMade(() => try fsAbsolute(name));
+        }
+        .OsCwd => {
+            charge(shared, 1);
+            return () => pathMade(() => try osCwd());
+        }
+        .OsSetCwd => {
+            let name = pathCharged(r[y], shared);
+            return () => pathDone(() => try osSetCwd(name));
+        }
+        .OsHostname => {
+            charge(shared, 1);
+            return () => pathMade(() => try osHostname());
         }
         .FsTempDir => {
             charge(shared, 1);

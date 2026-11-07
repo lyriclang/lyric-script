@@ -2,6 +2,7 @@
 // a too deep recursion and `panic` end as the script's panics with their codes and frames; the
 // fuel stops a loop deterministically.
 import std.fs { exists, readBytes, remove, removeAll, tempDir, tempFile, writeBytes };
+import std.os { env, setEnv };
 import std.path { join };
 import std.test { assertEq, assertTrue };
 import lyric_script.vm.asm { assemble };
@@ -230,6 +231,28 @@ fn dirCosts(path: string, op: string, cost: int): void {
     let text = dirProgram(path, op);
     assertEq(scalar(runText(text, "p", [0], cost)), 7, op);
     assertTrue(suspended(runText(text, "p", [0], cost - 1)), op);
+}
+
+@Test
+fn theSystemsCallsChargeBeforeTheyAct(): void {
+    let long = "x" * 3200;
+    let one = 1 + 3200 / 32;
+    // no such directory: the call fails, what counts is what it took first
+    dirCosts(long, "call.w os.setCwd, s1, r1", one);
+    assertTrue(suspended(runText(dirProgram("x", "call.w os.cwd, s1, r0"), "p", [0], 0)));
+    assertTrue(suspended(runText(dirProgram("x", "call.w os.hostname, s1, r0"), "p", [0], 0)));
+    // a variable is set once it is paid, by its name and its value
+    let name = "LYRIC_SCRIPT_TEST_" + "y" * 3182;
+    let set = dirProgram(name, "call.n os.setEnv, s1, r1");
+    assertTrue(suspended(runText(set, "p", [0], 2 * one - 2)));
+    assertTrue(env(name) == null);
+    assertEq(scalar(runText(set, "p", [0], 1 + 6400 / 32)), 7);
+    assertEq(env(name), name);
+    // the whole environment costs what it holds
+    setEnv("LYRIC_SCRIPT_TEST_LONG", long);
+    let all = dirProgram("x", "call.n os.envs, s1, r0");
+    assertTrue(suspended(runText(all, "p", [0], one - 1)));
+    assertEq(scalar(runText(all, "p", [0], -1)), 7);
 }
 
 @Test

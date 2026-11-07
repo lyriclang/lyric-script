@@ -2233,7 +2233,7 @@ ohne Zonen, dazu `Metadata.modified` und der Fall für `std.random.system`; S7h6
 `args` und `exit(n)` stehen in der Prelude (Format 42, Natives `os.argCount`, `os.arg`, `os.exit`). Was hinter der Datei
 steht, gehört dem Skript, auch was wie eine Option aussieht; ein Paket nennt keine Datei und trennt mit `--`; `check`
 führt nichts aus und lehnt alles hinter seiner Datei ab (§14 Regeln 1, 2, 4; §12 Regel 25). `exit` ist ein eigenes
-Ergebnis des Laufs, `Outcome.Exit`: Es läuft durch denselben Weg wie die Ohnmacht der `budget`-Marke `-2`, beendet jede
+Ergebnis des Laufs, `Outcome.Exit`: Es nimmt denselben Weg wie ein erschöpftes Budget (die Marke `-2`), beendet jede
 Task, führt kein `defer` aus und schreibt, was die Konsole hält.
 **Vorhersage daneben:** Ich hatte erwartet, das CLI müsse Lyric 5s `exit` rufen, weil das Ende von `main` auf einen
 Lesejob warte. Mutant LL (der Code wird einfach zurückgegeben) blieb grün, und mit offen gehaltener Eingabe endete der
@@ -2241,3 +2241,21 @@ Lauf nach 0,3 s. Der direkte Aufruf ist gestrichen.
 Mutanten (12): alle getötet außer LL, der zur Änderung führte. LF baute zuerst nicht (`found` war verengt), LF2 stirbt
 wie vorhergesagt. Rot-Lauf gegen S7g6: 10 von 11 rot; `check_takes_one_file` war schon grün, die Regel ist neu
 aufgeschrieben, nicht neu gebaut. Fälle 783 → 794, Tests 368 → 370.
+
+**Ergebnis S7h2 (2026-11-07).** Der Rest von `std.os` (Format 43, zehn Natives): `os.args()`, `env`, `envs`, `setEnv`,
+`cwd`, `setCwd`, `exit`, `platform`, `arch`, `homeDir`, `tempDir`, `hostname`, `cpuCount`, `pid` (§12 Regel 26).
+`cwd`, `setCwd` und `hostname` warten wie ein Dateiaufruf; `envs` und `setEnv` zahlen nach Bytes.
+**Eine Abweichung von Lyric 5, zum Prüfen (P40):** `envs()` gibt eine Liste von Paaren in Bytereihenfolge der Namen
+zurück, keine `Map`. Vorhergesagt waren +40 bis +100 ms Kaltstart für `import std.os`, gemessen +270. Die Bisektion
+fand das Wort `Map`: Der Lader lädt `std.collections` für jedes Modul, das es nennt, also für jedes Programm mit
+`import std.os`. Mit Paaren bleiben unter Last etwa +100 ms (A ohne std.os 481, B 574; `println` lag in diesem Lauf bei
+472–498 statt 322). Der Rest ist das Übersetzen des Moduls selbst: Ohne `envs` ändert sich nichts mehr.
+**Beim ersten Lauf gefunden:** Ein `std`-Modul, das einen Prelude-Namen verdeckt (`os.exit`), warnte mit SEM0153. Damit
+wurde jedes Programm mit `import std.os` nicht gecacht. Ein `std`-Modul warnt jetzt nicht mehr; der Import beim Nutzer
+warnt weiter.
+Mutanten: 18 schnelle über `std.os`, 10 über VM und Prüfer. Überlebt haben OB (ein Name mit `=` vorn kommt nur unter
+Windows vor), OH und OR (`cwd` und `hostname` scheitern nicht portabel), alle wie vorhergesagt. VE überlebte gegen die
+Vorhersage: Der Fall prüfte nur „eine der drei Plattformen“, und `homeDir` fragt dieselbe Zahl. Jetzt prüft der Fall
+Windows gegen den Trenner, VE stirbt. Rot-Lauf gegen S7h1: 0 von 13 grün. Fälle 794 → 807, Tests 370 → 371.
+**S7h3 und S7h4 getauscht:** Zuerst `std.process`, dann `os.signals`. So kann ein Fall ein echtes Signal an ein Kind
+schicken.

@@ -1,5 +1,144 @@
-//! The system the script runs on (12; Lyric 5's `std.os`): its environment. A module of the right
-//! `os` (01 S1).
+//! The program and the system it runs on (12 rule 26; Lyric 5's `std.os`): its arguments, its environment, its
+//! working directory, its end and the system's facts. A module of the right `os` (01 S1).
+
+private fn envBlock(): string = __os_envs()
+private fn envSet(name: string, value: string): void = __os_setEnv(name, value)
+private fn cwdInto(holder: string[]): int = __os_cwd(holder)
+private fn cwdTo(path: string): int = __os_setCwd(path)
+private fn hostnameInto(holder: string[]): int = __os_hostname(holder)
+private fn platformNumber(): int = __os_platform()
+private fn archNumber(): int = __os_arch()
+
+/// The system the script runs on; its text is the target triples' word.
+enum Platform :: Display {
+    Linux,
+    MacOS,
+    Windows,
+    Other,
+
+    fn show(): string = match (this) {
+        .Linux => "linux",
+        .MacOS => "macos",
+        .Windows => "windows",
+        .Other => "other",
+    }
+}
+
+/// The machine the script runs on; its text is the target triples' word.
+enum Arch :: Display {
+    X86_64,
+    Aarch64,
+    Other,
+
+    fn show(): string = match (this) {
+        .X86_64 => "x86_64",
+        .Aarch64 => "aarch64",
+        .Other => "other",
+    }
+}
+
+/// The script's name and its arguments, a new list each call. The prelude's `args` is what follows the name.
+fn args(): string[] {
+    let out: string[] = []
+    var k = 0
+    while (k < __argCount()) {
+        out.push(__argAt(k))
+        k += 1
+    }
+    return out
+}
 
 /// The value of the environment variable `name`, `null` where it is not set.
 fn env(name: string): ?string = __os_env(name)
+
+/// The whole environment, a snapshot: its pairs in the byte order of the names. A name ends at the first `=`
+/// after its first byte: Windows' own entries begin with one. A list, not Lyric 5's map: a map here would load
+/// the collections for every program that imports this module, 170 ms of each cold start.
+fn envs(): (string, string)[] {
+    let pairs: (string, string)[] = []
+    for (entry in envBlock().split("\0")) {
+        if (let eq = "=".nextIn(entry, 1)) {
+            pairs.push((entry[..eq], entry[(eq + 1)..]))
+        }
+    }
+    try {
+        pairs.sortByKey((p) => p.0)
+    } catch (e: Error) {
+        unreachable("a name throws nothing")
+    }
+    return pairs
+}
+
+/// Sets the variable `name` to `value`, for this process and those it starts. A name that is empty or holds `=` or
+/// a NUL, or a value that holds a NUL, is the program's mistake: it panics.
+fn setEnv(name: string, value: string): void {
+    if (name.isEmpty() || name.contains("=") || name.contains("\0") || value.contains("\0")) {
+        panic(f"os.setEnv: '{name}' cannot be an environment variable's name, or its value holds a NUL")
+    }
+    envSet(name, value)
+}
+
+/// The working directory, absolute.
+fn cwd(): string throws IoError {
+    let holder = [""]
+    let n = cwdInto(holder)
+    if (n < 0) {
+        throw __ioFailure(n, null, "the working directory looked up")
+    }
+    return holder[0]
+}
+
+/// Makes `path` the working directory.
+fn setCwd(path: string): void throws IoError {
+    let n = cwdTo(path)
+    if (n < 0) {
+        throw __ioFailure(n, path, "made the working directory")
+    }
+}
+
+/// Ends the run at once, as the prelude's `exit`.
+fn exit(code: int): never = __os_exit(code)
+
+/// The system the script runs on.
+fn platform(): Platform = match (platformNumber()) {
+    1 => Platform.Linux,
+    2 => Platform.MacOS,
+    3 => Platform.Windows,
+    _ => Platform.Other,
+}
+
+/// The machine the script runs on.
+fn arch(): Arch = match (archNumber()) {
+    1 => Arch.X86_64,
+    2 => Arch.Aarch64,
+    _ => Arch.Other,
+}
+
+/// The user's home directory, `HOME`, on Windows `USERPROFILE`, or `null` where it is not set or empty.
+fn homeDir(): ?string {
+    if (let home = env(if (platformNumber() == 3) "USERPROFILE" else "HOME")) {
+        if (!home.isEmpty()) {
+            return home
+        }
+    }
+    return null
+}
+
+/// The system's directory for temporary files; `fs.tempDir()` makes a new directory in it.
+fn tempDir(): string = __os_tempRoot()
+
+/// The machine's name.
+fn hostname(): string throws IoError {
+    let holder = [""]
+    let n = hostnameInto(holder)
+    if (n < 0) {
+        throw __ioFailure(n, null, "the machine's name looked up")
+    }
+    return holder[0]
+}
+
+/// How many processors are online for the program, one at least.
+fn cpuCount(): int = __os_cpuCount()
+
+/// The process's id.
+fn pid(): int = __os_pid()

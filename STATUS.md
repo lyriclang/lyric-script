@@ -384,7 +384,10 @@ VM's call path, S7k measurement point 3.
 - **S7h1 done** — `args` and `exit` in the prelude, what follows the file is the script's, `--` for a package's
   program (format 42). S7h is cut in six: `args`/`exit`, the rest of `std.os`, `os.signals`, `std.process`, `std.time`
   without zones, zones and patterns. 794 cases, 370 tests; see 14.
-- Next: **S7h2** — the rest of `std.os`.
+- **S7h2 done** — the rest of `std.os` (format 43). `os.envs()` answers pairs, not Lyric 5's `Map`: the word `Map`
+  loaded the collections for every `import std.os`, +170 ms cold (P40). A `std` module hiding a prelude name no
+  longer warns: `os.exit` made every program with `import std.os` uncacheable. 807 cases, 371 tests; see 14.
+- Next: **S7h3** — `std.process` (swapped with `os.signals`, so that a case can signal a child).
 
 ## Working mode
 
@@ -458,4 +461,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P37 | **An iterator's default member stays "throws anything" under a written `throws`.** `s.split("/").count()` goes through `this.next()` over all implementations of `Iterator`, one of which is a function value's, so a function that writes `throws IoError` must catch it. Per-call sets (S7g5) settle a type parameter's member, not `this` in a default member. Fix when a real program trips on it, or carry `this`'s type through the default's set the same way; the cost is more `Through` entries in every checker run. |
 | P38 | **A method of a `std` module named like an iterator adapter loads `std.iter` for everyone who imports the module.** `this.take(` in `std.fs` cost every `import std.fs` 283 ms cold (S7g6), found only because a prediction missed. The loader reads names (`namesIter`), so too many is a cost that nothing reports. Before 1.0: have the check fail when a `std` module loads `std.iter` without calling an adapter, or load by what the checker resolves. |
 | P39 | **`fs.glob`'s API has no model in Lyric 5**: decided in S7g6 after Python's `glob` and the shell (§12 rule 24). Worth the maintainer's look: no escape other than a class, dot names left to a part that says them, `**` following no link, `..` by the text. |
+| P40 | **`os.envs()` answers `(string, string)[]` in the byte order of the names, not Lyric 5's `Map`** (S7h2): a `Map` in `std.os` loaded `std.collections` for every program that imports `std.os`, +170 ms cold. Worth the maintainer's look: the deviation, or a loader that pays for the collections only where a program reaches them. |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

@@ -158,8 +158,7 @@ fn aNativeThatWaitsDoesNotStartWithoutItsBudget(): void {
     """;
     assertTrue(suspended(runText(line, "p", [1], 0)));
     // a write to the console too: charged by its bytes, and none of them written
-    let put = bytesProgram("load.i s1, 1
-        call.n console.put, s1, r0");
+    let put = bytesProgram("load.i s1, 1\n        call.n console.put, s1, r0");
     assertTrue(suspended(runText(put, "p", [3200], made + 100)));
 }
 

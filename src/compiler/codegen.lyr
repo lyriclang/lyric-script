@@ -35,7 +35,7 @@ import lyric_script.vm.module {
     optionalKind,
     tupleKind,
 };
-import lyric_script.vm.native { NativeFn, nativeInfo, nativeNumber, nativeOf };
+import lyric_script.vm.native { NativeFn, nativeInfo, nativeNumber, nativeOf, nativeWaits };
 import lyric_script.vm.op { Instr, Op };
 
 /// The name of the function that runs a script's top-level code (07 Top).
@@ -1820,10 +1820,6 @@ class FnGen {
                 let d = this.any(x.value);
                 this.emit(Op.TimerAfter, dst.r, d.s, 0);
             }
-            // S6e: a line of standard input
-            .ReadLine => {
-                this.emit(Op.ReadLine, dst.r, 0, 0);
-            }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);
                 this.emit(Op.TaskSt, dst.s, task.r, 0);
@@ -2331,7 +2327,7 @@ class FnGen {
             bs + info.scalars + (if (info.returnsScalar) 1 else 0),
             br + info.refs + (if (info.returnsRef) 1 else 0)
         );
-        this.emit(Op.CallN, nativeNumber(nf), bs, br);
+        this.emit(if (nativeWaits(nf)) Op.CallW else Op.CallN, nativeNumber(nf), bs, br);
         if (info.returnsScalar && dst.s >= 0 && dst.s != bs) {
             this.emit(Op.MoveS, dst.s, bs, 0);
         } else if (info.returnsRef && dst.r >= 0 && dst.r != br) {

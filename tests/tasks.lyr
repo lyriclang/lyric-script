@@ -594,5 +594,8 @@ fn timeIsChecked(): void {
 @Test
 fn readLineIsAWait(): void {
     assertEq(errs("fn f(): string {\n    return readLine() ?? \"\"\n}"), []);
-    assertEq(errs("fn f() throws Exception {\n    let l = readLine()\n}"), ["LYS-SEM0034"]);
+    // it may throw the two (12 rule 20), and a clause leaves out neither
+    assertEq(errs("fn f() throws [IoError, Cancelled] {\n    let l = readLine()\n}"), []);
+    assertEq(errs("fn f() throws IoError {\n    let l = readLine()\n}"), ["LYS-SEM0034"]);
+    assertEq(errs("fn f() throws Cancelled {\n    let l = readLine()\n}"), ["LYS-SEM0034"]);
 }

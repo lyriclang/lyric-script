@@ -154,8 +154,9 @@ pub enum Op :: [Variants, Equatable] {
     // S6d3: the task sleeps `s[a]` nanoseconds; a channel that closes once `s[b]` nanoseconds passed.
     Sleep,
     TimerAfter,
-    // S6e: a line of standard input, read by a Lyric 5 task while the script's task waits.
-    ReadLine,
+    // S7g2: a native that waits, as `call.n` calls one: it runs on a Lyric 5 task while the script's
+    // task waits (S6e), charged before it starts, and what it answers lands when the task runs again.
+    CallW,
     // S7b1: lists — a new one (`b`: its elements' slots, scalars × 256 + references); a push of the
     // value at the bases; an element read and written, of one scalar or one reference in place, of
     // several slots over the index and the list at the bases (a write's value after them); the
@@ -358,7 +359,7 @@ pub fn info(op: Op): OpInfo {
         .ListChanges => OpInfo { mnemonic = "list.changes", operands = [.Scalar, .Ref] },
         .ListCheck => OpInfo { mnemonic = "list.check", operands = [.Ref, .Scalar] },
         .ListSupp => OpInfo { mnemonic = "list.supp", operands = [.Ref, .Ref] },
-        .ReadLine => OpInfo { mnemonic = "read.line", operands = [.Ref] },
+        .CallW => OpInfo { mnemonic = "call.w", operands = [.Native, .ScalarBase, .RefBase] },
     };
 }
 

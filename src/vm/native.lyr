@@ -147,6 +147,17 @@ enum NativeFn :: [Equatable] {
     BytesCopy,
     /// The first `s[x]` in `s[x + 1]..s[x + 2]` of `r[y]`, into `s[x]`; -1 for none.
     BytesFind,
+    /// The console (S7g2): text on the standard error; what the buffers hold written out, a failure
+    /// dropped; bytes into a stream's buffer and that stream written out, each answering a failure
+    /// as `-(kind << 32 | code)`. The last two wait (`call.w`): the next line of the standard input
+    /// into a holder, 1, or 0 at its end; bytes of the input, how many.
+    ConsoleEprint,
+    ConsoleEprintln,
+    ConsoleFlushAll,
+    ConsolePut,
+    ConsoleFlush,
+    ConsoleLine,
+    ConsoleRead,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -160,7 +171,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 104;
+let nativeCount: int = 111;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -268,7 +279,14 @@ fn nativeOf(n: int): NativeFn {
         100 => NativeFn.RandomFloat,
         101 => NativeFn.RandomNormal,
         102 => NativeFn.BytesCopy,
-        _ => NativeFn.BytesFind,
+        103 => NativeFn.BytesFind,
+        104 => NativeFn.ConsoleEprint,
+        105 => NativeFn.ConsoleEprintln,
+        106 => NativeFn.ConsoleFlushAll,
+        107 => NativeFn.ConsolePut,
+        108 => NativeFn.ConsoleFlush,
+        109 => NativeFn.ConsoleLine,
+        _ => NativeFn.ConsoleRead,
     };
 }
 
@@ -379,6 +397,13 @@ fn nativeNumber(n: NativeFn): int {
         .RandomNormal => 101,
         .BytesCopy => 102,
         .BytesFind => 103,
+        .ConsoleEprint => 104,
+        .ConsoleEprintln => 105,
+        .ConsoleFlushAll => 106,
+        .ConsolePut => 107,
+        .ConsoleFlush => 108,
+        .ConsoleLine => 109,
+        .ConsoleRead => 110,
     };
 }
 
@@ -488,6 +513,22 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .RandomNormal => sig("random.normal", 2, 1, true, false),
         .BytesCopy => sig("bytes.copy", 3, 2, false, false),
         .BytesFind => sig("bytes.find", 3, 1, true, false),
+        .ConsoleEprint => sig("console.eprint", 0, 1, false, false),
+        .ConsoleEprintln => sig("console.eprintln", 0, 1, false, false),
+        .ConsoleFlushAll => sig("console.flushAll", 0, 0, false, false),
+        .ConsolePut => sig("console.put", 1, 1, true, false),
+        .ConsoleFlush => sig("console.flush", 1, 0, true, false),
+        .ConsoleLine => sig("console.line", 0, 1, true, false),
+        .ConsoleRead => sig("console.read", 0, 1, true, false),
+    };
+}
+
+/// Whether a native waits (07 N6; S7g2): it runs on a task of the host while the script's task waits,
+/// called by `call.w`; every other by `call.n`.
+fn nativeWaits(n: NativeFn): bool {
+    return match (n) {
+        .ConsoleLine | .ConsoleRead => true,
+        _ => false,
     };
 }
 

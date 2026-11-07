@@ -234,7 +234,39 @@ fn sleep(d: Duration) {
 class Timer {
     static fn after(d: Duration): Channel<void> = __timerAfter(d.nanos())
 }
-fn readLine(): ?string = __readLine()
+fn __consoleLine(holder: string[]): int = __console_line(holder)
+/// The next line of the standard input without its end, `null` at the end of the input (12 rule 20).
+fn readLine(): ?string throws [IoError, Cancelled] {
+    let holder = [""]
+    let n = __consoleLine(holder)
+    if (n < 0) {
+        throw __ioFailure(n, null, holder[0])
+    }
+    return if (n == 0) null else holder[0]
+}
+/// The `IoError` a native's negative answer says: `-(kind << 32 | code)`, the kinds counted from 1.
+fn __ioFailure(answer: int, path: ?string, detail: string): IoError {
+    let code = -answer
+    let kind: IoErrorKind = match (code >> 32) {
+        1 => IoErrorKind.NotFound,
+        2 => IoErrorKind.PermissionDenied,
+        3 => IoErrorKind.AlreadyExists,
+        4 => IoErrorKind.IsDirectory,
+        5 => IoErrorKind.NotDirectory,
+        6 => IoErrorKind.InvalidInput,
+        7 => IoErrorKind.InvalidData,
+        8 => IoErrorKind.UnexpectedEof,
+        9 => IoErrorKind.TimedOut,
+        10 => IoErrorKind.ConnectionRefused,
+        11 => IoErrorKind.ConnectionReset,
+        12 => IoErrorKind.AddrInUse,
+        13 => IoErrorKind.BrokenPipe,
+        14 => IoErrorKind.Closed,
+        15 => IoErrorKind.Unsupported,
+        _ => IoErrorKind.Other { code = code & 0xFFFFFFFF },
+    }
+    return IoError { kind = kind, path = path, detail = detail }
+}
 class TimedOut :: Error {
     fn message(): string = "timed out"
 }

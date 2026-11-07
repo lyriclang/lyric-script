@@ -7,6 +7,7 @@
 //! what reached the clause (05 K7). The sets are the checker's to hold the written `throws`
 //! against.
 import std.collections { List, Map };
+import lyric_script.vm.native { nativeOf, nativeWaits };
 import lyric_script.compiler.typed {
     FnInfo,
     TExpr,
@@ -283,8 +284,14 @@ class ThrowSets {
                     out.add(Ty.Named(this.cancelled), this.line);
                 }
             }
-            .ChanRecv(_, _) | .SemAcquire(_) | .ParkWatched | .Sleep(_) | .ReadLine => {
+            .ChanRecv(_, _) | .SemAcquire(_) | .ParkWatched | .Sleep(_) => {
                 if (this.cancelled >= 0) {
+                    out.add(Ty.Named(this.cancelled), this.line);
+                }
+            }
+            // a native that waits is a wait (10 rule 18)
+            .Native(.Std(k), _, _) => {
+                if (this.cancelled >= 0 && nativeWaits(nativeOf(k))) {
                     out.add(Ty.Named(this.cancelled), this.line);
                 }
             }

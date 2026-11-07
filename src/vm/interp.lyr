@@ -21,7 +21,7 @@ import std.core { arrayOf };
 import std.core { fstringFormatted, fstringPadded };
 import std.fs { exists };
 import std.hash { DefaultHasher };
-import std.io { print, println, stdin };
+import std.io { IoError, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
 import std.os { env };
 import std.random { Random };
 import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
@@ -202,7 +202,7 @@ class TaskState {
     var nativePending: bool = false,
     var nativeTicket: int = 0,
     var nativeDone: bool = false,
-    var nativeText: ?string = null,
+    var nativeAnswer: ?WaitAnswer = null,
     // what an error that left the task threw, and its record: what `await` throws again
     var thrown: HeapRef = nilRef(),
     var record: HeapRef = nilRef(),
@@ -807,6 +807,23 @@ fn callNative(
     match (which) {
         .Print => print(textOf(r[y])),
         .Println => println(textOf(r[y])),
+        .ConsoleEprint => eprint(textOf(r[y])),
+        .ConsoleEprintln => eprintln(textOf(r[y])),
+        .ConsoleFlushAll => flush(),
+        .ConsolePut => {
+            let p = r[y];
+            if (!(p is ScriptBytes)) {
+                return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+            }
+            if (charge(shared, bytesCost(p.data.length()))) {
+                s[x] = consolePut(s[x] as int, p.data) as uint64;
+            }
+        }
+        .ConsoleFlush => s[x] = consoleFlush(s[x] as int) as uint64,
+        // the verifier keeps these to `call.w`
+        .ConsoleLine | .ConsoleRead => {
+            return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
+        }
         .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
         .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
         // Lyric 5's shortest text that reads back, `1.0` for an integral float
@@ -2767,16 +2784,13 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // S6e: a line of standard input at `r[a]`, none at its end — the first native that
             // waits: a Lyric 5 task reads it while the script's task waits, and the others run
             // (07 N6, 11 Co)
-            .ReadLine => {
+            .CallW => {
                 if (t.nativeDone) {
                     t.nativeDone = false;
-                    let line = t.nativeText;
-                    t.nativeText = null;
-                    if (line != null) {
-                        r[br + a] = ScriptString { text = line };
-                    } else {
-                        r[br + a] = nil;
+                    if (let answer = t.nativeAnswer) {
+                        takeAnswer(nativeOf(a), answer, s, r, bs + b, br + c);
                     }
+                    t.nativeAnswer = null;
                     pc += 1;
                     continue;
                 }
@@ -2789,6 +2803,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     inject = true;
                     continue;
                 }
+                // a wait the budget does not cover does not start: this call again on `resume`
+                let job = waitJob(nativeOf(a), r, br + c, shared);
+                if (shared.budget == -2) {
+                    return Outcome.Suspended;
+                }
                 t.nativePending = true;
                 t.nativeTicket += 1;
                 let ticket = t.nativeTicket;
@@ -2796,16 +2815,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 shared.pendingNatives += 1;
                 spawnDetached(
                     () => {
-                        var text: ?string = null;
-                        let got = try? stdin().readLine();
-                        if (let g = got) {
-                            text = g;
-                        }
-                        // a task cancelled meanwhile waits no more: the line is dropped
+                        let answer = job();
+                        // a task cancelled meanwhile waits no more: what came is dropped
                         if (st.nativePending && st.nativeTicket == ticket) {
                             st.nativePending = false;
                             st.nativeDone = true;
-                            st.nativeText = text;
+                            st.nativeAnswer = answer;
                             shared.pendingNatives -= 1;
                             shared.queue.push(st);
                             try? shared.wakeups.send(1);
@@ -3662,6 +3677,130 @@ fn charge(shared: RunShared, n: int): bool {
     }
     shared.budget -= n;
     return true;
+}
+
+/// What a native that waits brought (S7g2): a number, a failure as `-(kind << 32 | code)`; a text; bytes.
+struct WaitAnswer {
+    n: int,
+    text: ?string = null,
+    bytes: ?uint8[] = null,
+}
+
+/// What `call.w` runs on a Lyric 5 task, charged here, before it starts: nothing the task does
+/// touches the script's values. The budget's end is the caller's to read.
+fn waitJob(which: NativeFn, r: HeapRef[], y: int, shared: RunShared): fn() -> WaitAnswer {
+    match (which) {
+        .ConsoleRead => {
+            let p = r[y];
+            let n = if (p is ScriptBytes) p.data.length() else 0;
+            charge(shared, bytesCost(n));
+            return () => consoleRead(n);
+        }
+        _ => {
+            charge(shared, 1);
+            return () => consoleLine();
+        }
+    }
+}
+
+/// Puts what a native that waits brought where the script sees it: the number at the scalar base,
+/// and what goes with it into the object at the reference base, which the script's task kept.
+fn takeAnswer(which: NativeFn, a: WaitAnswer, s: uint64[], r: HeapRef[], x: int, y: int): void {
+    var n = a.n;
+    match (which) {
+        .ConsoleRead => {
+            let p = r[y];
+            let bytes = a.bytes;
+            if (p is ScriptBytes && bytes != null) {
+                // another task may have cut the bytes meanwhile
+                if (n > p.data.length()) {
+                    n = p.data.length();
+                }
+                var k = 0;
+                while (k < n) {
+                    p.data[k] = bytes[k];
+                    k += 1;
+                }
+            }
+        }
+        _ => {
+            let o = r[y];
+            let text = a.text;
+            if (o is ScriptArray && text != null) {
+                o.r[0] = ScriptString { text = text };
+            }
+        }
+    }
+    s[x] = n as uint64;
+}
+
+/// The next line of the standard input: 1 and the line, 0 at its end, or the failure and its detail.
+fn consoleLine(): WaitAnswer {
+    let line = try stdin().readLine() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e), text = failureDetail(e) };
+    };
+    if (let l = line) {
+        return WaitAnswer { n = 1, text = l };
+    }
+    return WaitAnswer { n = 0 };
+}
+
+/// Up to `n` bytes of the standard input, into an array of their own: the script's stay its own.
+fn consoleRead(n: int): WaitAnswer {
+    let into = [0 as uint8] * n;
+    let got = try stdin().read(into) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = got, bytes = into };
+}
+
+fn consolePut(stream: int, data: List<uint8>): int {
+    let from = data.toArray();
+    let w = if (stream == 2) stderr() else stdout();
+    return try w.write(from) catch (e: IoError) failureCode(e);
+}
+
+fn consoleFlush(stream: int): int {
+    let w = if (stream == 2) stderr() else stdout();
+    try w.flush() catch (e: IoError) {
+        return failureCode(e);
+    };
+    return 0;
+}
+
+/// An `IoError` as a number, the way the runtime's calls answer: the kinds counted from 1 in their
+/// order, and what `std.core`'s prelude reads back in `__ioFailure`.
+fn failureCode(e: IoError): int {
+    let kind = match (e.kind) {
+        .NotFound => 1,
+        .PermissionDenied => 2,
+        .AlreadyExists => 3,
+        .IsDirectory => 4,
+        .NotDirectory => 5,
+        .InvalidInput => 6,
+        .InvalidData => 7,
+        .UnexpectedEof => 8,
+        .TimedOut => 9,
+        .ConnectionRefused => 10,
+        .ConnectionReset => 11,
+        .AddrInUse => 12,
+        .BrokenPipe => 13,
+        .Closed => 14,
+        .Unsupported => 15,
+        .Other { code } => {
+            return -((16 << 32) | (code & 0xFFFFFFFF));
+        }
+        _ => 16,
+    };
+    return -(kind << 32);
+}
+
+/// What a failure says more than its kind: what caused it, or else what was being done.
+fn failureDetail(e: IoError): string {
+    if (let cause = e.cause()) {
+        return cause.message();
+    }
+    return e.detail;
 }
 
 /// What a native of `Bytes` costs for `n` bytes (12 rule 17): a unit for every 32 and one for the call.

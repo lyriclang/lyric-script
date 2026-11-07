@@ -146,6 +146,24 @@ fn bytesCosts(op: string, cost: int): void {
 }
 
 @Test
+fn aNativeThatWaitsDoesNotStartWithoutItsBudget(): void {
+    // only the side that does not start: the other would read this test's standard input
+    let made = 1 + 3200 / 32;
+    assertTrue(suspended(runText(bytesProgram("call.w console.read, s1, r0"), "p", [3200], made + 100)));
+    let line = """
+    fn p(s) -> s regs 2 1
+        call.w console.line, s1, r0
+        ret.s s1
+    end
+    """;
+    assertTrue(suspended(runText(line, "p", [1], 0)));
+    // a write to the console too: charged by its bytes, and none of them written
+    let put = bytesProgram("load.i s1, 1
+        call.n console.put, s1, r0");
+    assertTrue(suspended(runText(put, "p", [3200], made + 100)));
+}
+
+@Test
 fn theNativesOfBytesChargeByTheirBytes(): void {
     let walk = 1 + 3200 / 32;
     bytesCosts("call.n bytes.toList, s1, r0", walk);

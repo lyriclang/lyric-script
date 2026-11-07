@@ -3,7 +3,7 @@
 //! structure of a module; it guards against faults of the toolchain, not against foreign
 //! bytecode, which is never loaded (design/v1, 01 S10).
 import std.collections { List };
-import lyric_script.vm.native { nativeCount, nativeInfo, nativeOf };
+import lyric_script.vm.native { nativeCount, nativeInfo, nativeOf, nativeWaits };
 import lyric_script.vm.op { Instr, Op, Operand, info };
 
 /// What a function returns, and in which register file the caller receives it: one scalar,
@@ -244,8 +244,11 @@ fn checkOperand(module: Module, f: Function, op: Op, kind: Operand, value: int):
 /// A call passes the callee's parameters from consecutive registers starting at its bases, and
 /// the result lands at the base of the file the callee returns in.
 fn checkCall(module: Module, f: Function, ins: Instr): ?string {
-    if (ins.op == .CallN && (ins.a as int) < nativeCount) {
+    if ((ins.op == .CallN || ins.op == .CallW) && (ins.a as int) < nativeCount) {
         let n = nativeInfo(nativeOf(ins.a as int));
+        if (nativeWaits(nativeOf(ins.a as int)) != (ins.op == .CallW)) {
+            return if (ins.op == .CallW) f"native '{n.name}' does not wait" else f"native '{n.name}' waits";
+        }
         let baseS = ins.b as int;
         let baseR = ins.c as int;
         if (baseS + n.scalars > f.scalars || (n.returnsScalar && baseS >= f.scalars)) {

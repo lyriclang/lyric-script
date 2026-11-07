@@ -406,3 +406,80 @@ class TextWriter<W :: [Writer]> {
         this.inner.writeString("\n")
     }
 }
+
+// The console (§12 rule 20): the buffers `print` and `eprint` write into, and the one standard input.
+
+private fn eprintText(s: string): void = __console_eprint(s)
+private fn consolePut(stream: int, from: Any): int = __console_put(stream, from)
+private fn consoleFlush(stream: int): int = __console_flush(stream)
+private fn consoleRead(into: Any): int = __console_read(into)
+
+/// Writes `v`'s text on the standard error.
+fn eprint<T :: [Display]>(v: T): void {
+    eprintText(f"{v}")
+}
+
+/// Writes out what the console holds now, the standard output's and then the standard error's; a
+/// failure is dropped.
+fn flush(): void = __console_flushAll()
+
+/// The program's standard input. One buffer stands behind every `Stdin`, so `readLine`, `lines` and
+/// `read` take turns on it without a byte lost.
+class Stdin :: [Reader] {
+    /// The next line without its end, `null` at the end of the input.
+    fn readLine(): ?string throws [IoError, Cancelled] = readLine()
+
+    /// The lines to the end of the input, as `readLine` gives them.
+    fn lines(): StdinLinesIter = StdinLinesIter { }
+
+    /// What a line's read left in the buffer first.
+    fn read(into: Bytes): int throws [IoError, Cancelled] {
+        if (into.isEmpty()) {
+            return 0
+        }
+        let n = consoleRead(into.v)
+        if (n < 0) {
+            throw __ioFailure(n, null, "read from the standard input")
+        }
+        return n
+    }
+}
+
+class StdinLinesIter :: [Iterator] {
+    type Item = string
+
+    fn next(): ?string = readLine()
+}
+
+/// One of the console's output streams: what it takes goes into the buffer `print` or `eprint` writes
+/// into, so what the two write keeps its order. Not `Closeable`: the console is not the program's to close.
+class ConsoleWriter :: [Writer] {
+    stream: int
+
+    /// Takes all of `from`; a flush due meanwhile may throw.
+    fn write(from: Bytes): int throws IoError {
+        let n = consolePut(this.stream, from.v)
+        if (n < 0) {
+            throw this.failure(n)
+        }
+        return n
+    }
+
+    /// Writes out what the stream holds now; a pipe nobody reads is `BrokenPipe`.
+    fn flush(): void throws IoError {
+        let n = consoleFlush(this.stream)
+        if (n < 0) {
+            throw this.failure(n)
+        }
+    }
+
+    private fn failure(n: int): IoError {
+        return __ioFailure(n, null, if (this.stream == 2) "written to the standard error" else "written to the standard output")
+    }
+}
+
+fn stdin(): Stdin = Stdin { }
+
+fn stdout(): ConsoleWriter = ConsoleWriter { stream = 1 }
+
+fn stderr(): ConsoleWriter = ConsoleWriter { stream = 2 }

@@ -366,7 +366,9 @@ VM's call path, S7k measurement point 3.
 - **S7f6 done, S7f done** — `std.random` gives Lyric 5's stream for a seed and asks for no right;
   `std.random.system` draws from the system with `os` (P35). Found: `import std.random` cost 204 ms cold,
   since `nextFloat` holds `Float` and so loaded the number tower; names are whole now, about 80 ms.
-- Next: **S7g1** — `std.io` over memory, in Script. S7g is cut in six, see 14.
+- **S7g1 done** — `std.io` over memory, in Script; `IoError` in the prelude; `bytes.copy`, `bytes.find`. Found:
+  the field `this.taken` holds `.take`, which loaded `std.iter` and cost 200 ms; every such check is by whole names now.
+- Next: **S7g2** — the console, and the general way a native waits. S7g is cut in six, see 14.
 
 ## Working mode
 
@@ -436,4 +438,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P33 | **No older heavy native charges the budget.** 01 S5c and the plan say a native knows its cost and charges it first; only `BigInt` does. `sort`, `repeat`, `replace`, `split` and their kin run to the end on any budget, so a sandboxed script can spend far more than it was given in one call. Proposal: audit them with S8, which builds `resume`, using `charge`. | S7f4 |
 | P34 | **An operation dearer than one `resume` gives never gets through.** A native stops before it works, so a loop of `resume` with a small grant repeats the stop forever. S8 has to say what happens: the grant accumulates, or the host gets told how much the call asks. | S7f4 |
 | P35 | **`std.random.system` is a module Lyric 5 does not have.** Rights hang on a module, and 01 S8 wants the seeded generator free and the system's behind `os`, so the free `nextInRange`, `nextFloat`, `shuffle` and `Random.fresh()` left `std.random` for it: code moved from Lyric 5 changes an import, and `fresh` is a free function there. The alternative is rights per member, which 01 S1 does not have. I'd keep it. |
+| P36 | **Nothing makes a `match` over `IoErrorKind` write its `_`.** Lyric 5 marks the enum `@NonExhaustive`, Script has no such mark, so a `match` that names every kind today breaks when a release adds one, and §12 rule 19 only says so. A general mark is a language feature 01 does not have, for one enum so far; I'd leave it, and add the mark if a second enum needs it. |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

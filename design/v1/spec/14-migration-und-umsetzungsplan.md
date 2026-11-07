@@ -2090,3 +2090,23 @@ Rot-Lauf und Mutanten:
 - **S7g5** `std.fs`, Verzeichnisse: `metadata`, `createDir`, `remove`, `rename`, `readDir`, `canonicalize`,
   `absolute`, `createDirAll`, `removeAll`, `copy`, `walk`, `tempDir`, `tempFile`.
 - **S7g6** `fs.glob` in Script (12 Um).
+
+**Ergebnis S7g1 (2026-11-07).** `std/io.lyrs`, 400 Zeilen Script: `Reader`, `Writer`, `Seek`, `copy`,
+`ByteReader`, `ByteBuffer`, `BufReader`, `BufWriter`, `TextReader`, `TextWriter`. `IoError` und `IoErrorKind`
+stehen in der Prelude, `import std.io { IoError }` nennt, was jedes Modul sieht. Zwei Natives: `bytes.copy`,
+nach Bytes gebucht und richtig bei Überlappung, und `bytes.find`, damit eine Zeile nicht Byte für Byte im
+Interpreter gesucht wird. Format 37. Abweichungen von Lyric 5, alle aus der Go-Form über `Bytes`: `read(into)`
+füllt von vorn, weil es keinen Slice-Typ gibt; `ByteBuffer.toBytes()` statt `toArray`; `readToEnd` gibt `Bytes`;
+Vorgabe-Methoden auf dem Interface statt `extend<R>`. `@NonExhaustive` gibt es in Script nicht: ein `match` über
+`IoErrorKind` wird nicht zum `_` gezwungen, die Spec sagt es nur (P36). Ein qualifiziertes `io.IoError` geht nicht;
+die Warnung für einen nie geschlossenen `BufWriter` kommt mit den Lints (S11).
+**Gefunden beim Messen, derselbe Fehler wie in S7f6:** `import std.io` kostete kalt über 600 ms unter Last, die
+Vorhersage war +40..80. Der Sprung lag an einem Feld: `this.taken` enthält `.take`, `namesIter` prüfte
+Teilstrings und lud `std.iter`. Beide übrigen Prüfungen gehen jetzt über `holdsName`. Danach, CPU-Minimum:
+`let b = b"a"` 511 ms, `import std.io` 619 ms, also +108; `println(1)` 428 → 474 im Minimum, im Median 562 → 522:
+Die Last einer parallelen Sitzung überdeckt, was die Prelude kostet. Das wird am Ende von S7g bei Ruhe nachgemessen.
+Wanduhr unter Last taugt nicht: `println(1)` allein streute dabei zwischen 352 und 576 ms.
+Rot-Lauf: 26 von 26 rot gegen S7f6. Mutanten (39): alle getötet außer IV (Kontrolle ohne Wirkung) und **IS**: ein
+Byte unter `0xC0` mit Größe 1 statt 0 ändert nichts, weil `fromUtf8` es genauso ablehnt. Der Zweig war tot und ist
+weg. Dass ein Byte ab `0xF8` nicht auf drei weitere wartet, prüft kein Fall: `ByteReader` wartet nie, sichtbar wäre
+es erst an einer Konsole. Fälle 666 → 692, Tests 364.

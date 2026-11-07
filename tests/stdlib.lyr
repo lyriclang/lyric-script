@@ -39,6 +39,9 @@ fn theNumberTowerComesWhereAModuleNamesIt(): void {
     assertTrue(loadProgram("t.lyrs", "let x = \"a\".toBytes()").bytes);
     assertTrue(loadProgram("t.lyrs", "fn f(x: Bytes) { }").bytes);
     assertTrue(loadProgram("t.lyrs", "let x = string.fromUtf8Lossy(y)").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = string.fromUtf8(y)").bytes);
+    assertTrue(loadProgram("t.lyrs", "catch (e: Utf8Error) { }").bytes);
+    assertTrue(!loadProgram("t.lyrs", "let myBytes = 1").bytes);
     // a constant, a member after a dot, an interface
     assertTrue(loadProgram("t.lyrs", "println(int.max)").numbers);
     assertTrue(loadProgram("t.lyrs", "println(2.pow(3))").numbers);
@@ -119,6 +122,15 @@ fn aProgramLoadsStdIterWhereItNamesAMemberOfItsBlocks(): void {
     assertEq(loads(plain.names, "std.iter"), false);
     assertEq(loads(mapped.names, "std.iter"), true);
     assertEq(loads(skipped.names, "std.iter"), true);
+    // a whole name (S7g1): std.io's `this.taken` is no `.take`, and cost every user of it 200 ms
+    assertEq(
+        loads(loadProgram("nowhere/taken.lyrs", "let x = y.taken\n").names, "std.iter"),
+        false
+    );
+    assertEq(
+        loads(loadProgram("nowhere/take.lyrs", "let x = y.take(1)\n").names, "std.iter"),
+        true
+    );
 }
 
 fn loads(names: List<string>, name: string): bool {

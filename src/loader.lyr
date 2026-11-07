@@ -411,7 +411,7 @@ fn isWordChar(c: char): bool {
 
 /// Whether a module loaded names a member of std.iter's blocks over every iterator (S7c6b): `.map`,
 /// `.filter` and the others, read off the module's text — a name of a function of a block
-/// `extend<I :: [...]> I` there.
+/// `extend<I :: [...]> I` there. A whole name: a field `.taken` is no `.take`, and cost 200 ms.
 fn namesIter(l: Loaded): bool {
     let members = List<string>.new();
     var inBlock = false;
@@ -430,7 +430,7 @@ fn namesIter(l: Loaded): bool {
     }
     for (text in l.texts) {
         for (m in members) {
-            if (text.contains(m)) {
+            if (holdsName(text, m)) {
                 return true;
             }
         }
@@ -507,8 +507,8 @@ fn holdsName(text: string, name: string): bool {
 /// back, or a byte string. Too many is a cost, none too few; a `b"` after a letter ends a string.
 fn namesBytes(l: Loaded): bool {
     for (text in l.texts) {
-        for (n in ["Bytes", "fromUtf8", "Utf8Error"]) {
-            if (text.contains(n)) {
+        for (n in ["Bytes", "Utf8Error", "fromUtf8", "fromUtf8Lossy", "toBytes"]) {
+            if (holdsName(text, n)) {
                 return true;
             }
         }

@@ -2180,7 +2180,7 @@ Keinen Mutanten gibt es für ein fehlschlagendes `close` und für `writeAll` bei
 einem Skript aus nicht auslösen. Rot-Lauf gegen S7g3: 17 von 18 rot, grün nur `a_lambda_with_a_using_gives_its_value`,
 ein Ablehnungsfall, der vorher schon ablehnte. Fälle 735 → 753, Tests 367.
 
-**S7g5 fertig:** Verzeichnisse in `std.fs`: `metadata`, `createDir`, `remove`, `removeDir`, `rename`, `canonicalize`,
+**Ergebnis S7g5 (2026-11-07).** Verzeichnisse in `std.fs`: `metadata`, `createDir`, `remove`, `removeDir`, `rename`, `canonicalize`,
 `absolute`, `readDir` mit `DirEntry`, `createDirAll`, `removeAll`, `copy`, `walk`, `tempDir`, `tempFile`, in Script über
 zwölf neue Natives (Format 41). `fs.exists` wird zu `metadata`, die Antwort trägt Größe und vier Bits in einer Zahl.
 `Metadata.modified` kommt mit `std.time` in S7h. Der Runner kennt `//! symlink:`; wo das System keine Links zulässt,
@@ -2204,3 +2204,25 @@ Antwort ist nie 0, außer bei „weder noch“ der Größe 0), XA–XD (Rennen, 
 Ablehnungsfälle, die vorher schon ablehnten. Fälle 753 → 774, Tests 368. Ein Verzeichnisname, der kein UTF-8 ist, wird
 zu einem `IoError` ohne den inneren `Utf8Error` (`dirNext`); ein Skript kann so einen Namen nicht selbst anlegen, also
 gibt es dafür keinen Fall.
+
+**Ergebnis S7g6 (2026-11-07).** `fs.glob(pattern)` in Script, ohne neue Natives. Lyric 5 hat kein `glob`, die API ist
+hier also **eigene Entscheidung, zum Prüfen** (§12 Regel 24): jeder Pfad einmal, in Bytereihenfolge des Texts; `*`, `?`,
+`[abc]`, `[a-z]`, `[!abc]`; `**` als ganzer Teil, als letzter Teil alles darunter, nicht der Ort selbst; ein Trenner am
+Ende verlangt Verzeichnisse; ein Punktname nur für einen Teil mit Punkt, `**` geht nicht hinein; `**` folgt keinem Link,
+die anderen Teile schon; ein Teil ohne Platzhalter wird das System gefragt, nicht im Verzeichnis gesucht; was nicht da
+ist, ist kein Treffer, jeder andere Fehler sein `IoError`; ein offenes `[` und `**` neben anderem sind `InvalidInput`.
+`..` wird lexikalisch aufgelöst, wie `path.join` es tut, also auch über einen Link hinweg: So verhält sich
+`std.path`, `glob` erbt das. Vorbild: Pythons `glob` und die Shell; ein Escape gibt es nicht, `[*]` trägt ein `*`.
+**Beim Lesen gefunden, nicht durch einen Fall:** Über `**/q/**/b` kam `q/q/b` doppelt, `**/` zählte einen Link auf ein
+Verzeichnis nicht mit, `*/` schon. Beides ist behoben, je mit Fall.
+**Eine teure Benennung:** Kaltstart erst +283 ms statt der vorhergesagten +20 bis +40. `namesIter` las in `this.take(`
+den Adapter `.take` und lud `std.iter` bei jedem `import std.fs`. Nach dem Umbenennen +41 ms, gemessen unter Last: In
+diesem Lauf lag auch `println` bei 440 statt 322 ms, die Absolutzahlen taugen also nicht, nur der Abstand (A 1000,
+B 1041). Die Falle bleibt für jedes `std`-Modul, siehe P38.
+**Windows:** Der erste vollständige Lauf dort zeigte einen Fehler im Runner: `os.symlink` macht ohne vorhandenes Ziel
+einen Dateilink, und ein Dateilink auf ein Verzeichnis antwortet „permission denied“. Der Runner kennt jetzt
+`//! symlink-dir:`.
+Mutanten (38 über `std.fs`): Überlebt haben GE, GG (nur auf Windows sichtbar), GF (`**/**` zusammenzufassen spart nur
+Zeit), GX, KB (ein anderer Fehler als „nicht da“ lässt sich nicht portabel erzeugen) und KC, das ich falsch vorhergesagt
+hatte: `NotFound` hat keine unteren Bits, der Wächter zählt also nur bei anderen Fehlern. KM überlebte zuerst
+unvorhergesehen; `ab*b.txt` auf `ab.txt` tötet ihn jetzt. Rot-Lauf gegen S7g5: 0 von 9 grün. Fälle 774 → 783, Tests 368.

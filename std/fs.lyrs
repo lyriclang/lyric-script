@@ -3,7 +3,7 @@
 //! declares `IoError` alone, as the conveniences do (12 rule 22).
 
 import std.io { Reader, Seek, SeekFrom, TextReader, Writer, copy as copyAll }
-import std.path { join, parent }
+import std.path { components, join, parent, separator }
 
 private fn fileNew(): Any = __fs_file()
 private fn fileOpen(how: int, file: Any, path: string): int = __fs_open(how, file, path)
@@ -626,4 +626,287 @@ fn tempFile(): string throws IoError {
         throw __ioFailure(n, holder[0], "made")
     }
     return holder[0]
+}
+
+/// The paths a pattern names, each once, in the byte order of their text. Each part between separators is matched
+/// against the names of a directory: `*` any run of characters, `?` one, `[abc]`, `[a-z]` and `[!abc]` one
+/// of those or none of them, anything else itself; `**` as a whole part is any number of directories, or,
+/// as the last part, all that is under them. A trailing separator asks for directories alone. A name that
+/// begins with `.` is matched only by a part that begins with `.`, and `**` does not go into it. `**` does
+/// not follow a link, the other parts do. A part without any of these is a name, and what it names is
+/// asked of the system, not looked for. What is not there is no match. A `[` that is not closed and a `**`
+/// beside anything else in its part are `InvalidInput`.
+fn glob(pattern: string): string[] throws IoError {
+    let parts = components(pattern)
+    var base = ""
+    var from = 0
+    if (parts.length() > 0 && isVolume(parts[0])) {
+        base = parts[0]
+        from = 1
+    }
+    let wanted: string[] = []
+    var k = from
+    while (k < parts.length()) {
+        let part = parts[k]
+        checkPart(part, pattern)
+        // `**/**` is `**`
+        if (part != "**" || wanted.length() == 0 || wanted[wanted.length() - 1] != "**") {
+            wanted.push(part)
+        }
+        k += 1
+    }
+    let going = GlobWalk {
+        parts = wanted,
+        dirsOnly = pattern.endsWith("/") || pattern.endsWith(separator),
+        found = [],
+    }
+    if (wanted.isEmpty()) {
+        // the pattern names a place only: the root, the volume, `.`
+        if (!pattern.isEmpty()) {
+            going.found.push(if (base.isEmpty()) "." else base)
+        }
+    } else {
+        going.from(base, 0)
+    }
+    let found = going.found
+    try {
+        found.sortByKey((p) => p)
+    } catch (e: Error) {
+        unreachable("a path throws nothing")
+    }
+    // `**/a/**/b` comes to `a/a/b` by two ways
+    let once: string[] = []
+    for (p in found) {
+        if (once.isEmpty() || once[once.length() - 1] != p) {
+            once.push(p)
+        }
+    }
+    return once
+}
+
+/// Whether the first of a path's components is its root or volume.
+private fn isVolume(first: string): bool {
+    if (first.endsWith(separator)) {
+        return true
+    }
+    return separator == "\\" && (first.length() == 2 && first[1] == ':' || first.startsWith("\\\\"))
+}
+
+private fn hasWild(part: string): bool {
+    for (c in part.chars()) {
+        if (c == '*' || c == '?' || c == '[') {
+            return true
+        }
+    }
+    return false
+}
+
+private fn charsOf(s: string): char[] {
+    let out: char[] = []
+    for (c in s.chars()) {
+        out.push(c)
+    }
+    return out
+}
+
+/// Where the class that opens at `open` closes: past a first `]` and a `!`, the next `]`; -1 for none.
+private fn classEnd(p: char[], open: int): int {
+    var k = open + 1
+    if (k < p.length() && p[k] == '!') {
+        k += 1
+    }
+    if (k < p.length() && p[k] == ']') {
+        k += 1
+    }
+    while (k < p.length()) {
+        if (p[k] == ']') {
+            return k
+        }
+        k += 1
+    }
+    return -1
+}
+
+/// Refuses a `[` that is not closed and a `**` beside anything else.
+private fn checkPart(part: string, pattern: string): void throws IoError {
+    if (part == "**") {
+        return
+    }
+    let p = charsOf(part)
+    var k = 0
+    while (k < p.length()) {
+        if (p[k] == '[') {
+            let end = classEnd(p, k)
+            if (end < 0) {
+                throw IoError { kind = IoErrorKind.InvalidInput, path = pattern, detail = "a `[` that is not closed" }
+            }
+            k = end
+        } else if (p[k] == '*' && k + 1 < p.length() && p[k + 1] == '*') {
+            throw IoError { kind = IoErrorKind.InvalidInput, path = pattern, detail = "`**` beside something else" }
+        }
+        k += 1
+    }
+}
+
+/// Whether the class of `p` from `open` to `end` holds `c`.
+private fn classHolds(p: char[], open: int, end: int, c: char): bool {
+    var k = open + 1
+    let negated = p[k] == '!'
+    if (negated) {
+        k += 1
+    }
+    var held = false
+    while (k < end) {
+        if (k + 2 < end && p[k + 1] == '-') {
+            held = held || (p[k] <= c && c <= p[k + 2])
+            k += 3
+        } else {
+            held = held || p[k] == c
+            k += 1
+        }
+    }
+    return held != negated
+}
+
+/// Whether a part matches a whole name: the last `*` given more of the name each time the rest fails.
+private fn partMatches(p: char[], name: char[]): bool {
+    var i = 0
+    var j = 0
+    var star = -1
+    var mark = 0
+    while (j < name.length()) {
+        if (i < p.length()) {
+            if (p[i] == '*') {
+                star = i
+                mark = j
+                i += 1
+                continue
+            }
+            if (p[i] == '?') {
+                i += 1
+                j += 1
+                continue
+            }
+            if (p[i] == '[') {
+                let end = classEnd(p, i)
+                if (classHolds(p, i, end, name[j])) {
+                    i = end + 1
+                    j += 1
+                    continue
+                }
+            } else if (p[i] == name[j]) {
+                i += 1
+                j += 1
+                continue
+            }
+        }
+        if (star < 0) {
+            return false
+        }
+        mark += 1
+        j = mark
+        i = star + 1
+    }
+    while (i < p.length() && p[i] == '*') {
+        i += 1
+    }
+    return i == p.length()
+}
+
+/// A pattern's parts on their way through the directories.
+private class GlobWalk {
+    parts: string[]
+    dirsOnly: bool
+    found: string[]
+
+    /// The entries of `dir`; what is not there, or no directory, has none.
+    private fn entriesOf(dir: string): DirEntry[] throws IoError {
+        let out: DirEntry[] = []
+        let handle = dirNew()
+        let at = if (dir.isEmpty()) "." else dir
+        let n = dirOpen(handle, at)
+        if (n < 0) {
+            let e = __ioFailure(n, at, "opened to read")
+            if (e.kind == IoErrorKind.NotFound || e.kind == IoErrorKind.NotDirectory) {
+                return out
+            }
+            throw e
+        }
+        for (e in ReadDirIter { handle = handle, dir = at }) {
+            out.push(e)
+        }
+        return out
+    }
+
+    /// `path` found, where a trailing separator does not ask for a directory it is not.
+    private fn foundPath(path: string, isDir: bool): void {
+        if (!this.dirsOnly || isDir) {
+            this.found.push(path)
+        }
+    }
+
+    /// An entry the last part matched; an entry that is a link says it is a link, what it leads to says the rest.
+    private fn foundEntry(e: DirEntry): void throws IoError {
+        if (!this.dirsOnly) {
+            this.found.push(e.path)
+            return
+        }
+        let n = pathLook(e.path)
+        this.foundPath(e.path, n >= 0 && metadataOf(n).isDir)
+    }
+
+    /// What the parts from `k` name under `dir`.
+    private fn from(dir: string, k: int): void throws IoError {
+        let part = this.parts[k]
+        let last = k == this.parts.length() - 1
+        if (part == "**") {
+            if (!last) {
+                this.from(dir, k + 1)
+            }
+            for (e in this.entriesOf(dir)) {
+                if (e.name.startsWith(".")) {
+                    continue
+                }
+                if (last) {
+                    this.foundEntry(e)
+                }
+                if (e.isDir) {
+                    this.from(e.path, k)
+                }
+            }
+            return
+        }
+        if (!hasWild(part)) {
+            let path = join(dir, part)
+            if (!last) {
+                this.from(path, k + 1)
+            } else {
+                let n = pathLook(path)
+                if (n >= 0) {
+                    this.foundPath(path, metadataOf(n).isDir)
+                } else {
+                    let e = __ioFailure(n, path, "looked at")
+                    if (e.kind != IoErrorKind.NotFound && e.kind != IoErrorKind.NotDirectory) {
+                        throw e
+                    }
+                }
+            }
+            return
+        }
+        let p = charsOf(part)
+        let dots = part.startsWith(".")
+        for (e in this.entriesOf(dir)) {
+            if (e.name.startsWith(".") && !dots) {
+                continue
+            }
+            if (!partMatches(p, charsOf(e.name))) {
+                continue
+            }
+            if (!last) {
+                this.from(e.path, k + 1)
+            } else {
+                this.foundEntry(e)
+            }
+        }
+    }
 }

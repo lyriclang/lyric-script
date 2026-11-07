@@ -2,6 +2,7 @@
 //! conforms to — objects of script types, strings, and the one `nil` that stands for `null`.
 //! A string is wrapped once when it is made; converting a Lyric 5 string to an interface would
 //! box it at every conversion (value probe W1).
+import std.fs { File };
 import std.random { Random };
 import lyric_script.vm.bigint { Big };
 import std.collections { List, Map };
@@ -90,6 +91,15 @@ pub class ScriptBuilder :: [HeapRef] {
 /// A number of any size (S7f4): never changed once made.
 pub class ScriptBigInt :: [HeapRef] {
     pub big: Big,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// What a `File` holds (S7g4): Lyric 5's file, once one is open.
+pub class ScriptFile :: [HeapRef] {
+    pub var file: ?File = null,
 
     pub fn desc(): ?TypeDesc {
         return null;

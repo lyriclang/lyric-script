@@ -160,6 +160,15 @@ enum NativeFn :: [Equatable] {
     ConsoleRead,
     /// The system's separator of a path's elements (S7g3).
     PathSeparator,
+    /// A file (S7g4): a handle not yet on anything. The others wait (`call.w`), run to their end in a
+    /// cancelled task, and answer as the console does, `-(kind << 32 | code)` for a failure: the handle
+    /// put on a path opened as the bits say; bytes read, bytes written, the new position, 0 for a close.
+    FsFile,
+    FsOpen,
+    FsRead,
+    FsWrite,
+    FsSeek,
+    FsClose,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -173,7 +182,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 112;
+let nativeCount: int = 118;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -289,7 +298,13 @@ fn nativeOf(n: int): NativeFn {
         108 => NativeFn.ConsoleFlush,
         109 => NativeFn.ConsoleLine,
         110 => NativeFn.ConsoleRead,
-        _ => NativeFn.PathSeparator,
+        111 => NativeFn.PathSeparator,
+        112 => NativeFn.FsFile,
+        113 => NativeFn.FsOpen,
+        114 => NativeFn.FsRead,
+        115 => NativeFn.FsWrite,
+        116 => NativeFn.FsSeek,
+        _ => NativeFn.FsClose,
     };
 }
 
@@ -408,6 +423,12 @@ fn nativeNumber(n: NativeFn): int {
         .ConsoleLine => 109,
         .ConsoleRead => 110,
         .PathSeparator => 111,
+        .FsFile => 112,
+        .FsOpen => 113,
+        .FsRead => 114,
+        .FsWrite => 115,
+        .FsSeek => 116,
+        .FsClose => 117,
     };
 }
 
@@ -525,12 +546,27 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .ConsoleLine => sig("console.line", 0, 1, true, false),
         .ConsoleRead => sig("console.read", 0, 1, true, false),
         .PathSeparator => sig("path.separator", 0, 0, false, true),
+        .FsFile => sig("fs.file", 0, 0, false, true),
+        .FsOpen => sig("fs.open", 1, 2, true, false),
+        .FsRead => sig("fs.read", 0, 2, true, false),
+        .FsWrite => sig("fs.write", 0, 2, true, false),
+        .FsSeek => sig("fs.seek", 2, 1, true, false),
+        .FsClose => sig("fs.close", 0, 1, true, false),
     };
 }
 
 /// Whether a native waits (07 N6; S7g2): it runs on a task of the host while the script's task waits,
 /// called by `call.w`; every other by `call.n`.
 fn nativeWaits(n: NativeFn): bool {
+    return match (n) {
+        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose => true,
+        _ => false,
+    };
+}
+
+/// Whether a cancel ends a native that waits (10 rule 18): the console's. A file's call ends in a
+/// bounded time, and what it moved stays moved, so it runs to its end (12 rule 22).
+fn nativeCancels(n: NativeFn): bool {
     return match (n) {
         .ConsoleLine | .ConsoleRead => true,
         _ => false,

@@ -372,7 +372,10 @@ VM's call path, S7k measurement point 3.
   throws `[IoError, Cancelled]`. Found: a report stood before the output still buffered; `finish` flushes first.
 - **S7g3 done** — `std.path` in Script, no right, differential against Lyric 5 clean on both systems' forms. Found:
   `path.join` in a script loaded `std.iter`, +340 ms cold; a module's name is a receiver now where the word is nothing else.
-- Next: **S7g4** — `std.fs`: `File` and the conveniences over the same way. S7g is cut in six, see 14.
+- **S7g4 done** — `std.fs`: `File`, `OpenOptions` and the conveniences over `call.w`; a cancel does not end a file's
+  call. Found: a value block that does not come out was refused where Lyric 5 takes it; it is `never` now.
+  `import std.fs` costs +197 ms cold (Debug), it loads `std.io`.
+- Next: **S7g5** — `std.fs`, directories. S7g is cut in six, see 14.
 
 ## Working mode
 

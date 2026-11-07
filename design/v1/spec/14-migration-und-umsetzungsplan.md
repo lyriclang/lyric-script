@@ -2155,3 +2155,27 @@ wirkungslos, gestrichen), WC und WP (`1:a` normalisiert mit und ohne Volumen gle
 nur auf POSIX, dort gleichwertig. Eine Vorhersage war falsch: `stem("")` ist leer, nicht `.`; das Differential
 bestätigt das. Rot-Lauf: 13 von 14 rot gegen S7g2, `path_lives_in_its_module` grün, `join` war schon unbekannt.
 Fälle 721 → 735, Tests 366.
+
+**Ergebnis S7g4 (2026-11-07).** `std.fs` trägt `File` (`Reader`, `Writer`, `Seek`, `Closeable`), `OpenOptions`,
+`readText`, `readBytes`, `writeText`, `writeBytes`, `appendText`, `lines` und `exists`, alles in Script über sechs
+Natives (Format 40). `fs.open`, `read`, `write`, `seek` und `close` gehen über `call.w`, andere Tasks laufen also
+weiter. Ein Abbruch beendet einen Dateiaufruf nicht (Lyric 5 §Files Regel 5): `nativeCancels` ist jetzt von
+`nativeWaits` getrennt, ein Abbruch wirkt beim nächsten echten Warten. `File.close` führt keine eigene Prüfung: Lyric 5s
+`File` sagt `Closed`, die Antwortzahl trägt es. Die Kosten stehen vor dem Start fest (`aFilesCallsChargeBeforeTheyStart`,
+exakte Budgets). Der Runner kennt `//! in-temp-dir`.
+**Gefunden:** Ein Lambda, das in `using` plus `return`, in if/else aus Returns oder in einem `match` aus Block-Armen
+endete, wurde abgelehnt (SEM0017/SEM0001), ebenso `let x = if (c) { return 1 } else { 2 }`. Lyric 5 nimmt das alles
+(Gegenprobe). Ein Wertblock, der nicht herauskommt, ist jetzt `never` (§7 Regel 10); mein erster Patch an einer
+Sonderstelle ist dafür wieder raus.
+**Eine falsche Annahme:** VB (`nativeToItsEnd` aus) überlebte, ich hielt das für ein Zeitfenster. Tatsächlich weckt
+der Abbruch die Task, `call.w` läuft von vorn, und bei `open` fällt das nicht auf. Bei `read` geht ein Stück verloren.
+Der Fall `a_cancelled_task_finishes_its_file_call` bricht jetzt ab, während genau ein `read` läuft; VB liefert dort
+`fghij` statt `abcde`. Der Fall hängt nicht am Timing.
+Kaltstart, 20 Runden in Ruhe, Median CPU: `println(1)` unverändert 320 ms, `import std.fs { exists }` von 322 auf
+519, also +197, weil `std.fs` nun `std.io` lädt (Debug-Build). Auch wer nur `exists` braucht, zahlt das; gemessen wird
+am Ende von S7g noch einmal.
+Mutanten (27 über `std.fs`, 15 über die VM): getötet außer GA, GB, GC, wie vorhergesagt: ein ausgelassenes `close`
+sieht man unter Linux nicht. VK tötet der Konsolenfall `bytes_cut_while_a_read_waits`, `deliverBytes` ist derselbe Weg.
+Keinen Mutanten gibt es für ein fehlschlagendes `close` und für `writeAll` bei `k == 0`: Beides lässt sich von
+einem Skript aus nicht auslösen. Rot-Lauf gegen S7g3: 17 von 18 rot, grün nur `a_lambda_with_a_using_gives_its_value`,
+ein Ablehnungsfall, der vorher schon ablehnte. Fälle 735 → 753, Tests 367.

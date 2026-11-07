@@ -15439,7 +15439,13 @@ class Checker {
             out.push(this.stmt(s));
         }
         this.popScope();
-        return TExpr.Block(out.toArray(), boxE(value), typeOf(value));
+        let stmts = out.toArray();
+        // what never comes out of its statements gives no value: it is worth `never`, as in
+        // `let x = if (c) { return 1 } else { 2 }` and as the last arm of a lambda (S7g4)
+        if (typeOf(value) == .Void && leavesAll(stmts)) {
+            return TExpr.Block(stmts, boxE(value), Ty.Never);
+        }
+        return TExpr.Block(stmts, boxE(value), typeOf(value));
     }
 
     /// A value block whose statement `split` is a defer or a using: what stands before it, then

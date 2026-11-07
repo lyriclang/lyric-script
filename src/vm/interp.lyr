@@ -19,9 +19,9 @@ import std.collections { List, Map };
 import std.core { StringBuilder, UnicodeCategory };
 import std.core { arrayOf };
 import std.core { fstringFormatted, fstringPadded };
-import std.fs { exists };
+import std.fs { File, OpenOptions, exists };
 import std.hash { DefaultHasher };
-import std.io { IoError, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
+import std.io { IoError, SeekFrom, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
 import std.os { env };
 import std.path { separator as pathSeparator };
 import std.random { Random };
@@ -56,6 +56,7 @@ import lyric_script.vm.heap {
     ScriptIndex,
     ScriptBigInt,
     ScriptBytes,
+    ScriptFile,
     ScriptRandom,
     ScriptBuilder,
     ErrorRecord,
@@ -69,7 +70,7 @@ import lyric_script.vm.heap {
     sameRef,
 };
 import lyric_script.vm.descriptor { Interning, conforms };
-import lyric_script.vm.native { NativeFn, nativeOf };
+import lyric_script.vm.native { NativeFn, nativeCancels, nativeOf };
 
 /// How a run ended.
 pub enum Outcome {
@@ -202,6 +203,7 @@ class TaskState {
     // S6e: a native it waits for — the ticket of the one it waits for now, and what came
     var nativePending: bool = false,
     var nativeTicket: int = 0,
+    var nativeToItsEnd: bool = false,
     var nativeDone: bool = false,
     var nativeAnswer: ?WaitAnswer = null,
     // what an error that left the task threw, and its record: what `await` throws again
@@ -652,7 +654,7 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
         shared.queue.push(st);
     }
     // S6e: and a native's
-    if (st.nativePending) {
+    if (st.nativePending && !st.nativeToItsEnd) {
         st.nativePending = false;
         shared.pendingNatives -= 1;
         shared.queue.push(st);
@@ -822,9 +824,10 @@ fn callNative(
         }
         .ConsoleFlush => s[x] = consoleFlush(s[x] as int) as uint64,
         // the verifier keeps these to `call.w`
-        .ConsoleLine | .ConsoleRead => {
+        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose => {
             return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
         }
+        .FsFile => r[y] = ScriptFile { },
         .PathSeparator => r[y] = ScriptString { text = pathSeparator },
         .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
         .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
@@ -1834,6 +1837,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     // can read the field: that is no fault of the compiler's
                     if (recv is ScriptBigInt
                         || recv is ScriptBytes
+                        || recv is ScriptFile
                         || recv is ScriptRandom
                         || recv is ScriptBuilder
                         || recv is ScriptIndex) {
@@ -2796,8 +2800,9 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     pc += 1;
                     continue;
                 }
+                let waiting = nativeOf(a);
                 let own = t.handle;
-                if (own != null && own.cancelled) {
+                if (own != null && own.cancelled && nativeCancels(waiting)) {
                     if (br + f.refs + 1 > r.length()) {
                         r = growRefs(r, br + f.refs + 1);
                     }
@@ -2805,12 +2810,16 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     inject = true;
                     continue;
                 }
+                if (let fault = waitFault(waiting, r, br + c)) {
+                    return panicOut(module, frames, fi, pc, fault.code, fault.message);
+                }
                 // a wait the budget does not cover does not start: this call again on `resume`
-                let job = waitJob(nativeOf(a), r, br + c, shared);
+                let job = waitJob(waiting, s, r, bs + b, br + c, shared);
                 if (shared.budget == -2) {
                     return Outcome.Suspended;
                 }
                 t.nativePending = true;
+                t.nativeToItsEnd = !nativeCancels(waiting);
                 t.nativeTicket += 1;
                 let ticket = t.nativeTicket;
                 let st = t;
@@ -3690,13 +3699,52 @@ struct WaitAnswer {
 
 /// What `call.w` runs on a Lyric 5 task, charged here, before it starts: nothing the task does
 /// touches the script's values. The budget's end is the caller's to read.
-fn waitJob(which: NativeFn, r: HeapRef[], y: int, shared: RunShared): fn() -> WaitAnswer {
+fn waitJob(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    shared: RunShared
+): fn() -> WaitAnswer {
     match (which) {
         .ConsoleRead => {
-            let p = r[y];
-            let n = if (p is ScriptBytes) p.data.length() else 0;
+            let n = bytesAt(r[y]).length();
             charge(shared, bytesCost(n));
             return () => consoleRead(n);
+        }
+        .FsOpen => {
+            let handle = r[y];
+            let name = textOf(r[y + 1]);
+            let how = s[x] as int;
+            charge(shared, bytesCost(name.length()));
+            return () => fileOpen(handle, name, how);
+        }
+        .FsRead => {
+            let file = fileAt(r[y]);
+            let n = bytesAt(r[y + 1]).length();
+            charge(shared, bytesCost(n));
+            return () => fileRead(file, n);
+        }
+        .FsWrite => {
+            let file = fileAt(r[y]);
+            let data = bytesAt(r[y + 1]);
+            charge(shared, bytesCost(data.length()));
+            // another task may change the bytes meanwhile: these are the ones the call was handed
+            let from = data.toArray();
+            return () => fileWrite(file, from);
+        }
+        .FsSeek => {
+            let file = fileAt(r[y]);
+            let offset = s[x] as int;
+            let whence = s[x + 1] as int;
+            charge(shared, 1);
+            return () => fileSeek(file, offset, whence);
+        }
+        .FsClose => {
+            let file = fileAt(r[y]);
+            charge(shared, 1);
+            return () => fileClose(file);
         }
         _ => {
             charge(shared, 1);
@@ -3705,26 +3753,70 @@ fn waitJob(which: NativeFn, r: HeapRef[], y: int, shared: RunShared): fn() -> Wa
     }
 }
 
+/// What stops a native that waits before it starts: a field of the standard library's that holds
+/// something else, since a script can build a `File` or a `Bytes` of its own.
+fn waitFault(which: NativeFn, r: HeapRef[], y: int): ?NativeFault {
+    let bytesOnly = which == NativeFn.ConsoleRead;
+    let holdsFile = which == NativeFn.FsRead
+        || which == NativeFn.FsWrite
+        || which == NativeFn.FsSeek
+        || which == NativeFn.FsClose;
+    if (bytesOnly && !(r[y] is ScriptBytes)) {
+        return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
+    if (holdsFile) {
+        let o = r[y];
+        if (!(o is ScriptFile) || o.file == null) {
+            return bytesFault("LYS-RT0007", "a File's field holds no file");
+        }
+    }
+    if ((which == NativeFn.FsRead || which == NativeFn.FsWrite) && !(r[y + 1] is ScriptBytes)) {
+        return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
+    return null;
+}
+
+/// The bytes `waitFault` saw.
+fn bytesAt(o: HeapRef): List<uint8> {
+    if (o is ScriptBytes) {
+        return o.data;
+    }
+    unreachable("waitFault looked");
+}
+
+/// The file `waitFault` saw.
+fn fileAt(o: HeapRef): File {
+    if (o is ScriptFile) {
+        if (let f = o.file) {
+            return f;
+        }
+    }
+    unreachable("waitFault looked");
+}
+
+/// What a native read: copied to the script's bytes here, where it is not running on another
+/// task, and no more than they hold now: another task may have cut them meanwhile.
+fn deliverBytes(a: WaitAnswer, o: HeapRef): int {
+    let bytes = a.bytes;
+    if (!(o is ScriptBytes) || bytes == null) {
+        return a.n;
+    }
+    let n = if (a.n > o.data.length()) o.data.length() else a.n;
+    var k = 0;
+    while (k < n) {
+        o.data[k] = bytes[k];
+        k += 1;
+    }
+    return n;
+}
+
 /// Puts what a native that waits brought where the script sees it: the number at the scalar base,
 /// and what goes with it into the object at the reference base, which the script's task kept.
 fn takeAnswer(which: NativeFn, a: WaitAnswer, s: uint64[], r: HeapRef[], x: int, y: int): void {
     var n = a.n;
     match (which) {
-        .ConsoleRead => {
-            let p = r[y];
-            let bytes = a.bytes;
-            if (p is ScriptBytes && bytes != null) {
-                // another task may have cut the bytes meanwhile
-                if (n > p.data.length()) {
-                    n = p.data.length();
-                }
-                var k = 0;
-                while (k < n) {
-                    p.data[k] = bytes[k];
-                    k += 1;
-                }
-            }
-        }
+        .ConsoleRead => n = deliverBytes(a, r[y]),
+        .FsRead => n = deliverBytes(a, r[y + 1]),
         _ => {
             let o = r[y];
             let text = a.text;
@@ -3754,6 +3846,50 @@ fn consoleRead(n: int): WaitAnswer {
         return WaitAnswer { n = failureCode(e) };
     };
     return WaitAnswer { n = got, bytes = into };
+}
+
+/// Opens the path as the bits say, `File.openWith`'s options; what they refuse, the script refused.
+fn fileOpen(handle: HeapRef, name: string, how: int): WaitAnswer {
+    let options = OpenOptions {
+        read = how & 1 != 0,
+        write = how & 2 != 0,
+        append = how & 4 != 0,
+        create = how & 8 != 0,
+        truncate = how & 16 != 0,
+    };
+    let file = try File.openWith(name, options) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    if (handle is ScriptFile) {
+        handle.file = file;
+    }
+    return WaitAnswer { n = 0 };
+}
+
+/// Up to `n` bytes of a file, into an array of their own.
+fn fileRead(file: File, n: int): WaitAnswer {
+    let into = [0 as uint8] * n;
+    let got = try file.read(into) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = got, bytes = into };
+}
+
+fn fileWrite(file: File, from: uint8[]): WaitAnswer {
+    return WaitAnswer { n = try file.write(from) catch (e: IoError) failureCode(e) };
+}
+
+fn fileSeek(file: File, offset: int, whence: int): WaitAnswer {
+    let to = if (whence == 0) SeekFrom.Start(offset)
+        else if (whence == 1) SeekFrom.Current(offset) else SeekFrom.End(offset);
+    return WaitAnswer { n = try file.seek(to) catch (e: IoError) failureCode(e) };
+}
+
+fn fileClose(file: File): WaitAnswer {
+    try file.close() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = 0 };
 }
 
 fn consolePut(stream: int, data: List<uint8>): int {

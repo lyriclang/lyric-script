@@ -1,6 +1,7 @@
 // The interpreter: hand-written programs run to their results; overflow, division by zero, null,
 // a too deep recursion and `panic` end as the script's panics with their codes and frames; the
 // fuel stops a loop deterministically.
+import std.fs { readBytes, remove, tempFile, writeBytes };
 import std.test { assertEq, assertTrue };
 import lyric_script.vm.asm { assemble };
 import lyric_script.vm.heap { ScriptString };
@@ -162,6 +163,48 @@ fn aNativeThatWaitsDoesNotStartWithoutItsBudget(): void {
     // a write to the console too: charged by its bytes, and none of them written
     let put = bytesProgram("load.i s1, 1\n        call.n console.put, s1, r0");
     assertTrue(suspended(runText(put, "p", [3200], made + 100)));
+}
+
+/// The handle in r0, the file open as `how` says, the 3200 bytes in r1, then `op`.
+fn fileProgram(path: string, how: int, op: string): string {
+    return f"""
+    fn p(s) -> s regs 4 3
+        call.n bytes.new, s0, r2
+        call.n fs.file, s1, r0
+        load.str r1, "{path}"
+        load.i s1, {how}
+        call.w fs.open, s1, r0
+        move.r r1, r2
+        {op}
+        load.i s0, 7
+        ret.s s0
+    end
+    """;
+}
+
+fn fileCosts(path: string, how: int, op: string, cost: int): void {
+    let text = fileProgram(path, how, op);
+    let before = 1 + 3200 / 32 + 1 + path.length() / 32;
+    assertEq(scalar(runText(text, "p", [3200], before + cost)), 7);
+    assertTrue(suspended(runText(text, "p", [3200], before + cost - 1)));
+}
+
+@Test
+fn aFilesCallsChargeBeforeTheyStart(): void {
+    let path = try! tempFile();
+    defer {
+        try! remove(path);
+    }
+    try! writeBytes(path, [0 as uint8] * 3200);
+    let walk = 1 + 3200 / 32;
+    fileCosts(path, 1, "", 0);
+    fileCosts(path, 1, "call.w fs.read, s1, r0", walk);
+    fileCosts(path, 2, "call.w fs.write, s1, r0", walk);
+    fileCosts(path, 1, "load.i s1, 0\n        load.i s2, 0\n        call.w fs.seek, s1, r0", 1);
+    fileCosts(path, 1, "call.w fs.close, s1, r0", 1);
+    // what the budget does not cover has not happened: the bytes are still there
+    assertTrue(suspended(runText(fileProgram(path, 2, "call.w fs.write, s1, r0"), "p", [3200], 1)));
+    assertEq((try! readBytes(path)).length(), 3200);
 }
 
 @Test

@@ -375,7 +375,11 @@ VM's call path, S7k measurement point 3.
 - **S7g4 done** — `std.fs`: `File`, `OpenOptions` and the conveniences over `call.w`; a cancel does not end a file's
   call. Found: a value block that does not come out was refused where Lyric 5 takes it; it is `never` now.
   `import std.fs` costs +197 ms cold (Debug), it loads `std.io`.
-- Next: **S7g5** — `std.fs`, directories. S7g is cut in six, see 14.
+- **S7g5 done** — `std.fs`: directories, metadata, `walk`, `copy`, temporary places (format 41). A call on a generic's
+  type parameter now throws what its argument's member throws, resolved per call: `s.startsWith("a")` under a written
+  `throws` was refused (§6 rule 5). The Windows failure of S7g4 was a test's: a path unescaped in assembler text.
+  `import std.fs` cold 521 → 694 ms. 774 cases, 368 tests; see 14.
+- Next: **S7g6** — `fs.glob`. S7g is cut in six, see 14.
 
 ## Working mode
 
@@ -446,4 +450,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P34 | **An operation dearer than one `resume` gives never gets through.** A native stops before it works, so a loop of `resume` with a small grant repeats the stop forever. S8 has to say what happens: the grant accumulates, or the host gets told how much the call asks. | S7f4 |
 | P35 | **`std.random.system` is a module Lyric 5 does not have.** Rights hang on a module, and 01 S8 wants the seeded generator free and the system's behind `os`, so the free `nextInRange`, `nextFloat`, `shuffle` and `Random.fresh()` left `std.random` for it: code moved from Lyric 5 changes an import, and `fresh` is a free function there. The alternative is rights per member, which 01 S1 does not have. I'd keep it. |
 | P36 | **Nothing makes a `match` over `IoErrorKind` write its `_`.** Lyric 5 marks the enum `@NonExhaustive`, Script has no such mark, so a `match` that names every kind today breaks when a release adds one, and §12 rule 19 only says so. A general mark is a language feature 01 does not have, for one enum so far; I'd leave it, and add the mark if a second enum needs it. |
+| P37 | **An iterator's default member stays "throws anything" under a written `throws`.** `s.split("/").count()` goes through `this.next()` over all implementations of `Iterator`, one of which is a function value's, so a function that writes `throws IoError` must catch it. Per-call sets (S7g5) settle a type parameter's member, not `this` in a default member. Fix when a real program trips on it, or carry `this`'s type through the default's set the same way; the cost is more `Through` entries in every checker run. |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

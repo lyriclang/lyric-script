@@ -1,7 +1,8 @@
 // The interpreter: hand-written programs run to their results; overflow, division by zero, null,
 // a too deep recursion and `panic` end as the script's panics with their codes and frames; the
 // fuel stops a loop deterministically.
-import std.fs { readBytes, remove, tempFile, writeBytes };
+import std.fs { exists, readBytes, remove, removeAll, tempDir, tempFile, writeBytes };
+import std.path { join };
 import std.test { assertEq, assertTrue };
 import lyric_script.vm.asm { assemble };
 import lyric_script.vm.heap { ScriptString };
@@ -166,12 +167,17 @@ fn aNativeThatWaitsDoesNotStartWithoutItsBudget(): void {
 }
 
 /// The handle in r0, the file open as `how` says, the 3200 bytes in r1, then `op`.
+/// A path as the assembler's text says it: Windows' separators are escapes there.
+fn inAsm(path: string): string {
+    return path.replace("\\", "\\\\");
+}
+
 fn fileProgram(path: string, how: int, op: string): string {
     return f"""
     fn p(s) -> s regs 4 3
         call.n bytes.new, s0, r2
         call.n fs.file, s1, r0
-        load.str r1, "{path}"
+        load.str r1, "{inAsm(path)}"
         load.i s1, {how}
         call.w fs.open, s1, r0
         move.r r1, r2
@@ -205,6 +211,56 @@ fn aFilesCallsChargeBeforeTheyStart(): void {
     // what the budget does not cover has not happened: the bytes are still there
     assertTrue(suspended(runText(fileProgram(path, 2, "call.w fs.write, s1, r0"), "p", [3200], 1)));
     assertEq((try! readBytes(path)).length(), 3200);
+}
+
+/// `op` with a handle's place in r0, the path in r1 and r2, in a program that answers 7.
+fn dirProgram(path: string, op: string): string {
+    return f"""
+    fn p(s) -> s regs 4 5
+        load.str r1, "{inAsm(path)}"
+        load.str r2, "{inAsm(path)}"
+        {op}
+        load.i s0, 7
+        ret.s s0
+    end
+    """;
+}
+
+fn dirCosts(path: string, op: string, cost: int): void {
+    let text = dirProgram(path, op);
+    assertEq(scalar(runText(text, "p", [0], cost)), 7, op);
+    assertTrue(suspended(runText(text, "p", [0], cost - 1)), op);
+}
+
+@Test
+fn whatAPathNamesIsChargedBeforeItIsAsked(): void {
+    // no such path: the call fails, what counts is what it took first
+    let long = "x" * 3200;
+    let one = 1 + 3200 / 32;
+    dirCosts(long, "call.w fs.metadata, s1, r1", one);
+    dirCosts(long, "call.w fs.createDir, s1, r1", one);
+    dirCosts(long, "call.w fs.remove, s1, r1", one);
+    dirCosts(long, "call.w fs.removeDir, s1, r1", one);
+    dirCosts(long, "call.w fs.rename, s1, r1", 2 * one);
+    dirCosts(long, "call.w fs.canonicalize, s1, r0", one);
+    dirCosts(long, "call.w fs.absolute, s1, r0", one);
+    dirCosts(long, "call.n fs.dir, s1, r0\n        call.w fs.dirOpen, s1, r0", one);
+    // a place is made once it is paid: without the budget, none is
+    assertTrue(suspended(runText(dirProgram("x", "call.w fs.tempDir, s1, r0"), "p", [0], 0)));
+    assertTrue(suspended(runText(dirProgram("x", "call.w fs.tempFile, s1, r0"), "p", [0], 0)));
+    // what the budget does not cover has not happened
+    let t = try! tempDir();
+    defer {
+        try! removeAll(t);
+    }
+    let made = join(t, "made");
+    assertTrue(suspended(runText(dirProgram(made, "call.w fs.createDir, s1, r1"), "p", [0], 1)));
+    assertTrue(!exists(made));
+    // a directory's entry costs one, and letting it go
+    let open = f"call.n fs.dir, s1, r0\n        call.w fs.dirOpen, s1, r0\n        ";
+    let opened = 1 + t.length() / 32;
+    dirCosts(t, open + "move.r r4, r0\n        call.w fs.dirNext, s1, r3", opened + 1);
+    dirCosts(t, open + "call.w fs.dirClose, s1, r0", opened + 1);
 }
 
 @Test

@@ -2179,3 +2179,28 @@ sieht man unter Linux nicht. VK tötet der Konsolenfall `bytes_cut_while_a_read_
 Keinen Mutanten gibt es für ein fehlschlagendes `close` und für `writeAll` bei `k == 0`: Beides lässt sich von
 einem Skript aus nicht auslösen. Rot-Lauf gegen S7g3: 17 von 18 rot, grün nur `a_lambda_with_a_using_gives_its_value`,
 ein Ablehnungsfall, der vorher schon ablehnte. Fälle 735 → 753, Tests 367.
+
+**S7g5 fertig:** Verzeichnisse in `std.fs`: `metadata`, `createDir`, `remove`, `removeDir`, `rename`, `canonicalize`,
+`absolute`, `readDir` mit `DirEntry`, `createDirAll`, `removeAll`, `copy`, `walk`, `tempDir`, `tempFile`, in Script über
+zwölf neue Natives (Format 41). `fs.exists` wird zu `metadata`, die Antwort trägt Größe und vier Bits in einer Zahl.
+`Metadata.modified` kommt mit `std.time` in S7h. Der Runner kennt `//! symlink:`; wo das System keine Links zulässt,
+meldet er eine NOTE und der Fall gilt als bestanden.
+**Gefunden, in der Sprache:** `s.startsWith("a")` unter einem geschriebenen `throws IoError` wurde abgelehnt (SEM0034).
+Ein Aufruf auf `P :: [Pattern]` vereinte die Mengen aller Implementierungen, auch die des Funktionswerts, der alles
+werfen darf. Jetzt merkt sich die Wurfmenge eines Generischen je Aufruf das offene Mitglied (`Through`), und
+`substituted` löst es am Aufrufer über die Bindung auf; außerhalb eines Generischen gilt die Vereinigung über alle
+Implementierungen (§6 Regel 5). Fünf neue Fälle in `06-errors`. Bleibt konservativ, siehe P37:
+`s.split("/").count()` unter einem geschriebenen `throws` gilt weiter als „wirft alles“.
+**Gefunden, in den Tests:** `aFilesCallsChargeBeforeTheyStart` aus S7g4 war nur auf Windows rot: Der Pfad stand
+ungeschützt im Assemblertext, seine Backslashes waren dort Escapes. Lokal nachgestellt mit einem Backslash in `TMPDIR`:
+vor der Korrektur beide Budgettests rot, danach alle grün. Der Windows-Lauf von S7g4 endete am Teststep, seine Fälle
+liefen dort also noch nicht.
+Kaltstart, 20 Runden in Ruhe, Median CPU: `println(1)` 323 → 322 ms, `import std.fs { exists }` 521 → 694, also +173
+(vorhergesagt: etwa 650, 44 ms zu wenig), Debug-Build. Das Modul trägt jetzt viel, und jeder Import zahlt alles.
+Mutanten (40 über `std.fs`, 20 über VM und Checker): Überlebt haben wie vorhergesagt HE und JM (ein schreibgeschützter
+Pfad lässt sich im Fall nicht verlässlich machen), HM (`absolute` scheitert nur ohne Arbeitsverzeichnis), IQ (die
+Antwort ist nie 0, außer bei „weder noch“ der Größe 0), XA–XD (Rennen, Windows, ein ausgelassenes `close`), JV und JW
+(Lockerungen, die sich mit einem einzigen Typparameter nicht zeigen). Rot-Lauf gegen S7g4: 17 von 21 rot, grün die vier
+Ablehnungsfälle, die vorher schon ablehnten. Fälle 753 → 774, Tests 368. Ein Verzeichnisname, der kein UTF-8 ist, wird
+zu einem `IoError` ohne den inneren `Utf8Error` (`dirNext`); ein Skript kann so einen Namen nicht selbst anlegen, also
+gibt es dafür keinen Fall.

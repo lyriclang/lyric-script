@@ -2,7 +2,8 @@
 //! on a task of the host: the other tasks go on, and in a cancelled task it runs to its end, so that it
 //! declares `IoError` alone, as the conveniences do (12 rule 22).
 
-import std.io { Reader, Seek, SeekFrom, TextReader, Writer }
+import std.io { Reader, Seek, SeekFrom, TextReader, Writer, copy as copyAll }
+import std.path { join, parent }
 
 private fn fileNew(): Any = __fs_file()
 private fn fileOpen(how: int, file: Any, path: string): int = __fs_open(how, file, path)
@@ -11,8 +12,22 @@ private fn fileWrite(file: Any, from: Any): int = __fs_write(file, from)
 private fn fileSeek(offset: int, whence: int, file: Any): int = __fs_seek(offset, whence, file)
 private fn fileClose(file: Any): int = __fs_close(file)
 
-/// Whether something — a file, a folder — is at `path`.
-fn exists(path: string): bool = __fs_exists(path)
+private fn pathLook(path: string): int = __fs_metadata(path)
+private fn pathMakeDir(path: string): int = __fs_createDir(path)
+private fn pathRemove(path: string): int = __fs_remove(path)
+private fn pathRemoveDir(path: string): int = __fs_removeDir(path)
+private fn pathRename(from: string, to: string): int = __fs_rename(from, to)
+private fn pathResolve(holder: string[], path: string): int = __fs_canonicalize(holder, path)
+private fn pathAbsolute(holder: string[], path: string): int = __fs_absolute(holder, path)
+private fn newTempDir(holder: string[]): int = __fs_tempDir(holder)
+private fn newTempFile(holder: string[]): int = __fs_tempFile(holder)
+private fn dirNew(): Any = __fs_dir()
+private fn dirOpen(dir: Any, path: string): int = __fs_dirOpen(dir, path)
+private fn dirNext(holder: string[], dir: Any): int = __fs_dirNext(holder, dir)
+private fn dirClose(dir: Any): int = __fs_dirClose(dir)
+
+/// Whether a path names anything: `false` where `metadata` would throw.
+fn exists(path: string): bool = pathLook(path) >= 0
 
 /// How a file is opened: to read, to write, to append at its end, created where it is not there, cut to
 /// nothing where it is. `File.openWith` refuses with `InvalidInput` a file opened neither to read nor to
@@ -248,4 +263,367 @@ class FileLinesIter :: [Iterator, Closeable] {
     fn close(): void throws IoError {
         this.file.close()
     }
+}
+
+/// What a path names, through links: its size in bytes, whether it is a file or a directory — neither,
+/// for a device or a socket —, whether it cannot be written; and whether the path itself is a link.
+struct Metadata {
+    size: int
+    isFile: bool
+    isDir: bool
+    isSymlink: bool
+    readonly: bool
+}
+
+/// The metadata of the answer of `pathLook`, which is no failure.
+private fn metadataOf(n: int): Metadata {
+    return Metadata {
+        size = n >> 4,
+        isFile = n & 1 != 0,
+        isDir = n & 2 != 0,
+        isSymlink = n & 4 != 0,
+        readonly = n & 8 != 0,
+    }
+}
+
+/// What `path` names, through links; a link that leads nowhere is not found.
+fn metadata(path: string): Metadata throws IoError {
+    let n = pathLook(path)
+    if (n < 0) {
+        throw __ioFailure(n, path, "looked at")
+    }
+    return metadataOf(n)
+}
+
+/// Makes the directory `path` in one that is there.
+fn createDir(path: string): void throws IoError {
+    let n = pathMakeDir(path)
+    if (n < 0) {
+        throw __ioFailure(n, path, "made")
+    }
+}
+
+/// Removes the file `path`.
+fn remove(path: string): void throws IoError {
+    let n = pathRemove(path)
+    if (n < 0) {
+        throw __ioFailure(n, path, "removed")
+    }
+}
+
+/// Removes the directory `path`, which must be empty; one that is not is `Other` with the system's code.
+fn removeDir(path: string): void throws IoError {
+    let n = pathRemoveDir(path)
+    if (n < 0) {
+        throw __ioFailure(n, path, "removed")
+    }
+}
+
+/// Renames `from` to `to` on one file system, replacing a file there.
+fn rename(from: string, to: string): void throws IoError {
+    let n = pathRename(from, to)
+    if (n < 0) {
+        throw __ioFailure(n, from, f"renamed to {to}")
+    }
+}
+
+/// `path` absolute, its links resolved and its `.` and `..` taken out; it must be there.
+fn canonicalize(path: string): string throws IoError {
+    let holder = [""]
+    let n = pathResolve(holder, path)
+    if (n < 0) {
+        throw __ioFailure(n, path, "resolved")
+    }
+    return holder[0]
+}
+
+/// `path` made absolute by the working directory and normalized; nothing more is asked of the file system.
+fn absolute(path: string): string throws IoError {
+    let holder = [""]
+    let n = pathAbsolute(holder, path)
+    if (n < 0) {
+        throw __ioFailure(n, path, "made absolute")
+    }
+    return holder[0]
+}
+
+/// An entry of a directory: its name, its path, the directory's joined with the name, and what the entry
+/// is itself, a link not followed.
+struct DirEntry {
+    name: string
+    path: string
+    isFile: bool
+    isDir: bool
+    isSymlink: bool
+
+    /// What the entry names, following a link, as the module's `metadata` does.
+    fn metadata(): Metadata throws IoError {
+        let n = pathLook(this.path)
+        if (n < 0) {
+            throw __ioFailure(n, this.path, "looked at")
+        }
+        return metadataOf(n)
+    }
+}
+
+/// The entries of the directory `path`, in the system's order, without `.` and `..`. The iterator lets the
+/// directory go at its end and at an error; a `for` that leaves it early lets it go, and so does `close()`.
+fn readDir(path: string): ReadDirIter throws IoError {
+    let handle = dirNew()
+    let n = dirOpen(handle, path)
+    if (n < 0) {
+        throw __ioFailure(n, path, "opened to read")
+    }
+    return ReadDirIter { handle = handle, dir = path }
+}
+
+/// A directory's entries, from `readDir`. After its end or an error it gives no more; after `close()` a
+/// call throws `Closed`.
+class ReadDirIter :: [Iterator, Closeable] {
+    type Item = DirEntry
+    handle: Any
+    dir: string
+
+    /// The next entry, `null` at the end.
+    fn next(): ?DirEntry throws IoError {
+        let holder = [""]
+        let n = dirNext(holder, this.handle)
+        if (n < 0) {
+            throw __ioFailure(n, this.dir, holder[0])
+        }
+        if (n == 0) {
+            return null
+        }
+        return DirEntry {
+            name = holder[0],
+            path = join(this.dir, holder[0]),
+            isFile = n == 1,
+            isDir = n == 2,
+            isSymlink = n == 3,
+        }
+    }
+
+    /// Lets the directory go before the end. A second close does nothing.
+    fn close(): void throws IoError {
+        let n = dirClose(this.handle)
+        if (n < 0) {
+            throw __ioFailure(n, this.dir, "closed")
+        }
+    }
+}
+
+/// What `name` names, `null` where nothing is there; any other error is thrown.
+private fn lookOrNothing(name: string): ?Metadata throws IoError {
+    let n = pathLook(name)
+    if (n >= 0) {
+        return metadataOf(n)
+    }
+    let e = __ioFailure(n, name, "looked at")
+    if (e.kind == IoErrorKind.NotFound) {
+        return null
+    }
+    throw e
+}
+
+/// Makes the directory and every one above it that is not there. A directory there already is nothing to
+/// do; something else there is `NotDirectory`.
+fn createDirAll(path: string): void throws IoError {
+    if (let m = lookOrNothing(path)) {
+        if (m.isDir) {
+            return
+        }
+        throw IoError { kind = IoErrorKind.NotDirectory, path = path, detail = "made" }
+    }
+    let up = parent(path)
+    if (up != path && up != ".") {
+        createDirAll(up)
+    }
+    let n = pathMakeDir(path)
+    if (n < 0) {
+        let e = __ioFailure(n, path, "made")
+        // made meanwhile by another: done, where it is a directory
+        if (e.kind == IoErrorKind.AlreadyExists) {
+            if (let m = lookOrNothing(path)) {
+                if (m.isDir) {
+                    return
+                }
+            }
+        }
+        throw e
+    }
+}
+
+/// Removes `path` and all that is in it: a link is removed, never followed into, and nothing there is
+/// nothing to do. It removes what it can and throws the first error it met.
+fn removeAll(path: string): void throws IoError {
+    let n = pathLook(path)
+    if (n >= 0) {
+        let m = metadataOf(n)
+        if (let e = takeAway(path, m.isDir && !m.isSymlink, m.isSymlink)) {
+            throw e
+        }
+        return
+    }
+    // nothing there, a link that leads nowhere, or one that leads to itself: what the path names itself
+    // the system alone can say, and removing it asks
+    let answer = pathRemove(path)
+    if (answer < 0) {
+        let e = __ioFailure(answer, path, "removed")
+        if (e.kind != IoErrorKind.NotFound) {
+            throw e
+        }
+    }
+}
+
+/// Removes `name`, a directory with everything in it, and answers the first error met.
+private fn takeAway(name: string, isDir: bool, isLink: bool): ?IoError {
+    if (!isDir) {
+        let n = pathRemove(name)
+        if (n >= 0) {
+            return null
+        }
+        // a link to a directory is a directory to Windows' DeleteFileW
+        if (isLink && pathRemoveDir(name) >= 0) {
+            return null
+        }
+        return __ioFailure(n, name, "removed")
+    }
+    var first: ?IoError = null
+    let entries: DirEntry[] = []
+    try {
+        for (e in readDir(name)) {
+            entries.push(e)
+        }
+    } catch (e: IoError) {
+        first = e
+    }
+    for (e in entries) {
+        let error = takeAway(e.path, e.isDir, e.isSymlink)
+        if (first == null) {
+            first = error
+        }
+    }
+    let n = pathRemoveDir(name)
+    if (n < 0 && first == null) {
+        first = __ioFailure(n, name, "removed")
+    }
+    return first
+}
+
+/// Copies the bytes of the file `from` to the file `to`, made or cut as `File.create` makes it, and
+/// answers how many. From a directory it is `IsDirectory`, from anything else that is no file and onto
+/// itself `InvalidInput`, before anything is written.
+fn copy(from: string, to: string): int throws IoError {
+    let what = metadata(from)
+    if (!what.isFile) {
+        throw IoError {
+            kind = if (what.isDir) IoErrorKind.IsDirectory else IoErrorKind.InvalidInput,
+            path = from,
+            detail = "copied: no file",
+        }
+    }
+    if (exists(to) && canonicalize(from) == canonicalize(to)) {
+        throw IoError { kind = IoErrorKind.InvalidInput, path = from, detail = f"copied onto itself, {to}" }
+    }
+    using let r = File.open(from)
+    using let w = File.create(to)
+    try {
+        return copyAll(r, w)
+    } catch (e: Cancelled) {
+        unreachable("a file's call is not cancelled")
+    }
+}
+
+/// The entries under `path`, not `path` itself: depth first, a directory before what is in it, each
+/// directory's entries in the byte order of their names, links not followed. Each directory is read whole
+/// and let go, so the walk holds nothing open; an error ends it.
+fn walk(path: string): WalkIter throws IoError {
+    let it = WalkIter { frames = [] }
+    it.enter(path)
+    return it
+}
+
+/// The entries under a directory, from `walk`. After its end or an error it gives no more.
+class WalkIter :: [Iterator] {
+    type Item = DirEntry
+    frames: WalkFrame[]
+    var below: ?string = null
+    var done: bool = false
+
+    /// The next entry, `null` at the end.
+    fn next(): ?DirEntry throws IoError {
+        if (this.done) {
+            return null
+        }
+        // the directory given last is entered now: what reading it throws comes after its entry
+        if (let dir = this.below) {
+            this.below = null
+            try {
+                this.enter(dir)
+            } catch (e: IoError) {
+                this.done = true
+                throw e
+            }
+        }
+        loop {
+            if (this.frames.isEmpty()) {
+                this.done = true
+                return null
+            }
+            let frame = this.frames[this.frames.length() - 1]
+            if (frame.at == frame.entries.length()) {
+                this.frames.pop()
+                continue
+            }
+            let e = frame.entries[frame.at]
+            frame.at += 1
+            if (e.isDir) {
+                this.below = e.path
+            }
+            return e
+        }
+    }
+
+    /// Reads the entries of `dir`, sorted by name, as the walk's next to give.
+    private fn enter(dir: string): void throws IoError {
+        let entries: DirEntry[] = []
+        for (e in readDir(dir)) {
+            entries.push(e)
+        }
+        // a function value may throw anything to the checker: this one does not
+        try {
+            entries.sortByKey((e) => e.name)
+        } catch (e: Error) {
+            unreachable("a name throws nothing")
+        }
+        this.frames.push(WalkFrame { entries = entries })
+    }
+}
+
+/// A directory of a walk: its entries, and how many were given.
+private class WalkFrame {
+    entries: DirEntry[]
+    var at: int = 0
+}
+
+/// Makes a new directory under the system's directory for temporary files and answers its path. Nothing
+/// removes it but `removeAll`.
+fn tempDir(): string throws IoError {
+    let holder = [""]
+    let n = newTempDir(holder)
+    if (n < 0) {
+        throw __ioFailure(n, holder[0], "made")
+    }
+    return holder[0]
+}
+
+/// Makes a new empty file under the system's directory for temporary files and answers its path. Nothing
+/// removes it but `remove`.
+fn tempFile(): string throws IoError {
+    let holder = [""]
+    let n = newTempFile(holder)
+    if (n < 0) {
+        throw __ioFailure(n, holder[0], "made")
+    }
+    return holder[0]
 }

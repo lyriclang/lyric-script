@@ -26,8 +26,9 @@ enum NativeFn :: [Equatable] {
     TraceText,
     /// `std.os.env(name)`: the environment variable's value, `null` where it is not set.
     OsEnv,
-    /// `std.fs.exists(path)`: whether something is at the path.
-    FsExists,
+    /// What a path names (S7g5), through links, as `FsOpen` waits: `size << 4`, and the bits 1 a file,
+    /// 2 a directory, 4 a link itself, 8 cannot be written; a failure as `FsOpen`'s.
+    FsMetadata,
     /// A `float`'s place in IEEE 754's total order as an `int` (S7c5b): -NaN, -infinity, …, -0.0,
     /// 0.0, …, infinity, NaN, compared as integers.
     FloatOrderKey,
@@ -169,6 +170,24 @@ enum NativeFn :: [Equatable] {
     FsWrite,
     FsSeek,
     FsClose,
+    /// What a path names is done something to (S7g5); these wait as `FsOpen`, 0 or a failure.
+    FsCreateDir,
+    FsRemove,
+    FsRemoveDir,
+    FsRename,
+    /// The holder's first place takes a path made (S7g5): the path resolved, made absolute, a new
+    /// directory, a new file.
+    FsCanonicalize,
+    FsAbsolute,
+    FsTempDir,
+    FsTempFile,
+    /// A directory (S7g5), as `FsFile`: a handle not yet on anything, then opened at a path. Its next
+    /// entry is 1 a file, 2 a directory, 3 a link, 4 neither, 0 at the end, the name or a failure's detail
+    /// in the holder's first place.
+    FsDir,
+    FsDirOpen,
+    FsDirNext,
+    FsDirClose,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -182,7 +201,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 118;
+let nativeCount: int = 130;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -198,7 +217,7 @@ fn nativeOf(n: int): NativeFn {
         8 => NativeFn.StrCmp,
         9 => NativeFn.TraceText,
         10 => NativeFn.OsEnv,
-        11 => NativeFn.FsExists,
+        11 => NativeFn.FsMetadata,
         12 => NativeFn.FloatOrderKey,
         13 => NativeFn.ListSortInts,
         14 => NativeFn.ListSortFloats,
@@ -304,7 +323,19 @@ fn nativeOf(n: int): NativeFn {
         114 => NativeFn.FsRead,
         115 => NativeFn.FsWrite,
         116 => NativeFn.FsSeek,
-        _ => NativeFn.FsClose,
+        117 => NativeFn.FsClose,
+        118 => NativeFn.FsCreateDir,
+        119 => NativeFn.FsRemove,
+        120 => NativeFn.FsRemoveDir,
+        121 => NativeFn.FsRename,
+        122 => NativeFn.FsCanonicalize,
+        123 => NativeFn.FsAbsolute,
+        124 => NativeFn.FsTempDir,
+        125 => NativeFn.FsTempFile,
+        126 => NativeFn.FsDir,
+        127 => NativeFn.FsDirOpen,
+        128 => NativeFn.FsDirNext,
+        _ => NativeFn.FsDirClose,
     };
 }
 
@@ -322,7 +353,7 @@ fn nativeNumber(n: NativeFn): int {
         .StrCmp => 8,
         .TraceText => 9,
         .OsEnv => 10,
-        .FsExists => 11,
+        .FsMetadata => 11,
         .FloatOrderKey => 12,
         .ListSortInts => 13,
         .ListSortFloats => 14,
@@ -429,6 +460,18 @@ fn nativeNumber(n: NativeFn): int {
         .FsWrite => 115,
         .FsSeek => 116,
         .FsClose => 117,
+        .FsCreateDir => 118,
+        .FsRemove => 119,
+        .FsRemoveDir => 120,
+        .FsRename => 121,
+        .FsCanonicalize => 122,
+        .FsAbsolute => 123,
+        .FsTempDir => 124,
+        .FsTempFile => 125,
+        .FsDir => 126,
+        .FsDirOpen => 127,
+        .FsDirNext => 128,
+        .FsDirClose => 129,
     };
 }
 
@@ -445,7 +488,7 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .StrCmp => sig("string.cmp", 0, 2, true, false),
         .TraceText => sig("error.trace", 0, 1, false, true),
         .OsEnv => sig("os.env", 0, 1, false, true),
-        .FsExists => sig("fs.exists", 0, 1, true, false),
+        .FsMetadata => sig("fs.metadata", 0, 1, true, false),
         .FloatOrderKey => sig("float.orderKey", 1, 0, true, false),
         .ListSortInts => sig("list.sortInts", 0, 1, false, false),
         .ListSortFloats => sig("list.sortFloats", 0, 1, false, false),
@@ -552,6 +595,18 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .FsWrite => sig("fs.write", 0, 2, true, false),
         .FsSeek => sig("fs.seek", 2, 1, true, false),
         .FsClose => sig("fs.close", 0, 1, true, false),
+        .FsCreateDir => sig("fs.createDir", 0, 1, true, false),
+        .FsRemove => sig("fs.remove", 0, 1, true, false),
+        .FsRemoveDir => sig("fs.removeDir", 0, 1, true, false),
+        .FsRename => sig("fs.rename", 0, 2, true, false),
+        .FsCanonicalize => sig("fs.canonicalize", 0, 2, true, false),
+        .FsAbsolute => sig("fs.absolute", 0, 2, true, false),
+        .FsTempDir => sig("fs.tempDir", 0, 1, true, false),
+        .FsTempFile => sig("fs.tempFile", 0, 1, true, false),
+        .FsDir => sig("fs.dir", 0, 0, false, true),
+        .FsDirOpen => sig("fs.dirOpen", 0, 2, true, false),
+        .FsDirNext => sig("fs.dirNext", 0, 2, true, false),
+        .FsDirClose => sig("fs.dirClose", 0, 1, true, false),
     };
 }
 
@@ -559,7 +614,11 @@ fn nativeInfo(n: NativeFn): NativeInfo {
 /// called by `call.w`; every other by `call.n`.
 fn nativeWaits(n: NativeFn): bool {
     return match (n) {
-        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose => true,
+        .ConsoleLine | .ConsoleRead => true,
+        .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose => true,
+        .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename => true,
+        .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile => true,
+        .FsDirOpen | .FsDirNext | .FsDirClose => true,
         _ => false,
     };
 }

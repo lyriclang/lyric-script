@@ -1463,7 +1463,11 @@ class Checker {
             this.functions.toArray(),
             ei,
             this.typeIndex.get("Cancelled") ?? -1,
-            this.typeIndex.get("ChannelClosed") ?? -1
+            this.typeIndex.get("ChannelClosed") ?? -1,
+            (t: Ty) => match (t) {
+                .Named(i) => i,
+                _ => this.builtinOf(t),
+            }
         );
         sets.infer();
         // a match over a clause's set covers the set (05 K7)

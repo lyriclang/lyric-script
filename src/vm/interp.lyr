@@ -19,7 +19,21 @@ import std.collections { List, Map };
 import std.core { StringBuilder, UnicodeCategory };
 import std.core { arrayOf };
 import std.core { fstringFormatted, fstringPadded };
-import std.fs { File, OpenOptions, exists };
+import std.fs {
+    File,
+    OpenOptions,
+    ReadDirIter,
+    absolute as fsAbsolute,
+    canonicalize as fsCanonicalize,
+    createDir as fsCreateDir,
+    metadata as fsMetadata,
+    readDir as fsReadDir,
+    remove as fsRemove,
+    removeDir as fsRemoveDir,
+    rename as fsRename,
+    tempDir as fsTempDir,
+    tempFile as fsTempFile,
+};
 import std.hash { DefaultHasher };
 import std.io { IoError, SeekFrom, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
 import std.os { env };
@@ -56,6 +70,7 @@ import lyric_script.vm.heap {
     ScriptIndex,
     ScriptBigInt,
     ScriptBytes,
+    ScriptDir,
     ScriptFile,
     ScriptRandom,
     ScriptBuilder,
@@ -824,10 +839,11 @@ fn callNative(
         }
         .ConsoleFlush => s[x] = consoleFlush(s[x] as int) as uint64,
         // the verifier keeps these to `call.w`
-        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose => {
+        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose => {
             return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
         }
         .FsFile => r[y] = ScriptFile { },
+        .FsDir => r[y] = ScriptDir { },
         .PathSeparator => r[y] = ScriptString { text = pathSeparator },
         .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
         .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
@@ -855,7 +871,6 @@ fn callNative(
                 r[y] = nil;
             }
         }
-        .FsExists => s[x] = truth(exists(textOf(r[y]))),
         // the sign bit set: the other bits turned over, so the integers' order is the
         // total order (S7c5b)
         .FloatOrderKey => {
@@ -1838,6 +1853,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     if (recv is ScriptBigInt
                         || recv is ScriptBytes
                         || recv is ScriptFile
+                        || recv is ScriptDir
                         || recv is ScriptRandom
                         || recv is ScriptBuilder
                         || recv is ScriptIndex) {
@@ -3746,6 +3762,58 @@ fn waitJob(
             charge(shared, 1);
             return () => fileClose(file);
         }
+        .FsMetadata => {
+            let name = pathCharged(r[y], shared);
+            return () => pathLook(name);
+        }
+        .FsCreateDir => {
+            let name = pathCharged(r[y], shared);
+            return () => pathDone(() => try fsCreateDir(name));
+        }
+        .FsRemove => {
+            let name = pathCharged(r[y], shared);
+            return () => pathDone(() => try fsRemove(name));
+        }
+        .FsRemoveDir => {
+            let name = pathCharged(r[y], shared);
+            return () => pathDone(() => try fsRemoveDir(name));
+        }
+        .FsRename => {
+            let from = pathCharged(r[y], shared);
+            let to = pathCharged(r[y + 1], shared);
+            return () => pathDone(() => try fsRename(from, to));
+        }
+        .FsCanonicalize => {
+            let name = pathCharged(r[y + 1], shared);
+            return () => pathMade(() => try fsCanonicalize(name));
+        }
+        .FsAbsolute => {
+            let name = pathCharged(r[y + 1], shared);
+            return () => pathMade(() => try fsAbsolute(name));
+        }
+        .FsTempDir => {
+            charge(shared, 1);
+            return () => pathMade(() => try fsTempDir());
+        }
+        .FsTempFile => {
+            charge(shared, 1);
+            return () => pathMade(() => try fsTempFile());
+        }
+        .FsDirOpen => {
+            let handle = r[y];
+            let name = pathCharged(r[y + 1], shared);
+            return () => dirOpen(handle, name);
+        }
+        .FsDirNext => {
+            let dir = dirAt(r[y + 1]);
+            charge(shared, 1);
+            return () => dirNext(dir);
+        }
+        .FsDirClose => {
+            let dir = dirAt(r[y]);
+            charge(shared, 1);
+            return () => dirClose(dir);
+        }
         _ => {
             charge(shared, 1);
             return () => consoleLine();
@@ -3773,6 +3841,12 @@ fn waitFault(which: NativeFn, r: HeapRef[], y: int): ?NativeFault {
     if ((which == NativeFn.FsRead || which == NativeFn.FsWrite) && !(r[y + 1] is ScriptBytes)) {
         return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
     }
+    if (which == NativeFn.FsDirNext || which == NativeFn.FsDirClose) {
+        let o = if (which == NativeFn.FsDirNext) r[y + 1] else r[y];
+        if (!(o is ScriptDir) || o.dir == null) {
+            return bytesFault("LYS-RT0007", "a ReadDirIter's field holds no directory");
+        }
+    }
     return null;
 }
 
@@ -3792,6 +3866,23 @@ fn fileAt(o: HeapRef): File {
         }
     }
     unreachable("waitFault looked");
+}
+
+/// The iterator `waitFault` saw.
+fn dirAt(o: HeapRef): ReadDirIter {
+    if (o is ScriptDir) {
+        if (let d = o.dir) {
+            return d;
+        }
+    }
+    unreachable("waitFault looked");
+}
+
+/// The path a native takes, charged by its bytes.
+fn pathCharged(o: HeapRef, shared: RunShared): string {
+    let name = textOf(o);
+    charge(shared, bytesCost(name.length()));
+    return name;
 }
 
 /// What a native read: copied to the script's bytes here, where it is not running on another
@@ -3887,6 +3978,64 @@ fn fileSeek(file: File, offset: int, whence: int): WaitAnswer {
 
 fn fileClose(file: File): WaitAnswer {
     try file.close() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = 0 };
+}
+
+/// What a path names, as `std.fs`'s `Metadata` reads it.
+fn pathLook(name: string): WaitAnswer {
+    let m = try fsMetadata(name) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    let bits = (if (m.isFile) 1 else 0)
+        | (if (m.isDir) 2 else 0)
+        | (if (m.isSymlink) 4 else 0)
+        | (if (m.readonly) 8 else 0);
+    return WaitAnswer { n = m.size << 4 | bits };
+}
+
+/// A call that answers nothing: 0, or its failure.
+fn pathDone(call: fn() -> void throws IoError): WaitAnswer {
+    try call() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = 0 };
+}
+
+/// A call that answers a path: 0 and the path, or its failure and the path it was at.
+fn pathMade(call: fn() -> string throws IoError): WaitAnswer {
+    let made = try call() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e), text = e.path ?? "" };
+    };
+    return WaitAnswer { n = 0, text = made };
+}
+
+/// Opens the directory, the handle on it from now on.
+fn dirOpen(handle: HeapRef, name: string): WaitAnswer {
+    let dir = try fsReadDir(name) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    if (handle is ScriptDir) {
+        handle.dir = dir;
+    }
+    return WaitAnswer { n = 0 };
+}
+
+/// A directory's next entry: its kind and name, 0 at the end, or the failure and its detail.
+fn dirNext(dir: ReadDirIter): WaitAnswer {
+    let next = try dir.next() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e), text = e.detail };
+    };
+    if (let entry = next) {
+        let kind = if (entry.isFile) 1 else if (entry.isDir) 2 else if (entry.isSymlink) 3 else 4;
+        return WaitAnswer { n = kind, text = entry.name };
+    }
+    return WaitAnswer { n = 0 };
+}
+
+fn dirClose(dir: ReadDirIter): WaitAnswer {
+    try dir.close() catch (e: IoError) {
         return WaitAnswer { n = failureCode(e) };
     };
     return WaitAnswer { n = 0 };

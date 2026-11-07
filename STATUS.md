@@ -387,7 +387,11 @@ VM's call path, S7k measurement point 3.
 - **S7h2 done** — the rest of `std.os` (format 43). `os.envs()` answers pairs, not Lyric 5's `Map`: the word `Map`
   loaded the collections for every `import std.os`, +170 ms cold (P40). A `std` module hiding a prelude name no
   longer warns: `os.exit` made every program with `import std.os` uncacheable. 807 cases, 371 tests; see 14.
-- Next: **S7h3** — `std.process` (swapped with `os.signals`, so that a case can signal a child).
+- **S7h3 done** — `std.process` (format 44) and `os.Signal`. A `std` module's import of a module with a right asks
+  for none; the user's import does. The conformance runner hands the cases the binary under test, so a case's child
+  is a script. A read a cancel ended may take the next bytes (P41). `import std.process` costs +187 ms cold,
+  +110 of it a compiler cost that already held (P42). 821 cases, 373 tests; see 14.
+- Next: **S7h4** — `os.signals()`.
 
 ## Working mode
 
@@ -462,4 +466,6 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P38 | **A method of a `std` module named like an iterator adapter loads `std.iter` for everyone who imports the module.** `this.take(` in `std.fs` cost every `import std.fs` 283 ms cold (S7g6), found only because a prediction missed. The loader reads names (`namesIter`), so too many is a cost that nothing reports. Before 1.0: have the check fail when a `std` module loads `std.iter` without calling an adapter, or load by what the checker resolves. |
 | P39 | **`fs.glob`'s API has no model in Lyric 5**: decided in S7g6 after Python's `glob` and the shell (§12 rule 24). Worth the maintainer's look: no escape other than a class, dot names left to a part that says them, `**` following no link, `..` by the text. |
 | P40 | **`os.envs()` answers `(string, string)[]` in the byte order of the names, not Lyric 5's `Map`** (S7h2): a `Map` in `std.os` loaded `std.collections` for every program that imports `std.os`, +170 ms cold. Worth the maintainer's look: the deviation, or a loader that pays for the collections only where a program reaches them. |
+| P41 | **A pipe read or console read a cancel ended goes on as a Lyric 5 job and may take the next bytes, which are then lost** (S7h3, §12 rule 27): the wait natives run on a detached job with no handle to stop it. A reader that goes on reading after a timeout reads at that risk. Fix needs a job that hands back what it took, or a read that Lyric 5 can stop. |
+| P42 | **A program that compiles a class meeting both `Reader` and `Writer` pays ~+100 ms cold** (S7h3): `import std.io { ByteBuffer }` with one use 425 → 522 ms; a user module with one class of each 425 → 533; either alone costs nothing measurable. `std.process`'s two pipes pay it for every importer (+110 of its +187). Cause not found: the debug binary carries no symbols for perf. Next step: a build with symbols, profile the two variants. |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

@@ -202,9 +202,10 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
                 }
             };
             let name = im.path.join(".");
-            // a module of a class of rights asks for it, here (01 S1)
+            // a module of a class of rights asks for it, here (01 S1); one module of the standard
+            // library importing another asks for nothing: the table names each one's class (S7h3)
             let right = classOf(name);
-            if (right != null) {
+            if (right != null && !l.names[i].startsWith("std.")) {
                 l.rights.push(
                     RightUse {
                         right = right,

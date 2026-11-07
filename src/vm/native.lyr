@@ -201,6 +201,13 @@ enum NativeFn :: [Equatable] {
     OsTempRoot,
     OsCpuCount,
     OsPid,
+    ProcessChild,
+    ProcessSpawn,
+    ProcessRead,
+    ProcessWrite,
+    ProcessClose,
+    ProcessWait,
+    ProcessSignal,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -214,7 +221,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 143;
+let nativeCount: int = 150;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -361,7 +368,14 @@ fn nativeOf(n: int): NativeFn {
         139 => NativeFn.OsArch,
         140 => NativeFn.OsTempRoot,
         141 => NativeFn.OsCpuCount,
-        _ => NativeFn.OsPid,
+        142 => NativeFn.OsPid,
+        143 => NativeFn.ProcessChild,
+        144 => NativeFn.ProcessSpawn,
+        145 => NativeFn.ProcessRead,
+        146 => NativeFn.ProcessWrite,
+        147 => NativeFn.ProcessClose,
+        148 => NativeFn.ProcessWait,
+        _ => NativeFn.ProcessSignal,
     };
 }
 
@@ -511,6 +525,13 @@ fn nativeNumber(n: NativeFn): int {
         .OsTempRoot => 140,
         .OsCpuCount => 141,
         .OsPid => 142,
+        .ProcessChild => 143,
+        .ProcessSpawn => 144,
+        .ProcessRead => 145,
+        .ProcessWrite => 146,
+        .ProcessClose => 147,
+        .ProcessWait => 148,
+        .ProcessSignal => 149,
     };
 }
 
@@ -659,6 +680,13 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .OsTempRoot => sig("os.tempRoot", 0, 0, false, true),
         .OsCpuCount => sig("os.cpuCount", 0, 0, true, false),
         .OsPid => sig("os.pid", 0, 0, true, false),
+        .ProcessChild => sig("process.child", 0, 0, false, true),
+        .ProcessSpawn => sig("process.spawn", 3, 6, true, false),
+        .ProcessRead => sig("process.read", 1, 2, true, false),
+        .ProcessWrite => sig("process.write", 0, 2, true, false),
+        .ProcessClose => sig("process.close", 1, 1, true, false),
+        .ProcessWait => sig("process.wait", 0, 2, true, false),
+        .ProcessSignal => sig("process.signal", 2, 1, true, false),
     };
 }
 
@@ -672,15 +700,19 @@ fn nativeWaits(n: NativeFn): bool {
         .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile => true,
         .FsDirOpen | .FsDirNext | .FsDirClose => true,
         .OsCwd | .OsSetCwd | .OsHostname => true,
+        .ProcessSpawn | .ProcessRead | .ProcessWrite | .ProcessClose | .ProcessWait => true,
+        .ProcessSignal => true,
         _ => false,
     };
 }
 
-/// Whether a cancel ends a native that waits (10 rule 18): the console's. A file's call ends in a
-/// bounded time, and what it moved stays moved, so it runs to its end (12 rule 22).
+/// Whether a cancel ends a native that waits (10 rule 18): the console's, and a child's wait and
+/// its pipes', as Lyric 5's (12 rule 27). A file's call ends in a bounded time, and what it moved
+/// stays moved, so it runs to its end (12 rule 22).
 fn nativeCancels(n: NativeFn): bool {
     return match (n) {
         .ConsoleLine | .ConsoleRead => true,
+        .ProcessRead | .ProcessWrite | .ProcessWait => true,
         _ => false,
     };
 }

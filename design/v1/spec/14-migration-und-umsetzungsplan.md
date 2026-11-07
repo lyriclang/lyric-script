@@ -2259,3 +2259,26 @@ Vorhersage: Der Fall prüfte nur „eine der drei Plattformen“, und `homeDir` 
 Windows gegen den Trenner, VE stirbt. Rot-Lauf gegen S7h1: 0 von 13 grün. Fälle 794 → 807, Tests 370 → 371.
 **S7h3 und S7h4 getauscht:** Zuerst `std.process`, dann `os.signals`. So kann ein Fall ein echtes Signal an ein Kind
 schicken.
+
+**Ergebnis S7h3 (2026-11-08).** `std.process` (Format 44, sieben Natives, §12 Regel 27): `Command` mit `spawn`,
+`output` und `status`, `Child` mit `wait`, `kill` und `signal`, `ExitStatus`, `Output`, die Pipes als `Reader`/`Writer`.
+Dazu `os.Signal` in `std.os`. Start, Lesen, Schreiben, Schließen und Warten laufen als Wartejob wie ein Dateiaufruf.
+Lesen, Schreiben und Warten enden beim Abbruch. Der Start zahlt nach den Bytes von Programm, Argumenten, Variablen und
+Verzeichnis. Vor dem Start wird geschrieben, was die Konsole hält, damit ein Kind mit geerbtem Strom danach schreibt.
+**Zwei Regeln am Lader:** Ein `std`-Modul, das ein Modul mit Recht importiert (`std.process` → `std.os`), fragt kein
+Recht an; das Recht fragt der Import beim Nutzer an. Und der Konformanzläufer gibt den Fällen den Pfad des geprüften
+Binarys als `LYRIC_SCRIPT_UNDER_TEST`: Das Kind eines Falls ist ein Script.
+**Bekannte Grenze (P41):** Ein Lesen, das ein Abbruch beendet, läuft als Lyric-5-Job weiter und kann die nächsten
+Bytes nehmen, die dann verloren sind. Regel 27 schreibt das hin.
+Mutanten: 16 schnelle über `std.process`, 10 über VM und Lader. Überlebt haben PB und PC (Lyric 5 prüft Namen selbst,
+mit derselben Meldung), PG (Lyric 5s `wait` schließt die Eingabe selbst), PI und PJ (kein Fall hängt daran, dass
+`output` stderr schließt oder die Eingabe leert) und QG (das Budget eines Lesens prüft kein Fall), alle wie
+vorhergesagt. QH überlebte gegen die Vorhersage: Ein leeres Kind gibt `std.process` nie heraus. Jetzt prüft ein
+Unit-Test Bytecode, der aus einem leeren Kind liest; QH stirbt. Rot-Lauf gegen S7h2: 0 von 14 grün.
+**Kaltstart weit daneben (P42):** In Ruhe `println` 332 ms, mit `import std.os` 384, mit `import std.process` 571.
+Vorhergesagt waren +40 bis +100 gegen `std.os`, gemessen +187. Kein Name lädt ein weiteres Modul nach. Die Bisektion
+fand die Schnittstellen: Ohne `:: [Reader, …]` und `:: [Writer, …]` an den Pipes kostet das Modul 445. Jede der
+beiden allein kostet in einem Nutzermodul nichts, beide zusammen +110. Und schon `import std.io { ByteBuffer }` mit
+einer Nutzung kostet +100: Der Preis liegt bei jeder übersetzten Klasse, die beide Schnittstellen erfüllt, und galt
+schon vor diesem Slice. Die Ursache ist offen: Das Binary hat keine Symbole für perf.
+Fälle 807 → 821, Tests 371 → 373.

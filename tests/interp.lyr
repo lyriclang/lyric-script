@@ -256,6 +256,46 @@ fn theSystemsCallsChargeBeforeTheyAct(): void {
 }
 
 @Test
+fn aChildIsChargedBeforeItStarts(): void {
+    // no such program: the start fails, what counts is what it took first, the program and its four other texts
+    let text = f"""
+    fn p(s) -> s regs 4 7
+        call.n process.child, s1, r0
+        load.str r1, "{"x" * 3200}"
+        load.str r2, ""
+        load.str r3, ""
+        load.str r4, ""
+        load.str r5, ""
+        load.i s1, 0
+        load.i s2, 0
+        load.i s3, 0
+        call.w process.spawn, s1, r0
+        load.i s0, 7
+        ret.s s0
+    end
+    """;
+    let cost = 1 + 3200 / 32 + 4;
+    assertEq(scalar(runText(text, "p", [0], cost)), 7);
+    assertTrue(suspended(runText(text, "p", [0], cost - 1)));
+}
+
+@Test
+fn aChildNotStartedHoldsNoPipe(): void {
+    // `std.process` never hands one out; bytecode that reads from one is the program's mistake, not the VM's
+    let text = """
+    fn p(s) -> s regs 2 2
+        call.n process.child, s1, r0
+        load.i s0, 4
+        call.n bytes.new, s0, r1
+        load.i s0, 1
+        call.w process.read, s0, r0
+        ret.s s0
+    end
+    """;
+    assertEq(panicOf(runText(text, "p", [0], -1)).code, "LYS-RT0007");
+}
+
+@Test
 fn whatAPathNamesIsChargedBeforeItIsAsked(): void {
     // no such path: the call fails, what counts is what it took first
     let long = "x" * 3200;

@@ -1,0 +1,258 @@
+//! Starts child processes and talks to them (12 rule 27; Lyric 5's `std.process`). A module of the right `process`
+//! (01 S1). A child's calls run on a task of the host, the other tasks go on; a wait for its end and a pipe's read or
+//! write end at a cancel, as Lyric 5's do.
+
+import std.io { Reader, Writer }
+import std.os { Signal }
+
+private fn childNew(): Any = __process_child()
+private fn childSpawn(
+    modes: int,
+    argc: int,
+    envc: int,
+    child: Any,
+    program: string,
+    args: string,
+    names: string,
+    values: string,
+    cwd: string,
+): int = __process_spawn(modes, argc, envc, child, program, args, names, values, cwd)
+private fn pipeRead(which: int, child: Any, into: Any): int = __process_read(which, child, into)
+private fn pipeWrite(child: Any, from: Any): int = __process_write(child, from)
+private fn pipeClose(which: int, child: Any): int = __process_close(which, child)
+private fn childWait(holder: string[], child: Any): int = __process_wait(holder, child)
+private fn childSignal(kind: int, number: int, child: Any): int = __process_signal(kind, number, child)
+
+/// What a child's standard stream is connected to: the parent's, a pipe to the parent, or nothing.
+enum Stdio {
+    Inherit,
+    Piped,
+    Null,
+}
+
+/// A process to start: the program, a path or a name looked up on `PATH`; its arguments; its working directory,
+/// the parent's where `null`; variables set over the parent's environment; its three standard streams.
+struct Command {
+    program: string
+    args: string[] = []
+    cwd: ?string = null
+    env: (string, string)[] = []
+    stdin: Stdio = Stdio.Inherit
+    stdout: Stdio = Stdio.Inherit
+    stderr: Stdio = Stdio.Inherit
+
+    /// Starts the process. `NotFound` for a program that is not there, `PermissionDenied` for one that may not run,
+    /// each with the program as the path; `InvalidInput` for a variable's name that is empty or holds `=`, or a NUL
+    /// in the program, an argument, a variable or the directory.
+    fn spawn(): Child throws IoError = this.start(this.stdin, this.stdout, this.stderr)
+
+    /// Starts the child with no input and both other streams piped, takes the two to their ends at once, and waits.
+    fn output(): Output throws [IoError, Cancelled] {
+        let child = this.start(Stdio.Null, Stdio.Piped, Stdio.Piped)
+        let errors = child.stderr ?? unreachable("piped")
+        let taken = spawn((): Bytes => {
+            let bytes = errors.readToEnd()
+            errors.close()
+            return bytes
+        })
+        let out = child.stdout ?? unreachable("piped")
+        let bytes = out.readToEnd()
+        out.close()
+        var errorBytes = Bytes.new()
+        try {
+            errorBytes = taken.await()
+        } catch (e: IoError) {
+            throw e
+        } catch (e: Cancelled) {
+            throw e
+        } catch (e: Error) {
+            unreachable("the reading task throws an IoError or Cancelled, nothing else")
+        }
+        return Output { status = child.wait(), stdout = bytes, stderr = errorBytes }
+    }
+
+    /// Starts the child with the parent's streams and waits for its end.
+    fn status(): ExitStatus throws [IoError, Cancelled] {
+        return this.spawn().wait()
+    }
+
+    private fn start(i: Stdio, o: Stdio, e: Stdio): Child throws IoError {
+        nulFree(this.program)
+        var args = ""
+        for (a in this.args) {
+            nulFree(a)
+            args = args + a + "\0"
+        }
+        var names = ""
+        var values = ""
+        for ((name, value) in this.env) {
+            if (name.isEmpty() || name.contains("=")) {
+                throw IoError { kind = IoErrorKind.InvalidInput, path = this.program, detail = f"a variable named '{name}'" }
+            }
+            nulFree(name)
+            nulFree(value)
+            names = names + name + "\0"
+            values = values + value + "\0"
+        }
+        let cwd = this.cwd ?? ""
+        nulFree(cwd)
+        let child = childNew()
+        let modes = modeOf(i) | (modeOf(o) << 2) | (modeOf(e) << 4)
+        let n = childSpawn(modes, this.args.length(), this.env.length(), child, this.program, args, names, values, cwd)
+        if (n < 0) {
+            throw __ioFailure(n, this.program, "started")
+        }
+        return Child {
+            handle = child,
+            stdin = if (i == Stdio.Piped) PipeWriter { handle = child } else null,
+            stdout = if (o == Stdio.Piped) PipeReader { handle = child, which = 1 } else null,
+            stderr = if (e == Stdio.Piped) PipeReader { handle = child, which = 2 } else null,
+        }
+    }
+}
+
+private fn nulFree(part: string): void throws IoError {
+    if (part.contains("\0")) {
+        throw IoError { kind = IoErrorKind.InvalidInput, detail = "a NUL in an argument or a variable" }
+    }
+}
+
+private fn modeOf(s: Stdio): int = match (s) {
+    .Inherit => 0,
+    .Piped => 1,
+    .Null => 2,
+}
+
+/// A started child: its standard streams where the command piped them, its end, its signals.
+class Child {
+    handle: Any
+    /// Its input, where the command piped it: closing it is the end of the child's input.
+    var stdin: ?PipeWriter
+    stdout: ?PipeReader
+    stderr: ?PipeReader
+
+    /// Waits for the child's end and answers how it ended. A piped input is closed first: a child that reads it
+    /// would wait for the parent while the parent waits for the child.
+    fn wait(): ExitStatus throws [IoError, Cancelled] {
+        this.stdin = null
+        let holder = [""]
+        let n = childWait(holder, this.handle)
+        if (n < 0) {
+            throw __ioFailure(n, null, "waited for")
+        }
+        return ExitStatus { raw = n, text = holder[0] }
+    }
+
+    /// Ends the child now: SIGKILL on POSIX, on Windows with code 1. A child that has ended is not touched.
+    fn kill(): void throws IoError {
+        this.signal(Signal.Other(9))
+    }
+
+    /// Sends the child `s`, where it has not ended: `Unsupported` for a signal the system has not, on Windows every
+    /// one but a kill.
+    fn signal(s: Signal): void throws IoError {
+        let (kind, number) = match (s) {
+            .Interrupt => (0, 0),
+            .Terminate => (1, 0),
+            .Hangup => (2, 0),
+            .Quit => (3, 0),
+            .User1 => (4, 0),
+            .User2 => (5, 0),
+            .WindowChange => (6, 0),
+            .Other(n) => (7, n),
+        }
+        let n = childSignal(kind, number, this.handle)
+        if (n < 0) {
+            throw __ioFailure(n, null, "signalled")
+        }
+    }
+}
+
+/// How a child ended: with an exit code, 0 to 255 on POSIX, any 32 bits on Windows, or on POSIX by a signal. Its
+/// text is `exit code 3` or `signal 9`.
+struct ExitStatus :: Display {
+    raw: int
+    text: string
+
+    fn success(): bool = this.raw == 0
+
+    /// The exit code, `null` where a signal ended the child.
+    fn code(): ?int {
+        if (this.raw < 1 << 40) {
+            return this.raw
+        }
+        return null
+    }
+
+    /// The signal that ended the child, `null` where it exited with a code.
+    fn signal(): ?Signal {
+        if (this.raw < 1 << 40) {
+            return null
+        }
+        let rest = this.raw - (1 << 40)
+        return match (rest >> 16) {
+            0 => Signal.Interrupt,
+            1 => Signal.Terminate,
+            2 => Signal.Hangup,
+            3 => Signal.Quit,
+            4 => Signal.User1,
+            5 => Signal.User2,
+            6 => Signal.WindowChange,
+            _ => Signal.Other(rest & 65535),
+        }
+    }
+
+    fn show(): string = this.text
+}
+
+/// What `output()` gives: how the child ended, and all it wrote on its two streams.
+struct Output {
+    status: ExitStatus
+    stdout: Bytes
+    stderr: Bytes
+}
+
+/// The parent's end of a child's output (1) or errors (2): a `Reader` whose read waits until bytes come, 0 once
+/// the child closed its end.
+class PipeReader :: [Reader, Closeable] {
+    handle: Any
+    which: int
+
+    fn read(into: Bytes): int throws [IoError, Cancelled] {
+        let n = pipeRead(this.which, this.handle, into.v)
+        if (n < 0) {
+            throw __ioFailure(n, null, "read")
+        }
+        return n
+    }
+
+    /// Closes the pipe; a second close does nothing.
+    fn close(): void throws IoError {
+        let n = pipeClose(this.which, this.handle)
+        if (n < 0) {
+            throw __ioFailure(n, null, "closed")
+        }
+    }
+}
+
+/// The parent's end of a child's input: a `Writer` whose write waits until the pipe takes some; `BrokenPipe` once
+/// the child closed its end. Closing it is the end of the child's input.
+class PipeWriter :: [Writer, Closeable] {
+    handle: Any
+
+    fn write(from: Bytes): int throws [IoError, Cancelled] {
+        let n = pipeWrite(this.handle, from.v)
+        if (n < 0) {
+            throw __ioFailure(n, null, "written")
+        }
+        return n
+    }
+
+    /// Closes the pipe; a second close does nothing.
+    fn close(): void throws IoError {
+        let n = pipeClose(0, this.handle)
+        if (n < 0) {
+            throw __ioFailure(n, null, "closed")
+        }
+    }
+}

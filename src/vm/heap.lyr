@@ -3,6 +3,7 @@
 //! A string is wrapped once when it is made; converting a Lyric 5 string to an interface would
 //! box it at every conversion (value probe W1).
 import std.fs { File, ReadDirIter };
+import std.process { Child };
 import std.random { Random };
 import lyric_script.vm.bigint { Big };
 import std.collections { List, Map };
@@ -100,6 +101,15 @@ pub class ScriptBigInt :: [HeapRef] {
 /// What a `File` holds (S7g4): Lyric 5's file, once one is open.
 pub class ScriptFile :: [HeapRef] {
     pub var file: ?File = null,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
+/// What a `Child` holds (S7h3): Lyric 5's child, once it is started.
+pub class ScriptChild :: [HeapRef] {
+    pub var child: ?Child = null,
 
     pub fn desc(): ?TypeDesc {
         return null;

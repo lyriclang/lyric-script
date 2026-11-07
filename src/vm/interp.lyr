@@ -49,9 +49,11 @@ import std.os {
     setEnv as osSetEnv,
     tempDir as osTempRoot,
 };
+import std.os { Signal };
+import std.process { Child, Command, Stdio };
 import std.path { separator as pathSeparator };
 import std.random { Random };
-import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
+import std.task { Cancelled, Channel, Select, sleep, spawn, spawnDetached, yieldNow };
 import std.time { Duration, Monotonic };
 import lyric_script.vm.bigint {
     Big,
@@ -82,6 +84,7 @@ import lyric_script.vm.heap {
     ScriptIndex,
     ScriptBigInt,
     ScriptBytes,
+    ScriptChild,
     ScriptDir,
     ScriptFile,
     ScriptRandom,
@@ -864,10 +867,11 @@ fn callNative(
         }
         .ConsoleFlush => s[x] = consoleFlush(s[x] as int) as uint64,
         // the verifier keeps these to `call.w`
-        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose | .OsCwd | .OsSetCwd | .OsHostname => {
+        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose | .OsCwd | .OsSetCwd | .OsHostname | .ProcessSpawn | .ProcessRead | .ProcessWrite | .ProcessClose | .ProcessWait | .ProcessSignal => {
             return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
         }
         .FsFile => r[y] = ScriptFile { },
+        .ProcessChild => r[y] = ScriptChild { },
         .FsDir => r[y] = ScriptDir { },
         .PathSeparator => r[y] = ScriptString { text = pathSeparator },
         .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
@@ -3886,6 +3890,49 @@ fn waitJob(
             charge(shared, 1);
             return () => pathMade(() => try osHostname());
         }
+        // S7h3: a child, its pipes, its end
+        .ProcessSpawn => {
+            let handle = r[y];
+            let program = pathCharged(r[y + 1], shared);
+            let args = partsOf(pathCharged(r[y + 2], shared), s[x + 1] as int);
+            let names = partsOf(pathCharged(r[y + 3], shared), s[x + 2] as int);
+            let values = partsOf(pathCharged(r[y + 4], shared), s[x + 2] as int);
+            let cwd = pathCharged(r[y + 5], shared);
+            let modes = s[x] as int;
+            return () => childSpawn(handle, program, args, names, values, cwd, modes);
+        }
+        .ProcessRead => {
+            let child = childAt(r[y]);
+            let which = s[x] as int;
+            let n = bytesAt(r[y + 1]).length();
+            charge(shared, bytesCost(n));
+            return () => pipeRead(child, which, n);
+        }
+        .ProcessWrite => {
+            let child = childAt(r[y]);
+            let data = bytesAt(r[y + 1]);
+            charge(shared, bytesCost(data.length()));
+            // another task may change the bytes meanwhile: these are the ones the call was handed
+            let from = data.toArray();
+            return () => pipeWrite(child, from);
+        }
+        .ProcessClose => {
+            let child = childAt(r[y]);
+            let which = s[x] as int;
+            charge(shared, 1);
+            return () => pipeClose(child, which);
+        }
+        .ProcessWait => {
+            let child = childAt(r[y + 1]);
+            charge(shared, 1);
+            return () => childWait(child);
+        }
+        .ProcessSignal => {
+            let child = childAt(r[y]);
+            let signal = signalFrom(s[x] as int, s[x + 1] as int);
+            charge(shared, 1);
+            return () => pathDone(() => try child.signal(signal));
+        }
         .FsTempDir => {
             charge(shared, 1);
             return () => pathMade(() => try fsTempDir());
@@ -3936,6 +3983,24 @@ fn waitFault(which: NativeFn, r: HeapRef[], y: int): ?NativeFault {
     if ((which == NativeFn.FsRead || which == NativeFn.FsWrite) && !(r[y + 1] is ScriptBytes)) {
         return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
     }
+    if (which == NativeFn.ProcessSpawn && !(r[y] is ScriptChild)) {
+        return bytesFault("LYS-RT0007", "a Child's field holds no child");
+    }
+    let holdsChild = which == NativeFn.ProcessRead
+        || which == NativeFn.ProcessWrite
+        || which == NativeFn.ProcessClose
+        || which == NativeFn.ProcessWait
+        || which == NativeFn.ProcessSignal;
+    if (holdsChild) {
+        let o = if (which == NativeFn.ProcessWait) r[y + 1] else r[y];
+        if (!(o is ScriptChild) || o.child == null) {
+            return bytesFault("LYS-RT0007", "a Child's field holds no child");
+        }
+    }
+    if ((which == NativeFn.ProcessRead || which == NativeFn.ProcessWrite)
+        && !(r[y + 1] is ScriptBytes)) {
+        return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
     if (which == NativeFn.FsDirNext || which == NativeFn.FsDirClose) {
         let o = if (which == NativeFn.FsDirNext) r[y + 1] else r[y];
         if (!(o is ScriptDir) || o.dir == null) {
@@ -3961,6 +4026,165 @@ fn fileAt(o: HeapRef): File {
         }
     }
     unreachable("waitFault looked");
+}
+
+/// The child `waitFault` saw.
+fn childAt(o: HeapRef): Child {
+    if (o is ScriptChild) {
+        if (let c = o.child) {
+            return c;
+        }
+    }
+    unreachable("waitFault looked");
+}
+
+/// The first `count` parts of `text`, each ended by a NUL.
+fn partsOf(text: string, count: int): string[] {
+    let out = List<string>.new();
+    for (part in text.split('\0')) {
+        if (out.length() < count) {
+            out.push(part.toString());
+        }
+    }
+    return out.toArray();
+}
+
+/// What a mode of `std.process` says, 0 to 2.
+fn stdioOf(mode: int): Stdio {
+    return match (mode) {
+        1 => Stdio.Piped,
+        2 => Stdio.Null,
+        _ => Stdio.Inherit,
+    };
+}
+
+/// Starts the child into `handle`: 0, or the failure. What the console holds is written first,
+/// so that a child that inherits a stream writes after it.
+fn childSpawn(
+    handle: HeapRef,
+    program: string,
+    args: string[],
+    names: string[],
+    values: string[],
+    cwd: string,
+    modes: int
+): WaitAnswer {
+    let pairs = List<(string, string)>.new();
+    var k = 0;
+    while (k < names.length()) {
+        pairs.push((names[k], values[k]));
+        k += 1;
+    }
+    let command = Command {
+        program = program,
+        args = args,
+        cwd = if (cwd.isEmpty()) null else cwd,
+        env = pairs.toArray(),
+        stdin = stdioOf(modes & 3),
+        stdout = stdioOf((modes >> 2) & 3),
+        stderr = stdioOf((modes >> 4) & 3),
+    };
+    consoleFlush(1);
+    consoleFlush(2);
+    let child = try command.spawn() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    if (handle is ScriptChild) {
+        handle.child = child;
+    }
+    return WaitAnswer { n = 0 };
+}
+
+/// The answer of a pipe the command did not make: closed.
+fn noPipe(): WaitAnswer {
+    return WaitAnswer { n = failureCode(IoError { kind = .Closed, detail = "" }) };
+}
+
+/// Up to `n` bytes of the child's output (1) or errors (2), into an array of their own.
+fn pipeRead(child: Child, which: int, n: int): WaitAnswer {
+    let pipe = if (which == 2) child.stderr else child.stdout;
+    if (let p = pipe) {
+        let into = [0 as uint8] * n;
+        try {
+            let got = p.read(into);
+            return WaitAnswer { n = got, bytes = into };
+        } catch (e: IoError) {
+            return WaitAnswer { n = failureCode(e) };
+        } catch (_: Cancelled) {
+            unreachable("nobody cancels a native's task");
+        }
+    }
+    return noPipe();
+}
+
+fn pipeWrite(child: Child, from: uint8[]): WaitAnswer {
+    if (let p = child.stdin) {
+        try {
+            return WaitAnswer { n = p.write(from) };
+        } catch (e: IoError) {
+            return WaitAnswer { n = failureCode(e) };
+        } catch (_: Cancelled) {
+            unreachable("nobody cancels a native's task");
+        }
+    }
+    return noPipe();
+}
+
+/// Closes the child's input (0), output (1) or errors (2).
+fn pipeClose(child: Child, which: int): WaitAnswer {
+    if (which == 0) {
+        if (let p = child.stdin) {
+            return pathDone(() => try p.close());
+        }
+    } else if (let p = if (which == 2) child.stderr else child.stdout) {
+        return pathDone(() => try p.close());
+    }
+    return noPipe();
+}
+
+/// The child's end: its code, or a signal as `signalAnswer` writes it, and its text.
+fn childWait(child: Child): WaitAnswer {
+    var c = child;
+    try {
+        let status = c.wait();
+        if (let code = status.code()) {
+            return WaitAnswer { n = code, text = f"{status}" };
+        }
+        return WaitAnswer { n = signalAnswer(status.signal()!), text = f"{status}" };
+    } catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    } catch (_: Cancelled) {
+        unreachable("nobody cancels a native's task");
+    }
+}
+
+/// A child's end by a signal: bit 40, the signal's kind from bit 16, the number of an `Other`.
+fn signalAnswer(s: Signal): int {
+    let kind = match (s) {
+        Signal.Interrupt => 0,
+        Signal.Terminate => 1,
+        Signal.Hangup => 2,
+        Signal.Quit => 3,
+        Signal.User1 => 4,
+        Signal.User2 => 5,
+        Signal.WindowChange => 6,
+        Signal.Other(n) => (7 << 16) + n,
+    };
+    return (1 << 40) + (if (kind >= 7 << 16) kind else kind << 16);
+}
+
+/// The signal of a kind as `std.os`'s `Signal` counts its variants, `number` for an `Other`.
+fn signalFrom(kind: int, number: int): Signal {
+    return match (kind) {
+        0 => Signal.Interrupt,
+        1 => Signal.Terminate,
+        2 => Signal.Hangup,
+        3 => Signal.Quit,
+        4 => Signal.User1,
+        5 => Signal.User2,
+        6 => Signal.WindowChange,
+        _ => Signal.Other(number),
+    };
 }
 
 /// The iterator `waitFault` saw.
@@ -4003,6 +4227,7 @@ fn takeAnswer(which: NativeFn, a: WaitAnswer, s: uint64[], r: HeapRef[], x: int,
     match (which) {
         .ConsoleRead => n = deliverBytes(a, r[y]),
         .FsRead => n = deliverBytes(a, r[y + 1]),
+        .ProcessRead => n = deliverBytes(a, r[y + 1]),
         _ => {
             let o = r[y];
             let text = a.text;

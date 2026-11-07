@@ -37,6 +37,19 @@ enum Arch :: Display {
     }
 }
 
+/// A signal of the system, by an abstract name (Lyric 5 10 §12 rule 1): Windows knows `Interrupt` and `Terminate`
+/// only. `Other(n)` is the system's number `n`.
+enum Signal {
+    Interrupt,
+    Terminate,
+    Hangup,
+    Quit,
+    User1,
+    User2,
+    WindowChange,
+    Other(int),
+}
+
 /// The script's name and its arguments, a new list each call. The prelude's `args` is what follows the name.
 fn args(): string[] {
     let out: string[] = []

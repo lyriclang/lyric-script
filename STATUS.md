@@ -415,7 +415,11 @@ VM's call path, S7k measurement point 3.
   and column, `CsvOptions` for the separator and LF. 23 mutants, all killed as predicted; 851 cases.
 - **S7i3 done** — a module's `let` and `var` take a visibility word as a declaration does (04 rule 5, 02 D2;
   S7i3a), and `m.x` asks it; `std.log` in Script (12 rule 35). 15 mutants, all killed as predicted; 855 cases.
-- Next: **S7i4** — `std.cli` (its API is decided in plan 14 §S7i).
+- **S7i4 done** — `std.cli` in Script (12 rule 36): `Cli` declares flags, options, arguments and commands,
+  `parse(args)` reads them, writes the help and the errors itself (exit 0 and 2), `tryParse` throws `CliError`.
+  28 mutants, all killed; 863 cases. **S7i done.**
+- Next: **S7j** — the VM's call path (frames without `List`, a resolved function table, one growth check per
+  call, fuel at returns), measured with the bench of measurement point 1 before and after.
 
 ## Working mode
 

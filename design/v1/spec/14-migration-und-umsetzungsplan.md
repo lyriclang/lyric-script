@@ -2480,3 +2480,19 @@ Rot-Lauf gegen S7i2: 4 von 4 neuen rot, die zwei alten Kontrollfälle grün.
 Kaltstart: `import std.log` (75 Zeilen) +9 ms gegen `hello`, vorhergesagt waren +15 bis +60. Beide Messungen nach
 S7i1 lagen unter der Vorhersage; die Schätzung je Zeile aus `std.time` (0,5 ms) ist für kleine Module zu hoch.
 Fälle 851 → 855, Tests 375.
+
+**Ergebnis S7i4 (2026-11-08).** `std.cli` (§12 Regel 36), ganz in Script, wie entschieden. Beim Bauen kamen dazu:
+`tryParse` wirft für `--help` und `--version` einen `CliError` der Art `Help` bzw. `Version` mit dem Text, wie clap
+(`ErrorKind::DisplayHelp`); so liest ein Test oder ein Host die Hilfe, ohne dass der Lauf endet. Optionen dürfen
+nach Argumenten stehen (GNU `getopt_long`), `-` allein ist ein Argument. Ein `Cli` mit Befehlen hat keine Argumente
+und umgekehrt; was ein Befehl nach sich liest, liest sein eigener `Cli`, benannt `git add`. Eine Deklaration, die
+zweideutig liest (Name oder Kurzform doppelt, `help`, `version`, `-h`, ein Pflichtargument nach einem optionalen,
+Argumente neben Befehlen), und eine Frage an `Args` nach einem nicht deklarierten Namen paniken (`LYS-RT0008`): Das
+ist ein Fehler des Skripts, nicht der Kommandozeile.
+Fälle: acht. Die Spalten der Hilfe wurden vorher mit einem Orakel in Python gerechnet.
+Mutanten: 28 über `std.cli`, alle getötet. Eine Vorhersage war als unsicher markiert (K17: der Fall mit Exit 0
+sieht einen Zeilenumbruch mehr am Ende nicht, weil der Läufer ihn hinnimmt); getötet hat K17 der Fall der Hilfe.
+Rot-Lauf gegen S7i3: 8 von 8 rot.
+Kaltstart: `import std.cli` (477 Zeilen) +130 ms gegen `hello`, vorhergesagt waren +40 bis +200, etwa 0,27 ms je
+Zeile.
+Fälle 855 → 863, Tests 375. **S7i ist damit fertig**: `std.test`, `std.csv`, `std.log`, `std.cli`.

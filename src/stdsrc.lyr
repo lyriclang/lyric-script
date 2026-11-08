@@ -12,6 +12,7 @@ let stdPackage: int = -1;
 
 /// The modules of the standard library, by their names.
 let stdModules: string[] = [
+    "std.cli",
     "std.csv",
     "std.fmt",
     "std.fs",
@@ -32,6 +33,7 @@ let stdModules: string[] = [
 /// The text of the standard library's module `name`, `null` where there is none of that name.
 fn stdSource(name: string): ?string {
     return match (name) {
+        "std.cli" => string.fromUtf8Lossy(comptime embed("../std/cli.lyrs")),
         "std.csv" => string.fromUtf8Lossy(comptime embed("../std/csv.lyrs")),
         "std.fmt" => string.fromUtf8Lossy(comptime embed("../std/fmt.lyrs")),
         "std.fs" => string.fromUtf8Lossy(comptime embed("../std/fs.lyrs")),

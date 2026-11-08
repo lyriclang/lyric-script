@@ -75,6 +75,7 @@ fn theStandardLibrarysModulesAreInTheBinary(): void {
     assertEq(
         stdBelow("std"),
         [
+            "cli",
             "csv",
             "fmt",
             "fs",

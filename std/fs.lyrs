@@ -4,6 +4,7 @@
 
 import std.io { Reader, Seek, SeekFrom, TextReader, Writer, copy as copyAll }
 import std.path { components, join, parent, separator }
+import std.time.instant { Instant, instantOfEpochNanos }
 
 private fn fileNew(): Any = __fs_file()
 private fn fileOpen(how: int, file: Any, path: string): int = __fs_open(how, file, path)
@@ -12,7 +13,9 @@ private fn fileWrite(file: Any, from: Any): int = __fs_write(file, from)
 private fn fileSeek(offset: int, whence: int, file: Any): int = __fs_seek(offset, whence, file)
 private fn fileClose(file: Any): int = __fs_close(file)
 
-private fn pathLook(path: string): int = __fs_metadata(path)
+private fn pathLookInto(holder: string[], path: string): int = __fs_metadata(holder, path)
+// what a path names, without the moment it was written
+private fn pathLook(path: string): int = pathLookInto([""], path)
 private fn pathMakeDir(path: string): int = __fs_createDir(path)
 private fn pathRemove(path: string): int = __fs_remove(path)
 private fn pathRemoveDir(path: string): int = __fs_removeDir(path)
@@ -265,10 +268,12 @@ class FileLinesIter :: [Iterator, Closeable] {
     }
 }
 
-/// What a path names, through links: its size in bytes, whether it is a file or a directory — neither,
-/// for a device or a socket —, whether it cannot be written; and whether the path itself is a link.
+/// What a path names, through links: its size in bytes, the moment it was last written, whether it is a file
+/// or a directory — neither, for a device or a socket —, whether it cannot be written; and whether the path
+/// itself is a link.
 struct Metadata {
     size: int
+    modified: Instant
     isFile: bool
     isDir: bool
     isSymlink: bool
@@ -276,9 +281,16 @@ struct Metadata {
 }
 
 /// The metadata of the answer of `pathLook`, which is no failure.
-private fn metadataOf(n: int): Metadata {
+private fn metadataOf(n: int, holder: string[]): Metadata {
+    var nanos = 0
+    try {
+        nanos = int.parse(holder[0])
+    } catch (e: ParseError) {
+        unreachable("the VM writes the moment as its nanoseconds")
+    }
     return Metadata {
         size = n >> 4,
+        modified = instantOfEpochNanos(nanos),
         isFile = n & 1 != 0,
         isDir = n & 2 != 0,
         isSymlink = n & 4 != 0,
@@ -288,11 +300,12 @@ private fn metadataOf(n: int): Metadata {
 
 /// What `path` names, through links; a link that leads nowhere is not found.
 fn metadata(path: string): Metadata throws IoError {
-    let n = pathLook(path)
+    let modified = [""]
+    let n = pathLookInto(modified, path)
     if (n < 0) {
         throw __ioFailure(n, path, "looked at")
     }
-    return metadataOf(n)
+    return metadataOf(n, modified)
 }
 
 /// Makes the directory `path` in one that is there.
@@ -358,11 +371,12 @@ struct DirEntry {
 
     /// What the entry names, following a link, as the module's `metadata` does.
     fn metadata(): Metadata throws IoError {
-        let n = pathLook(this.path)
+        let modified = [""]
+        let n = pathLookInto(modified, this.path)
         if (n < 0) {
             throw __ioFailure(n, this.path, "looked at")
         }
-        return metadataOf(n)
+        return metadataOf(n, modified)
     }
 }
 
@@ -414,9 +428,10 @@ class ReadDirIter :: [Iterator, Closeable] {
 
 /// What `name` names, `null` where nothing is there; any other error is thrown.
 private fn lookOrNothing(name: string): ?Metadata throws IoError {
-    let n = pathLook(name)
+    let modified = [""]
+    let n = pathLookInto(modified, name)
     if (n >= 0) {
-        return metadataOf(n)
+        return metadataOf(n, modified)
     }
     let e = __ioFailure(n, name, "looked at")
     if (e.kind == IoErrorKind.NotFound) {
@@ -458,8 +473,7 @@ fn createDirAll(path: string): void throws IoError {
 fn removeAll(path: string): void throws IoError {
     let n = pathLook(path)
     if (n >= 0) {
-        let m = metadataOf(n)
-        if (let e = takeAway(path, m.isDir && !m.isSymlink, m.isSymlink)) {
+        if (let e = takeAway(path, n & 2 != 0 && n & 4 == 0, n & 4 != 0)) {
             throw e
         }
         return
@@ -852,7 +866,7 @@ private class GlobWalk {
             return
         }
         let n = pathLook(e.path)
-        this.foundPath(e.path, n >= 0 && metadataOf(n).isDir)
+        this.foundPath(e.path, n >= 0 && n & 2 != 0)
     }
 
     /// What the parts from `k` name under `dir`.
@@ -883,7 +897,7 @@ private class GlobWalk {
             } else {
                 let n = pathLook(path)
                 if (n >= 0) {
-                    this.foundPath(path, metadataOf(n).isDir)
+                    this.foundPath(path, n & 2 != 0)
                 } else {
                     let e = __ioFailure(n, path, "looked at")
                     if (e.kind != IoErrorKind.NotFound && e.kind != IoErrorKind.NotDirectory) {

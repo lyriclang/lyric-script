@@ -394,7 +394,10 @@ VM's call path, S7k measurement point 3.
 - **S7h4 done** — `os.signals()` (format 45): Lyric 5's subscription behind a script channel of sixteen. Closing
   it ends the subscription at once; the run's end ends those left open, and while one is open a run whose tasks
   all wait waits for a signal. 824 cases, 374 tests; see 14.
-- Next: **S7h5** — the base of `std.time`.
+- **S7h5a done** — the base of `std.time` (format 46): `Duration`'s arithmetic, order, Go text and `parse` by
+  `extend` in `std.time`, `Instant` in its own small module (`std.fs`'s `Metadata.modified` loads no calendar),
+  `Monotonic` on the run's clock. `import std.time` +58 ms cold. 832 cases, 374 tests; see 14.
+- Next: **S7h5b** — calendar, fixed zones, `DateTime`, RFC 3339, `Instant`'s text and `parse`.
 
 ## Working mode
 

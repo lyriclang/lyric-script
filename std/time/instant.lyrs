@@ -1,0 +1,47 @@
+//! A moment on the wall clock (12 rule 29; Lyric 5 12 §Time rule 4): a module of its own, so that `std.fs`'s
+//! `Metadata.modified` costs a program no more than these lines. `std.time` hands it on with its text and the
+//! calendar; a program that names `Instant` imports it from there.
+
+private fn clockNow(): int = __time_realtime()
+
+/// A moment on the wall clock, in nanoseconds since 1970-01-01T00:00:00Z — POSIX time, no leap seconds
+/// counted: the years 1677 to 2262. Two compare and order as the moments they are.
+struct Instant :: [Equatable, Ordered, TotalOrder, Hashable, Add<Duration>] {
+    private ns: int
+
+    /// The current moment on the system's wall clock, which the system may set back; to measure how long
+    /// something took, take `Monotonic`.
+    static fn now(): Instant = Instant { ns = clockNow() }
+
+    /// The whole seconds since the epoch, rounded down: a moment before 1970 gives a negative count.
+    fn epochSecs(): int = floorDiv(this.ns, 1000000000)
+
+    /// The whole milliseconds since the epoch, rounded down.
+    fn epochMillis(): int = floorDiv(this.ns, 1000000)
+
+    /// The moment `d` later, earlier for a negative `d`.
+    fn add(d: Duration): Instant = Instant { ns = this.ns + d.nanos() }
+
+    /// How long after `earlier` this moment is, negative where it is before.
+    fn since(earlier: Instant): Duration = Duration.ofNanos(this.ns - earlier.ns)
+
+    fn equals(o: Instant): bool = this.ns == o.ns
+    fn compare(o: Instant): ?Ordering = this.ns.compare(o.ns)
+    fn totalCompare(o: Instant): Ordering = this.ns.totalCompare(o.ns)
+
+    fn hash(h: Hasher) {
+        h.writeInt(this.ns)
+    }
+}
+
+/// The moment `ns` nanoseconds after the epoch, for the library's own: `Instant` has no public way from a count.
+internal fn instantOfEpochNanos(ns: int): Instant = Instant { ns = ns }
+
+/// The nanoseconds of `at` since the epoch, for the library's own.
+internal fn epochNanosOf(at: Instant): int = at.ns
+
+/// `a / b` rounded down.
+internal fn floorDiv(a: int, b: int): int {
+    let q = a / b
+    return if (a % b < 0) q - 1 else q
+}

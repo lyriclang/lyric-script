@@ -54,7 +54,7 @@ import std.process { Child, Command, Stdio };
 import std.path { separator as pathSeparator };
 import std.random { Random };
 import std.task { Cancelled, Channel, Select, sleep, spawn, spawnDetached, yieldNow };
-import std.time { Duration, Monotonic };
+import std.time { Duration, Instant, Monotonic };
 import lyric_script.vm.bigint {
     Big,
     add as bigAdd,
@@ -985,6 +985,14 @@ fn callNative(
         }
         .OsPid => {
             s[x] = osPid() as uint64;
+        }
+        // the wall clock's nanoseconds since 1970, and the run's own monotonic clock (S7h5): the one
+        // its timers keep
+        .TimeRealtime => {
+            s[x] = epochNanos(Instant.now()) as uint64;
+        }
+        .TimeMonotonic => {
+            s[x] = nowNs(shared) as uint64;
         }
         .OsEnv => {
             if (let v = env(textOf(r[y]))) {
@@ -3888,7 +3896,7 @@ fn waitJob(
             return () => fileClose(file);
         }
         .FsMetadata => {
-            let name = pathCharged(r[y], shared);
+            let name = pathCharged(r[y + 1], shared);
             return () => pathLook(name);
         }
         .FsCreateDir => {
@@ -4457,7 +4465,14 @@ fn pathLook(name: string): WaitAnswer {
         | (if (m.isDir) 2 else 0)
         | (if (m.isSymlink) 4 else 0)
         | (if (m.readonly) 8 else 0);
-    return WaitAnswer { n = m.size << 4 | bits };
+    // the moment it was last written, its nanoseconds since 1970 as text: the holder's
+    return WaitAnswer { n = m.size << 4 | bits, text = f"{epochNanos(m.modified)}" };
+}
+
+/// The nanoseconds of `at` since 1970-01-01T00:00:00Z: Lyric 5's `Instant` answers no count of them (S7h5).
+fn epochNanos(at: Instant): int {
+    let epoch = try! Instant.parse("1970-01-01T00:00:00Z");
+    return at.since(epoch).nanos();
 }
 
 /// A call that answers nothing: 0, or its failure.

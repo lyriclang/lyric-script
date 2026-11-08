@@ -2295,3 +2295,16 @@ Mutanten: 10 über VM und `std.os`, alle wie vorhergesagt. Überlebt haben SC (d
 endet ohnehin, nur eine Einbettung merkt es), SE (kein Fall liefert ein `Other`, die Nummern sind nicht portabel), SH
 (`std.os` gibt immer acht Formen) und SJ (ein geschlossener Kanal, den keiner liest). Rot-Lauf gegen S7h3: 0 von 3
 grün. Kaltstart `import std.os` +4 ms. Fälle 821 → 824, Tests 373 → 374.
+
+**Ergebnis S7h5a (2026-11-08).** Der Grund von `std.time` (Format 46, zwei Natives, §12 Regel 29), Recht `os`.
+`Duration` bleibt im Prelude, damit `sleep` ohne Import wartet. Ihre Arithmetik, Vergleiche, Hash, `Default`, der
+Text nach Go und `parse` hängen in `std.time` per `extend` an ihr: wer nichts davon nennt, zahlt nichts. `parse` zählt
+abwärts, damit die kleinste Spanne erreichbar bleibt. `Instant` liegt in einem eigenen kleinen Modul
+`std.time.instant`, das `std.time` per `pub import` weitergibt. So lädt `std.fs` für `Metadata.modified` nicht den
+Kalender von S7h5b. `Monotonic` liest die Uhr des Laufs, dieselbe, die seine Timer halten. `fs.metadata` gibt die
+Änderungszeit als Text in einem Halter zurück. Dazu kommt ein Fall für `std.random.system`: zwei Kind-Läufe ziehen
+zwei Ströme.
+Mutanten: 16 über VM, `std.time`, `std.time.instant`, `std.fs` und `std.random.system`, alle getötet wie vorhergesagt.
+Rot-Lauf gegen S7h4: 7 von 8 rot. Der Fall für `random.system` war schon grün, er ist neu, die Regel nicht.
+Kaltstart: `import std.fs` +13 ms gegen S7h4, `import std.time` +58 ms gegen `println` (vorhergesagt +60 bis +120).
+Fälle 824 → 832, Tests 374.

@@ -22,6 +22,8 @@ let stdModules: string[] = [
     "std.process",
     "std.random",
     "std.random.system",
+    "std.time",
+    "std.time.instant",
 ];
 
 /// The text of the standard library's module `name`, `null` where there is none of that name.
@@ -37,6 +39,8 @@ fn stdSource(name: string): ?string {
         "std.process" => string.fromUtf8Lossy(comptime embed("../std/process.lyrs")),
         "std.random" => string.fromUtf8Lossy(comptime embed("../std/random.lyrs")),
         "std.random.system" => string.fromUtf8Lossy(comptime embed("../std/random/system.lyrs")),
+        "std.time" => string.fromUtf8Lossy(comptime embed("../std/time.lyrs")),
+        "std.time.instant" => string.fromUtf8Lossy(comptime embed("../std/time/instant.lyrs")),
         _ => null,
     };
 }

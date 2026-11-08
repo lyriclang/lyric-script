@@ -1,0 +1,225 @@
+//! Spans and the system's two clocks (12 rule 29; Lyric 5 12 §Time): a module of the right `os`. `Duration`
+//! is the prelude's, so that a script waits without an import; its arithmetic, its text and `parse` are this
+//! module's, a program that names none of them pays for none.
+pub import std.time.instant { Instant }
+
+private fn clockMonotonic(): int = __time_monotonic()
+
+/// The least span, whose text has no positive twin.
+private fn leastNanos(): int = -9223372036854775807 - 1
+
+extend Duration :: [
+    Equatable,
+    Ordered,
+    TotalOrder,
+    Hashable,
+    Default,
+    Display,
+    Parse,
+    Add,
+    Sub,
+    Mul<int>,
+    Div<int>
+] {
+    /// The span in seconds, with their fraction.
+    fn asSecsFloat(): float = (this.nanos() as float) / 1000000000.0
+
+    fn add(rhs: Duration): Duration = Duration.ofNanos(this.nanos() + rhs.nanos())
+    fn sub(rhs: Duration): Duration = Duration.ofNanos(this.nanos() - rhs.nanos())
+    fn mul(rhs: int): Duration = Duration.ofNanos(this.nanos() * rhs)
+
+    /// The span divided by `rhs`, rounded toward zero; a division by zero panics.
+    fn div(rhs: int): Duration = Duration.ofNanos(this.nanos() / rhs)
+
+    fn equals(o: Duration): bool = this.nanos() == o.nanos()
+    fn compare(o: Duration): ?Ordering = this.nanos().compare(o.nanos())
+    fn totalCompare(o: Duration): Ordering = this.nanos().totalCompare(o.nanos())
+
+    fn hash(h: Hasher) {
+        h.writeInt(this.nanos())
+    }
+
+    /// Zero.
+    static fn default(): Duration = Duration.ofNanos(0)
+
+    /// The span as Go writes it: `0s`; under a second one unit — `ns`, `µs`, `ms` — with the fraction, its
+    /// trailing zeros dropped (`1.5µs`, `500ms`); from a second on hours, minutes and seconds with their
+    /// fraction, the larger ones from the first that is not zero (`1.5s`, `1m30s`, `1h0m0s`); a minus in front
+    /// of a negative one.
+    fn show(): string {
+        let ns = this.nanos()
+        if (ns == 0) {
+            return "0s"
+        }
+        // its positive twin is no `int`
+        if (ns == leastNanos()) {
+            return "-2562047h47m16.854775808s"
+        }
+        let u = if (ns < 0) -ns else ns
+        var text = ""
+        if (u < 1000000000) {
+            let unit = if (u < 1000) "ns" else if (u < 1000000) "µs" else "ms"
+            let precision = if (u < 1000) 0 else if (u < 1000000) 3 else 6
+            let (whole, fraction) = splitFraction(u, precision)
+            text = f"{whole}{fraction}{unit}"
+        } else {
+            let (secs, fraction) = splitFraction(u, 9)
+            let minutes = secs / 60
+            let hours = minutes / 60
+            text = if (hours > 0) f"{hours}h{minutes % 60}m{secs % 60}{fraction}s"
+                else if (minutes > 0) f"{minutes}m{secs % 60}{fraction}s"
+                else f"{secs}{fraction}s"
+        }
+        return if (ns < 0) "-" + text else text
+    }
+
+    /// A span in Go's form: an optional sign, then one or more numbers each with its unit — `ns`, `us` (or
+    /// `µs`, `μs`), `ms`, `s`, `m`, `h` —, a number with a fraction allowed: `1h30m`, `1.5h`, `.5s`,
+    /// `-300ms`; `0` alone is zero. A fraction is scaled to its unit through a float, as Go does. An empty
+    /// text throws `ParseError` with `Empty`, a number without digits or a missing or unknown unit `Invalid`,
+    /// a span beyond the range `Overflow`.
+    static fn parse(s: string): Duration {
+        let cs = List<char>.new()
+        for (c in s.chars()) {
+            cs.push(c)
+        }
+        let n = cs.length()
+        if (n == 0) {
+            throw ParseError { kind = ParseErrorKind.Empty }
+        }
+        var i = 0
+        var negative = false
+        if (cs[0] == '-' || cs[0] == '+') {
+            negative = cs[0] == '-'
+            i = 1
+        }
+        if (n - i == 1 && cs[i] == '0') {
+            return Duration.ofNanos(0)
+        }
+        if (i == n) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        // the span counts downward, so that the least is reached: each part is taken from it
+        var total = 0
+        while (i < n) {
+            let start = i
+            var whole = 0
+            while (i < n && isDigit(cs[i])) {
+                let d = (cs[i] as int) - 48
+                if (whole < (leastNanos() + d) / 10) {
+                    throw ParseError { kind = ParseErrorKind.Overflow }
+                }
+                whole = whole * 10 - d
+                i += 1
+            }
+            let digitsBefore = i > start
+            var fraction = 0
+            var scale = 1.0
+            var digitsAfter = false
+            if (i < n && cs[i] == '.') {
+                i += 1
+                let fractionStart = i
+                var full = false
+                while (i < n && isDigit(cs[i])) {
+                    // digits past what 63 bits hold add nothing a nanosecond sees; one digit fewer than
+                    // Lyric 5's unsigned count takes, which no nanosecond sees either
+                    if (!full && fraction < 922337203685477580) {
+                        fraction = fraction * 10 + ((cs[i] as int) - 48)
+                        scale = scale * 10.0
+                    } else {
+                        full = true
+                    }
+                    i += 1
+                }
+                digitsAfter = i > fractionStart
+            }
+            if (!digitsBefore && !digitsAfter) {
+                throw ParseError { kind = ParseErrorKind.Invalid }
+            }
+            // the unit: everything up to the next number
+            let unit = StringBuilder.new()
+            while (i < n && !isDigit(cs[i]) && cs[i] != '.') {
+                unit.appendChar(cs[i])
+                i += 1
+            }
+            let per = unitNanos(unit.toString())
+            if (per == 0) {
+                throw ParseError { kind = ParseErrorKind.Invalid }
+            }
+            if (whole < leastNanos() / per) {
+                throw ParseError { kind = ParseErrorKind.Overflow }
+            }
+            var value = whole * per
+            if (fraction > 0) {
+                let part = ((fraction as float) * ((per as float) / scale)) as int
+                if (value < leastNanos() + part) {
+                    throw ParseError { kind = ParseErrorKind.Overflow }
+                }
+                value -= part
+            }
+            if (total < leastNanos() - value) {
+                throw ParseError { kind = ParseErrorKind.Overflow }
+            }
+            total += value
+        }
+        if (negative) {
+            return Duration.ofNanos(total)
+        }
+        if (total == leastNanos()) {
+            throw ParseError { kind = ParseErrorKind.Overflow }
+        }
+        return Duration.ofNanos(-total)
+    }
+}
+
+private fn isDigit(c: char): bool = c >= '0' && c <= '9'
+
+/// `v` over 10^`precision`: the whole part, and the fraction as `.ddd` without its trailing zeros, nothing
+/// where it is zero.
+private fn splitFraction(v: int, precision: int): (int, string) {
+    var scale = 1
+    var k = 0
+    while (k < precision) {
+        scale *= 10
+        k += 1
+    }
+    let whole = v / scale
+    var rest = v % scale
+    if (rest == 0) {
+        return (whole, "")
+    }
+    var digits = precision
+    while (rest % 10 == 0) {
+        rest = rest / 10
+        digits -= 1
+    }
+    var text = f"{rest}"
+    while (text.length() < digits) {
+        text = "0" + text
+    }
+    return (whole, "." + text)
+}
+
+/// The nanoseconds of a unit's name, 0 for no unit.
+private fn unitNanos(name: string): int = match (name) {
+    "ns" => 1,
+    "us" => 1000,
+    "µs" => 1000,
+    "μs" => 1000,
+    "ms" => 1000000,
+    "s" => 1000000000,
+    "m" => 60000000000,
+    "h" => 3600000000000,
+    _ => 0,
+}
+
+/// A moment on the clock that only moves forward, from an unspecified start: for how long something takes,
+/// never for the time of day. The run's own, which its timers keep.
+struct Monotonic {
+    private ns: int
+
+    static fn now(): Monotonic = Monotonic { ns = clockMonotonic() }
+
+    /// How long ago this moment was taken.
+    fn elapsed(): Duration = Duration.ofNanos(clockMonotonic() - this.ns)
+}

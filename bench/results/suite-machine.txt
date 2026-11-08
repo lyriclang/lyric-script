@@ -1,0 +1,11 @@
+date: 2026-11-08T23:44:29+01:00
+cpu: Intel(R) Core(TM) Ultra 5 228V
+vcpus: 8
+kernel: 6.18.54.1-microsoft-standard-WSL2
+os: "Arch Linux"
+dotnet runtimes: 
+lyrc: lyrc 4.6.0
+lyrvm: lyrvm 4.6.0 (.lyrbc 4.0)
+4.6 commit: 33339164f0a9785336ece22deec4b933d2101260 (v4.6-final)
+lyric-script: lyric-script 1.0.0-dev (bytecode format 47) (/home/Olivier/dev/projects/lyric-script-rel-s7k/out/release/x86_64-linux-gnu/lyric-script)
+zig: 0.16.0

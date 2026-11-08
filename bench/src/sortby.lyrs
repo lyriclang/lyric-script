@@ -1,0 +1,22 @@
+// B6 sortby: B5 with a comparison written in the language — every comparison is a call of a
+// lambda in both VMs (P26). The same algorithm as ../v46/sortby.lyr.
+fn run(): int {
+    var x = 12345
+    let xs = List<int>.new()
+    var i = 0
+    while (i < 50000) {
+        x = (x * 1103515245 + 12345) % 2147483648
+        xs.push(x % 1000000)
+        i += 1
+    }
+    xs.sortBy((a, b) => a.totalCompare(b))
+    var check = 0
+    i = 0
+    while (i < xs.length()) {
+        check = (check * 31 + xs[i]) % 1000000007
+        i += 1
+    }
+    return check
+}
+
+println(run())

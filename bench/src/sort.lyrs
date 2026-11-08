@@ -1,0 +1,23 @@
+// B5 sort: 50 000 ints from an LCG sorted by their natural order, the way each language writes
+// it (here the list's own sort, in the VM; ../v46/sort.lyr calls std.collections' merge sort,
+// in bytecode), then a checksum over the order.
+fn run(): int {
+    var x = 12345
+    let xs = List<int>.new()
+    var i = 0
+    while (i < 50000) {
+        x = (x * 1103515245 + 12345) % 2147483648
+        xs.push(x % 1000000)
+        i += 1
+    }
+    xs.sort()
+    var check = 0
+    i = 0
+    while (i < xs.length()) {
+        check = (check * 31 + xs[i]) % 1000000007
+        i += 1
+    }
+    return check
+}
+
+println(run())

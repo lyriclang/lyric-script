@@ -2564,3 +2564,125 @@ dafür 207 bis 414 s, Lyric 5 bricht jeden Aufruf aber nach festen 5 min ab (lyr
 einem Wrapper um `zig`, der diese eine Einheit ohne Grenze übersetzt; siehe P46.
 
 Fälle: 863, Tests: 376.
+
+**Schnitt S7k (2026-11-08).** Drei Teile, je ein Commit:
+- **S7k1 Messpunkt 3:** die Bench-Suite nach 14 S7, Bericht in `bench/README.md`.
+- **S7k2 Kaltstart nach Phase (P21):** `hello` und die Imports der Zielprogramme, warm und kalt, auf dem
+  Release-Build; Lesen, Übersetzen der std-Module, Schreiben des Caches und Laufen getrennt. Danach wird
+  entschieden, was vor 1.0 billiger werden muss.
+- **S7k3 Schreiben über einen Modulnamen (P45):** Lyric 5 §4 lesen, dann den Schreibzugriff erlauben oder mit
+  eigenen Worten ablehnen.
+
+**Erwartung S7k1 (vor dem ersten Messlauf geschrieben; nur 4.6 wurde vorher einmal gelaufen, um die Größen zu
+kalibrieren).** Die Suite hat acht Programme, jedes einmal als Script-Quelltext (`bench/src`) und einmal als
+4.x-Programm (`bench/v46`). Derselbe Algorithmus, dieselbe Ausgabe, und Python rechnet das Orakel unabhängig von
+beiden VMs nach.
+
+| Programm | Inhalt |
+|---|---|
+| B1 `fib` | fib(32), wie Messpunkt 1 |
+| B2 `loop` | wie Messpunkt 1 |
+| B3 `objects` | wie Messpunkt 1 |
+| B4 `words` | 100 000 Wörter in einem `StringBuilder` gebaut, gespalten und in einer `Map<string, int>` gezählt |
+| B5 `sort` | 50 000 Zahlen in der natürlichen Ordnung sortiert, wie jede Sprache es schreibt |
+| B6 `sortby` | dasselbe mit einem Vergleich als Lambda |
+| B7 `map` | 100 000 Schreib- und 400 000 Lesezugriffe auf eine `Map<int, int>` |
+| B8 `strings` | 700 000 Zahlen in einen `StringBuilder` geschrieben |
+
+Zum Aufbau:
+- Script läuft warm aus dem Cache, so wie 4.6 Bytecode läuft, den `lyrc` vorher gebaut hat. Gemessen wird der
+  Release-Build von S7j.
+- Wo es von Messpunkt 1 handgeschriebenen Bytecode gibt, läuft er zum Vergleich mit. Der Abstand zeigt, was der
+  Compiler gegen ihn verliert.
+- Kalibriert ist auf 0,5–0,85 s für 4.6, auf derselben belasteten Maschine.
+
+Die Hauptzahl ist das geometrische Mittel über B1–B8, brutto, gegen den Ratchet von 5×. Daneben steht das Mittel
+über B1, B2, B3 und B6: Dort bleibt die Arbeit in beiden Sprachen in der VM. B5, B7 und B8 rufen in Script
+native Typen auf, die 4.6 in Bytecode schreibt. Das ist ein echter Vorteil der neuen Laufzeit, aber kein Maß für
+die VM.
+
+| Programm | Script erwartet | Verhältnis erwartet |
+|---|---|---:|
+| B1 `fib` | 0,13–0,19 s: Der Quelltext kostet ~1,5× die Befehle von Hand (`fibsrc`: ~510 statt ~350 je Aufruf) | **3–4,5×** |
+| B2 `loop` | 0,10–0,20 s, schwächerer Code als der verschmolzene Sprung von Hand | **4–7×** |
+| B3 `objects` | 0,12–0,18 s | **3–5×** |
+| B4 `words` | 0,08–0,20 s; `split` als Iterator, je Wort ein `next` | **3–7×** |
+| B5 `sort` | 0,015–0,04 s: Die Liste sortiert nativ, der Rest ist Erzeugen und Prüfsumme | **15–40×** |
+| B6 `sortby` | 0,05–0,09 s: ~780 000 Vergleiche, je einer ein VM-Aufruf | **7–13×** |
+| B7 `map` | 0,05–0,15 s: `Map` ist nativ | **6–15×** |
+| B8 `strings` | 0,15–0,35 s: `append(i)` geht über `Display` | **2–5×** |
+| `empty` warm | 3–20 ms (unsicher: die Prelude lädt seit S7c Script-Module aus dem Cache) | — |
+
+- **Mittel B1–B8: 5–9×**, der Ratchet hält also knapp. **Mittel über die VM-Programme: 4–6×**, auf der Kippe.
+- Die Rangfolge nach Verhältnis: B5 > B7 ≈ B6 > B2 ≈ B4 > B3 > B1 ≈ B8.
+- Die Kontrolle bricht nicht, weil das Orakel geschlossen nachrechenbar ist. Ein Lauf, der wegen lyric#667
+  scheitert, zählt als INVALID. Erwartet werden 0 solcher Läufe, weil die Programme aus einer Kopie im
+  Linux-Dateisystem laufen. Vom Pfad `/mnt/c` aus scheiterten `words` und `map` kalt 20 von 20 Mal, mit
+  `'' names no type` und `'Self' names no type`.
+
+**Lauf 1 (2026-11-08, Release f20cd9d, 9 Runden plus Aufwärmrunde, Last 0,77–0,94).** Alle 210 Läufe gültig.
+
+| Programm | Script | 4.6 | Verhältnis (brutto) | erwartet |
+|---|---:|---:|---:|---:|
+| `empty` | 4,4 ms | 62 ms | — | 3–20 ms |
+| B1 `fib` | 0,143 s | 0,440 s | 3,07× | 3–4,5× |
+| B2 `loop` | 0,202 s | 0,636 s | **3,15×** | 4–7× |
+| B3 `objects` | 0,153 s | 0,457 s | 2,99× | 3–5× |
+| B4 `words` | 0,186 s | 0,546 s | **2,93×** | 3–7× |
+| B5 `sort` | 0,012 s | 0,581 s | 48,4× | 15–40× |
+| B6 `sortby` | 0,081 s | 0,538 s | **6,64×** | 7–13× |
+| B7 `map` | 0,226 s | 0,822 s | **3,64×** | 6–15× |
+| B8 `strings` | 0,269 s | 0,727 s | 2,70× | 2–5× |
+| **Mittel B1–B8** | | | **4,77×** | 5–9× |
+| Mittel B1, B2, B3, B6 | | | 3,72× | 4–6× |
+
+**Der Ratchet ist verfehlt**: 4,77× statt ≥ 5×. Das ist weniger als 2× daneben, der Plan wird also nicht neu
+geschnitten. Das Austrittskriterium von S7 („Messpunkt 3 ≥ 5×") hält damit aber nicht. Der handgeschriebene
+Bytecode von Messpunkt 1 läuft im selben Lauf 4,23× (`fib`), 6,33× (`loop`) und 4,09× (`objects`). Die Lücke
+liegt beim Compiler, nicht bei der VM. Drei Annahmen der Erwartung waren falsch:
+- **Der Compiler senkt `while` schlecht.** `loop` braucht aus dem Quelltext 11 VM-Befehle je Durchlauf, von Hand
+  5:
+  - Jede Zuweisung als Anweisung kopiert ihren Wert noch in ein Register, das niemand liest.
+  - `i += 1` lädt die 1, statt `add.imm` zu nehmen.
+  - Vergleich und Sprung sind zwei Befehle, keiner der verschmolzenen.
+  
+  `add.imm` und `jump.lt.i` gab es schon, aber nur für `for (i in a..b)`. Die Programme spiegeln die 4.x-Fassungen
+  und schreiben `while`. Sie werden nicht nachträglich auf `for` umgeschrieben; das hieße, den Ratchet
+  schönzurechnen.
+- **`Map` ist nicht nativ**, wie die Erwartung annahm, sondern in Script geschrieben (`std/collections.lyrs`,
+  std source-first). Ein Lesezugriff `m[k]` sind vier VM-Aufrufe: `index` → `get` → `__hashOf`, `place`.
+- **4.6 lief schneller als bei der Kalibrierung** (0,44–0,82 s statt 0,49–0,84), weil die Maschine ruhiger war.
+
+Ein Werkzeugbefund kam dazu. Der Release-Build scheitert beim **Übersetzen** abhängig von den Pfadlängen
+(lyric#667), unter valgrind auch aus der Linux-Kopie. Die VM-Läufe aus dem Cache waren in Lauf 1 alle gültig.
+Ab jetzt füllt deshalb der Debug-Build desselben Stands den Cache (`--prefill`). Der Schlüssel enthält Quelle,
+Version und Format, nicht das Profil, und das Release-Binary führt nur noch den Bytecode aus.
+
+**S7k1b, Senkungen im Codegen.** Vier Änderungen:
+- Eine Zuweisung als Anweisung schreibt ihren Wert nirgendwohin.
+- `x + k`, `k + x`, `x - k`, `x += k` und `x -= k` mit einem Literal `k`, das in 16 Bit passt, werden zu `add.imm`.
+  Der Überlauf wird gleich geprüft.
+- Ein Vergleich `<`, `<=`, `>`, `>=` auf `int` oder `char` in der Bedingung von `if`, `while` oder `do-while`
+  springt selbst. Dafür kommt `jump.le.i` neben `jump.lt.i`, und das Bytecode-Format geht von 47 auf 48. Die
+  Operanden werden weiter von links nach rechts gelesen.
+- Eine literale Bedingung springt immer oder nie; das betrifft das `while (true)` hinter `while let`.
+
+Fuel bleibt gleich: ein Rücksprung je Durchlauf.
+
+**Erwartung S7k1b (vor dem ersten Lauf geschrieben).** Die Zahl der Befehle (cachegrind) mit warmem Cache,
+gegen f20cd9d:
+
+| Programm | vorher | Erwartung | Grund |
+|---|---:|---|---|
+| `loop` | 4,873·10⁹ | **2,9–3,4·10⁹ (−30 bis −40 %)** | 6 statt 11 VM-Befehle je Durchlauf, nahe am Bytecode von Hand (2,82·10⁹) |
+| `fib` | 3,333·10⁹ | −12 bis −20 % | innerer Aufruf 10 statt 13 VM-Befehle, Blatt 3 statt 4 |
+| `objects` | 3,300·10⁹ | −15 bis −20 % | Aufbau 6 statt 9 Befehle je Knoten, Lauf 8 statt 11 |
+| `words` | 3,372·10⁹ | −3 bis −10 % | Die Arbeit liegt in `append`, `split` und `Map`, die std-Module senken mit |
+| `sort` | 0,123·10⁹ | 0 bis −5 % | Start und natives Sortieren |
+| `sortby` | 1,760·10⁹ | −3 bis −10 % | `totalCompare` und der Aufruf der Lambda |
+| `map` | 3,650·10⁹ | −5 bis −15 % | die Sondierschleife von `Map.place` |
+| `strings` | 5,208·10⁹ | −3 bis −10 % | `append` über `Display` |
+
+- **Wandzeit, Lauf 2:** Mittel B1–B8 **5,0–5,6×**; der Ratchet hält also knapp. Mittel B1, B2, B3, B6 **4,3–4,6×**.
+- **Prüfung:** Konformanz 863/863. Unit-Tests, die eine genaue Disassemblierung vergleichen, können brechen;
+  erwartet werden 0–5 solcher Fälle, dazu ein neuer Test je Senkung.

@@ -1,0 +1,14 @@
+// B8 strings: the numbers 0..699 999 written into a StringBuilder, each followed by a comma, then
+// the text's length — int to text and appending. The same algorithm as ../v46/strings.lyr.
+fn run(): int {
+    let b = StringBuilder.new()
+    var i = 0
+    while (i < 700000) {
+        b.append(i)
+        b.append(",")
+        i += 1
+    }
+    return b.toString().length()
+}
+
+println(run())

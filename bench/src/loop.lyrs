@@ -1,0 +1,15 @@
+// B2 loop: 10^7 iterations of acc = (acc + i * i) % 1000003 — dispatch and int arithmetic.
+// In a function, so the counters are locals as in ../v46/loop.lyr (top-level bindings are the
+// module's).
+fn run(): int {
+    let n = 10000000
+    var acc = 0
+    var i = 0
+    while (i < n) {
+        acc = (acc + i * i) % 1000003
+        i += 1
+    }
+    return acc
+}
+
+println(run())

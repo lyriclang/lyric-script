@@ -746,14 +746,51 @@ class FnGen {
         return this.code.length();
     }
 
+    /// A jump, to be patched, taken where condition `c` is `when`; `-1` where it never is. An
+    /// `int` or `char` comparison jumps by itself (`jump.lt.i`, `jump.le.i`, both operands still
+    /// read left to right), a literal condition jumps always or never; anything else is computed
+    /// and tested (S7k1b).
+    mut fn jumpWhen(c: TExpr, when: bool): int {
+        match (c) {
+            .Bool(b) => {
+                return if (b == when) this.emit(Op.Jump, 0, 0, 0) else -1;
+            }
+            .Binary(l, op, r, _) => {
+                let lt = typeOf(l.value);
+                let fused = (lt == .Int || lt == .Char)
+                    && typeOf(r.value) == lt
+                    && (op == .Lt || op == .Le || op == .Gt || op == .Ge);
+                if (fused) {
+                    let a = this.any(l.value).s;
+                    let b = this.any(r.value).s;
+                    // as `x < y` or `x <= y`: `a > b` is `b < a`, `a >= b` is `b <= a`
+                    let (x, y, strict) = match (op) {
+                        .Lt => (a, b, true),
+                        .Le => (a, b, false),
+                        .Gt => (b, a, true),
+                        _ => (b, a, false),
+                    };
+                    if (when) {
+                        return this.emit(if (strict) Op.JumpLtI else Op.JumpLeI, x, y, 0);
+                    }
+                    // not `x < y` is `y <= x`; not `x <= y` is `y < x`
+                    return this.emit(if (strict) Op.JumpLeI else Op.JumpLtI, y, x, 0);
+                }
+            }
+            _ => { }
+        }
+        let cond = this.any(c).s;
+        return this.emit(if (when) Op.JumpIf else Op.JumpIfNot, cond, 0, 0);
+    }
+
     /// Points the jump at `at` to `target`: operand a of `jump`, b of `jump.if`/`jump.ifnot`, c of
-    /// `jump.lt.i`.
+    /// `jump.lt.i`/`jump.le.i`.
     mut fn patch(at: int, target: int): void {
         let old = this.code[at];
         let t = target as uint16;
         this.code[at] = match (old.op) {
             .Jump => Instr { op = old.op, a = t, b = old.b, c = old.c },
-            .JumpLtI => Instr { op = old.op, a = old.a, b = old.b, c = t },
+            .JumpLtI | .JumpLeI => Instr { op = old.op, a = old.a, b = old.b, c = t },
             _ => Instr { op = old.op, a = old.a, b = t, c = old.c },
         };
     }
@@ -986,16 +1023,17 @@ class FnGen {
             }
             .If(c, then, otherwise, line) => {
                 this.line = line;
-                let cond = this.any(c).s;
-                let toElse = this.emit(Op.JumpIfNot, cond, 0, 0);
+                let toElse = this.jumpWhen(c, false);
                 this.release(m);
                 this.stmts(then);
                 if (otherwise.length() > 0) {
                     let toEnd = this.emit(Op.Jump, 0, 0, 0);
-                    this.patch(toElse, this.here());
+                    if (toElse >= 0) {
+                        this.patch(toElse, this.here());
+                    }
                     this.stmts(otherwise);
                     this.patch(toEnd, this.here());
-                } else {
+                } else if (toElse >= 0) {
                     this.patch(toElse, this.here());
                 }
             }
@@ -1007,8 +1045,10 @@ class FnGen {
                 this.stmts(body);
                 let test = this.here();
                 this.line = line;
-                let cond = this.any(c).s;
-                this.emit(Op.JumpIf, cond, top, 0);
+                let back = this.jumpWhen(c, true);
+                if (back >= 0) {
+                    this.patch(back, top);
+                }
                 this.closeLoop(loop, test);
             }
             .While(c, body, line) => {
@@ -1019,8 +1059,10 @@ class FnGen {
                 this.stmts(body);
                 let test = this.here();
                 this.line = line;
-                let cond = this.any(c).s;
-                this.emit(Op.JumpIf, cond, top, 0);
+                let back = this.jumpWhen(c, true);
+                if (back >= 0) {
+                    this.patch(back, top);
+                }
                 this.patch(toTest, test);
                 this.closeLoop(loop, test);
             }
@@ -1273,7 +1315,13 @@ class FnGen {
         let m = this.mark();
         let t = typeOf(e);
         let (ns, nr) = this.slots(t);
-        if (ns == 0 && nr == 0) {
+        // an assignment's value is its target's: as a statement nothing reads it, so it is not
+        // copied anywhere (S7k1b)
+        let assigns = match (e) {
+            .Assign(_, _, _, _) => true,
+            _ => false,
+        };
+        if ((ns == 0 && nr == 0) || assigns) {
             this.to(e, nowhere);
         } else {
             this.any(e);
@@ -2097,6 +2145,16 @@ class FnGen {
             this.patch(skip, this.here());
             return;
         }
+        // `x + 1`, `1 + x`, `x - 1`: the constant as the instruction's immediate (S7k1b)
+        let imm = immediateOf(l, op, r);
+        if (imm != null) {
+            let (x, k) = imm;
+            let a = this.any(x).s;
+            if (dst.s >= 0) {
+                this.emit(Op.AddImm, dst.s, a, k & 0xFFFF);
+            }
+            return;
+        }
         let a = this.any(l).s;
         let b = this.any(r).s;
         let f = typeOf(l) == .Float;
@@ -2446,6 +2504,15 @@ class FnGen {
             this.release(m);
             return;
         }
+        // `x += 1`, `x -= 1`: the constant as the immediate (S7k1b)
+        if (t == .Int) {
+            let k = stepOf(op, value);
+            if (k != null) {
+                this.emit(Op.AddImm, out.s, cur.s, k & 0xFFFF);
+                this.release(m);
+                return;
+            }
+        }
         let rv = this.any(value);
         if (t == .Str) {
             let base = this.nextR;
@@ -2477,6 +2544,50 @@ class FnGen {
         }
         this.release(m);
     }
+}
+
+/// The immediate that `x op k` adds, where `op` is `+` or `-` on `int` and `k` a literal whose
+/// immediate fits the 16 bits of `add.imm`; `null` otherwise. The overflow check is the same:
+/// `x - k` and `x + (-k)` overflow alike.
+fn stepOf(op: BinaryOp, value: TExpr): ?int {
+    var k = 0;
+    match (value) {
+        .Int(n) => {
+            k = n;
+        }
+        _ => {
+            return null;
+        }
+    }
+    // the immediate is a signed 16-bit value: `x + k` takes k in -32768..32767, `x - k` takes
+    // -k there, so k in -32767..32768 (checked before the negation, which int's least value
+    // would overflow)
+    if (op == .Add) {
+        return if (k >= -32768 && k <= 32767) k else null;
+    }
+    if (op == .Sub) {
+        return if (k >= -32767 && k <= 32768) -k else null;
+    }
+    return null;
+}
+
+/// `x + k`, `k + x` or `x - k` on `int` with a literal `k` that fits an immediate: `x` and the
+/// immediate.
+fn immediateOf(l: TExpr, op: BinaryOp, r: TExpr): ?(TExpr, int) {
+    if (typeOf(l) != .Int || typeOf(r) != .Int) {
+        return null;
+    }
+    let right = stepOf(op, r);
+    if (right != null) {
+        return (l, right);
+    }
+    if (op == .Add) {
+        let left = stepOf(op, l);
+        if (left != null) {
+            return (r, left);
+        }
+    }
+    return null;
 }
 
 fn nativeFn(n: Native): NativeFn {

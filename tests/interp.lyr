@@ -496,6 +496,25 @@ fn aTooDeepRecursionIsAStackOverflow(): void {
     assertEq(p.trace.length(), maxDepth + 1);
 }
 
+/// A recursion deeper than the frames' first array returns through every frame (S7j): the frames
+/// grow, and what they held before is what they hold after.
+@Test
+fn aDeepRecursionReturnsThroughEveryFrame(): void {
+    let text = """
+        fn sum(s) -> s regs 3 0
+            load.i s1, 0
+            jump.lt.i s1, s0, @more
+            ret.s s0
+        more:
+            add.imm s2, s0, -1
+            call sum, s2, r0
+            add.i s0, s0, s2
+            ret.s s0
+        end
+        """;
+    assertEq(scalar(runText(text, "sum", [1000], -1)), 500500);
+}
+
 @Test
 fn objectsHoldTheirFields(): void {
     let text = """

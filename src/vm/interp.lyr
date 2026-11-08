@@ -171,6 +171,58 @@ struct CallFrame {
     baseR: int,
 }
 
+/// The callers' frames while their callees run, in one array doubled where it runs out (S7j). A
+/// `List<CallFrame>` cost a call a frame: its `push` lives in the instance unit of
+/// `std.collections`, which no build inlines, and its `pop` gives an optional. The growth is a
+/// method of its own, so that `push` stays small enough to be inlined.
+class FrameStack {
+    var data: CallFrame[],
+    var n: int = 0,
+
+    static fn new(): FrameStack {
+        return FrameStack {
+            data = [CallFrame { function = 0, pc = 0, baseS = 0, baseR = 0 }] * 256,
+        };
+    }
+
+    fn length(): int {
+        return this.n;
+    }
+
+    mut fn push(fr: CallFrame): void {
+        if (this.n == this.data.length()) {
+            this.grow();
+        }
+        this.data[this.n] = fr;
+        this.n += 1;
+    }
+
+    mut fn grow(): void {
+        let bigger = [CallFrame { function = 0, pc = 0, baseS = 0, baseR = 0 }] * (this.n * 2);
+        var k = 0;
+        while (k < this.n) {
+            bigger[k] = this.data[k];
+            k += 1;
+        }
+        this.data = bigger;
+    }
+
+    /// The frame on top, taken off; the stack holds one.
+    mut fn take(): CallFrame {
+        this.n -= 1;
+        return this.data[this.n];
+    }
+
+    /// Frame `i`, the outermost 0.
+    fn get(i: int): CallFrame {
+        return this.data[i];
+    }
+
+    mut fn clear(): void {
+        this.n = 0;
+    }
+}
+
 /// Runs `entry` of `module` with `args` in its first scalar registers, with `fuel` units of
 /// budget (a backward jump or a call costs one; `-1` runs without a limit), on a task of its
 /// own: a panic of the VM itself becomes `Outcome.Panic` with the code `LYS-ICE0001`.
@@ -213,7 +265,7 @@ pub fn execute(
 class TaskState {
     var s: uint64[],
     var r: HeapRef[],
-    var frames: List<CallFrame>,
+    var frames: FrameStack,
     var fi: int,
     var pc: int = 0,
     var bs: int = 0,
@@ -257,7 +309,7 @@ class TaskState {
 class Context {
     var s: uint64[],
     var r: HeapRef[],
-    var frames: List<CallFrame>,
+    var frames: FrameStack,
     var fi: int,
     var pc: int,
     var bs: int,
@@ -314,7 +366,7 @@ fn coroutineStart(module: Module, env: HeapRef): ?Context {
     let x = Context {
         s = [0 as uint64] * grown(0, callee.scalars),
         r = refArray(grown(0, callee.refs)),
-        frames = List<CallFrame>.new(),
+        frames = FrameStack.new(),
         fi = target,
         pc = 0,
         bs = 0,
@@ -527,7 +579,7 @@ fn runOn(
     let main = TaskState {
         s = [0 as uint64] * grown(0, first.scalars),
         r = refArray(grown(0, first.refs)),
-        frames = List<CallFrame>.new(),
+        frames = FrameStack.new(),
         fi = fi,
     };
     var k = 0;
@@ -1428,9 +1480,9 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
     // above the frame's
     var inject = false;
     while (true) {
+        // the injected throw is the `Throw` arm's to clear: no write a step (S7j)
         let ins = if (inject) Instr { op = .Throw, a = f.refs as uint16, b = 0, c = 0 }
             else code[pc];
-        inject = false;
         let a = ins.a as int;
         let b = ins.b as int;
         let c = ins.c as int;
@@ -1496,7 +1548,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     );
                 }
                 let x = s[bs + b] as int;
-                let z = if (ins.op == .DivI) x.checkedDiv(y) else x.checkedRem(y);
+                // a match, not `==`: `==` on `Op` is a call into std.core (S7j)
+                let z = match (ins.op) {
+                    .DivI => x.checkedDiv(y),
+                    _ => x.checkedRem(y),
+                };
                 if (z == null) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
                 }
@@ -1589,20 +1645,30 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             }
             .Jump => {
                 if (a <= pc) {
-                    shared.budget = spend(shared.budget);
-                    if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                    // without a limit (-1) nothing is spent: one read, no write (S7j)
+                    if (shared.budget != -1) {
+                        shared.budget = spend(shared.budget);
+                        if (shared.budget == -2) {
+                            return Outcome.Suspended;
+                        }
                     }
                 }
                 pc = a;
             }
             .JumpIf | .JumpIfNot => {
-                let taken = (s[bs + a] != 0) == (ins.op == .JumpIf);
+                let whenTrue = match (ins.op) {
+                    .JumpIf => true,
+                    _ => false,
+                };
+                let taken = (s[bs + a] != 0) == whenTrue;
                 if (taken) {
                     if (b <= pc) {
-                        shared.budget = spend(shared.budget);
-                        if (shared.budget == -2) {
-                            return Outcome.Suspended;
+                        // without a limit (-1) nothing is spent: one read, no write (S7j)
+                        if (shared.budget != -1) {
+                            shared.budget = spend(shared.budget);
+                            if (shared.budget == -2) {
+                                return Outcome.Suspended;
+                            }
                         }
                     }
                     pc = b;
@@ -1613,9 +1679,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             .JumpLtI => {
                 if ((s[bs + a] as int) < (s[bs + b] as int)) {
                     if (c <= pc) {
-                        shared.budget = spend(shared.budget);
-                        if (shared.budget == -2) {
-                            return Outcome.Suspended;
+                        // without a limit (-1) nothing is spent: one read, no write (S7j)
+                        if (shared.budget != -1) {
+                            shared.budget = spend(shared.budget);
+                            if (shared.budget == -2) {
+                                return Outcome.Suspended;
+                            }
                         }
                     }
                     pc = c;
@@ -1624,9 +1693,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 }
             }
             .Call => {
-                shared.budget = spend(shared.budget);
-                if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                // without a limit (-1) nothing is spent: one read, no write (S7j)
+                if (shared.budget != -1) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
+                        return Outcome.Suspended;
+                    }
                 }
                 if (frames.length() >= maxDepth) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
@@ -1647,26 +1719,30 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc = 0;
             }
             .Ret | .RetS | .RetR | .RetN => {
-                if (ins.op == .RetS) {
-                    s[bs] = s[bs + a];
-                } else if (ins.op == .RetR) {
-                    r[br] = r[br + a];
-                } else if (ins.op == .RetN) {
-                    // the result's slots to the bases: from higher registers to lower ones, in
-                    // order, so an overlap reads before it writes
-                    var k = 0;
-                    while (k < f.retS) {
-                        s[bs + k] = s[bs + a + k];
-                        k += 1;
+                match (ins.op) {
+                    .RetS => {
+                        s[bs] = s[bs + a];
                     }
-                    k = 0;
-                    while (k < f.retR) {
-                        r[br + k] = r[br + b + k];
-                        k += 1;
+                    .RetR => {
+                        r[br] = r[br + a];
                     }
+                    .RetN => {
+                        // the result's slots to the bases: from higher registers to lower ones,
+                        // in order, so an overlap reads before it writes
+                        var k = 0;
+                        while (k < f.retS) {
+                            s[bs + k] = s[bs + a + k];
+                            k += 1;
+                        }
+                        k = 0;
+                        while (k < f.retR) {
+                            r[br + k] = r[br + b + k];
+                            k += 1;
+                        }
+                    }
+                    _ => { }
                 }
-                let back = frames.pop();
-                if (back == null) {
+                if (frames.length() == 0) {
                     // S6b: a coroutine's body ended — its result kept, its pull answers that no
                     // value came (Lyric 5 10 §1 rules 3–5)
                     let p = t.pullers.pop();
@@ -1711,6 +1787,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         _ => Outcome.Void,
                     };
                 }
+                let back = frames.take();
                 if (back.function < 0) {
                     // a report's call returned: the message, then the cause, then its message
                     let rep = report;
@@ -1885,7 +1962,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     );
                 }
                 let x = s[bs + b] as int;
-                s[bs + a] = (if (ins.op == .Shl) x << count else x >> count) as uint64;
+                let shifted = match (ins.op) {
+                    .Shl => x << count,
+                    _ => x >> count,
+                };
+                s[bs + a] = shifted as uint64;
                 pc += 1;
             }
             .BNot => {
@@ -1942,9 +2023,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // a call through a function value: the value is the callee's first reference argument,
             // and its first scalar field names the function
             .CallV => {
-                shared.budget = spend(shared.budget);
-                if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                // without a limit (-1) nothing is spent: one read, no write (S7j)
+                if (shared.budget != -1) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
+                        return Outcome.Suspended;
+                    }
                 }
                 if (frames.length() >= maxDepth) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
@@ -1982,9 +2066,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // a call through an interface value: the receiver is the callee's first reference
             // argument, and its type's table names the function of slot `a`
             .CallI => {
-                shared.budget = spend(shared.budget);
-                if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                // without a limit (-1) nothing is spent: one read, no write (S7j)
+                if (shared.budget != -1) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
+                        return Outcome.Suspended;
+                    }
                 }
                 if (frames.length() >= maxDepth) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
@@ -2043,9 +2130,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // S3i: a static member through a type's descriptor: the function in slot `a` of the
             // descriptor in reference register `c`, its arguments after it
             .CallS => {
-                shared.budget = spend(shared.budget);
-                if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                // without a limit (-1) nothing is spent: one read, no write (S7j)
+                if (shared.budget != -1) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
+                        return Outcome.Suspended;
+                    }
                 }
                 if (frames.length() >= maxDepth) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
@@ -2238,6 +2328,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // in a caller the call (06 §5 rule 1); `throw` starts its record, `rethrow` goes on
             // with the one in register `b` (S4b)
             .Throw | .Rethrow => {
+                inject = false;
                 let value = r[br + a];
                 let held = if (ins.op == .Rethrow) r[br + b] else nilRef();
                 let record = if (held is ErrorRecord) held else recordOf(frames, fi, pc);
@@ -2249,8 +2340,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                             pc = h.target;
                             break;
                         }
-                        let back = frames.pop();
-                        if (back == null) {
+                        if (frames.length() == 0) {
                             return panicOut(
                                 module,
                                 frames,
@@ -2260,6 +2350,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                                 "an error caught by no frame"
                             );
                         }
+                        let back = frames.take();
                         fi = back.function;
                         f = module.functions[fi];
                         code = f.code;
@@ -2339,8 +2430,8 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     }
                     // the frames are left: the report's call runs where the entry ran
                     if (frames.length() > 0) {
-                        bs = frames[0].baseS;
-                        br = frames[0].baseR;
+                        bs = frames.get(0).baseS;
+                        br = frames.get(0).baseR;
                     }
                     frames.clear();
                     frames.push(CallFrame { function = -1, pc = 0, baseS = bs, baseR = br });
@@ -3248,7 +3339,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 let child = TaskState {
                     s = [0 as uint64] * grown(0, callee.scalars),
                     r = refArray(grown(0, callee.refs)),
-                    frames = List<CallFrame>.new(),
+                    frames = FrameStack.new(),
                     fi = target,
                 };
                 child.r[0] = env;
@@ -3461,7 +3552,10 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc += 1;
             }
             .ListGetS | .ListGetR | .ListSetS | .ListSetR => {
-                let reads = ins.op == .ListGetS || ins.op == .ListGetR;
+                let reads = match (ins.op) {
+                    .ListGetS | .ListGetR => true,
+                    _ => false,
+                };
                 let o = r[br + (if (reads) b else a)];
                 let i = (s[bs + (if (reads) c else b)]) as int;
                 if (!(o is ScriptArray)) {
@@ -3502,7 +3596,10 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     );
                 }
                 // a write's value stands after the index and the list
-                let writes = ins.op == .ListSetN;
+                let writes = match (ins.op) {
+                    .ListSetN => true,
+                    _ => false,
+                };
                 let at = if (writes) 1 else 0;
                 var k = 0;
                 while (k < o.ns) {
@@ -3653,14 +3750,14 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
 
 /// The record of an error thrown at `pc` of function `fi`: that frame, then its callers at their
 /// calls; a report's call stands for none.
-fn recordOf(frames: List<CallFrame>, fi: int, pc: int): ErrorRecord {
+fn recordOf(frames: FrameStack, fi: int, pc: int): ErrorRecord {
     let functions = List<int>.new();
     let pcs = List<int>.new();
     functions.push(fi);
     pcs.push(pc);
     var i = frames.length() - 1;
     while (i >= 0) {
-        let fr = frames[i];
+        let fr = frames.get(i);
         if (fr.function >= 0) {
             functions.push(fr.function);
             pcs.push(fr.pc - 1);
@@ -3699,13 +3796,13 @@ fn handlerAt(f: Function, pc: int): ?Handler {
 
 /// Whether a frame takes an error thrown at `pc` of `f`: `f`'s, or a caller's at its call, down
 /// to the first frame or to a report's call.
-fn caught(module: Module, frames: List<CallFrame>, f: Function, pc: int): bool {
+fn caught(module: Module, frames: FrameStack, f: Function, pc: int): bool {
     if (handlerAt(f, pc) != null) {
         return true;
     }
     var k = frames.length() - 1;
-    while (k >= 0 && frames[k].function >= 0) {
-        if (handlerAt(module.functions[frames[k].function], frames[k].pc - 1) != null) {
+    while (k >= 0 && frames.get(k).function >= 0) {
+        if (handlerAt(module.functions[frames.get(k).function], frames.get(k).pc - 1) != null) {
             return true;
         }
         k -= 1;
@@ -5128,7 +5225,7 @@ fn growRefs(r: HeapRef[], need: int): HeapRef[] {
 /// The panic outcome, with the script's frames: the current one first, then its callers.
 fn panicOut(
     module: Module,
-    frames: List<CallFrame>,
+    frames: FrameStack,
     fi: int,
     pc: int,
     code: string,
@@ -5141,12 +5238,12 @@ fn panicOut(
 
 /// The script's frames: the current one first, then its callers; a report's call stands for
 /// none.
-fn traceOf(module: Module, frames: List<CallFrame>, fi: int, pc: int): string[] {
+fn traceOf(module: Module, frames: FrameStack, fi: int, pc: int): string[] {
     let trace = List<string>.new();
     trace.push(frameText(module.functions[fi], pc));
     var i = frames.length() - 1;
     while (i >= 0) {
-        let fr = frames[i];
+        let fr = frames.get(i);
         if (fr.function >= 0) {
             trace.push(frameText(module.functions[fr.function], fr.pc - 1));
         }

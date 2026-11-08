@@ -418,8 +418,13 @@ VM's call path, S7k measurement point 3.
 - **S7i4 done** — `std.cli` in Script (12 rule 36): `Cli` declares flags, options, arguments and commands,
   `parse(args)` reads them, writes the help and the errors itself (exit 0 and 2), `tryParse` throws `CliError`.
   28 mutants, all killed; 863 cases. **S7i done.**
-- Next: **S7j** — the VM's call path (frames without `List`, a resolved function table, one growth check per
-  call, fuel at returns), measured with the bench of measurement point 1 before and after.
+- **S7j done** — the VM's call path: its own frame stack instead of `List<CallFrame>`, `match` instead of `==`
+  on `Op` in the hot path, no fuel write without a limit, no `inject` write per instruction. Release build,
+  instructions (cachegrind): `fib` −13 %, `loop` −9 %, `objects` −9 %, `fibsrc` −14 %, `sortby` −17 %; the
+  prediction for `fib` (−20 to −30 %) missed: dispatch, outside the cut, is ~60 instructions per VM op. 11
+  mutants as predicted (one equivalent survives); 863 cases, 376 tests.
+- Next: **S7k** — measurement point 3: the bench suite in Script source and as 4.x programs, on the
+  release build, with P21 (cold start by phase) and P45.
 
 ## Working mode
 
@@ -499,4 +504,5 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P43 | **Script has no attributes, and no slice of the plan has a clock for them** (found in S7i1): design 09 At decides kinds 1 and 2 like Lyric 5 — data attributes readable through reflection, the closed list `@Deprecated`, `@Test`, `@Bench`, `@MustUse`, `@NonExhaustive`, `@callerExpr`/`@callerLine`/`@callerFile`, `@Allow`/`@Warn`/`@Deny`, `@Shared` — but the parser knows no `@`. `std.test`'s assertions therefore write `got 2` where Lyric 5 writes `xs.length() = 2`. Clocked by recommendation to **S11**, with `@Test` and `lyric-script test`, which need them first; kind 1 and its reflection (`f.attribute<T>()`) with `reflect` in S10. Say if another place fits better. | S7i1 |
 | P44 | **`string` is no `Contains<char>` in Script** (S7i1): Lyric 5 writes `extend string :: [Contains<char>] { }`, its generic `contains<P :: [Pattern]>` meeting the member at `P = char`; Script's checker refuses that (`LYS-SEM0042`) and reaches `c in s` through a case of its own. So `assertContains("abc", 'b')` of Lyric 5's documentation is `LYS-SEM0028` in Script. Clocked to S11 with the rest of `std.test`: a generic member meeting an interface member at an instantiation, or a member of its own. | S7i1 |
 | P45 | **A write through a module's name is refused with the wrong words** (found in S7i3a): `kept.count = 5`, `kept` an imported module, says `LYS-SEM0002` "nothing in scope is named 'kept'". Whether Lyric 5 lets a module write another's `var` through its name, and so whether the refusal is right, is not read yet; either way the message names the wrong thing. Clocked to S7k: read Lyric 5 §4, then allow the write or refuse it with its own words. | S7i3a |
+| P46 | **The release build needs a detour** (S7j): the whole package is one C unit of 32 MB; `zig cc -O2` takes 207–414 s on it, and Lyric 5 stops each call at a fixed 5 min (lyriclang/lyric#699). S7j built with a wrapper around `zig` that compiles that unit without a limit. Release runs also need their oracle while lyriclang/lyric#667 and #668 are open. Clocked to S7k (its bench runs on the release build) and to the 1.0 release. | S7j |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

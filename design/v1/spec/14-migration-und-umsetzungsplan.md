@@ -2496,3 +2496,71 @@ Rot-Lauf gegen S7i3: 8 von 8 rot.
 Kaltstart: `import std.cli` (477 Zeilen) +130 ms gegen `hello`, vorhergesagt waren +40 bis +200, etwa 0,27 ms je
 Zeile.
 Fälle 855 → 863, Tests 375. **S7i ist damit fertig**: `std.test`, `std.csv`, `std.log`, `std.cli`.
+
+**Schnitt und Erwartung S7j (2026-11-08, vor der ersten Änderung geschrieben).** Gemessen wird mit dem Bench von
+Messpunkt 1 (`fib`, `loop`, `objects` als `.lyrsasm`), dazu zwei Programme im Quelltext: `fibsrc` (fib(30) in Script)
+und `sortby` (100 000 Zahlen über `sortBy` mit einer Lambda, P26). **Hauptmaß ist die Zahl der Maschinenbefehle**
+(cachegrind, `I refs`): Sie hängt nicht von der Last der Maschine ab. Eine parallele Sitzung lastet die Kerne
+gerade aus, und WSL2 hat keine Hardware-Zähler. Die Wandzeit kommt abwechselnd gemessen dazu, als Nebenmaß. Jeder Lauf
+muss sein Orakel liefern (lyric#667 ist offen).
+Befund vor der Änderung, Release-Build von S7i4: `fib` 2,84·10⁹ Befehle, etwa 400 je Aufruf; `loop` 3,09·10⁹, etwa
+60 je VM-Befehl. Je Aufruf entfallen etwa 56 auf `List<CallFrame>` (`push` ist ein Aufruf in die Instanz-Einheit von
+`std.collections`, ohne LTO nie eingebettet; `pop` gibt ein Optional), 24 auf `Op.equals`: `ins.op == .RetS`
+wird zu einem Aufruf, weil `Op :: [Equatable]` seinen Vergleich aus der Vorgabe von `std.core` holt. Dazu kommen
+etwa 13 auf `spend` (ein Schreibzugriff auf `shared.budget` je Aufruf, auch ohne Grenze), 9 auf die zwei
+Wachstumsprüfungen und je VM-Befehl etwa 15 auf das Holen über die `inject`-Auswahl.
+Die Änderungen:
+- (a) ein eigener Stapel `FrameStack` (vier `int` je Frame in einem Array) statt `List<CallFrame>`;
+- (b) `match` statt `==` auf `Op` im heißen Pfad (Rücksprung, Division, bedingter Sprung, Schiebung, Listenzugriff);
+- (c) Fuel nur, wo eine Grenze gesetzt ist: ein Lesezugriff statt Lesen und Schreiben;
+- (d) eine Wachstumsprüfung je Aufruf;
+- (e) `code[pc]` zuerst, `inject` danach, ohne den Schreibzugriff je Befehl.
+Die aufgelöste Funktionstabelle entfällt: `Function` ist eine Klasse, `module.functions[a]` kopiert nichts. Fuel
+bleibt bei Aufrufen und Rücksprüngen wie in 01 S5 und spec 17; es wird nur billiger, nicht verlegt.
+**Erwartung:** `fib` −20 bis −30 % Befehle (300–330 je Aufruf), `fibsrc` ebenso, `sortby` −10 bis −25 %, `loop` −5
+bis −15 %, `objects` 0 bis −10 %. Die Wandzeit folgt ungefähr, wenn die Last es zeigt. Die Ausgaben bleiben gleich,
+und Konformanz und Tests bleiben grün.
+
+**Ergebnis S7j (2026-11-08).** Gebaut wurden (a), (b) und (c). (e) wurde anders gebaut als geplant, (d) gar nicht.
+Gemessen wurde auf Release-Builds, und jeder Lauf hat sein Orakel geliefert. Vor jedem Wurf stand eine eigene
+Erwartung im Protokoll.
+
+| Befehle (`I refs`) | `fib` | `loop` | `objects` | `fibsrc` | `sortby` |
+|---|---|---|---|---|---|
+| vorher (S7i4) | 2,836·10⁹ | 3,092·10⁹ | 1,854·10⁹ | 1,605·10⁹ | 4,465·10⁹ |
+| erster Wurf | +21 % | +6 % | +6 % | +16 % | +4 % |
+| zweiter Wurf | −9,4 % | −4,9 % | −5,0 % | −9,5 % | −12,7 % |
+| **gebaut** | **2,455·10⁹ (−13,4 %)** | **2,822·10⁹ (−8,7 %)** | **1,689·10⁹ (−8,9 %)** | **1,377·10⁹ (−14,2 %)** | **3,711·10⁹ (−16,9 %)** |
+| Wandzeit in s (Median aus 9, abwechselnd) | 0,143 → 0,106 | 0,109 → 0,100 | 0,122 → 0,118 | 0,077 → 0,065 | 0,209 → 0,178 |
+
+**Für `fib` und `fibsrc` ist die Erwartung verfehlt**: Sie sanken um 13 und 14 % statt um 20 bis 30 %. `loop`,
+`objects` und `sortby` liegen in ihren Spannen. Die Gründe zeigt die Annotation je Zeile:
+- **Erster Wurf, teurer als vorher.** Der Stapel hielt vier `int` je Frame. `push` und `get` wurden nicht
+  eingebettet: `push` hatte die Wachstumsschleife inline, `get` vier Indexprüfungen. Dazu wuchs Code ohne
+  Zeilenzuordnung von 603 auf 1005 Mio. Befehle. Erst ein Stapel über `CallFrame[]`, der kalt in eigener
+  Methode wächst, wurde ganz eingebettet. Das war der zweite Wurf.
+- **(e) brachte im zweiten Wurf nichts.** `code[pc]` zuerst zu holen, machte die Zeile der Verzweigung teurer:
+  271 statt 155 Mio. Befehle. Gebaut ist deshalb die alte Auswahl beim Holen. Der Schreibzugriff `inject = false`
+  steht jetzt nur noch im Arm von `Throw`/`Rethrow`, nicht mehr je Befehl.
+- **(d) brachte im Versuch nichts Messbares**: Die zwei Prüfungen vergleichen heiße Werte. Weggelassen.
+- **Die Erwartung hat das Verteilen unterschätzt.** Etwa 60 Befehle je VM-Befehl fallen beim Holen, Zerlegen und
+  Verzweigen an, auch ohne Aufruf, und das lag außerhalb des Schnitts. Der Aufrufpfad war also nur gut die Hälfte
+  der 400 Befehle je Aufruf, nicht drei Viertel.
+- **`ins.op == X` ist ein Aufruf.** Auf einem `Op :: [Equatable]` ruft Lyric 5 dafür die Vorgabe von `std.core`
+  auf, statt die Zahl zu vergleichen. Im heißen Pfad umgeht `match` das; die kalten Stellen bleiben, wie sie waren.
+  Ob Lyric 5 den Vergleich eines einfachen Enums selbst eingebettet senken sollte, entscheidet S7k.
+
+**Tests und Mutanten.**
+- Neuer Test: `aDeepRecursionReturnsThroughEveryFrame`. Er rekursiert 1000 Frames tief, mehr als die 256, mit
+  denen der Stapel anfängt.
+- 11 Mutanten über die geänderten Stellen, alle wie vorhergesagt. J4 überlebt, weil er gleichwertig ist: −2
+  erreicht keinen Aufruf, solange der Lauf läuft. Die anderen zehn sind getötet.
+- Bei J7 (`<<` als `>>`) stimmte nur das Ergebnis. Getötet haben ihn nicht die Fälle von 08, sondern die von
+  `BigInt` und `std.process`; der einzige Fall von 08 mit `<<` prüft die Panik vor der Schiebung.
+- J1 (Wachstum ohne Kopie) hing nicht, wie befürchtet, sondern lieferte ein falsches Ergebnis.
+
+**Messung über einen Umweg.** Der Release-Build des Pakets ist eine C-Einheit von 32 MB. `zig cc -O2` braucht
+dafür 207 bis 414 s, Lyric 5 bricht jeden Aufruf aber nach festen 5 min ab (lyric#699). Gebaut wurde deshalb mit
+einem Wrapper um `zig`, der diese eine Einheit ohne Grenze übersetzt; siehe P46.
+
+Fälle: 863, Tests: 376.

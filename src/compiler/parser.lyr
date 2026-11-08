@@ -125,6 +125,9 @@ class Parser {
     // before the loop the parser is about to read
     var loopLabels: List<string> = List<string>.new(),
     var pendingLabel: ?string = null,
+    // where the `private` and the `internal` bindings of the module start (04 rule 5; S7i3a)
+    var privateAt: List<int> = List<int>.new(),
+    var internalAt: List<int> = List<int>.new(),
 
     static fn new(source: string, tokens: Token[]): Parser {
         return Parser {
@@ -356,7 +359,13 @@ class Parser {
             }
             this.skipTerminators();
         }
-        return Module { frontmatter = frontmatter, items = items.toArray(), text = this.source };
+        return Module {
+            frontmatter = frontmatter,
+            items = items.toArray(),
+            text = this.source,
+            privateBindings = this.privateAt.toArray(),
+            internalBindings = this.internalAt.toArray(),
+        };
     }
 
     mut fn parseItem(): Item throws SyntaxError {
@@ -408,7 +417,17 @@ class Parser {
                 || (this.peek(1).kind == .LParen && this.opensABlockAfterParens(1)))) {
             return Item.Decl(Decl.Extend(try this.parseExtend(first)));
         }
-        if (this.pos > 0 && this.tokens[this.pos - 1].start == first.start) {
+        // a binding of the module kept to its file or its package, as a declaration is (S7i3a)
+        let afterWord = this.pos > 0 && this.tokens[this.pos - 1].start == first.start;
+        if (afterWord && (this.atWord("let") || this.atWord("var"))) {
+            if (!isPub) {
+                this.privateAt.push(this.current().start);
+            } else if (inPackage) {
+                this.internalAt.push(this.current().start);
+            }
+            return Item.Stmt(try this.parseStmt());
+        }
+        if (afterWord) {
             throw this.failure(
                 "LYS-PAR0053",
                 "a visibility word before something that is no declaration",

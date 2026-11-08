@@ -174,7 +174,19 @@ fn declarations(): void {
         "(enum Color Red Green (fn name () : string = \"c\"))"
     );
     assertEq(show("type Ints = List<int>"), "(type Ints List<int>)");
-    assertEq(errs("pub let x = 1"), ["LYS-PAR0053"]);
+    assertEq(errs("pub x = 1"), ["LYS-PAR0053"]);
+    assertEq(errs("private println(1)"), ["LYS-PAR0053"]);
+}
+
+/// A module's binding takes a visibility word, as a declaration does (04 rule 5; S7i3a): the
+/// module notes where a `private` and an `internal` one start, a `pub` one is the default.
+@Test
+fn bindingsTakeAVisibilityWord(): void {
+    let m = parse("private let x = 1\nvar y = 2\ninternal var z = 3\npub let w = 4").module;
+    assertEq(m.privateBindings, [8]);
+    assertEq(m.internalBindings, [37]);
+    assertEq(errs("pub let w = 4\nprivate let (a, b) = (1, 2)"), []);
+    assertEq(show("private let x = 1"), show("let x = 1"));
 }
 
 @Test

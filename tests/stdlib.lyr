@@ -80,6 +80,7 @@ fn theStandardLibrarysModulesAreInTheBinary(): void {
             "fs",
             "io",
             "iter",
+            "log",
             "math",
             "os",
             "path",

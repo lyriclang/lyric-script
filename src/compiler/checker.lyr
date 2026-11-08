@@ -150,11 +150,13 @@ fn checkModule(
         c.submodules.insert(u.file, Names { names = subs });
         c.modByName.insert(u.name, u.file);
         c.sources.insert(u.file, u.module.text);
+        c.noteKeptBindings(u.file, u.module);
         for (item in u.module.items) {
             items.push(item);
         }
     }
     c.sources.insert(0, parsed.text);
+    // the entry's bindings need none: no module imports the entry
     for (item in parsed.items) {
         items.push(item);
     }
@@ -434,6 +436,9 @@ class Checker {
     var imported: List<ImportCheck> = List<ImportCheck>.new(),
     // the keys of what is `private`: its file's alone (02 V)
     var privateKeys: Set<string> = Set<string>.new(),
+    // the module bindings kept to their file or their package, by `file:offset` of their `let`
+    // or `var`, `true` for `internal` (04 rule 5; S7i3a)
+    var keptBindings: Map<string, bool> = Map<string, bool>.new(),
     // the keys of what is `internal`: its package's alone (07 V2, S5b); each module's package
     var internalKeys: Set<string> = Set<string>.new(),
     var modPkg: Map<int, int> = Map<int, int>.new(),
@@ -667,6 +672,16 @@ class Checker {
             f"'{name}' hides the prelude's: in this module the name is its own",
             at
         );
+    }
+
+    /// The bindings of module `m`, file `file`, that are `private` or `internal` (S7i3a).
+    mut fn noteKeptBindings(file: int, m: Module): void {
+        for (at in m.privateBindings) {
+            this.keptBindings.insert(f"{file}:{at}", false);
+        }
+        for (at in m.internalBindings) {
+            this.keptBindings.insert(f"{file}:{at}", true);
+        }
     }
 
     /// A declaration of the current module kept to its file (`private`, 02 V) or to its package
@@ -6455,6 +6470,12 @@ class Checker {
             this.mod = itemFile(item);
             match (item) {
                 .Stmt(s) => {
+                    let sp = stmtSpan(s);
+                    if (let inPackage = this.keptBindings.get(f"{sp.file}:{sp.start}")) {
+                        for (name in boundNames(s)) {
+                            this.keepPrivate(name, inPackage, inPackage);
+                        }
+                    }
                     if (this.mod <= 0 || bindsGlobals(s)) {
                         stmts.push(s);
                     } else {
@@ -13565,8 +13586,10 @@ class Checker {
                 if (this.lookupLocal(typeName) == null
                     && !this.globalIndex.containsKey(this.q(typeName))) {
                     if (let target = this.moduleNamed(typeName)) {
-                        let g = this.globalIndex.get(this.exportKey(target, name));
+                        let key = this.exportKey(target, name);
+                        let g = this.globalIndex.get(key);
                         if (g != null) {
+                            this.maySee(key, name, target, at);
                             return TExpr.Global(g, this.globals[g].ty);
                         }
                         this.error(
@@ -20183,6 +20206,66 @@ fn itemFile(item: Item): int {
 /// program, -1.
 fn fileModule(file: int): int {
     return if (file < 0) -1 else file;
+}
+
+/// The names a module's `let` or `var` binds: its name, or those of its pattern (S7i3a).
+fn boundNames(s: Stmt): string[] {
+    let out = List<string>.new();
+    match (s) {
+        .Let(_, name, _, _, _) => out.push(name),
+        .Destructure(_, p, _, _, _) => namesIn(p, out),
+        _ => { }
+    }
+    return out.toArray();
+}
+
+/// The names pattern `p` binds, into `out`.
+fn namesIn(p: Pattern, out: List<string>): void {
+    match (p) {
+        .Name(n, _) => out.push(n),
+        .Tuple(ps, _) => {
+            for (q in ps) {
+                namesIn(q, out);
+            }
+        }
+        // every alternative binds the same names
+        .Or(ps, _) => {
+            if (ps.length() > 0) {
+                namesIn(ps[0], out);
+            }
+        }
+        .Variant(_, _, ps, _) => {
+            if (let qs = ps) {
+                for (q in qs) {
+                    namesIn(q, out);
+                }
+            }
+        }
+        .VariantFields(_, _, fs, _) => {
+            for (f in fs) {
+                namesIn(f.pattern, out);
+            }
+        }
+        .Fields(_, fs, _) => {
+            for (f in fs) {
+                namesIn(f.pattern, out);
+            }
+        }
+        .Typed(n, _, _) => {
+            if (let name = n) {
+                out.push(name);
+            }
+        }
+        .List(ps, _, rest, _) => {
+            for (q in ps) {
+                namesIn(q, out);
+            }
+            if (let r = rest) {
+                out.push(r);
+            }
+        }
+        .Ignore(_) | .Literal(_, _) | .Range(_, _, _, _) => { }
+    }
 }
 
 /// Whether a statement of an imported module binds its globals: what of it runs (07 Top, V5).

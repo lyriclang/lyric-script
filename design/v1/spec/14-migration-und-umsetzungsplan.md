@@ -2457,3 +2457,26 @@ Rot-Lauf gegen S7i1: 4 von 4 rot.
 Kaltstart: `import std.csv` (198 Zeilen) +39 ms gegen `hello`, vorhergesagt waren +60 bis +150. Die Maschine lief
 in dieser Stunde schneller (`hello` 0,34 s statt 0,46 s), so sind es etwa 0,2 ms je Zeile.
 Fälle 847 → 851, Tests 374.
+
+**Ergebnis S7i3 (2026-11-08).** Zwei Teile.
+S7i3a: Sichtbarkeit für Bindungen. `std.log` braucht Zustand, den nur es selbst schreibt: die Schwelle und die Senke.
+Script lehnte `private let` und `private var` auf Modulebene ab (`LYS-PAR0053`, 02 D2 aus S2). Damals waren die
+äußersten `let` und `var` nur Anweisungen des Skripts. Seit S5 sind sie die Bindungen eines Moduls (04 Regel 3), und
+Lyric 5 gibt ihnen ein Sichtbarkeitswort (`pub let`). Entschieden nach Empfehlung: Eine Bindung nimmt die Wörter wie
+eine Deklaration (04 Regel 5, 02 D2 mitgeändert). Eine private Bindung schreibt und liest nur ihr eigenes Modul, bei
+einem Muster jeder Name. Dabei fiel auf, dass `m.x` die Sichtbarkeit einer Bindung bisher gar nicht prüfte; der
+Import tat es.
+Verworfen: der Zustand in der Instanz einer privaten Klasse hinter einer öffentlichen Bindung. Das wäre ein Umweg um
+eine Lücke, die Lyric 5 nicht hat, und die Bindung bliebe sichtbar.
+S7i3b: `std.log` (§12 Regel 35), wie entschieden. `Debug` eines Enum schreibt `Level.Info`, `Display` `INFO`.
+Nebenfund P45: Eine Zuweisung durch einen Modulnamen (`kept.count = 5`) meldet `LYS-SEM0002` „nothing in scope is
+named 'kept'“.
+Fälle: zwei in 04 (eine private Bindung bleibt in ihrer Datei, mit `stderr-has:` für Import und Zugriff; eine Bindung
+nimmt ein Wort), zwei für `std.log`; der Fall `visibility_before_a_statement` nimmt jetzt `pub println(…)`. Ein
+Unit-Test.
+Mutanten: 15 über Parser, Prüfer und `std.log`, alle getötet, jeder mit den vorhergesagten Fällen. PC traf
+zusätzlich den Test, der jedes std-Modul kompiliert, weil `std.log` selbst `private var` nutzt.
+Rot-Lauf gegen S7i2: 4 von 4 neuen rot, die zwei alten Kontrollfälle grün.
+Kaltstart: `import std.log` (75 Zeilen) +9 ms gegen `hello`, vorhergesagt waren +15 bis +60. Beide Messungen nach
+S7i1 lagen unter der Vorhersage; die Schätzung je Zeile aus `std.time` (0,5 ms) ist für kleine Module zu hoch.
+Fälle 851 → 855, Tests 375.

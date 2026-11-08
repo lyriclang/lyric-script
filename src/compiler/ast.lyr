@@ -497,6 +497,10 @@ struct Module :: [Debug] {
     items: Item[],
     /// The source text: what an assertion quotes as written (S4f).
     text: string = "",
+    /// Where the module's `private` and its `internal` bindings start, the offset of their `let` or
+    /// `var` (04 rule 5; S7i3a).
+    privateBindings: int[] = [],
+    internalBindings: int[] = [],
 }
 
 /// How a prefix operator is written.

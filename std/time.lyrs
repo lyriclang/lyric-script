@@ -1,7 +1,8 @@
-//! Spans, the system's two clocks, the calendar and RFC 3339 (12 rules 29–30; Lyric 5 12 §Time): a module of
-//! the right `os`. `Duration` is the prelude's, so that a script waits without an import; its arithmetic, its
-//! text and `parse` are this module's, a program that names none of them pays for none. So are `Instant`'s
-//! text, `parse` and `toDateTime`: `Instant` lives in `std.time.instant`, which `std.fs` names alone.
+//! Spans, the system's two clocks, the calendar, RFC 3339, zones and patterns (12 rules 29–32; Lyric 5 12
+//! §Time): a module of the right `os`. `Duration` is the prelude's, so that a script waits without an import;
+//! its arithmetic, its text and `parse` are this module's, a program that names none of them pays for none. So
+//! are `Instant`'s text, `parse` and `toDateTime`: `Instant` lives in `std.time.instant`, which `std.fs` names
+//! alone.
 pub import std.time.instant { Instant }
 import std.time.instant { epochNanosOf, floorDiv, instantOfEpochNanos }
 
@@ -550,6 +551,170 @@ struct DateTime :: [Equatable, Display, Parse] {
 
     fn show(): string = f"{this.d}T{this.t}{offsetText(this.off)}"
 
+    /// The date and time by a pattern of UTS #35, such as `yyyy-MM-dd HH:mm:ss`: `y` the year (`yy` its last
+    /// two digits, more `y` padded to the count), `M` the month (`MM` padded, `MMM` `Jan`, `MMMM` `January`,
+    /// `MMMMM` `J`), `d` the day, `H` the hour of 24, `h` of 12, `m`, `s`, `S…` the fraction to as many digits,
+    /// `a` `AM`/`PM`, `E` to `EEE` `Tue`, `EEEE` `Tuesday`, `EEEEE` `T`, `Z` to `ZZZ` `+0100`, `ZZZZ`
+    /// `GMT+01:00` (`GMT` for none), `ZZZZZ` `+01:00` (`Z` for none), `X`/`XX`/`XXX` `+01`/`+0100`/`+01:00`
+    /// with `Z` for none, `x`/`xx`/`xxx` the same without; text in `'…'` as it is, `''` a quote, what is no
+    /// letter as it is. Names are English. `TimeError` for a letter the pattern does not know or a quote not
+    /// closed.
+    fn format(pattern: string): string {
+        let out = StringBuilder.new()
+        for (tk in patternTokens(pattern)) {
+            if (tk.letter == ' ') {
+                out.appendStr(tk.literal)
+            } else {
+                out.appendStr(this.field(tk.letter, tk.count))
+            }
+        }
+        return out.toString()
+    }
+
+    private fn field(letter: char, count: int): string {
+        let t = this.t
+        let d = this.d
+        if (letter == 'y') {
+            return if (count == 2) twoDigits(floorRem(d.y, 100)) else padded(d.y, count)
+        }
+        if (letter == 'M') {
+            let name = monthNames()[d.m - 1]
+            return if (count >= 5) name[0..1] else if (count == 4) name else if (count == 3) name[0..3] else padded(d.m, count)
+        }
+        if (letter == 'd') {
+            return padded(d.d, count)
+        }
+        if (letter == 'H') {
+            return padded(t.h, count)
+        }
+        if (letter == 'h') {
+            return padded(if (t.h % 12 == 0) 12 else t.h % 12, count)
+        }
+        if (letter == 'm') {
+            return padded(t.mi, count)
+        }
+        if (letter == 's') {
+            return padded(t.s, count)
+        }
+        if (letter == 'S') {
+            let nine = padded(t.n, 9)
+            return if (count >= 9) nine else nine[0..count]
+        }
+        if (letter == 'a') {
+            return if (t.h < 12) "AM" else "PM"
+        }
+        if (letter == 'E') {
+            let name = d.dayOfWeek().show()
+            return if (count >= 5) name[0..1] else if (count == 4) name else name[0..3]
+        }
+        if (letter == 'Z') {
+            if (count >= 5) {
+                return offsetText(this.off)
+            }
+            if (count == 4) {
+                return if (this.off == 0) "GMT" else "GMT" + offsetText(this.off)
+            }
+            return offsetBasic(this.off)
+        }
+        if (this.off == 0 && letter == 'X') {
+            return "Z"
+        }
+        if (count == 1) {
+            return offsetHours(this.off)
+        }
+        if (count == 2 || count == 4) {
+            return offsetBasic(this.off)
+        }
+        return if (this.off == 0) "+00:00" else offsetText(this.off)
+    }
+
+    /// A date and time by a pattern of UTS #35, the fields as `format` writes them: a number takes the digits
+    /// it finds (a padded field at least its width; a year its sign), a name is matched without case, a
+    /// fraction as many digits as there are, `yy` as 1970–2069, `ZZZZ` `GMT` and an offset, `ZZZZZ` and `X`
+    /// `Z` too. What the pattern does not name is 1970-01-01 00:00:00; an offset field makes a fixed zone,
+    /// without one `zone` resolves the local time. `ParseError` with `Invalid` for a pattern that is none, a
+    /// text that does not fit it, or fields that name no date, time of day or offset.
+    static fn parseWith(pattern: string, text: string, zone: Zone = Zone.utc): DateTime {
+        let tokens = try patternTokens(pattern) catch (_: TimeError) throw ParseError { kind = ParseErrorKind.Invalid }
+        let r = FieldReader { cs = charsOf(text) }
+        var year = 1970
+        var month = 1
+        var day = 1
+        var hour = 0
+        var minute = 0
+        var second = 0
+        var nano = 0
+        var pm: ?bool = null
+        var h12: ?int = null
+        var off: ?int = null
+        for (tk in tokens) {
+            let letter = tk.letter
+            let count = tk.count
+            if (letter == ' ') {
+                r.literal(tk.literal)
+            } else if (letter == 'y') {
+                if (count == 2) {
+                    year = r.number(2, 2)
+                    year += if (year < 70) 2000 else 1900
+                } else {
+                    let sign = r.sign()
+                    year = sign * r.number(1, 9)
+                }
+            } else if (letter == 'M') {
+                month = if (count >= 3) r.name(monthNames(), count == 3) else r.number(count, 2)
+            } else if (letter == 'd') {
+                day = r.number(count, 2)
+            } else if (letter == 'H') {
+                hour = r.number(count, 2)
+            } else if (letter == 'h') {
+                h12 = r.number(count, 2)
+            } else if (letter == 'm') {
+                minute = r.number(count, 2)
+            } else if (letter == 's') {
+                second = r.number(count, 2)
+            } else if (letter == 'S') {
+                nano = r.fraction()
+            } else if (letter == 'a') {
+                pm = r.amPm()
+            } else if (letter == 'E') {
+                let _ = r.name(weekdayNames(), count <= 3)
+            } else if (letter == 'Z' && count == 4) {
+                r.literal("GMT")
+                off = if (r.signAhead()) r.offset(false) else 0
+            } else {
+                off = r.offset(letter == 'X' || (letter == 'Z' && count >= 5))
+            }
+        }
+        if (r.at != r.cs.length()) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        if (let h = h12) {
+            if (h < 1 || h > 12) {
+                throw ParseError { kind = ParseErrorKind.Invalid }
+            }
+            hour = h % 12 + (if (pm ?? false) 12 else 0)
+        } else if (let p = pm) {
+            if (p && hour < 12) {
+                hour += 12
+            }
+            if (!p && hour >= 12) {
+                hour -= 12
+            }
+        }
+        let date = try Date.of(year, month, day) catch (e: TimeError) throw ParseError {
+            kind = ParseErrorKind.Invalid,
+            detail = e.message(),
+        }
+        let time = try Time.of(hour, minute, second, nano) catch (e: TimeError) throw ParseError {
+            kind = ParseErrorKind.Invalid,
+            detail = e.message(),
+        }
+        if (let o = off) {
+            return DateTime { d = date, t = time, off = o * 1000000000, z = fixedOf(o * 1000000000) }
+        }
+        return DateTime.of(date, time, zone)
+    }
+
     /// RFC 3339's date-time (§5.6), strictly: `T` or `t` between the date and the time, a fraction of any
     /// length — cut to nanoseconds —, `Z`, `z` or `±hh:mm`; no space for the `T`, no second 60. `ParseError`
     /// with `Empty` for an empty text, `Invalid` for a text of another shape or a date or time that does not
@@ -788,4 +953,208 @@ private fn fixedOf(off: int): Zone {
         return Zone.utc
     }
     return Zone { label = offsetText(off), off = off }
+}
+
+/// One piece of a pattern: a field's letter and count, or (letter ' ') a literal text.
+private struct PatternToken {
+    letter: char
+    count: int
+    literal: string
+}
+
+/// The pieces of a UTS #35 pattern; `TimeError` for a letter that is no field or a quote not closed.
+private fn patternTokens(pattern: string): List<PatternToken> {
+    let out = List<PatternToken>.new()
+    let cs = charsOf(pattern)
+    var i = 0
+    while (i < cs.length()) {
+        let c = cs[i]
+        if (c == '\'') {
+            // a quoted literal; '' is one quote
+            let lit = StringBuilder.new()
+            i += 1
+            var closed = false
+            while (i < cs.length()) {
+                if (cs[i] == '\'') {
+                    if (i + 1 < cs.length() && cs[i + 1] == '\'') {
+                        lit.appendChar('\'')
+                        i += 2
+                        continue
+                    }
+                    closed = true
+                    i += 1
+                    break
+                }
+                lit.appendChar(cs[i])
+                i += 1
+            }
+            if (!closed) {
+                throw TimeError { detail = "the pattern's quote is not closed" }
+            }
+            out.push(PatternToken { letter = ' ', count = 0, literal = if (lit.length() == 0) "'" else lit.toString() })
+            continue
+        }
+        if (c.isAsciiAlpha()) {
+            var count = 0
+            while (i < cs.length() && cs[i] == c) {
+                count += 1
+                i += 1
+            }
+            if (!isPatternLetter(c)) {
+                throw TimeError { detail = f"the pattern letter '{c}' is none of y M d H h m s S a E Z X x" }
+            }
+            out.push(PatternToken { letter = c, count = count, literal = "" })
+            continue
+        }
+        let lit = StringBuilder.new()
+        while (i < cs.length() && !cs[i].isAsciiAlpha() && cs[i] != '\'') {
+            lit.appendChar(cs[i])
+            i += 1
+        }
+        out.push(PatternToken { letter = ' ', count = 0, literal = lit.toString() })
+    }
+    return out
+}
+
+private fn isPatternLetter(c: char): bool = "yMdHhmsSaEZXx".contains(c)
+
+/// `v` with zeros before it to `width` digits, its sign before them.
+private fn padded(v: int, width: int): string {
+    var text = f"{if (v < 0) -v else v}"
+    while (text.length() < width) {
+        text = "0" + text
+    }
+    return if (v < 0) "-" + text else text
+}
+
+private fn monthNames(): string[] = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+private fn weekdayNames(): string[] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+/// The offset as `+0100`, `-0530`; `+0000` for none.
+private fn offsetBasic(off: int): string {
+    let mins = (if (off < 0) -off else off) / 60000000000
+    return (if (off < 0) "-" else "+") + twoDigits(mins / 60) + twoDigits(mins % 60)
+}
+
+/// The offset's hours as `+01`, `-05`; `+00` for none.
+private fn offsetHours(off: int): string {
+    let mins = (if (off < 0) -off else off) / 60000000000
+    return (if (off < 0) "-" else "+") + twoDigits(mins / 60)
+}
+
+/// A reader over the text `DateTime.parseWith` reads field by field.
+private class FieldReader {
+    cs: List<char>
+    var at: int = 0
+
+    fn literal(text: string) {
+        for (c in text.chars()) {
+            if (this.at >= this.cs.length() || this.cs[this.at] != c) {
+                throw ParseError { kind = ParseErrorKind.Invalid }
+            }
+            this.at += 1
+        }
+    }
+
+    /// A number of at least `least` and at most `most` digits.
+    fn number(least: int, most: int): int {
+        var v = 0
+        var n = 0
+        while (n < most && this.at < this.cs.length() && isDigit(this.cs[this.at])) {
+            v = v * 10 + ((this.cs[this.at] as int) - 48)
+            this.at += 1
+            n += 1
+        }
+        if (n < least || n == 0) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        return v
+    }
+
+    /// A year's sign: `-` is -1, `+` or none 1.
+    fn sign(): int {
+        if (this.signAhead()) {
+            this.at += 1
+            return if (this.cs[this.at - 1] == '-') -1 else 1
+        }
+        return 1
+    }
+
+    fn signAhead(): bool = this.at < this.cs.length() && (this.cs[this.at] == '+' || this.cs[this.at] == '-')
+
+    /// Digits as nanoseconds; only the first nine count.
+    fn fraction(): int {
+        let (v, end) = readFraction(this.cs, this.at)
+        if (end == this.at) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        this.at = end
+        return v
+    }
+
+    /// One of the names, the whole name or its first three letters, without case; its number from 1.
+    fn name(names: string[], short: bool): int {
+        var i = 0
+        while (i < names.length()) {
+            let full = charsOf(names[i])
+            let want = if (short) 3 else full.length()
+            if (this.at + want <= this.cs.length()) {
+                var k = 0
+                while (k < want && this.cs[this.at + k].toLower() == full[k].toLower()) {
+                    k += 1
+                }
+                if (k == want) {
+                    this.at += want
+                    return i + 1
+                }
+            }
+            i += 1
+        }
+        throw ParseError { kind = ParseErrorKind.Invalid }
+    }
+
+    fn amPm(): bool {
+        if (this.at + 2 > this.cs.length()) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        let a = this.cs[this.at].toLower()
+        if (this.cs[this.at + 1].toLower() != 'm' || (a != 'a' && a != 'p')) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        this.at += 2
+        return a == 'p'
+    }
+
+    /// `Z` (where allowed), `+hh`, `+hhmm` or `+hh:mm`; the seconds east.
+    fn offset(zAllowed: bool): int {
+        if (this.at >= this.cs.length()) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        let c = this.cs[this.at]
+        if (zAllowed && (c == 'Z' || c == 'z')) {
+            this.at += 1
+            return 0
+        }
+        if (c != '+' && c != '-') {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        this.at += 1
+        let hours = this.number(2, 2)
+        var minutes = 0
+        if (this.at < this.cs.length() && this.cs[this.at] == ':') {
+            this.at += 1
+            minutes = this.number(2, 2)
+        } else if (this.at + 1 < this.cs.length() && isDigit(this.cs[this.at]) && isDigit(this.cs[this.at + 1])) {
+            minutes = this.number(2, 2)
+        }
+        if (hours > 23 || minutes > 59) {
+            throw ParseError { kind = ParseErrorKind.Invalid }
+        }
+        let secs = hours * 3600 + minutes * 60
+        return if (c == '-') -secs else secs
+    }
 }

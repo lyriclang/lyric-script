@@ -2348,3 +2348,23 @@ Kaltstart: `import std.time` +114 bis +141 ms gegen S7h5b (zwei Läufe, 20 und 3
 +45. `println` allein kostet +14 bis +19 ms. Abzüglich dessen sind es etwa 0,8 ms je neuer Zeile statt 0,23: Die
 Auflösung kostet mehr als ihre Länge. Das ist ein Befund zu P21 (S7k), dort wird nach Phase gemessen.
 Fälle 838 → 842, Tests 374.
+
+**Ergebnis S7h6b (2026-11-08).** Die Muster von UTS #35 (§12 Regel 32), ganz in Script, ohne Native (Format bleibt
+47). `format` und `parseWith` folgen dem Code von Lyric 5 Feld für Feld. Die Fehlermeldungen von `TimeError` sind die
+von Lyric 5. Eine Abweichung ist entschieden: Lyric 5 liest drei Felder nicht zurück, die es selbst schreibt, nämlich
+`ZZZZ` (`GMT+02:00`), `ZZZZZ` bei UTC (`Z`) und ein Jahr mit Vorzeichen (`-0044`). Seine Regel sagt aber „reads the
+same fields back“. Script folgt der Regel und liest alle drei. Gemeldet als lyric#690; folgt Lyric 5, fällt die
+Abweichung weg. Ein `ParseError` für ein Datum oder eine Uhrzeit, die es nicht gibt, trägt die Meldung von `Date.of`
+bzw. `Time.of` als Detail, wie `DateTime.parse` in Script.
+Fälle: der Fall von Lyric 5, portiert, und einer für das Zurücklesen und die Ränder. Eine Zeile (`12:05 am`) kam vor
+dem Mutantenlauf dazu, weil der Mutant `h % 12 → h` sonst sicher überlebt hätte.
+Mutanten: 22 über `std.time`, alle getötet, jeder mit genau den vorhergesagten Fällen.
+Rot-Lauf gegen S7h6a: 2 von 2 rot.
+Kaltstart: `import std.time` +416 ms gegen S7h6a, vorhergesagt waren +60 bis +130. Phasenzeiten in einer Kopie mit
+Zeitmessern, für `std.time` mit 669, 791 und 1160 Zeilen (S7h5b, S7h6a, S7h6b): Laden 45/55/140 ms, Prüfen
+280/345/525, Erzeugen 34/41/74, Verifizieren 24/29/67. Das Prüfen wächst linear, etwa 0,5 ms je Zeile im
+Debug-Compiler; zusammen ist es etwa 1 ms je Zeile. Das Wachstum ist also nicht überlinear. Falsch war die Schätzung
+von S7h5b (0,23 ms je Zeile), nicht die späteren Messungen. Ein kalter Lauf mit `import std.time` braucht im
+Debug-Build jetzt etwa 1,2 s, aus dem Cache nicht. Das gehört zu P21 (S7k): erst den Release-Build messen, dann
+Rümpfe nur prüfen, wo sie gebraucht werden, oder die std vorübersetzt mitliefern (11 std, mit `pack`).
+Fälle 842 → 844, Tests 374.

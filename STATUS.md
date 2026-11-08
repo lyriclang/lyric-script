@@ -411,7 +411,9 @@ VM's call path, S7k measurement point 3.
   `got 2, expected 3`, the first difference of long values below. `@callerExpr` waits for attributes (P43), a
   string's `Contains<char>` for S11 (P44); `assertPanics`, subtests and the runner come with `lyric-script test`.
   20 mutants, all killed as predicted; 847 cases.
-- Next: **S7i2** — `std.csv` (the APIs of S7i2–S7i4 are decided in plan 14 §S7i).
+- **S7i2 done** — `std.csv` in Script (12 rule 34): `parse` and `format` after RFC 4180, `CsvError` with line
+  and column, `CsvOptions` for the separator and LF. 23 mutants, all killed as predicted; 851 cases.
+- Next: **S7i3** — `std.log` (the APIs of S7i3–S7i4 are decided in plan 14 §S7i).
 
 ## Working mode
 

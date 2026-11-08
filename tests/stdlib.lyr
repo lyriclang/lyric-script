@@ -74,7 +74,20 @@ fn theStandardLibrarysModulesAreInTheBinary(): void {
     assertEq(stdSource("std"), null);
     assertEq(
         stdBelow("std"),
-        ["fmt", "fs", "io", "iter", "math", "os", "path", "process", "random", "test", "time"]
+        [
+            "csv",
+            "fmt",
+            "fs",
+            "io",
+            "iter",
+            "math",
+            "os",
+            "path",
+            "process",
+            "random",
+            "test",
+            "time",
+        ]
     );
     assertEq(stdBelow("std.random"), ["system"]);
     assertEq(stdBelow("std.time"), ["instant"]);

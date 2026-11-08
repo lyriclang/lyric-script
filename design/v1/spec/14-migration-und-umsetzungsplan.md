@@ -2408,7 +2408,7 @@ Die verworfenen Wege stehen dabei.
   - `.command(name, about): Cli` für Unterbefehle,
   - `.version(text)`.
 
-  `cli.parse(args()): Args` gibt
+  `cli.parse(args): Args` (`args` ist der Wert des Prelude, 12 Regel 25) gibt
   - `flag(name): bool`,
   - `option(name): ?string`,
   - `positional(name): ?string`,
@@ -2442,3 +2442,18 @@ Rot-Lauf gegen S7h6b: 3 von 3 rot.
 Kaltstart: `import std.test` (206 Zeilen) +110 ms gegen `hello`, vorhergesagt waren +100 bis +250. Das sind etwa
 0,5 ms je Zeile, wie bei `std.time` (P21).
 Fälle 844 → 847, Tests 374.
+
+**Ergebnis S7i2 (2026-11-08).** `std.csv` (§12 Regel 34), ganz in Script, wie entschieden. Zwei Entscheidungen kamen
+beim Bauen dazu: Ein Datensatz aus einem leeren Feld wird `""` geschrieben, weil eine leere Zeile kein Datensatz ist
+(wie Pythons `csv`; Go schreibt die leere Zeile und liest sie nicht zurück). Ein Feld mit einem BOM steht in
+Anführungszeichen, sonst verlöre das erste Feld ihn beim Lesen. Damit gilt das Zurücklesen für Datensätze gleicher
+Breite mit mindestens einem Feld, und die Regel sagt das so. Ein CR allein ist ein Zeichen des Feldes, wie in Go.
+Spalten zählen in Zeichen, nicht in Bytes wie bei `JsonError` in Lyric 5, weil Script über Zeichen liest. Ein
+Anführungszeichen, CR oder LF als Trenner panikt (`LYS-RT0008`).
+Fälle: vier. Der Fall für die Fehlerorte bekam vor dem Mutantenlauf eine CRLF-Zeile, einen Umbruch am Ende und
+einen BOM, sonst hätten drei Mutanten sicher überlebt.
+Mutanten: 23 über `std.csv`, alle getötet, jeder mit genau den vorhergesagten Fällen.
+Rot-Lauf gegen S7i1: 4 von 4 rot.
+Kaltstart: `import std.csv` (198 Zeilen) +39 ms gegen `hello`, vorhergesagt waren +60 bis +150. Die Maschine lief
+in dieser Stunde schneller (`hello` 0,34 s statt 0,46 s), so sind es etwa 0,2 ms je Zeile.
+Fälle 847 → 851, Tests 374.

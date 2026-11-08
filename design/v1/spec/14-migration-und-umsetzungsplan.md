@@ -2308,3 +2308,17 @@ Mutanten: 16 über VM, `std.time`, `std.time.instant`, `std.fs` und `std.random.
 Rot-Lauf gegen S7h4: 7 von 8 rot. Der Fall für `random.system` war schon grün, er ist neu, die Regel nicht.
 Kaltstart: `import std.fs` +13 ms gegen S7h4, `import std.time` +58 ms gegen `println` (vorhergesagt +60 bis +120).
 Fälle 824 → 832, Tests 374.
+
+**Ergebnis S7h5b (2026-11-08).** Der Kalender von `std.time` (§12 Regel 30), ganz in Script, ohne neue Natives
+(Format bleibt 46). Enthalten: `Date` (proleptisch gregorianisch, Jahre über 9999 mit `+`), `Time`, `Weekday`,
+`TimeError` mit allen drei Arten von Lyric 5, `Zone.utc` und `Zone.fixed`, `DateTime` an seinem Offset und strenges
+RFC 3339. `Instant` bekommt Text und `parse` per `extend` aus `std.time`; `std.time.instant` bleibt klein. Die Tage
+rechnen nach Hinnant. Gleichheit von `DateTime` vergleicht auch den Offset, wie in Lyric 5: dieselbe Ortszeit an zwei
+Offsets ist zweierlei. Zonen einer Datenbank, `withZone`, `zoneInfo` und die Muster folgen in S7h6.
+Mutanten: 18 über `std.time`, alle getötet. Zwei Fallzeilen kamen vor dem Mutantenlauf dazu, weil zwei Mutanten sonst
+sicher überlebt hätten (Offset in der Gleichheit, zweite Ziffer).
+Rot-Lauf gegen S7h5a: 6 von 6 rot.
+Kaltstart: `import std.time` +103 ms gegen S7h5a, vorhergesagt waren +30 bis +90. Die Vorhersage war verrechnet: der
+Preis wächst linear mit der Quelle (etwa 0,23 ms je Zeile, 225 → 669 Zeilen), weil die eingebettete std bei jedem
+kalten Lauf übersetzt wird. Das gehört zu P21 (S7k).
+Fälle 832 → 838, Tests 374.

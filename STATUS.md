@@ -397,7 +397,10 @@ VM's call path, S7k measurement point 3.
 - **S7h5a done** — the base of `std.time` (format 46): `Duration`'s arithmetic, order, Go text and `parse` by
   `extend` in `std.time`, `Instant` in its own small module (`std.fs`'s `Metadata.modified` loads no calendar),
   `Monotonic` on the run's clock. `import std.time` +58 ms cold. 832 cases, 374 tests; see 14.
-- Next: **S7h5b** — calendar, fixed zones, `DateTime`, RFC 3339, `Instant`'s text and `parse`.
+- **S7h5b done** — the calendar of `std.time` in Script (format 46): `Date`, `Time`, `Weekday`, `TimeError`,
+  fixed zones, `DateTime` at its offset, strict RFC 3339, `Instant`'s text and `parse`. `import std.time` +103 ms
+  cold over S7h5a, linear in its source (P21). 838 cases, 374 tests; see 14.
+- Next: **S7h6** — the zones of a database (TZif, POSIX rules, `local`) and the patterns.
 
 ## Working mode
 

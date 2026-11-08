@@ -6,6 +6,9 @@ pub import std.time.instant { Instant }
 import std.time.instant { epochNanosOf, floorDiv, instantOfEpochNanos }
 
 private fn clockMonotonic(): int = __time_monotonic()
+private fn zoneNew(): Any = __time_zone()
+private fn zoneOpen(how: int, holder: string[], handle: Any, name: string, text: string, data: Any): int = __time_zoneOpen(how, holder, handle, name, text, data)
+private fn zoneAt(ns: int, handle: Any, holder: string[]): int = __time_zoneAt(ns, handle, holder)
 
 /// The least span, whose text has no positive twin.
 private fn leastNanos(): int = -9223372036854775807 - 1
@@ -409,11 +412,13 @@ struct Time :: [Equatable, Ordered, TotalOrder, Hashable, Display, Parse] {
     }
 }
 
-/// A time zone: UTC, or a fixed offset from it — `Zone.utc`, `Zone.fixed(offset)`. Two zones are equal by
-/// name and offset.
+/// A time zone: UTC, a fixed offset from it, or a zone of rules — the database's, a TZif file's, a POSIX
+/// rule's. The host reads and keeps the rules (Lyric 5's), the zone asks them for the offset at a moment
+/// (12 rule 31). Two zones are equal by name, offset and kind.
 struct Zone :: [Equatable] {
     private label: string
     private off: int
+    private rules: ?Any = null
 
     static let utc: Zone = Zone { label = "UTC", off = 0 }
 
@@ -427,12 +432,59 @@ struct Zone :: [Equatable] {
         return fixedOf(ns)
     }
 
+    /// The zone of the IANA name (`Europe/Berlin`) in the system's database, `TZDIR` or `/usr/share/zoneinfo`;
+    /// `UTC`, `Etc/UTC` and `Z` are `Zone.utc` without it. `TimeError` with `NoZoneData` where the system has
+    /// no database (Windows), `NoSuchZone` for a name it does not have or that is no name — empty, absolute,
+    /// with `..` —, `Invalid` for a file that is no TZif.
+    static fn load(name: string): Zone = openZone(0, name, "", null)
+
+    /// The zone of a TZif file's bytes (RFC 8536, versions 1 to 4): its transitions, its types and the
+    /// footer's rule for the years beyond; `TimeError` for bytes that are no TZif.
+    static fn fromTzif(name: string, bytes: Bytes): Zone = openZone(1, name, "", bytes.v)
+
+    /// The zone of a POSIX TZ string (`CET-1CEST,M3.5.0,M10.5.0/3`, `EST5EDT`, `<+0330>-3:30`), its offsets
+    /// west-positive as POSIX writes them; `TimeError` for a string that is none.
+    static fn fromPosix(name: string, tz: string): Zone = openZone(2, name, tz, null)
+
+    /// The system's own zone: `TZ` where it is set — a name of the database, else a POSIX string —, else
+    /// `/etc/localtime`, else UTC.
+    static fn local(): Zone = openZone(3, "", "", null)
+
     fn name(): string = this.label
 
-    /// The offset east of UTC.
-    fn offset(): Duration = Duration.ofNanos(this.off)
+    /// Whether the zone is one offset for all time.
+    fn isFixed(): bool = this.rules == null
 
-    fn equals(o: Zone): bool = this.label == o.label && this.off == o.off
+    /// The offset east of UTC; a zone of rules answers its offset now.
+    fn offset(): Duration {
+        if (this.rules == null) {
+            return Duration.ofNanos(this.off)
+        }
+        return this.offsetAt(Instant.now())
+    }
+
+    /// The offset east of UTC at the moment `at`.
+    fn offsetAt(at: Instant): Duration = Duration.ofNanos(offsetNanosAt(this, epochNanosOf(at)))
+
+    /// The offset, whether daylight time is in force, and the abbreviation at the moment `at`.
+    fn infoAt(at: Instant): ZoneInfo {
+        if (let handle = this.rules) {
+            let holder = [""]
+            let bits = zoneAt(epochNanosOf(at), handle, holder)
+            let secs = floorDiv(bits, 2)
+            return ZoneInfo { offset = Duration.ofSecs(secs), isDst = bits - secs * 2 == 1, abbreviation = holder[0] }
+        }
+        return ZoneInfo { offset = Duration.ofNanos(this.off), isDst = false, abbreviation = this.label }
+    }
+
+    fn equals(o: Zone): bool = this.label == o.label && this.off == o.off && (this.rules == null) == (o.rules == null)
+}
+
+/// What a zone says about a moment.
+struct ZoneInfo :: [Equatable, Debug] {
+    offset: Duration
+    isDst: bool
+    abbreviation: string
 }
 
 /// A date and a time of day at an offset, in a zone. Two are equal by date, time and offset — one moment at
@@ -443,12 +495,48 @@ struct DateTime :: [Equatable, Display, Parse] {
     private off: int
     private z: Zone
 
-    /// The date and time in the zone.
-    static fn of(date: Date, time: Time, zone: Zone): DateTime = DateTime { d = date, t = time, off = zone.off, z = zone }
+    /// The date and time in the zone: in a zone of rules, at the offset in force then. A local time that does
+    /// not exist — the hour the clocks spring forward — moves forward by the gap; one that exists twice — the
+    /// hour they fall back — takes the earlier moment. In a zone of rules a local time beyond the moments an
+    /// `Instant` reaches, or within a day of their ends, panics (`LYS-RT0002`).
+    static fn of(date: Date, time: Time, zone: Zone): DateTime {
+        if (zone.rules == null) {
+            return DateTime { d = date, t = time, off = zone.off, z = zone }
+        }
+        let local = daysOf(date) * 86400 + (time.h * 60 + time.mi) * 60 + time.s
+        let before = offsetSecsAt(zone, local - 86400)
+        let after = offsetSecsAt(zone, local + 86400)
+        let beforeHolds = offsetSecsAt(zone, local - before) == before
+        let afterHolds = offsetSecsAt(zone, local - after) == after
+        if (beforeHolds && afterHolds) {
+            // once, or twice (an overlap): the earlier moment is the larger offset's
+            let off = if (before > after) before else after
+            return DateTime { d = date, t = time, off = off * 1000000000, z = zone }
+        }
+        if (beforeHolds) {
+            return DateTime { d = date, t = time, off = before * 1000000000, z = zone }
+        }
+        if (afterHolds) {
+            return DateTime { d = date, t = time, off = after * 1000000000, z = zone }
+        }
+        // a gap: forward by it, as the offset before the change reads the local time
+        return instantOfEpochNanos((local - before) * 1000000000 + time.n).toDateTime(zone)
+    }
 
     fn date(): Date = this.d
     fn time(): Time = this.t
     fn offset(): Duration = Duration.ofNanos(this.off)
+    fn zone(): Zone = this.z
+
+    /// The same local time `n` days on, in the zone: across a change of the clocks the offset follows it, a
+    /// day 23 or 25 hours long.
+    fn plusDays(n: int): DateTime = DateTime.of(this.d.plusDays(n), this.t, this.z)
+
+    /// The same moment in another zone.
+    fn withZone(zone: Zone): DateTime = this.toInstant().toDateTime(zone)
+
+    /// What the zone says at this moment: the offset, daylight time, the abbreviation.
+    fn zoneInfo(): ZoneInfo = this.z.infoAt(this.toInstant())
 
     /// The moment this date-time names; outside the years an `Instant` reaches, an overflow panics
     /// (`LYS-RT0002`).
@@ -533,10 +621,11 @@ struct DateTime :: [Equatable, Display, Parse] {
 }
 
 extend Instant :: [Display, Parse] {
-    /// The date, the time of day and the offset of this moment in `zone`.
+    /// The date, the time of day and the offset of this moment in `zone`, the offset in force then.
     fn toDateTime(zone: Zone): DateTime {
-        let off = zone.off
-        let local = epochNanosOf(this) + off
+        let ns = epochNanosOf(this)
+        let off = offsetNanosAt(zone, ns)
+        let local = ns + off
         let days = floorDiv(local, nanosPerDay())
         let rest = local - days * nanosPerDay()
         let time = Time {
@@ -658,6 +747,39 @@ private fn fromDays(days: int): Date {
     let month = if (mp < 10) mp + 3 else mp - 9
     let year = yearOfEra + era * 400 + (if (month <= 2) 1 else 0)
     return Date { y = year, m = month, d = day }
+}
+
+/// A zone the host reads, by `how` (0 the database's, 1 a TZif file's bytes, 2 a POSIX rule's text, 3 the
+/// system's).
+private fn openZone(how: int, name: string, text: string, bytes: ?Any): Zone {
+    let holder = [""]
+    let handle = zoneNew()
+    let n = zoneOpen(how, holder, handle, name, text, bytes ?? handle)
+    if (n == 1) {
+        return Zone.utc
+    }
+    if (n < 0) {
+        let kind = if (n == -2) TimeErrorKind.NoZoneData else if (n == -3) TimeErrorKind.NoSuchZone else TimeErrorKind.Invalid
+        throw TimeError { detail = holder[0], kind = kind }
+    }
+    return Zone { label = holder[0], off = 0, rules = handle }
+}
+
+/// The offset of `zone` in nanoseconds at the moment `ns` nanoseconds after 1970.
+private fn offsetNanosAt(zone: Zone, ns: int): int {
+    if (let handle = zone.rules) {
+        return floorDiv(zoneAt(ns, handle, [""]), 2) * 1000000000
+    }
+    return zone.off
+}
+
+/// The offset of `zone` in seconds at the second `secs` after 1970: beyond an `Instant`'s moments the count
+/// overflows (`LYS-RT0002`).
+private fn offsetSecsAt(zone: Zone, secs: int): int {
+    if (let handle = zone.rules) {
+        return floorDiv(zoneAt(secs * 1000000000, handle, [""]), 2)
+    }
+    return zone.off / 1000000000
 }
 
 /// The fixed zone of an offset in nanoseconds, UTC for none.

@@ -211,6 +211,9 @@ enum NativeFn :: [Equatable] {
     OsSignals,
     TimeRealtime,
     TimeMonotonic,
+    TimeZone,
+    TimeZoneOpen,
+    TimeZoneAt,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -224,7 +227,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 153;
+let nativeCount: int = 156;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -381,7 +384,10 @@ fn nativeOf(n: int): NativeFn {
         149 => NativeFn.ProcessSignal,
         150 => NativeFn.OsSignals,
         151 => NativeFn.TimeRealtime,
-        _ => NativeFn.TimeMonotonic,
+        152 => NativeFn.TimeMonotonic,
+        153 => NativeFn.TimeZone,
+        154 => NativeFn.TimeZoneOpen,
+        _ => NativeFn.TimeZoneAt,
     };
 }
 
@@ -541,6 +547,9 @@ fn nativeNumber(n: NativeFn): int {
         .OsSignals => 150,
         .TimeRealtime => 151,
         .TimeMonotonic => 152,
+        .TimeZone => 153,
+        .TimeZoneOpen => 154,
+        .TimeZoneAt => 155,
     };
 }
 
@@ -699,6 +708,9 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .OsSignals => sig("os.signals", 0, 2, false, true),
         .TimeRealtime => sig("time.realtime", 0, 0, true, false),
         .TimeMonotonic => sig("time.monotonic", 0, 0, true, false),
+        .TimeZone => sig("time.zone", 0, 0, false, true),
+        .TimeZoneOpen => sig("time.zoneOpen", 1, 5, true, false),
+        .TimeZoneAt => sig("time.zoneAt", 1, 2, true, false),
     };
 }
 
@@ -714,6 +726,7 @@ fn nativeWaits(n: NativeFn): bool {
         .OsCwd | .OsSetCwd | .OsHostname => true,
         .ProcessSpawn | .ProcessRead | .ProcessWrite | .ProcessClose | .ProcessWait => true,
         .ProcessSignal => true,
+        .TimeZoneOpen => true,
         _ => false,
     };
 }

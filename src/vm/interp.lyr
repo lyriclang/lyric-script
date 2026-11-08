@@ -54,7 +54,7 @@ import std.process { Child, Command, Stdio };
 import std.path { separator as pathSeparator };
 import std.random { Random };
 import std.task { Cancelled, Channel, Select, sleep, spawn, spawnDetached, yieldNow };
-import std.time { Duration, Instant, Monotonic };
+import std.time { Duration, Instant, Monotonic, TimeError as HostTimeError, Zone as HostZone };
 import lyric_script.vm.bigint {
     Big,
     add as bigAdd,
@@ -86,6 +86,7 @@ import lyric_script.vm.heap {
     ScriptBytes,
     ScriptChild,
     ScriptDir,
+    ScriptZone,
     ScriptFile,
     ScriptRandom,
     ScriptBuilder,
@@ -898,11 +899,12 @@ fn callNative(
         }
         .ConsoleFlush => s[x] = consoleFlush(s[x] as int) as uint64,
         // the verifier keeps these to `call.w`
-        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose | .OsCwd | .OsSetCwd | .OsHostname | .ProcessSpawn | .ProcessRead | .ProcessWrite | .ProcessClose | .ProcessWait | .ProcessSignal => {
+        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose | .OsCwd | .OsSetCwd | .OsHostname | .ProcessSpawn | .ProcessRead | .ProcessWrite | .ProcessClose | .ProcessWait | .ProcessSignal | .TimeZoneOpen => {
             return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
         }
         .FsFile => r[y] = ScriptFile { },
         .ProcessChild => r[y] = ScriptChild { },
+        .TimeZone => r[y] = ScriptZone { },
         .OsSignals => {
             if (let ch = signalChannel(r[y], r[y + 1], shared)) {
                 r[y] = ch;
@@ -993,6 +995,24 @@ fn callNative(
         }
         .TimeMonotonic => {
             s[x] = nowNs(shared) as uint64;
+        }
+        // what a zone of rules says at a moment, its nanoseconds since 1970 (S7h6a): the offset in
+        // seconds twice, the lowest bit daylight time; the abbreviation into the holder
+        .TimeZoneAt => {
+            let o = r[y];
+            if (o is ScriptZone) {
+                if (let zone = o.zone) {
+                    let epoch = try! Instant.parse("1970-01-01T00:00:00Z");
+                    let info = zone.infoAt(epoch + Duration.ofNanos(s[x] as int));
+                    let h = r[y + 1];
+                    if (h is ScriptArray) {
+                        h.r[0] = ScriptString { text = info.abbreviation };
+                    }
+                    s[x] = (info.offset.secs() * 2 + (if (info.isDst) 1 else 0)) as uint64;
+                    return null;
+                }
+            }
+            return bytesFault("LYS-RT0007", "a Zone's field holds no zone");
         }
         .OsEnv => {
             if (let v = env(textOf(r[y]))) {
@@ -3899,6 +3919,20 @@ fn waitJob(
             let name = pathCharged(r[y + 1], shared);
             return () => pathLook(name);
         }
+        .TimeZoneOpen => {
+            let handle = r[y + 1];
+            let name = textOf(r[y + 2]);
+            let how = s[x] as int;
+            let text = textOf(r[y + 3]);
+            let data = r[y + 4];
+            // a TZif file's bytes as the call was handed them; a POSIX rule as text
+            var bytes: uint8[] = [];
+            if (data is ScriptBytes) {
+                bytes = data.data.toArray();
+            }
+            charge(shared, bytesCost(bytes.length() + text.length()));
+            return () => zoneOpen(handle, how, name, bytes, text);
+        }
         .FsCreateDir => {
             let name = pathCharged(r[y], shared);
             return () => pathDone(() => try fsCreateDir(name));
@@ -4046,6 +4080,9 @@ fn waitFault(which: NativeFn, r: HeapRef[], y: int): ?NativeFault {
     if ((which == NativeFn.ProcessRead || which == NativeFn.ProcessWrite)
         && !(r[y + 1] is ScriptBytes)) {
         return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
+    if (which == NativeFn.TimeZoneOpen && !(r[y + 1] is ScriptZone)) {
+        return bytesFault("LYS-RT0007", "a Zone's field holds no zone");
     }
     if (which == NativeFn.FsDirNext || which == NativeFn.FsDirClose) {
         let o = if (which == NativeFn.FsDirNext) r[y + 1] else r[y];
@@ -4467,6 +4504,37 @@ fn pathLook(name: string): WaitAnswer {
         | (if (m.readonly) 8 else 0);
     // the moment it was last written, its nanoseconds since 1970 as text: the holder's
     return WaitAnswer { n = m.size << 4 | bits, text = f"{epochNanos(m.modified)}" };
+}
+
+/// A zone Lyric 5 reads (S7h6a), by `how`: 0 the database's of the name, 1 a TZif file's bytes, 2 a
+/// POSIX rule, 3 the system's own. 0 and the zone in the handle, its name in the holder; 1 where it is
+/// UTC, which the script holds itself; the failure's kind below zero — -1 `Invalid`, -2 `NoZoneData`,
+/// -3 `NoSuchZone` — and its detail in the holder.
+fn zoneOpen(handle: HeapRef, how: int, name: string, bytes: uint8[], text: string): WaitAnswer {
+    let zone = try zoneOf(how, name, bytes, text) catch (e: HostTimeError) {
+        let n = match (e.kind) {
+            .Invalid => -1,
+            .NoZoneData => -2,
+            .NoSuchZone => -3,
+        };
+        return WaitAnswer { n = n, text = e.message() };
+    };
+    if (zone.isFixed()) {
+        return WaitAnswer { n = 1, text = zone.name() };
+    }
+    if (handle is ScriptZone) {
+        handle.zone = zone;
+    }
+    return WaitAnswer { n = 0, text = zone.name() };
+}
+
+fn zoneOf(how: int, name: string, bytes: uint8[], text: string): HostZone throws HostTimeError {
+    return match (how) {
+        0 => try HostZone.load(name),
+        1 => try HostZone.fromTzif(name, bytes[..]),
+        2 => try HostZone.fromPosix(name, text),
+        _ => HostZone.local(),
+    };
 }
 
 /// The nanoseconds of `at` since 1970-01-01T00:00:00Z: Lyric 5's `Instant` answers no count of them (S7h5).

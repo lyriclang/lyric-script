@@ -2322,3 +2322,29 @@ Kaltstart: `import std.time` +103 ms gegen S7h5a, vorhergesagt waren +30 bis +90
 Preis wächst linear mit der Quelle (etwa 0,23 ms je Zeile, 225 → 669 Zeilen), weil die eingebettete std bei jedem
 kalten Lauf übersetzt wird. Das gehört zu P21 (S7k).
 Fälle 832 → 838, Tests 374.
+
+**Schnitt S7h6 (2026-11-08).** S7h6 teilt sich in zwei Teile. S7h6a bringt die Zonen mit Regeln, S7h6b die Muster.
+Entschieden nach Empfehlung: Die Daten einer Zone (TZif, POSIX-Regel, Datenbank unter `TZDIR`, `TZ` für `local`)
+liest und hält Lyric 5. Script hält nur einen Griff darauf und fragt „Offset und Kürzel zur Nanosekunde N“ ab. Die
+Auflösung einer Ortszeit (Lücke vorwärts, Überlappung früher) rechnet Script selbst, nach dem Code von Lyric 5.
+Die andere Möglichkeit wäre ein eigener TZif- und POSIX-Leser in Script gewesen. Das hieße zwei Leser für ein Format
+und doppelte Fehlermeldungen, die auseinanderlaufen. Die Muster (`format`, `parseWith`) sind reine Textlogik über
+Feldern, die Script schon hat. Sie werden deshalb in Script portiert, nicht über ein Native gereicht.
+
+**Ergebnis S7h6a (2026-11-08).** Zonen mit Regeln (§12 Regel 31), Format 47. Drei Natives: `time.zone` legt einen
+leeren Griff an. `time.zoneOpen` wartet und füllt ihn aus einer von vier Quellen (`load`, `fromTzif`, `fromPosix`,
+`local`). `time.zoneAt` gibt zu einer Nanosekunde Offset und Sommerzeit, das Kürzel in einem Halter. Eine feste
+Zone, auch `UTC` aus der Datenbank, bleibt ohne Griff. Neu sind `ZoneInfo`, `Zone.isFixed`, `offsetAt` und `infoAt`,
+außerdem `DateTime.zone`, `plusDays`, `withZone` und `zoneInfo`. Zonen sind gleich nach Name, Offset und Art.
+Abweichung von Lyric 5: Script reicht die Zeit als Nanosekunden ans Native. Eine Ortszeit jenseits der Jahre eines
+`Instant` (oder binnen eines Tages vor ihren Enden) läuft deshalb in Script über und panickt mit LYS-RT0002, wo
+Lyric 5 weiterliest. Ein eigener Fall hält das fest.
+Gefunden: Ein `string`, der als `Any`-Argument an ein Native geht, kommt verpackt an, und `textOf` liest dann "".
+Die POSIX-Regel bekommt deshalb einen eigenen `string`-Parameter.
+Mutanten: 16 über VM und `std.time`, alle getötet. Zwei Mutanten trafen mehr Fälle als vorhergesagt: `"CET"` allein
+ist keine Regel ohne Sommerzeit, sondern ein Fehler, und `at()` liest `zoneInfo`.
+Rot-Lauf gegen S7h5b: 4 von 4 rot.
+Kaltstart: `import std.time` +114 bis +141 ms gegen S7h5b (zwei Läufe, 20 und 30 Runden), vorhergesagt waren +15 bis
++45. `println` allein kostet +14 bis +19 ms. Abzüglich dessen sind es etwa 0,8 ms je neuer Zeile statt 0,23: Die
+Auflösung kostet mehr als ihre Länge. Das ist ein Befund zu P21 (S7k), dort wird nach Phase gemessen.
+Fälle 838 → 842, Tests 374.

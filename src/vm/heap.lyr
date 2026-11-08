@@ -5,6 +5,7 @@
 import std.fs { File, ReadDirIter };
 import std.process { Child };
 import std.random { Random };
+import std.time { Zone };
 import lyric_script.vm.bigint { Big };
 import std.collections { List, Map };
 import std.core { StringBuilder };
@@ -135,6 +136,16 @@ pub class ScriptRandom :: [HeapRef] {
 }
 
 /// What a `Bytes` holds (S7f5): its bytes, in the buffer of a list that grows.
+/// A zone of rules that Lyric 5 read — a TZif file, a POSIX rule, the system's own (S7h6a): its
+/// transitions and rule stay the host's, the script asks it for the offset at a moment.
+pub class ScriptZone :: [HeapRef] {
+    pub var zone: ?Zone = null,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
 pub class ScriptBytes :: [HeapRef] {
     pub data: List<uint8>,
 

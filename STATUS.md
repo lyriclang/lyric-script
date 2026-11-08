@@ -407,7 +407,11 @@ VM's call path, S7k measurement point 3.
 - **S7h6b done** — the patterns of `std.time` (UTS #35) in Script: `format`, `parseWith`; Script reads back
   `ZZZZ`, `ZZZZZ` at UTC and a year's sign, which Lyric 5 refuses (lyric#690). `import std.time` +416 ms cold
   over S7h6a, linear in its lines (about 1 ms a line in the debug build, P21). 844 cases, 374 tests; see 14.
-- Next: **S7i** — the batteries: `std.csv`, `std.log`, `std.cli`, `std.test`'s asserts.
+- **S7i1 done** — `std.test`'s assertions in Script (12 rule 33): `assertEq` and its eleven siblings, `fail`;
+  `got 2, expected 3`, the first difference of long values below. `@callerExpr` waits for attributes (P43), a
+  string's `Contains<char>` for S11 (P44); `assertPanics`, subtests and the runner come with `lyric-script test`.
+  20 mutants, all killed as predicted; 847 cases.
+- Next: **S7i2** — `std.csv` (the APIs of S7i2–S7i4 are decided in plan 14 §S7i).
 
 ## Working mode
 
@@ -484,4 +488,6 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P40 | **`os.envs()` answers `(string, string)[]` in the byte order of the names, not Lyric 5's `Map`** (S7h2): a `Map` in `std.os` loaded `std.collections` for every program that imports `std.os`, +170 ms cold. Worth the maintainer's look: the deviation, or a loader that pays for the collections only where a program reaches them. |
 | P41 | **A pipe read or console read a cancel ended goes on as a Lyric 5 job and may take the next bytes, which are then lost** (S7h3, §12 rule 27): the wait natives run on a detached job with no handle to stop it. A reader that goes on reading after a timeout reads at that risk. Fix needs a job that hands back what it took, or a read that Lyric 5 can stop. |
 | P42 | **A program that compiles a class meeting both `Reader` and `Writer` pays ~+100 ms cold** (S7h3): `import std.io { ByteBuffer }` with one use 425 → 522 ms; a user module with one class of each 425 → 533; either alone costs nothing measurable. `std.process`'s two pipes pay it for every importer (+110 of its +187). Cause not found: the debug binary carries no symbols for perf. Next step: a build with symbols, profile the two variants. |
+| P43 | **Script has no attributes, and no slice of the plan has a clock for them** (found in S7i1): design 09 At decides kinds 1 and 2 like Lyric 5 — data attributes readable through reflection, the closed list `@Deprecated`, `@Test`, `@Bench`, `@MustUse`, `@NonExhaustive`, `@callerExpr`/`@callerLine`/`@callerFile`, `@Allow`/`@Warn`/`@Deny`, `@Shared` — but the parser knows no `@`. `std.test`'s assertions therefore write `got 2` where Lyric 5 writes `xs.length() = 2`. Clocked by recommendation to **S11**, with `@Test` and `lyric-script test`, which need them first; kind 1 and its reflection (`f.attribute<T>()`) with `reflect` in S10. Say if another place fits better. | S7i1 |
+| P44 | **`string` is no `Contains<char>` in Script** (S7i1): Lyric 5 writes `extend string :: [Contains<char>] { }`, its generic `contains<P :: [Pattern]>` meeting the member at `P = char`; Script's checker refuses that (`LYS-SEM0042`) and reaches `c in s` through a case of its own. So `assertContains("abc", 'b')` of Lyric 5's documentation is `LYS-SEM0028` in Script. Clocked to S11 with the rest of `std.test`: a generic member meeting an interface member at an instantiation, or a member of its own. | S7i1 |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

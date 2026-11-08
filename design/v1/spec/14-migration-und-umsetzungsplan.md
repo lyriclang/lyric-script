@@ -2368,3 +2368,77 @@ von S7h5b (0,23 ms je Zeile), nicht die späteren Messungen. Ein kalter Lauf mit
 Debug-Build jetzt etwa 1,2 s, aus dem Cache nicht. Das gehört zu P21 (S7k): erst den Release-Build messen, dann
 Rümpfe nur prüfen, wo sie gebraucht werden, oder die std vorübersetzt mitliefern (11 std, mit `pack`).
 Fälle 842 → 844, Tests 374.
+
+**Schnitt und APIs S7i (2026-11-08).** S7i teilt sich in vier Teile: S7i1 `std.test` (die Asserts), S7i2 `std.csv`,
+S7i3 `std.log`, S7i4 `std.cli`. `std.test` folgt Lyric 5. Für `csv`, `log` und `cli` hat Lyric 5 keine Vorlage, dort
+sind es Ring-Pakete (Lyric 5 10 B1). Ihre APIs entscheidet dieser Schnitt nach Empfehlung (12 Um: je **eine** API).
+Die verworfenen Wege stehen dabei.
+
+- **`std.csv` (S7i2)** folgt der Form von Lyric 5s Formatmodulen `json` und `toml`. **`parse(text, options =
+  CsvOptions { }): string[][]`** liest RFC 4180. Datensätze enden an CRLF oder LF, der letzte Zeilenumbruch ist
+  frei. Ein Feld in `"…"` hält Trenner, Zeilenumbrüche und `""` für ein Anführungszeichen. Leere Zeilen zählen
+  nicht, wie in Go. Ein BOM am Anfang wird übersprungen, weil Excel ihn schreibt. Ein Anführungszeichen in einem
+  Feld ohne Anführung, ein offenes Anführungszeichen, Text nach dem schließenden und ein Datensatz mit anderer
+  Feldzahl als der erste werfen **`CsvError { line, column, detail }`** mit der Meldung `"{detail} at
+  {line}:{column}"`, wie `JsonError` und `TomlError`. **`format(rows, options): string`** schreibt RFC 4180. Es
+  setzt ein Feld in Anführungszeichen, wenn es den Trenner, ein `"`, CR oder LF hält, und beendet jeden Datensatz
+  mit CRLF. **`CsvOptions { separator: char = ',', crlf: bool = true }`**, `crlf = false` schreibt LF.
+  Verworfen:
+  - ein lesender Strom über `Reader`: eine zweite API für dasselbe; Skripte lesen ihre Datei ganz (`fs.readText`).
+  - Datensätze als `Map` über der Kopfzeile, wie Pythons `DictReader`: eine Zeile über `rows[0]`.
+  - `decode<T>` über `Codable`: das Paar gehört zu `codec` (S10), und für CSV hat es kein Format gefordert.
+  - Lazy Quotes wie in Go: ein zweiter Lesemodus.
+- **`std.log` (S7i3)**: die Stufen **`Level { Debug, Info, Warn, Error }`** wie in Go `slog`. Dazu `debug(message)`,
+  `info`, `warn` und `error`, außerdem `setLevel(level)` (Vorgabe `Info`) und `enabled(level): bool`. Eine Zeile ist
+  `LEVEL message`, `INFO server started`, und geht nach stderr. **`setSink(sink: fn(string) -> void)`** lenkt sie um,
+  in eine Datei, einen Test oder eine Liste. Ohne Zeitstempel: Wer ihn will, schreibt ihn in die Meldung, und
+  journald, systemd und CI setzen ihren eigenen. Ein Zeitstempel hieße außerdem `std.time` in jedem Programm, das
+  loggt (+1,2 s kalt im Debug-Build, P21). Kein Recht.
+  Verworfen:
+  - Felder als Schlüssel und Wert (`slog`): f-Strings tragen sie.
+  - Logger je Name wie in Python: eine zweite Ebene für Skripte.
+  - die Stufe aus einer Umgebungsvariable (`RUST_LOG`): sie gäbe `std.log` das Recht `os`; ein Skript liest
+    `os.env` selbst.
+- **`std.cli` (S7i4)**: ein Bauer wie Go `flag`, Rust `clap` als Builder oder Deno `parseArgs`. **`Cli.new(name,
+  about)`**, dann
+  - `.flag(name, short, help)`,
+  - `.option(name, short, help, default = null)`,
+  - `.positional(name, help, optional = false)`,
+  - `.rest(name, help)`,
+  - `.command(name, about): Cli` für Unterbefehle,
+  - `.version(text)`.
+
+  `cli.parse(args()): Args` gibt
+  - `flag(name): bool`,
+  - `option(name): ?string`,
+  - `positional(name): ?string`,
+  - `rest(): string[]`,
+  - `command(): ?(string, Args)`.
+
+  Gelesen werden `--name value`, `--name=value`, `-o value`, `-ovalue` und gebündelte Flags `-vq`; `--` beendet die
+  Optionen. `--help`/`-h` schreibt die Hilfe, aus den Angaben erzeugt, nach stdout und endet mit 0. `--version`
+  schreibt die Version, wo eine gesetzt ist. Was nicht passt, schreibt `error: …` und die Zeile `usage:` nach
+  stderr und endet mit 2, wie Go und clap. **`cli.tryParse(args)`** wirft stattdessen **`CliError`** für Tests und
+  Hosts. Werte sind Text; Zahlen liest `int.parse`.
+  Verworfen:
+  - eine Deklaration über ein Struct mit Attributen (Swift ArgumentParser, clap derive): Script hat noch keine
+    Attribute (P43) und keine Reflexion (S10).
+  - Typen je Option: ein zweites Typsystem neben `parse`.
+  - wiederholte Optionen als Liste: ein Wert je Name, der letzte gilt.
+
+**Ergebnis S7i1 (2026-11-08).** `std.test` mit den Asserts von Lyric 5 (§12 Regel 33), ganz in Script: `assertEq`,
+`assertNotEq`, `assertTrue`, `assertFalse`, `assertNull`, `assertNotNull`, `assertClose`, `assertLess`,
+`assertGreater`, `assertContains`, `assertEmpty`, `assertThrows` und `fail`. Die Meldung ist `got 2, expected 3`,
+beide Werte, wie `Debug` sie schreibt. Lange Werte bekommen den ersten Unterschied darunter, wie in Lyric 5: die erste
+Zeile, die abweicht, sonst ab 40 Zeichen zusammen das erste Zeichen mit Ausschnitt und Marke. Zwei Abweichungen von
+Lyric 5, beide mit Uhr: Ohne Attribute schreibt Script `got 2` statt `xs.length() = 2` (`@callerExpr`, P43, S11), und
+`assertContains` nimmt keinen `string` mit `char` (P44, S11). `assertPanics`, Subtests und der Runner kommen mit
+`lyric-script test` (S11): Eine Panik beendet in Script den Lauf auch in einem Task (10 Regel 2), sie kann also nur ein
+Runner fangen, der jeden Test in einem eigenen Lauf hält.
+Fälle: drei. Einer zeigt, dass gehaltene Asserts weitergehen, einer jede Meldung, einer die Unterschiede. Die
+Unterschiede wurden vorher mit einem Orakel in Python gerechnet.
+Mutanten: 20 über `std.test`, alle getötet, jeder mit genau den vorhergesagten Fällen.
+Rot-Lauf gegen S7h6b: 3 von 3 rot.
+Kaltstart: `import std.test` (206 Zeilen) +110 ms gegen `hello`, vorhergesagt waren +100 bis +250. Das sind etwa
+0,5 ms je Zeile, wie bei `std.time` (P21).
+Fälle 844 → 847, Tests 374.

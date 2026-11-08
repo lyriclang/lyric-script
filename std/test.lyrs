@@ -1,0 +1,206 @@
+//! The assertions a test fails by (12 rule 33; Lyric 5 12 §Test): `assertEq`, `assertTrue`, `assertThrows` and
+//! the others, `fail`. An assertion that does not hold panics (`LYS-RT0008`) with what it got against what was
+//! expected, each as `Debug` writes it, the actual value first: `got 2, expected 3`. Two values too long to
+//! compare by eye get their first difference named below: a text's first line that differs, else the first
+//! character. A module of no right. `@Test`, subtests, `assertPanics` and the runner come with
+//! `lyric-script test`.
+
+/// Fails the test unless `f` throws an `E`, and returns what it threw, for the test to look at; another error
+/// goes on out of the assertion.
+pub fn assertThrows<E :: [Error]>(f: fn() -> void, message: string = ""): E {
+    try {
+        f()
+    } catch (e: E) {
+        return e
+    }
+    fail(because("threw nothing, expected an error", message))
+}
+
+/// Fails the test unless `actual` equals `expected`: `got 2, expected 3`, then `message`, then, for values too
+/// long to compare by eye, their first difference.
+pub fn assertEq<T :: [Equatable, Debug]>(actual: T, expected: T, message: string = "") {
+    if (!(actual == expected)) {
+        let shown = actual.debug()
+        let wanted = expected.debug()
+        fail(because(got(shown) + ", expected " + wanted, message) + difference(shown, wanted))
+    }
+}
+
+/// Fails the test where `actual` equals `unexpected` — the assertion for "it changed", where `assertEq` says
+/// "it is".
+pub fn assertNotEq<T :: [Equatable, Debug]>(actual: T, unexpected: T, message: string = "") {
+    if (actual == unexpected) {
+        fail(because(got(actual.debug()) + ", expected anything else", message))
+    }
+}
+
+/// Fails the test unless `condition` holds.
+pub fn assertTrue(condition: bool, message: string = "") {
+    if (!condition) {
+        fail(because(got("false") + ", expected true", message))
+    }
+}
+
+/// Fails the test where `condition` holds.
+pub fn assertFalse(condition: bool, message: string = "") {
+    if (condition) {
+        fail(because(got("true") + ", expected false", message))
+    }
+}
+
+/// Fails the test where `value` is present.
+pub fn assertNull<T :: [Debug]>(value: ?T, message: string = "") {
+    if (let v = value) {
+        fail(because(got(v.debug()) + ", expected null", message))
+    }
+}
+
+/// Fails the test where `value` is absent; returns the value otherwise, for the test to go on with.
+pub fn assertNotNull<T>(value: ?T, message: string = ""): T {
+    return value ?? fail(because(got("null") + ", expected a value", message))
+}
+
+/// Fails the test unless `actual` lies within `tolerance` of `expected` — the comparison `assertEq` cannot make
+/// for floating point, where `0.1 + 0.2` is not `0.3`. NaN on either side fails: it is close to nothing.
+pub fn assertClose(actual: float, expected: float, tolerance: float, message: string = "") {
+    let gap = if (actual > expected) actual - expected else expected - actual
+    if (!(gap <= tolerance)) {
+        fail(because(got(f"{actual}") + f", expected {expected} within {tolerance}", message))
+    }
+}
+
+/// Fails the test unless `actual` is less than `bound`.
+pub fn assertLess<T :: [Ordered, Debug]>(actual: T, bound: T, message: string = "") {
+    if (!(actual < bound)) {
+        fail(because(got(actual.debug()) + ", expected less than " + bound.debug(), message))
+    }
+}
+
+/// Fails the test unless `actual` is greater than `bound`.
+pub fn assertGreater<T :: [Ordered, Debug]>(actual: T, bound: T, message: string = "") {
+    if (!(actual > bound)) {
+        fail(because(got(actual.debug()) + ", expected greater than " + bound.debug(), message))
+    }
+}
+
+/// Fails the test unless `container` holds `x` — what `x in container` asks (`Contains`):
+/// `assertContains(xs, 3)`.
+pub fn assertContains<T :: [Debug], C :: [Contains<T>, Debug]>(container: C, x: T, message: string = "") {
+    if (!container.contains(x)) {
+        fail(because(got(container.debug()) + ", expected to contain " + x.debug(), message))
+    }
+}
+
+/// Fails the test unless `c` holds nothing: its iterator gives no value — a list, a map, a set.
+pub fn assertEmpty<C :: [Iterable, Debug]>(c: C, message: string = "") {
+    if (c.iter().next() != null) {
+        fail(because(got(c.debug()) + ", expected nothing", message))
+    }
+}
+
+/// Fails the test outright, with `message` — for a branch a test must not reach.
+pub fn fail(message: string): never = panic(message)
+
+/// What an assertion got: `got 2`. Lyric 5 writes the expression of the call where it is not the value itself
+/// (`@callerExpr`); Script has no attributes before `lyric-script test`, so no call's text reaches it.
+private fn got(value: string): string = "got " + value
+
+/// What an assertion found, followed by the test's own message where it gave one.
+private fn because(found: string, message: string): string = if (message == "") found else found + ": " + message
+
+/// Where `actual` and `expected` — two values as `Debug` shows them — differ, for a failure's message: for texts
+/// that break lines, the first line that differs, both as `Debug` shows them; else, where the two are longer than
+/// 40 characters together, the first character that differs, the two around it and a mark under it. The empty
+/// string for short ones, which the message shows whole.
+private fn difference(actual: string, expected: string): string {
+    let a = linesOfText(actual)
+    let e = linesOfText(expected)
+    if (a.length() > 1 || e.length() > 1) {
+        var i = 0
+        while (i < a.length() && i < e.length() && a[i] == e[i]) {
+            i += 1
+        }
+        return f"\nline {i + 1}: {lineOf(a, i)}, expected {lineOf(e, i)}"
+    }
+    let ac = charsOf(actual)
+    let ec = charsOf(expected)
+    if (ac.length() + ec.length() <= 40) {
+        return ""
+    }
+    var at = 0
+    while (at < ac.length() && at < ec.length() && ac[at] == ec[at]) {
+        at += 1
+    }
+    let from = if (at > 20) at - 20 else 0
+    let out = StringBuilder.new()
+    out.appendStr(f"\nfirst difference at character {at + 1}:\n  ")
+    windowTo(out, ac, from)
+    out.appendStr("\n  ")
+    windowTo(out, ec, from)
+    out.appendStr("\n  ")
+    // the ellipsis before a cut window takes a column of its own
+    var pad = at - from + (if (from > 0) 1 else 0)
+    while (pad > 0) {
+        out.appendChar(' ')
+        pad -= 1
+    }
+    out.appendChar('^')
+    return out.toString()
+}
+
+/// Appends up to 40 characters of `cs` from `from` on, with an ellipsis where they are cut.
+private fn windowTo(out: StringBuilder, cs: List<char>, from: int) {
+    if (from > 0) {
+        out.appendChar('…')
+    }
+    let to = if (cs.length() - from > 40) from + 40 else cs.length()
+    for (i in from..to) {
+        out.appendChar(cs[i])
+    }
+    if (to < cs.length()) {
+        out.appendChar('…')
+    }
+}
+
+/// Line `i` of `lines` in quotes, or `no line` past their end.
+private fn lineOf(lines: List<string>, i: int): string = if (i < lines.length()) "\"" + lines[i] + "\"" else "no line"
+
+/// The lines of a text as `Debug` shows it — between quotes, a break written `\n` —, each as shown; anything
+/// else is one line, the whole.
+private fn linesOfText(shown: string): List<string> {
+    let lines = List<string>.new()
+    let cs = charsOf(shown)
+    let n = cs.length()
+    if (n < 2 || cs[0] != '"' || cs[n - 1] != '"') {
+        lines.push(shown)
+        return lines
+    }
+    var line = StringBuilder.new()
+    var i = 1
+    while (i < n - 1) {
+        let c = cs[i]
+        if (c == '\\' && i + 2 < n) {
+            if (cs[i + 1] == 'n') {
+                lines.push(line.toString())
+                line = StringBuilder.new()
+            } else {
+                line.appendChar(c)
+                line.appendChar(cs[i + 1])
+            }
+            i += 2
+        } else {
+            line.appendChar(c)
+            i += 1
+        }
+    }
+    lines.push(line.toString())
+    return lines
+}
+
+private fn charsOf(s: string): List<char> {
+    let cs = List<char>.new()
+    for (c in s.chars()) {
+        cs.push(c)
+    }
+    return cs
+}

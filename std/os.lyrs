@@ -8,6 +8,7 @@ private fn cwdTo(path: string): int = __os_setCwd(path)
 private fn hostnameInto(holder: string[]): int = __os_hostname(holder)
 private fn platformNumber(): int = __os_platform()
 private fn archNumber(): int = __os_arch()
+private fn signalsOf(wanted: Signal[], forms: Signal[]): Channel<Signal> = __os_signals(wanted, forms)
 
 /// The system the script runs on; its text is the target triples' word.
 enum Platform :: Display {
@@ -155,3 +156,24 @@ fn cpuCount(): int = __os_cpuCount()
 
 /// The process's id.
 fn pid(): int = __os_pid()
+
+/// Returns a channel the given signals arrive on (Lyric 5 10 §12): from now on they no longer do what the
+/// system does with them — mostly end the program — but arrive here. Each comes to every channel that asked
+/// for it. Signals are not counted: two that come before the first was received may arrive as one, and one
+/// that finds the channel's sixteen places taken is lost for that channel. Closing the channel ends the
+/// subscription at once: a signal no channel asks for any more is the system's again. KILL, STOP and the
+/// faults never arrive. A signal comes in while the script's tasks wait or switch: a task that computes on
+/// without either holds it back.
+fn signals(wanted: Signal...): Channel<Signal> = signalsOf(
+    wanted,
+    [
+        Signal.Interrupt,
+        Signal.Terminate,
+        Signal.Hangup,
+        Signal.Quit,
+        Signal.User1,
+        Signal.User2,
+        Signal.WindowChange,
+        Signal.Other(0),
+    ]
+)

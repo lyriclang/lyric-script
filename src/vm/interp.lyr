@@ -49,7 +49,7 @@ import std.os {
     setEnv as osSetEnv,
     tempDir as osTempRoot,
 };
-import std.os { Signal };
+import std.os { Signal, signals };
 import std.process { Child, Command, Stdio };
 import std.path { separator as pathSeparator };
 import std.random { Random };
@@ -359,6 +359,8 @@ pub class ScriptChannel :: [HeapRef] {
     // S6d2: the tasks whose select watches it: woken when it can be received from
     watchers: List<TaskState> = List<TaskState>.new(),
     var closed: bool = false,
+    // S7h4: what else ends with it — a subscription to signals, which ends at the close itself
+    var closer: ?fn() -> void = null,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -415,6 +417,10 @@ class RunShared {
     // signals its end on
     var pendingNatives: int = 0,
     wakeups: Channel<int> = Channel<int>.new(64),
+    // S7h4: the run's subscriptions to signals, each Lyric 5's channel, and how many are still open:
+    // an open one keeps a run whose tasks all wait waiting for a signal, not ended
+    feeds: List<Channel<Signal>>,
+    var openFeeds: int = 0,
 }
 
 /// A timer of the run (S6d3): its deadline, in nanoseconds of the run's clock — its sequence
@@ -483,8 +489,26 @@ fn earliestDeadline(shared: RunShared): int {
     return best;
 }
 
-/// Runs `entry` of `module` on the current task; see `execute`.
+/// Runs `entry` of `module` on the current task; see `execute`. Its end ends the subscriptions to
+/// signals its script left open (S7h4): no signal is swallowed after it.
 pub fn run(module: Module, entry: string, args: uint64[], fuel: int, argv: string[] = []): Outcome {
+    let feeds = List<Channel<Signal>>.new();
+    let out = runOn(module, entry, args, fuel, argv, feeds);
+    for (f in feeds) {
+        f.close();
+    }
+    return out;
+}
+
+/// Runs `entry` of `module`, its subscriptions to signals in `feeds`; see `run`.
+fn runOn(
+    module: Module,
+    entry: string,
+    args: uint64[],
+    fuel: int,
+    argv: string[],
+    feeds: List<Channel<Signal>>
+): Outcome {
     var fi = -1;
     var i = 0;
     while (i < module.functions.length()) {
@@ -521,6 +545,7 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int, argv: strin
         argv = argv,
         queue = List<TaskState>.new(),
         tasks = List<ScriptTask>.new(),
+        feeds = feeds,
     };
     // the scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits
     shared.queue.push(main);
@@ -528,13 +553,14 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int, argv: strin
         // S6d3: the timers whose time came wake behind the ready tasks; with none ready, the run
         // waits for the earliest — without timers that is a deadlock
         fireDueTimers(shared);
-        // S6e: a native's Lyric 5 task gets its turn at every step while one is waited for
-        if (shared.pendingNatives > 0) {
+        // S6e: a native's Lyric 5 task gets its turn at every step while one is waited for, and
+        // a subscription's while it is open (S7h4)
+        if (shared.pendingNatives + shared.openFeeds > 0) {
             try? yieldNow();
         }
         if (shared.head >= shared.queue.length()) {
-            // a native's end, or the earliest timer, ends the run's wait
-            if (shared.pendingNatives > 0) {
+            // a native's end, a signal, or the earliest timer, ends the run's wait
+            if (shared.pendingNatives + shared.openFeeds > 0) {
                 if (shared.timers.length() > 0) {
                     let wait = earliestDeadline(shared) - nowNs(shared);
                     if (wait > 0) {
@@ -725,6 +751,11 @@ fn closeChannel(ch: ScriptChannel, shared: RunShared): void {
         return;
     }
     ch.closed = true;
+    let closer = ch.closer;
+    ch.closer = null;
+    if (let f = closer) {
+        f();
+    }
     wakeWatchers(ch, shared);
     for (w in ch.receivers) {
         wake(w, shared);
@@ -872,6 +903,13 @@ fn callNative(
         }
         .FsFile => r[y] = ScriptFile { },
         .ProcessChild => r[y] = ScriptChild { },
+        .OsSignals => {
+            if (let ch = signalChannel(r[y], r[y + 1], shared)) {
+                r[y] = ch;
+            } else {
+                return bytesFault("LYS-RT0007", "signals takes the signals and a form of each");
+            }
+        }
         .FsDir => r[y] = ScriptDir { },
         .PathSeparator => r[y] = ScriptString { text = pathSeparator },
         .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
@@ -4171,6 +4209,113 @@ fn signalAnswer(s: Signal): int {
         Signal.Other(n) => (7 << 16) + n,
     };
     return (1 << 40) + (if (kind >= 7 << 16) kind else kind << 16);
+}
+
+/// A channel the signals of `wanted` come in on (Lyric 5 10 §12; S7h4): Lyric 5's subscription to
+/// them, whose signals a job of the host hands over as the script's values — `forms` holds one of
+/// each variant, `Other`'s last. Sixteen fit; one that finds them taken is lost for this channel
+/// (rule 3). Closing it ends the subscription at once (rule 4), the run's end each one left open.
+/// `null` where the two are no arrays of the eight forms.
+fn signalChannel(wanted: HeapRef, forms: HeapRef, shared: RunShared): ?HeapRef {
+    if (!(wanted is ScriptArray)) {
+        return null;
+    }
+    if (!(forms is ScriptArray)) {
+        return null;
+    }
+    if (forms.n != 8 || forms.nr != 1 || wanted.nr != 1) {
+        return null;
+    }
+    let ch = ScriptChannel {
+        capacity = 16,
+        ns = 0,
+        nr = 1,
+        buffer = List<Item>.new(),
+        receivers = List<TaskState>.new(),
+        senders = List<TaskState>.new(),
+    };
+    let asked = List<Signal>.new();
+    var k = 0;
+    while (k < wanted.n) {
+        let o = wanted.r[k];
+        if (o is ScriptObject) {
+            let number = if (o.scalars.length() > 1) o.scalars[1] as int else 0;
+            asked.push(signalFrom(o.scalars[0] as int, number));
+        }
+        k += 1;
+    }
+    // none asked: a channel no signal comes in on, which keeps no run waiting
+    if (asked.length() == 0) {
+        return ch;
+    }
+    let incoming = signals(asked.toArray()...);
+    shared.feeds.push(incoming);
+    shared.openFeeds += 1;
+    ch.closer = () => {
+        incoming.close();
+        shared.openFeeds -= 1;
+    };
+    let shapes = forms;
+    spawnDetached(
+        () => {
+            while (true) {
+                let got = try incoming.recv() catch (_: Cancelled) null;
+                if (let s = got) {
+                    if (!ch.closed) {
+                        offerSignal(ch, signalValue(s, shapes), shared);
+                        try? shared.wakeups.send(1);
+                    }
+                } else {
+                    return;
+                }
+            }
+        }
+    );
+    return ch;
+}
+
+/// Hands `value` to a task waiting on `ch`, or into its buffer while it has room; a full buffer
+/// loses it for this channel (Lyric 5 10 §12 rule 3).
+fn offerSignal(ch: ScriptChannel, value: HeapRef, shared: RunShared): void {
+    let item = Item { s = [0 as uint64] * 0, r = [value] };
+    if (ch.receivers.length() > 0) {
+        let w = ch.receivers.removeAt(0);
+        w.handoff = item;
+        wake(w, shared);
+    } else if (ch.buffer.length() < ch.capacity) {
+        ch.buffer.push(item);
+        wakeWatchers(ch, shared);
+    }
+}
+
+/// The script's value of `s`: its form, an `Other` with its number in a new one.
+fn signalValue(s: Signal, forms: ScriptArray): HeapRef {
+    let (kind, number) = match (s) {
+        Signal.Interrupt => (0, 0),
+        Signal.Terminate => (1, 0),
+        Signal.Hangup => (2, 0),
+        Signal.Quit => (3, 0),
+        Signal.User1 => (4, 0),
+        Signal.User2 => (5, 0),
+        Signal.WindowChange => (6, 0),
+        Signal.Other(n) => (7, n),
+    };
+    let form = forms.r[kind];
+    if (kind < 7 || !(form is ScriptObject)) {
+        return form;
+    }
+    let scalars = [0 as uint64] * form.scalars.length();
+    scalars[0] = 7 as uint64;
+    if (scalars.length() > 1) {
+        scalars[1] = number as uint64;
+    }
+    return ScriptObject {
+        typeDesc = form.typeDesc,
+        scalars = scalars,
+        refs = form.refs,
+        owner = form.owner,
+        version = form.version,
+    };
 }
 
 /// The signal of a kind as `std.os`'s `Signal` counts its variants, `number` for an `Other`.

@@ -391,7 +391,10 @@ VM's call path, S7k measurement point 3.
   for none; the user's import does. The conformance runner hands the cases the binary under test, so a case's child
   is a script. A read a cancel ended may take the next bytes (P41). `import std.process` costs +187 ms cold,
   +110 of it a compiler cost that already held (P42). 821 cases, 373 tests; see 14.
-- Next: **S7h4** — `os.signals()`.
+- **S7h4 done** — `os.signals()` (format 45): Lyric 5's subscription behind a script channel of sixteen. Closing
+  it ends the subscription at once; the run's end ends those left open, and while one is open a run whose tasks
+  all wait waits for a signal. 824 cases, 374 tests; see 14.
+- Next: **S7h5** — the base of `std.time`.
 
 ## Working mode
 

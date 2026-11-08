@@ -2282,3 +2282,16 @@ beiden allein kostet in einem Nutzermodul nichts, beide zusammen +110. Und schon
 einer Nutzung kostet +100: Der Preis liegt bei jeder übersetzten Klasse, die beide Schnittstellen erfüllt, und galt
 schon vor diesem Slice. Die Ursache ist offen: Das Binary hat keine Symbole für perf.
 Fälle 807 → 821, Tests 371 → 373.
+
+**Ergebnis S7h4 (2026-11-08).** `os.signals(s…)` (Format 45, ein Native, §12 Regel 28): ein `Channel<Signal>` mit 16
+Plätzen, Recht `os`. Dahinter liegt die Anmeldung von Lyric 5. Ein Job des Hosts nimmt die Signale aus ihrem Kanal und
+gibt sie dem Script-Kanal als Script-Werte: `std.os` reicht eine Form jeder Variante mit, die VM braucht also keinen
+Typ im Modulkopf. Das Schließen beendet die Anmeldung sofort, über einen `closer` am Script-Kanal wie in Lyric 5. Das
+Ende des Laufs schließt jede offene Anmeldung. Solange eine offen ist, wartet ein Lauf, dessen Aufgaben alle warten,
+auf ein Signal statt mit RT0018 zu enden. Ein Signal kommt an, während die Aufgaben warten oder wechseln.
+Ein Fall schickt einem Kind-Script `User1` an zwei Kanäle, schließt sie nacheinander, und das dritte `User1` beendet das
+Kind. Unter Windows ist `signal` dort `Unsupported`.
+Mutanten: 10 über VM und `std.os`, alle wie vorhergesagt. Überlebt haben SC (das Ende des Laufs schließt nichts; die CLI
+endet ohnehin, nur eine Einbettung merkt es), SE (kein Fall liefert ein `Other`, die Nummern sind nicht portabel), SH
+(`std.os` gibt immer acht Formen) und SJ (ein geschlossener Kanal, den keiner liest). Rot-Lauf gegen S7h3: 0 von 3
+grün. Kaltstart `import std.os` +4 ms. Fälle 821 → 824, Tests 373 → 374.

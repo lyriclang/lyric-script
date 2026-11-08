@@ -280,6 +280,20 @@ fn aChildIsChargedBeforeItStarts(): void {
 }
 
 @Test
+fn signalsTakeTheSignalsAndTheirForms(): void {
+    // `std.os` hands it two arrays, the forms eight; bytecode that hands it other things is the program's mistake
+    let text = """
+    fn p(s) -> s regs 1 2
+        load.null r0
+        load.null r1
+        call.n os.signals, s0, r0
+        ret.s s0
+    end
+    """;
+    assertEq(panicOf(runText(text, "p", [0], -1)).code, "LYS-RT0007");
+}
+
+@Test
 fn aChildNotStartedHoldsNoPipe(): void {
     // `std.process` never hands one out; bytecode that reads from one is the program's mistake, not the VM's
     let text = """

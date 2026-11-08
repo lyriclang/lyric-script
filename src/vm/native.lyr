@@ -208,6 +208,7 @@ enum NativeFn :: [Equatable] {
     ProcessClose,
     ProcessWait,
     ProcessSignal,
+    OsSignals,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -221,7 +222,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 150;
+let nativeCount: int = 151;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -375,7 +376,8 @@ fn nativeOf(n: int): NativeFn {
         146 => NativeFn.ProcessWrite,
         147 => NativeFn.ProcessClose,
         148 => NativeFn.ProcessWait,
-        _ => NativeFn.ProcessSignal,
+        149 => NativeFn.ProcessSignal,
+        _ => NativeFn.OsSignals,
     };
 }
 
@@ -532,6 +534,7 @@ fn nativeNumber(n: NativeFn): int {
         .ProcessClose => 147,
         .ProcessWait => 148,
         .ProcessSignal => 149,
+        .OsSignals => 150,
     };
 }
 
@@ -687,6 +690,7 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .ProcessClose => sig("process.close", 1, 1, true, false),
         .ProcessWait => sig("process.wait", 0, 2, true, false),
         .ProcessSignal => sig("process.signal", 2, 1, true, false),
+        .OsSignals => sig("os.signals", 0, 2, false, true),
     };
 }
 

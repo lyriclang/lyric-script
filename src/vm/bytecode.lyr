@@ -320,14 +320,14 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
     };
 }
 
-/// The number of an operation: its place among the operations, as `Op.all()` lists them.
+/// The number of an operation: its place among the operations, as `Op.all()` lists them. Read
+/// from the variants at compile time: `Op.all()` builds the array anew at each call, and searched
+/// once per instruction it was a fifth of a cold `hello` (S7k2).
 fn opNumber(op: Op): int {
-    var k = 0;
-    for (o in Op.all()) {
-        if (o == op) {
-            return k;
+    comptime for (v in variants<Op>()) {
+        if (op is v) {
+            return v.index;
         }
-        k += 1;
     }
     return 255;
 }

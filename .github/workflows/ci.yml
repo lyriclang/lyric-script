@@ -144,6 +144,20 @@ jobs:
           # with a timeout
           "$bin" run examples/concurrent/pipeline.lyrs | tee pipeline.txt
           grep -qx '10 squares, sum 385' pipeline.txt
+          # S7: the target programs of design 02 - a terminal tool (the most frequent words) and an
+          # automation (files renamed, a program called), each with only the rights it imports
+          printf 'the cat and the dog\nThe end\n' > a.txt; printf 'a dog, a cat\n' > b.txt
+          "$bin" run --allow file examples/targets/topwords.lyrs a.txt b.txt | tee top.txt
+          grep -qx '     3 the' top.txt
+          grep -qx '     2 cat' top.txt
+          mkdir photos; : > 'photos/My Holiday.JPG'; : > photos/ok.png
+          "$bin" run --allow file,process examples/targets/rename.lyrs photos | tee rename.txt
+          grep -qx 'My Holiday.JPG -> my-holiday.jpg' rename.txt
+          grep -qx 'git is there' rename.txt
+          [ "$(grep -c ' -> ' rename.txt)" -eq 1 ]
+          code=0; "$bin" run examples/targets/topwords.lyrs a.txt 2> norights.txt || code=$?
+          [ "$code" -eq 2 ]
+          grep -q 'LYS-CAP0001' norights.txt
 
       # The specification's suite at the commit spec.pin names (the `script` branch of
       # lyric-spec): every case whose `since:` the toolchain has reached.

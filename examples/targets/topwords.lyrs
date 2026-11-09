@@ -1,0 +1,18 @@
+#!/usr/bin/env lyric-script
+// The terminal tool of design 02: the ten most frequent words of the files given.
+import std.fs { readText }
+
+var counts: Map<string, int> = [:]
+for (path in args) {
+    for (word in readText(path).split((c: char) => c.isWhitespace())) {
+        if (word.isEmpty()) {
+            continue
+        }
+        let w = word.toLower()
+        counts[w] = (counts[w] ?? 0) + 1
+    }
+}
+let top = counts.entries().sortedBy((a, b) => if (a.1 != b.1) b.1.totalCompare(a.1) else a.0.totalCompare(b.0))
+for ((word, n) in top.iter().take(10)) {
+    println(f"{n:>6} {word}")
+}

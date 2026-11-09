@@ -445,6 +445,39 @@ fn theFuelStopsALoopAtTheSameBackwardJump(): void {
     assertEq(scalar(runText(sum, "sum", [1000], 999)), 500500);
 }
 
+/// A loop that jumps back by a fused comparison pays as one that compares first (S7k1b): `jump.le.i`
+/// and `jump.lt.i` each have their own arm, and each takes the fuel of a backward jump.
+@Test
+fn aFusedComparisonPaysItsBackwardJump(): void {
+    let le = """
+        fn sum(s) -> s regs 3 0
+            load.i s1, 0
+            load.i s2, 1
+        loop:
+            add.i s1, s1, s2
+            add.imm s2, s2, 1
+            jump.le.i s2, s0, @loop
+            ret.s s1
+        end
+        """;
+    let lt = """
+        fn sum(s) -> s regs 4 0
+            load.i s1, 0
+            load.i s2, 1
+            add.imm s3, s0, 1
+        loop:
+            add.i s1, s1, s2
+            add.imm s2, s2, 1
+            jump.lt.i s2, s3, @loop
+            ret.s s1
+        end
+        """;
+    for (text in [le, lt]) {
+        assertTrue(suspended(runText(text, "sum", [1000], 998)));
+        assertEq(scalar(runText(text, "sum", [1000], 999)), 500500);
+    }
+}
+
 @Test
 fn overflowIsTheScriptsPanic(): void {
     let text = """

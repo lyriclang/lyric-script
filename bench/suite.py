@@ -12,6 +12,11 @@ Before each round the script waits (at most --idle-wait seconds) for the 1-minut
 to fall below --idle-load and records it. Every run's output is compared with the oracle
 (oracle.py, computed independently); a mismatch marks the run INVALID and keeps it out of the
 medians.
+
+`--prefill <lyric-script>` compiles every source once with another binary of the same commit
+before the warm-up round (the cache key is source, version and format, not the profile): while
+lyric#667 lets a release-profile compiler corrupt its own compile, a debug binary fills the cache
+and the release binary only runs the bytecode — which is what the suite measures.
 """
 import argparse
 import json
@@ -75,6 +80,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--idle-load", type=float, default=1.0)
     ap.add_argument("--idle-wait", type=int, default=600)
+    ap.add_argument("--prefill")
     args = ap.parse_args()
 
     oracle = {p: ORACLE[p]() for p in PROGRAMS}
@@ -85,6 +91,20 @@ def main():
     samples = {vm: {p: [] for p in PROGRAMS} for vm in names}
     invalid = []
     rounds = []
+
+    prefilled = []
+    if args.prefill:
+        for p in PROGRAMS:
+            done = subprocess.run([args.prefill, "run", f"{args.dir}/src/{p}.lyrs"],
+                                  capture_output=True, text=True, env=env)
+            ok = done.returncode == 0 and done.stdout.strip() == oracle[p]
+            prefilled.append({"program": p, "ok": ok})
+            if not ok:
+                invalid.append({"round": "prefill", "vm": "prefill", "program": p,
+                                "exit": done.returncode, "stdout": done.stdout.strip()[:200],
+                                "stderr": done.stderr.strip()[:500]})
+        print(f"prefill with {args.prefill}: {sum(x['ok'] for x in prefilled)}/{len(PROGRAMS)}",
+              flush=True)
 
     for r in range(args.runs + 1):
         warm = r == 0
@@ -148,6 +168,8 @@ def main():
     result = {
         "host": platform.uname()._asdict(),
         "runs": args.runs,
+        "prefill": args.prefill,
+        "prefilled": prefilled,
         "rounds": rounds,
         "loadavg_after": os.getloadavg(),
         "samples": samples,

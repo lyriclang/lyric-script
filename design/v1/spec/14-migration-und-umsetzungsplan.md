@@ -2828,3 +2828,65 @@ nicht, deshalb endet die Suche hier und geht in P47 ein. S7k1 schließt mit G un
 Methodisch folgt daraus: Ein Befehlsvergleich zwischen zwei VM-Ständen misst die Zuteilung mit. Eine Senkung im
 Compiler wird gegen dieselbe VM gemessen (Variante C). Eine Änderung an der VM wird mit unverändertem Text
 gemessen, also mit den `.lyrsasm`, nicht mit dem Bytecode des neuen Compilers.
+
+**Erwartung S7k2 (vor dem ersten Lauf geschrieben).** Gemessen wird der Release-Build von G, aus einer Kopie im
+Linux-Dateisystem, je 11 Läufe abwechselnd. Kalt heißt mit leerem Cache, warm mit dem Cache, den die erste
+Runde füllt. Dazu kommen die Befehle eines kalten Laufs unter callgrind. Gemessen werden `hello` und die beiden
+Zielprogramme aus 02, die dafür als `examples/targets/topwords.lyrs` (`std.fs`) und `rename.lyrs` (`std.fs`,
+`std.path`, `std.process`) geschrieben wurden.
+
+| Programm | kalt erwartet | warm erwartet |
+|---|---|---|
+| `hello` | 55–90 ms: Der Debug-Build braucht ~430 ms, Release sollte 5–8× schneller sein. **Ratchet ≤ 50 ms verfehlt** | 4–6 ms |
+| `topwords` | 110–220 ms | 6–15 ms |
+| `rename` | 140–280 ms | 6–15 ms |
+
+Erwartet waren außerdem diese Anteile am kalten `hello`: Prüfen 50–65 %, Parsen 15–25 %, Codegen und
+Verifier 10–20 %, Cache und Lauf unter 5 %.
+
+**Ergebnis S7k2 (2026-11-09).** Die Erwartung war zu pessimistisch.
+
+| Programm | kalt | warm | Befehle kalt |
+|---|---:|---:|---:|
+| `hello` | **35,5 ms** | 4,6 ms | 237,5·10⁶ |
+| `rename` | 87,0 ms | 22,1 ms (mit dem Start von `git`) | 657,6·10⁶ |
+| `topwords` | — | — | stürzt ab |
+
+- **Beide Ratchets halten**: kalt ≤ 50 ms und warm ≤ 10 ms (11 Perf).
+- **`topwords` übersetzt der Release-Build nicht.** In jedem Verzeichnis und in jedem von 23 Läufen gibt es
+  einen SIGSEGV in `Checker.resolveNamed`: `lyr_str_eq` liest einen String, den der Sammler schon freigegeben
+  hat. Das ist dieselbe Familie wie lyric#667, diesmal unabhängig vom Pfad; der Fall steht dort als Kommentar.
+  Der Debug-Build übersetzt und läuft das Programm. Damit ist #667 für 1.0 ein Blocker (P48).
+- **Wohin die Befehle gehen** (callgrind, inklusive). Die Anteile überlappen, weil der Checker die Module der
+  Prelude selbst parst und speichert:
+  - Prüfen 71 %, davon die Inferenz der Fehlermengen allein 17 % (`checkThrows`, ein Fixpunkt über alle
+    geladenen Funktionen).
+  - Parsen 25 %.
+  - **Cache schreiben 24 %, davon 21 % in `opNumber`.** Für jede Instruktion baute `Op.all()` das Array aller
+    Operationen neu, dann wurde darin linear gesucht.
+  - Codegen 4 %.
+
+  Nach Herkunft des Codes: Laufzeit (Sammler) 37 %, libc (Speicher füllen und kopieren) 21 %, `Map` und
+  `SipHash` der std 23 %.
+
+**S7k2b.** `opNumber` liest die Nummer zur Übersetzungszeit aus den Varianten
+(`comptime for (v in variants<Op>())`, `op is v`, `v.index`; Lyric 5 09 D5). Ein neuer Test prüft jede Nummer
+gegen ihren Platz.
+
+| Programm | Befehle kalt vorher | nachher | erwartet | kalt vorher | nachher |
+|---|---:|---:|---|---:|---:|
+| `hello` | 237,5·10⁶ | 187,5·10⁶ | **−21 %** (erwartet −18 bis −24 %) | 36,2 ms | **30,1 ms** |
+| `rename` | 657,8·10⁶ | 497,8·10⁶ | −24 % (erwartet 520–580·10⁶) | 94,0 ms | 75,6 ms |
+
+Die Messung lief am selben Ort und zur selben Zeit, jeweils mit Last unter 1,0 zu Beginn. Die
+Cache-Dateien beider Binaries sind byte-gleich. Die zwei Mutanten (Nummer + 1, Nummer modulo 64) tötet je
+derselbe Satz von 4 Tests. Die Konformanz tötet keinen davon, anders als für den ersten vorhergesagt: Jeder
+Fall läuft mit leerem Cache aus dem Modul im Speicher, die Suite liest ihren Cache also nie zurück. Den Weg
+über den Cache prüfen nur die Unit-Tests von `bytecode.lyr`.
+
+Entscheidung (nach Empfehlung): **Vor 1.0 muss für den Start nichts weiter billiger werden**, die Ratchets
+halten mit Abstand. Die nächsten Hebel bleiben verzeichnet, mit Uhr bei der Messung zu 1.0 (S15):
+- die Inferenz der Fehlermengen (17 %)
+- der Sammler (37 %)
+- `Thrown.none()`, das bei jedem Aufruf drei Listen anlegt
+- `nativeNamed`, eine lineare Suche, die je Native einen `NativeInfo` baut

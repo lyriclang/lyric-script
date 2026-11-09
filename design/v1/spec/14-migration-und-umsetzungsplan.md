@@ -2663,8 +2663,9 @@ Version und Format, nicht das Profil, und das Release-Binary führt nur noch den
 - `x + k`, `k + x`, `x - k`, `x += k` und `x -= k` mit einem Literal `k`, das in 16 Bit passt, werden zu `add.imm`.
   Der Überlauf wird gleich geprüft.
 - Ein Vergleich `<`, `<=`, `>`, `>=` auf `int` oder `char` in der Bedingung von `if`, `while` oder `do-while`
-  springt selbst. Dafür kommt `jump.le.i` neben `jump.lt.i`, und das Bytecode-Format geht von 47 auf 48. Die
-  Operanden werden weiter von links nach rechts gelesen.
+  springt selbst. Dafür kam zuerst `jump.le.i` neben `jump.lt.i`, Format 48; das Ergebnis unten nimmt die Op
+  wieder heraus (Entscheidung G), und das Format bleibt 47. Die Operanden werden weiter von links nach rechts
+  gelesen.
 - Eine literale Bedingung springt immer oder nie; das betrifft das `while (true)` hinter `while let`.
 
 Fuel bleibt gleich: ein Rücksprung je Durchlauf.
@@ -2686,3 +2687,144 @@ gegen f20cd9d:
 - **Wandzeit, Lauf 2:** Mittel B1–B8 **5,0–5,6×**; der Ratchet hält also knapp. Mittel B1, B2, B3, B6 **4,3–4,6×**.
 - **Prüfung:** Konformanz 863/863. Unit-Tests, die eine genaue Disassemblierung vergleichen, können brechen;
   erwartet werden 0–5 solcher Fälle, dazu ein neuer Test je Senkung.
+
+**Ergebnis S7k1b (2026-11-09).** Gebaut wie beschrieben. Prüfung: Konformanz 863/863, ein Unit-Test brach
+(`registersAreGivenBack` las `x + 3` als drei Befehle, jetzt `x * 3`), vier neue Tests für die Senkungen und
+einer für Fuel. Die neuen Tests sind auf f20cd9d 5/5 rot. Von elf Mutanten wurden neun getötet, wie
+vorhergesagt. K9 (`jump.le.i` verbraucht rückwärts kein Fuel) überlebte zunächst, wie als unsicher
+vorhergesagt; der neue Test `aFusedComparisonPaysItsBackwardJump` tötet ihn jetzt. K11 (`k + x` ohne
+Immediate) überlebt wie vorhergesagt, er ändert nur die Form.
+
+Befehle (cachegrind, warmer Cache, Prefill aus dem Debug-Build):
+
+| Programm | f20cd9d | S7k1b | Änderung | erwartet |
+|---|---:|---:|---:|---|
+| `loop` | 4,873·10⁹ | 3,553·10⁹ | **−27,1 %** | −30 bis −40 % |
+| `fib` | 3,333·10⁹ | 2,962·10⁹ | −11,1 % | −12 bis −20 % |
+| `objects` | 3,300·10⁹ | 2,801·10⁹ | −15,1 % | −15 bis −20 % |
+| `words` | 3,372·10⁹ | 3,559·10⁹ | **+5,6 %** | −3 bis −10 % |
+| `sort` | 0,123·10⁹ | 0,111·10⁹ | −9,5 % | 0 bis −5 % |
+| `sortby` | 1,760·10⁹ | 1,661·10⁹ | −5,6 % | −3 bis −10 % |
+| `map` | 3,650·10⁹ | 3,750·10⁹ | **+2,7 %** | −5 bis −15 % |
+| `strings` | 5,208·10⁹ | 5,488·10⁹ | **+5,4 %** | −3 bis −10 % |
+
+`words`, `map` und `strings` wurden langsamer, obwohl ihr Bytecode kürzer wurde. `strings` hat drei VM-Befehle
+je Durchlauf weniger, und keine einzige std-Funktion wuchs. Der Weg zur Ursache, je mit Erwartung vorab:
+- **Prefill?** Nein. f20cd9d mit dem eigenen Debug-Build als Prefill trifft die alten Zahlen auf 0,01 %.
+- **Wo?** Der Zuwachs liegt ganz in `runTask`, in C-Code ohne Lyric-Zeile (627 → 934·10⁶ in `strings`).
+  callgrind je Maschinenbefehl zeigt mehr Stack-Spills (+185·10⁶) und Register-`mov`s (+156·10⁶). Der
+  Dispatch-Kopf hat 24 statt 20 Befehle, und der `MoveR`-Arm mit der Kartenmarkierung lädt zwei Werte mehr vom
+  Stack. Sein Lyric-Code ist unverändert.
+- **Der neue Arm?** Nein. Variante M faltet `jump.le.i` in den Arm von `jump.lt.i`: `words`, `map` und
+  `strings` bleiben gleich, `fib` und `loop` werden schlechter.
+- **Die verschobenen Ordnungszahlen?** Nein. Variante E hängt die Op ans Ende des Enums und lässt alle alten
+  Nummern stehen: gleich wie S7k1b.
+- **Der Compiler-Code in derselben C-Einheit von 32 MB?** Nein. Variante C nimmt S7k1b mit dem `codegen.lyr`
+  von f20cd9d: auf 0,01 % gleich wie S7k1b.
+- **Jede Änderung an der VM?** Variante R nimmt f20cd9d mit einer unbenutzten Op und einem Arm `pc += 1` und
+  trifft f20cd9d auf 0,01 %. Das schloss aber nichts aus, ein Fehler im Aufbau: R lief den alten Bytecode, alle
+  anderen Varianten den neuen. R sagt nichts über ein Binary, das neuen Bytecode ausführt.
+- **Das Binary oder der Bytecode?** Die Kontrolle mit gleichem Text: dieselben `.lyrsasm` von Messpunkt 1
+  (`fib`, `loop`, `objects`) auf jedem Release-Build. R trifft f20cd9d genau. S7k1b, E und C liegen gleich
+  darüber: `fib` +7,2 %, `loop` +9,2 %, `objects` +13,7 %. M liegt noch höher (`fib` +11,7 %). Es ist das Binary.
+- **Der Fuel-Pfad des Arms?** Nein. Variante F, ein Arm ohne Fuel (nur als Experiment, rückwärts unsicher),
+  liegt bei S7k1b.
+
+Das Bild: Jeder Code für `jump.le.i` in `runTask` lässt den C-Compiler die ganze Dispatch-Schleife schlechter
+zuteilen, ob als eigener Arm, gefaltet oder ohne Fuel-Pfad. Das trifft Arme, die er nicht berührt. Ein trivialer
+Arm tut es nicht. Das ist die Empfindlichkeit, die schon S7j zeigte (Dispatch ≈ 60 Befehle je VM-Op, damals
+außerhalb des Schnitts). Die Zuteilung der Dispatch-Schleife wird zu P47.
+
+**Lauf 2 (2026-11-09, Release S7k1b, Prefill aus dem Debug-Build, 9 Runden plus Aufwärmrunde).** Alle Läufe
+gültig, Prefill 9/9.
+
+| Programm | Script | 4.6 | Verhältnis (brutto) | Lauf 1 |
+|---|---:|---:|---:|---:|
+| B1 `fib` | 0,137 s | 0,422 s | 3,08× | 3,07× |
+| B2 `loop` | 0,116 s | 0,616 s | 5,33× | 3,15× |
+| B3 `objects` | 0,147 s | 0,448 s | 3,05× | 2,99× |
+| B4 `words` | 0,189 s | 0,532 s | 2,81× | 2,93× |
+| B5 `sort` | 0,011 s | 0,576 s | 50,4× | 48,4× |
+| B6 `sortby` | 0,085 s | 0,535 s | 6,33× | 6,64× |
+| B7 `map` | 0,246 s | 0,795 s | 3,24× | 3,64× |
+| B8 `strings` | 0,285 s | 0,729 s | 2,55× | 2,70× |
+| **Mittel B1–B8** | | | **4,97×** | 4,77× |
+| Mittel B1, B2, B3, B6 | | | 4,22× | 3,72× |
+
+Erwartet waren 5,0–5,2× und 4,3–4,5×. Der Bytecode von Hand, also unveränderter Text, fiel von Lauf 1 auf Lauf 2:
+`fib` 4,23 → 3,72×, `objects` 4,09 → 3,66×. Die schlechtere Zuteilung kostet an der Uhr mehr, als ihre Befehle
+zeigen. Der Ratchet ist um Haaresbreite verfehlt.
+
+**Entscheidung G (nach Empfehlung).** `jump.le.i` fällt wieder heraus. Die VM ist byte-gleich mit f20cd9d, das
+Format bleibt 47. Ein verschmolzener Vergleich braucht nur `jump.lt.i`:
+- `x < y` springt mit `jump.lt.i x, y`; `x > y` mit vertauschten Operanden.
+- `x >= y` und `x <= y` sind die Verneinungen davon. Soll der Sprung fallen, wo `x < y` *nicht* hält, springt
+  `jump.lt.i` über einen einfachen `jump`.
+- `while (i < n)` hat damit weiter einen Befehl an der Rückkante. Der Weg über den `jump` kostet einen Dispatch
+  mehr, nur auf einem der beiden Pfade.
+
+Verworfen:
+- **Eigener Arm** (S7k1b), **gefaltet in `jump.lt.i`** (M), **Op am Ende des Enums** (E): alle drei verschieben
+  die Zuteilung gleich oder schlechter.
+- **Arm ohne Fuel-Pfad** (F): verschiebt sie genauso und ist rückwärts unsicher.
+- **`jump.le.i` nur vorwärts mit einer Regel im Verifier**: Sie war der nächste Schritt, falls der Fuel-Pfad
+  stört. Nach F ist sie hinfällig, denn schon der Vergleich stört.
+- **Die Dispatch-Schleife umbauen**, damit ihre Zuteilung nicht mehr an einzelnen Armen hängt: Das ist P47, ein
+  eigener Schnitt und nicht Teil einer Senkung im Compiler.
+
+**Ergebnis G (2026-11-09).** Prüfung: 381 Tests, Konformanz 865/865 (mit den zwei Fällen von S7k3), `fmt` sauber.
+Zwei Tests passen sich an: `everyComparisonJumpsBothWays` zählt jetzt beide Formen, den direkten Sprung und den
+Sprung über einen `jump`. `aFusedComparisonPaysItsBackwardJump` prüft eine `<=`-Schleife über den `jump`. Vier
+Mutanten, alle getötet, je von Tests und Konformanz: Richtung verkehrt (19 Tests / 610 Fälle rot), Ziel des
+Übersprungs eins zu weit (7 / 134), `<=` ohne Tausch (2 / 26), `>=` vertauscht (6 / 177). Die `.lyrsasm` von
+Messpunkt 1 laufen auf dem Build von G genau wie auf f20cd9d.
+
+| Programm | f20cd9d | S7k1b | G | G gegen f20cd9d |
+|---|---:|---:|---:|---:|
+| `loop` | 4,873·10⁹ | 3,553·10⁹ | 3,232·10⁹ | **−33,7 %** |
+| `fib` | 3,333·10⁹ | 2,962·10⁹ | 2,864·10⁹ | −14,1 % |
+| `objects` | 3,300·10⁹ | 2,801·10⁹ | 2,470·10⁹ | −25,1 % |
+| `words` | 3,372·10⁹ | 3,559·10⁹ | 3,303·10⁹ | −2,0 % |
+| `sort` | 0,123·10⁹ | 0,111·10⁹ | 0,105·10⁹ | −14,8 % |
+| `sortby` | 1,760·10⁹ | 1,661·10⁹ | 1,524·10⁹ | −13,4 % |
+| `map` | 3,650·10⁹ | 3,750·10⁹ | 3,486·10⁹ | −4,5 % |
+| `strings` | 5,208·10⁹ | 5,488·10⁹ | 5,122·10⁹ | −1,6 % |
+
+Vorhergesagt waren für G: `loop` 3,0–3,3·10⁹, `fib` −8 bis −14 %, `objects` −15 bis −22 %, `words` −3 bis −8 %,
+`sort` und `sortby` −5 bis −10 %, `map` −3 bis −10 %, `strings` −4 bis −8 %. `objects`, `sort` und `sortby` liegen
+darüber, `words` und `strings` knapp darunter. Kein Programm liegt über f20cd9d, jedes unter S7k1b.
+
+**Läufe 3 und 4 (2026-11-09, Release G, Prefill aus dem Debug-Build von G, je 9 Runden plus Aufwärmrunde).**
+Lauf 4 wiederholt Lauf 3 mit demselben Binary, um Drift der Maschine vom Binary zu trennen. Alle Läufe gültig,
+Prefill je 9/9. Verhältnis brutto, 4.6 gegen Script:
+
+| Programm | Lauf 1 (f20cd9d) | Lauf 2 (S7k1b) | Lauf 3 (G) | Lauf 4 (G) |
+|---|---:|---:|---:|---:|
+| B1 `fib` | 3,07× | 3,08× | 3,54× | 3,40× |
+| B2 `loop` | 3,15× | 5,33× | 4,56× | 4,87× |
+| B3 `objects` | 2,99× | 3,05× | 2,88× | 2,93× |
+| B4 `words` | 2,93× | 2,81× | 3,16× | 3,13× |
+| B5 `sort` | 48,4× | 50,4× | 49,6× | 43,4× |
+| B6 `sortby` | 6,64× | 6,33× | 7,41× | 7,30× |
+| B7 `map` | 3,64× | 3,24× | 3,50× | 3,51× |
+| B8 `strings` | 2,70× | 2,55× | 2,76× | 2,82× |
+| **Mittel B1–B8** | 4,77× | 4,97× | **5,18×** | **5,13×** |
+| Mittel B1, B2, B3, B6 | 3,72× | 4,22× | 4,31× | 4,34× |
+| von Hand: `fib`, `loop`, `objects` | 4,23 / 6,33 / 4,09× | 3,72 / 6,41 / 3,66× | 4,45 / 6,31 / 3,38× | 4,20 / 6,20 / 3,45× |
+
+Vorhergesagt für Lauf 3 waren 5,2–5,6× und 4,4–4,8×. **Der Ratchet hält**, in beiden Läufen, aber am unteren
+Rand. Lauf 4 trifft Lauf 3 je Zelle auf 3–6 %, mit Ausnahme von `sort`, das bei 12 ms im Rauschen des Starts liegt.
+Zwei Zellen folgen ihren Befehlen nicht:
+- `loop` aus dem Quelltext: 0,131–0,139 s auf G gegen 0,116 s auf S7k1b, bei 9 % weniger Befehlen und gleich
+  vielen Dispatches (60,05·10⁶ indirekte Sprünge in beiden).
+- `objects` von Hand läuft auf G 17 % langsamer als in Lauf 1 auf f20cd9d, bei gleichem Text, gleicher VM-Quelle
+  und gleichen Befehlen auf 10⁻⁶.
+
+Das ist das Layout des Binarys, nicht die Zahl der Befehle: Der Compiler liegt in derselben C-Einheit, und jede
+Änderung an ihm verschiebt die Adressen der Dispatch-Schleife. Die Sprungsimulation von valgrind kann das nicht
+zeigen. Ihr Modell für indirekte Sprünge verfehlt in beiden Builds 99,9 %. Zähler der Hardware gibt es unter WSL
+nicht, deshalb endet die Suche hier und geht in P47 ein. S7k1 schließt mit G und dem Mittel von Lauf 3.
+
+Methodisch folgt daraus: Ein Befehlsvergleich zwischen zwei VM-Ständen misst die Zuteilung mit. Eine Senkung im
+Compiler wird gegen dieselbe VM gemessen (Variante C). Eine Änderung an der VM wird mit unverändertem Text
+gemessen, also mit den `.lyrsasm`, nicht mit dem Bytecode des neuen Compilers.

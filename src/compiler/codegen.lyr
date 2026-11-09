@@ -747,9 +747,11 @@ class FnGen {
     }
 
     /// A jump, to be patched, taken where condition `c` is `when`; `-1` where it never is. An
-    /// `int` or `char` comparison jumps by itself (`jump.lt.i`, `jump.le.i`, both operands still
-    /// read left to right), a literal condition jumps always or never; anything else is computed
-    /// and tested (S7k1b).
+    /// `int` or `char` comparison jumps by `jump.lt.i` (both operands still read left to right), a
+    /// literal condition jumps always or never; anything else is computed and tested (S7k1b).
+    /// There is no `jump.le.i`: every VM that had one ran the same bytecode 7–14 % slower (14,
+    /// Ergebnis S7k1b), so `<=` and `>=` are `<` the other way round, and where the jump is taken
+    /// as `x < y` does not hold, `jump.lt.i` steps over a plain `jump`.
     mut fn jumpWhen(c: TExpr, when: bool): int {
         match (c) {
             .Bool(b) => {
@@ -763,18 +765,22 @@ class FnGen {
                 if (fused) {
                     let a = this.any(l.value).s;
                     let b = this.any(r.value).s;
-                    // as `x < y` or `x <= y`: `a > b` is `b < a`, `a >= b` is `b <= a`
-                    let (x, y, strict) = match (op) {
+                    // the condition is `x < y` holding (or not): `a > b` is `b < a`, `a <= b` is
+                    // not `b < a`, `a >= b` is not `a < b`
+                    let (x, y, holds) = match (op) {
                         .Lt => (a, b, true),
-                        .Le => (a, b, false),
                         .Gt => (b, a, true),
-                        _ => (b, a, false),
+                        .Le => (b, a, false),
+                        _ => (a, b, false),
                     };
-                    if (when) {
-                        return this.emit(if (strict) Op.JumpLtI else Op.JumpLeI, x, y, 0);
+                    if (holds == when) {
+                        return this.emit(Op.JumpLtI, x, y, 0);
                     }
-                    // not `x < y` is `y <= x`; not `x <= y` is `y < x`
-                    return this.emit(if (strict) Op.JumpLeI else Op.JumpLtI, y, x, 0);
+                    // taken where `x < y` does not hold: over the jump where it does
+                    let over = this.emit(Op.JumpLtI, x, y, 0);
+                    let jump = this.emit(Op.Jump, 0, 0, 0);
+                    this.patch(over, this.here());
+                    return jump;
                 }
             }
             _ => { }
@@ -784,13 +790,13 @@ class FnGen {
     }
 
     /// Points the jump at `at` to `target`: operand a of `jump`, b of `jump.if`/`jump.ifnot`, c of
-    /// `jump.lt.i`/`jump.le.i`.
+    /// `jump.lt.i`.
     mut fn patch(at: int, target: int): void {
         let old = this.code[at];
         let t = target as uint16;
         this.code[at] = match (old.op) {
             .Jump => Instr { op = old.op, a = t, b = old.b, c = old.c },
-            .JumpLtI | .JumpLeI => Instr { op = old.op, a = old.a, b = old.b, c = t },
+            .JumpLtI => Instr { op = old.op, a = old.a, b = old.b, c = t },
             _ => Instr { op = old.op, a = old.a, b = t, c = old.c },
         };
     }

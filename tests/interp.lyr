@@ -445,8 +445,9 @@ fn theFuelStopsALoopAtTheSameBackwardJump(): void {
     assertEq(scalar(runText(sum, "sum", [1000], 999)), 500500);
 }
 
-/// A loop that jumps back by a fused comparison pays as one that compares first (S7k1b): `jump.le.i`
-/// and `jump.lt.i` each have their own arm, and each takes the fuel of a backward jump.
+/// A loop that jumps back by a fused comparison pays as one that compares first (S7k1b): the back
+/// edge `jump.lt.i` takes the fuel of a backward jump, and so does the plain `jump` that
+/// `jump.lt.i` steps over where the test is `<=` (`while (i <= n)`).
 @Test
 fn aFusedComparisonPaysItsBackwardJump(): void {
     let le = """
@@ -456,7 +457,9 @@ fn aFusedComparisonPaysItsBackwardJump(): void {
         loop:
             add.i s1, s1, s2
             add.imm s2, s2, 1
-            jump.le.i s2, s0, @loop
+            jump.lt.i s0, s2, @out
+            jump @loop
+        out:
             ret.s s1
         end
         """;

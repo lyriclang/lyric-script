@@ -1692,23 +1692,6 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     pc += 1;
                 }
             }
-            // its own arm, as `jump.lt.i`: the test sits in every loop's back edge (S7k1b)
-            .JumpLeI => {
-                if ((s[bs + a] as int) <= (s[bs + b] as int)) {
-                    if (c <= pc) {
-                        // without a limit (-1) nothing is spent: one read, no write (S7j)
-                        if (shared.budget != -1) {
-                            shared.budget = spend(shared.budget);
-                            if (shared.budget == -2) {
-                                return Outcome.Suspended;
-                            }
-                        }
-                    }
-                    pc = c;
-                } else {
-                    pc += 1;
-                }
-            }
             .Call => {
                 // without a limit (-1) nothing is spent: one read, no write (S7j)
                 if (shared.budget != -1) {

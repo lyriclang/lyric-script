@@ -263,9 +263,29 @@ fn everyComparisonJumpsBothWays(): void {
     assertEq(value(src + calls, "neg"), 1 + 2 + 16 + 32);
     assertEq(value(src + calls, "cl"), 1);
     assertEq(value(src + calls, "cg"), 8);
+    // both forms: `jump.lt.i` alone where the jump is taken as `x < y` holds, and over a plain
+    // `jump` where it is taken as it does not
     let text = codeOf(src, ["bits", "cbits"]);
-    assertTrue(text.contains("    jump.le.i s"), text);
-    assertTrue(text.contains("    jump.lt.i s"), text);
+    let all = List<string>.new();
+    for (line in text.split("\n")) {
+        all.push(line.toString());
+    }
+    let lines = all.toArray();
+    var alone = 0;
+    var over = 0;
+    var k = 0;
+    while (k + 1 < lines.length()) {
+        if (lines[k].startsWith("    jump.lt.i s")) {
+            if (lines[k + 1].startsWith("    jump @")) {
+                over += 1;
+            } else {
+                alone += 1;
+            }
+        }
+        k += 1;
+    }
+    assertTrue(alone > 0, text);
+    assertTrue(over > 0, text);
 }
 
 @Test

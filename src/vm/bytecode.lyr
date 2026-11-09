@@ -3,6 +3,7 @@
 //! then the module. Only the toolchain that wrote it reads it back: a head that does not match is
 //! no file of this toolchain, and the reader says so rather than guessing (01 S10).
 import std.collections { List };
+import std.core { variants };
 import lyric_script.vm.module { Function, Handler, Module, RightUse, ReturnKind, TypeDesc };
 import lyric_script.vm.op { Instr, Op };
 

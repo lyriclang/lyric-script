@@ -49,7 +49,14 @@ Lyric 4.x status up to the 4.6 cut is archived at
   19; `examples/concurrent/pipeline.lyrs` runs in CI. Found on the way: `join` took the first task
   spawned, not the first to fail; coroutines never equal to themselves; the lambda lookahead blind
   to `<…>` (since S3); the conformance runner without a timeout.
-- **Open milestone: S7** — std core.
+- **S7 done (2026-11-09, lyric-script#9, lyric-spec#393, tag `s7-complete`)**: the std core — lists,
+  iterators, maps and sets, strings and formats, numbers with `BigInt` and `Bytes`, I/O and files,
+  processes, environment and time, the batteries `test`, `csv`, `log`, `cli`; the VM's call path.
+  Measurement point 3: **5.18×** 4.6 over the bench suite (ratchet ≥ 5× holds); cold `hello` 30 ms on
+  the release build (≤ 50 ms). The target programs terminal tool and automation (02) run in CI on
+  every Tier 1 target (`examples/targets`). 382 tests, 865 conformance cases, bytecode format 47.
+  Blocking 1.0: the release build cannot compile `topwords` (P48, lyric#667).
+- **Open milestone: S8** — security and embedding.
 
 ## Milestones
 
@@ -62,7 +69,7 @@ Lyric 4.x status up to the 4.6 cut is archived at
 | S4 | Errors and control | M | **done** 2026-10-29 |
 | S5 | Modules and packages | M | **done** 2026-10-29 |
 | S6 | Coroutines and tasks | L | **done** 2026-10-29 |
-| S7 | std core | XL | — |
+| S7 | std core | XL | **done** 2026-11-09 |
 | S8 | Security and embedding | L | — |
 | S9 | Hot reload | L | — |
 | S10 | std rest | L | — |
@@ -436,7 +443,8 @@ VM's call path, S7k measurement point 3.
   read from the variants at compile time now (S7k2b), `hello` 36.2 → 30.1 ms, `rename` 94 → 76 ms. The release
   build does not compile `topwords` (P48, lyric#667). The two target programs of 02 are examples in CI
   (`examples/targets`). 382 tests. **S7k done.**
-- Next: **S7 close** — design 12's lines against the code, PR, merge, tag `s7-complete`.
+- **S7 closed** — design 12's lines against the code (14, "S7, Abschluss"); the target programs in CI.
+- Next: **S8** — security and embedding; plan its slices in 14 first.
 
 ## Working mode
 

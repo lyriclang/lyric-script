@@ -2890,3 +2890,50 @@ halten mit Abstand. Die nächsten Hebel bleiben verzeichnet, mit Uhr bei der Mes
 - der Sammler (37 %)
 - `Thrown.none()`, das bei jedem Aufruf drei Listen anlegt
 - `nativeNamed`, eine lineare Suche, die je Native einen `NativeInfo` baut
+
+**S7, Abschluss (2026-11-09).** Abgleich der Bereichszeilen 12 Um, Src und der Einzelheiten der
+Standardbibliothek gegen den Code. Gebaut sind:
+- **Module:** `iter`, `collections` (`Map`, `Set`, `Deque`, `Heap`), `fmt`, `math` mit `BigInt`, `numbers`,
+  `bytes`, `io`, `fs` mit `glob`, `path`, `process`, `os` mit `signals`, `time`, `random`, `test`, `cli`,
+  `log` und `csv`. `core` und `string` liegen in der Prelude, die Task-Typen seit S6 ebenfalls.
+- **Namen und Formen** nach Lyric 5s std, je Slice in Spec 12 Regeln 2–36.
+- **Zahlen:** Typkonstanten am Typ (`int.max`), Weltkonstanten in `math`.
+- **Container:** `+`, `xs * n`.
+- **I/O:** Go-Form über `Bytes`, ein `IoError { kind }`, das `Command`-Struct.
+- **Strings:** Länge in Bytes, `s[i]`, `Pattern`.
+- **Rechte:** die feste Rechtetabelle.
+- **Kostenregeln mit Test** für die Natives von `BigInt`, `Bytes`, Konsole, Dateien, Verzeichnissen, Pfaden
+  und Prozessen.
+- **Aus früheren Meilensteinen:** Array-Muster, `Hashable`, `is int[]` als Prüfstein der Listen-Deskriptoren
+  (`typeOf` selbst mit `reflect`), `e.suppressed()`, `eprintln`, `args`, `exit`, `Coroutine :: Iterator`,
+  `for` über jedes Iterable, Tasks, Koroutinen und Kanäle als Interfacewerte, `IoError` für `readLine`,
+  `os.signals`.
+
+Abweichend entschieden: `Map` und `Set` liegen in Script über einem nativen Index, nicht ganz in der VM
+(P27).
+
+Mit Uhr woanders:
+- die Kostenregeln der älteren Natives `sort`, `repeat`, `replace`, `split`, `+` und `*` (P33, S8)
+- die Kennzeichnung „Callback darf nicht warten“ (S8, mit den Callbacks)
+- `@Test`, Subtests, `@Bench` und die Attribute (P43, S11)
+- `string :: Contains<char>` (P44, S11)
+- `encoding`, `codec`, `json`, `toml`, `regex`, `compress`, `hash`, `crypto`, `net`, `uri`, `http`, `term` und
+  `reflect` (S10)
+- die Werkzeugzeilen von 12 (S11–S13)
+
+**Austrittskriterium erfüllt:** Messpunkt 3 hält mit 5,18× und 5,13×. Die Zielprogramme Terminal-Werkzeug und
+Automatisierung laufen als `examples/targets` in der CI auf allen vier Plattformen, jedes mit nur den Rechten,
+die es importiert, und ohne Rechte mit `LYS-CAP0001`.
+
+Gefunden über die letzten Slices:
+- Ein Schreibzugriff über einen Modulnamen sprach von einem unbekannten Namen (P45, lyric#705).
+- `jump.le.i` verschob die Registerzuteilung der VM (P47).
+- Das Schreiben des Caches baute für jede Instruktion die Liste aller Operationen.
+- Der Release-Build übersetzt `topwords` nicht (P48, lyric#667): Für 1.0 ist das ein Blocker.
+
+Lehren:
+- Ein Befehlsvergleich zwischen VM-Ständen braucht unveränderten Text als Kontrolle.
+- Eine Wiederholung mit demselben Binary trennt Drift vom Binary.
+- Die Konformanz liest ihren Cache nie zurück; diesen Weg prüfen nur die Unit-Tests.
+
+382 Tests, 865 Fälle; Bytecode-Format 47.

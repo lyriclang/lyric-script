@@ -13243,6 +13243,36 @@ class Checker {
                     );
                     return TExpr.Unknown;
                 }
+                // `util.count = 1`: a module's binding is read through the module's name and
+                // written only through its import, as Lyric 5 refuses the write (04 rule 5;
+                // lyriclang/lyric#705; S7k3)
+                match (object.value) {
+                    .Name(m, _) => {
+                        if (this.lookupLocal(m) == null
+                            && !this.globalIndex.containsKey(this.q(m))) {
+                            if (let target = this.moduleNamed(m)) {
+                                let key = this.exportKey(target, field);
+                                let g = this.globalIndex.get(key);
+                                if (g == null) {
+                                    this.error(
+                                        "LYS-RES0004",
+                                        f"the module '{m}' declares no binding '{field}'",
+                                        memberAt
+                                    );
+                                } else if (this.maySee(key, field, target, memberAt)) {
+                                    this.error(
+                                        "LYS-SEM0019",
+                                        if (this.globals[g].isVar) f"'{m}.{field}' is not written through its module's name: import '{field}' to write it"
+                                            else f"'{m}.{field}' is a let: it is never written",
+                                        memberAt
+                                    );
+                                }
+                                return TExpr.Unknown;
+                            }
+                        }
+                    }
+                    _ => { }
+                }
                 let o = this.expr(object.value, null);
                 match (typeOf(o)) {
                     .Tuple(_) => {

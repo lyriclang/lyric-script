@@ -3019,3 +3019,31 @@ Entschieden nach Empfehlung, mit den Alternativen:
   Host sieht nicht, wessen Budget er zahlt).
 - **Losgelöste Tasks gehören der Instanz**, nicht dem Aufruf. Verworfen: sie am Ende des Aufrufs
   abzubrechen; ein Mod, der einen Timer startet, braucht sie über den Aufruf hinaus.
+
+**S8a, Ergebnis (2026-11-12).**
+- **S8a1:** `Instance` über einem dauerhaften `RunShared`. `runOn` zerfällt in `newShared`, `callIn` und
+  `schedule`. Zwischen zwei Aufrufen werden beendete Tasks und abgearbeitete Einträge der Warteschlange
+  vergessen, damit eine langlebige Instanz nicht mit ihren Aufrufen wächst. Die CLI läuft über
+  `instanceOf(…).initOutcome`.
+- **S8a2:** `Vm` (`src/embed.lyr`) mit `load`, `compile` und `loadTrusted`. Die Übersetzung mit Diagnosen
+  als Werten (`compileLoaded`) teilen sich die CLI und der Host; die CLI sagt sie nur noch an. Der Cache nimmt
+  einen Ort vom Host (`loadIn`, `storeIn`), und `decode` nimmt mit `null` die Bytes jeder Quelle.
+- **S8a3:** Das Modul trägt die Funktionen, die ein Host rufen darf (`Callable`, Format 48): öffentliche
+  Funktionen der obersten Ebene des Einstiegs, nicht generisch, nicht die oberste Ebene selbst, mit ihren
+  Typen an der Grenze (`Boundary`). `Value` und `CallResult` sind die Formen des Hosts. `init` und `call`
+  sind typisiert; ein Aufruf, den die Exporte nicht tragen, wirft `InstanceMisuse`.
+
+Entschieden nach Empfehlung:
+- **`exit` im eingebetteten Aufruf** ist ein eigenes Ergebnis `.Exit(code)` und beendet die Instanz.
+  Verworfen: als `.Panic` (es ist kein Fehler des Skripts) oder `.Aborted` (das ist die Entscheidung des
+  Hosts).
+- **Der Name `Callable`**, weil `Export` das Attribut der Prelude verdeckt.
+
+Prüfung:
+- 20 neue Tests; insgesamt 402 Tests und 865 Fälle.
+- Spec 13 Regeln 1–3, ohne neue Fälle: Die Einbettung erreicht die CLI nicht und wird von den Unit-Tests
+  geprüft.
+- Zwölf Mutanten: zehn getötet wie vorhergesagt, einer (B4, der Cache wird nie gelesen) überlebt wie
+  vorhergesagt als äquivalent. Einer (C3, eine Liste des Hosts mit falscher Slot-Form) überlebte gegen die
+  Vorhersage: `for` und `length()` lesen eine Liste ohne `ns`/`nr`. Ein Test, der an eine Liste des Hosts
+  anhängt, tötet ihn jetzt.

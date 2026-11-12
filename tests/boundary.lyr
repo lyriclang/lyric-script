@@ -70,6 +70,22 @@ fn listsCrossBothWays(): void {
     );
 }
 
+// a list the host gave is the script's to grow: it is made as the script's own lists are
+@Test
+fn aListTheHostGaveGrowsAsTheScriptsOwn(): void {
+    let inst = ready(
+        "fn grow(xs: int[]): int[] {\n    xs.push(4)\n    return xs\n}\nfn more(xs: string[]): string[] {\n    xs.push(\"z\")\n    return xs\n}\n"
+    );
+    assertEq(
+        ok(try! inst.call("grow", [Value.List([Value.Int(1), Value.Int(2), Value.Int(3)])], -1)),
+        Value.List([Value.Int(1), Value.Int(2), Value.Int(3), Value.Int(4)])
+    );
+    assertEq(
+        ok(try! inst.call("more", [Value.List([Value.Str("y")])], -1)),
+        Value.List([Value.Str("y"), Value.Str("z")])
+    );
+}
+
 @Test
 fn anErrorAndAPanicComeBackAsResults(): void {
     let inst = ready(

@@ -1,0 +1,144 @@
+// An instance of a script (S8a1; Script 01 S9, S11, 07 Top): the top level runs once with
+// `init`, then calls run functions of the module against the same globals; a panic of the script
+// leaves it ready, the budget and `exit` stop it, and what a call leaves waiting goes on in the
+// next one.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.compiler.checker { ProgramUnit, checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.loader { loadProgram };
+import lyric_script.vm.interp { Instance, InstanceMisuse, InstancePhase, Outcome, instanceOf };
+import lyric_script.vm.module { Module };
+
+// the module of a script with the prelude, compiled as the command line does
+fn moduleOf(source: string): Module {
+    let l = loadProgram("t.lyrs", source);
+    assertEq(l.errors.length(), 0);
+    let imported = List<ProgramUnit>.new();
+    for (k in l.order) {
+        if (k != 0) {
+            imported.push(
+                ProgramUnit {
+                    name = l.names[k],
+                    module = l.parses[k].module,
+                    file = k,
+                    submodules = l.subs[k],
+                    package = l.pkgOf[k],
+                }
+            );
+        }
+    }
+    let checked = checkModule(
+        l.parses[0].module,
+        imported.toArray(),
+        l.collections,
+        l.numbers,
+        l.bytes
+    );
+    assertEq(checked.errors.length(), 0);
+    return generate(checked.program, "t.lyrs");
+}
+
+fn ready(source: string): Instance {
+    let inst = instanceOf(moduleOf(source));
+    match (try! inst.init(-1)) {
+        .Void => { }
+        _ => assertTrue(false, "the top level did not end"),
+    }
+    return inst;
+}
+
+fn scalar(o: Outcome): int {
+    return match (o) {
+        .Scalar(bits) => bits as int,
+        .Panic(_) => -1000,
+        .Error(_) => -2000,
+        .Suspended => -3000,
+        .Exit(code) => -4000 - code,
+        _ => -999999,
+    };
+}
+
+// whether the instance refuses the call as the host's mistake
+fn refuses(inst: Instance, name: string): bool {
+    try {
+        inst.call(name, [], -1);
+    } catch (e: InstanceMisuse) {
+        return true;
+    }
+    return false;
+}
+
+@Test
+fn theTopLevelRunsOnceAndItsGlobalsStay(): void {
+    let inst = ready("var count = 10\nfn bump(): int {\n    count += 1\n    return count\n}\n");
+    assertEq(scalar(try! inst.call("bump", [], -1)), 11);
+    assertEq(scalar(try! inst.call("bump", [], -1)), 12);
+    var again = false;
+    try {
+        inst.init(-1);
+    } catch (e: InstanceMisuse) {
+        again = true;
+    }
+    assertTrue(again, "a second init");
+}
+
+@Test
+fn aCallTakesItsArguments(): void {
+    let inst = ready("fn add(a: int, b: int): int = a + b\n");
+    assertEq(scalar(try! inst.call("add", [40 as uint64, 2 as uint64], -1)), 42);
+}
+
+@Test
+fn aCallBeforeInitAndAnUnknownFunctionAreTheHostsMistakes(): void {
+    let inst = instanceOf(moduleOf("fn f(): int = 1\n"));
+    assertTrue(refuses(inst, "f"), "before init");
+    try! inst.init(-1);
+    assertTrue(refuses(inst, "g"), "no such function");
+    assertEq(scalar(try! inst.call("f", [], -1)), 1);
+}
+
+@Test
+fn aPanicLeavesTheInstanceReady(): void {
+    let inst = ready(
+        "var n = 0\nfn boom() {\n    n += 1\n    panic(\"no\")\n}\nfn get(): int = n\n"
+    );
+    assertEq(scalar(try! inst.call("boom", [], -1)), -1000);
+    assertTrue(inst.phase() == InstancePhase.Ready);
+    assertEq(scalar(try! inst.call("get", [], -1)), 1);
+}
+
+@Test
+fn theBudgetSuspendsTheInstance(): void {
+    let inst = ready(
+        "fn spin(): int {\n    var i = 0\n    while (i < 1000) {\n        i += 1\n    }\n    return i\n}\n"
+    );
+    assertEq(scalar(try! inst.call("spin", [], 10)), -3000);
+    assertTrue(inst.phase() == InstancePhase.Suspended);
+    assertTrue(refuses(inst, "spin"), "a suspended instance");
+}
+
+@Test
+fn anExitEndsTheInstance(): void {
+    let inst = ready("fn quit() {\n    exit(3)\n}\nfn f(): int = 1\n");
+    assertEq(scalar(try! inst.call("quit", [], -1)), -4003);
+    assertTrue(inst.phase() == InstancePhase.Ended);
+    assertTrue(refuses(inst, "f"), "an ended instance");
+}
+
+@Test
+fn aDetachedTaskGoesOnInTheNextCall(): void {
+    let inst = ready(
+        "var seen = 0\nfn start() {\n    spawnDetached {\n        seen = 5\n    }\n}\nfn get(): int = seen\n"
+    );
+    try! inst.call("start", [], -1);
+    assertEq(scalar(try! inst.call("get", [], -1)), 5);
+}
+
+@Test
+fn aClosedInstanceTakesNoCall(): void {
+    let inst = ready("fn f(): int = 1\n");
+    inst.close();
+    assertTrue(inst.phase() == InstancePhase.Ended);
+    assertTrue(refuses(inst, "f"), "a closed instance");
+}

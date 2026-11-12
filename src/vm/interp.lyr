@@ -233,7 +233,13 @@ pub fn execute(
     fuel: int,
     argv: string[] = []
 ): Outcome {
-    let task = spawn(() => run(module, entry, args, fuel, argv));
+    return onOwnTask(() => run(module, entry, args, fuel, argv));
+}
+
+/// What `job` gives, run on a Lyric 5 task of its own: a panic of the VM itself becomes
+/// `Outcome.Panic` with the code `LYS-ICE0001`.
+fn onOwnTask(job: fn() -> Outcome): Outcome {
+    let task = spawn(job);
     while (!task.isDone()) {
         try? yieldNow();
         // a VM that sleeps until a timer leaves this task nothing to wait for: no spinning (S6d3)
@@ -454,11 +460,11 @@ class RunShared {
     // the code of an `exit`, which ends the run where a budget ends it
     var exitCode: ?int = null,
     // the tasks ready to run, from `head` on; every task spawned, in order (S6a)
-    queue: List<TaskState>,
+    var queue: List<TaskState>,
     var head: int = 0,
     // the objects numbered so far, for a hash by identity (01 S8; S7d1)
     var objects: int = 0,
-    tasks: List<ScriptTask>,
+    var tasks: List<ScriptTask>,
     // the first task to end with an error or a panic: what the top level's end gives (07 End;
     // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
     var failed: ?ScriptTask = null,
@@ -553,6 +559,121 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int, argv: strin
     return out;
 }
 
+/// What an instance takes next (S8a1): `Fresh` its `init`, `Ready` calls; `Suspended` waits for
+/// the host's decision (01 S5b, resumed with S8b); `Ended` after the script's `exit` or `close`,
+/// `Broken` after a failure of the VM itself — neither takes a call.
+pub enum InstancePhase :: [Equatable] {
+    Fresh,
+    Ready,
+    Suspended,
+    Ended,
+    Broken,
+}
+
+/// A call the instance does not take in its phase, or a function it does not have: the host's
+/// mistake, not the script's (S8a1).
+pub struct InstanceMisuse :: [Error] {
+    reason: string,
+
+    /// What the host asked that the instance does not take.
+    pub fn message(): string {
+        return this.reason;
+    }
+}
+
+/// A script loaded to be called (01 S9, S11; 07 Top; S8a1): its globals, tasks and timers live
+/// from `init` to `close`. `init` runs the top level once, then `call` runs a function of the
+/// module as the first task of that call. A task the call leaves waiting — detached, or on a
+/// timer — stays and goes on in the next call; after a panic of the script the instance takes
+/// calls as before (01 S11), the call's frames gone, its globals as they were.
+pub class Instance {
+    shared: RunShared,
+    feeds: List<Channel<Signal>>,
+    var at: InstancePhase = InstancePhase.Fresh,
+
+    /// What the instance takes next.
+    pub fn phase(): InstancePhase {
+        return this.at;
+    }
+
+    /// Runs the script's top level (07 Top) with `fuel` units of budget, `-1` without a limit.
+    pub mut fn init(fuel: int): Outcome throws InstanceMisuse {
+        if (this.at != InstancePhase.Fresh) {
+            throw InstanceMisuse { reason = f"init on an instance that is {phaseName(this.at)}" };
+        }
+        let fi = functionIndex(this.shared.module, topLevelName(this.shared.module));
+        if (fi < 0) {
+            throw InstanceMisuse { reason = "the module has no top level" };
+        }
+        return this.enter(fi, [], fuel);
+    }
+
+    /// Calls the function `name` with `args` in its first scalar registers and `fuel` units of
+    /// budget, `-1` without a limit; only after `init`.
+    pub mut fn call(name: string, args: uint64[], fuel: int): Outcome throws InstanceMisuse {
+        if (this.at != InstancePhase.Ready) {
+            throw InstanceMisuse { reason = f"a call on an instance that is {phaseName(this.at)}" };
+        }
+        let fi = functionIndex(this.shared.module, name);
+        if (fi < 0) {
+            throw InstanceMisuse { reason = f"the module has no function '{name}'" };
+        }
+        return this.enter(fi, args, fuel);
+    }
+
+    /// Ends the instance: the subscriptions to signals its script left open end (S7h4); it takes
+    /// no call after.
+    pub mut fn close(): void {
+        for (f in this.feeds) {
+            f.close();
+        }
+        if (this.at != InstancePhase.Broken) {
+            this.at = InstancePhase.Ended;
+        }
+    }
+
+    mut fn enter(fi: int, args: uint64[], fuel: int): Outcome {
+        let shared = this.shared;
+        let out = onOwnTask(() => callIn(shared, fi, args, fuel));
+        this.at = match (out) {
+            .Suspended => InstancePhase.Suspended,
+            .Exit(_) => InstancePhase.Ended,
+            .Panic(p) => if (p.code == "LYS-ICE0001") InstancePhase.Broken else InstancePhase.Ready,
+            _ => InstancePhase.Ready,
+        };
+        if (this.at == InstancePhase.Ended) {
+            for (f in this.feeds) {
+                f.close();
+            }
+        }
+        return out;
+    }
+}
+
+/// A new instance of `module`, its top level not run yet; `argv` is what `args` gives the script,
+/// its own name first (S8a1).
+pub fn instanceOf(module: Module, argv: string[] = []): Instance {
+    let feeds = List<Channel<Signal>>.new();
+    return Instance { shared = newShared(module, -1, argv, feeds), feeds = feeds };
+}
+
+/// The name of `module`'s top level: a script's (07 Top; the code generator's `scriptEntry`), or the
+/// `main` of hand-written bytecode.
+fn topLevelName(module: Module): string {
+    return if (functionIndex(module, "<script>") >= 0) "<script>" else "main";
+}
+
+/// The phase as a word of a message.
+fn phaseName(p: InstancePhase): string {
+    return match (p) {
+        .Fresh => "not initialised",
+        .Ready => "ready",
+        .Suspended => "suspended",
+        .Ended => "ended",
+        .Broken => "broken by a failure of the VM",
+    };
+}
+
 /// Runs `entry` of `module`, its subscriptions to signals in `feeds`; see `run`.
 fn runOn(
     module: Module,
@@ -562,20 +683,50 @@ fn runOn(
     argv: string[],
     feeds: List<Channel<Signal>>
 ): Outcome {
-    var fi = -1;
-    var i = 0;
-    while (i < module.functions.length()) {
-        if (module.functions[i].name == entry) {
-            fi = i;
-        }
-        i += 1;
-    }
+    let fi = functionIndex(module, entry);
     if (fi < 0) {
         return Outcome.Panic(
             ScriptPanic { code = "LYS-ICE0001", message = f"no function '{entry}'", trace = [] }
         );
     }
-    let first = module.functions[fi];
+    return callIn(newShared(module, fuel, argv, feeds), fi, args, fuel);
+}
+
+/// The place of the function named `name` in `module`, the last of that name; -1 where none is.
+fn functionIndex(module: Module, name: string): int {
+    var fi = -1;
+    var i = 0;
+    while (i < module.functions.length()) {
+        if (module.functions[i].name == name) {
+            fi = i;
+        }
+        i += 1;
+    }
+    return fi;
+}
+
+/// What the tasks of `module` share, new: the script's top-level bindings (07 Top), alive as long
+/// as the run or the instance; the descriptors — the compiler's, and those shared copies make
+/// (S3i).
+fn newShared(module: Module, fuel: int, argv: string[], feeds: List<Channel<Signal>>): RunShared {
+    return RunShared {
+        module = module,
+        gs = [0 as uint64] * module.globalsS,
+        gr = refArray(module.globalsR),
+        interning = Interning.of(module),
+        budget = fuel,
+        argv = argv,
+        queue = List<TaskState>.new(),
+        tasks = List<ScriptTask>.new(),
+        feeds = feeds,
+    };
+}
+
+/// Calls function `fi` of `shared`'s module with `args` in its first scalar registers, as the
+/// first task of this call, with `fuel` units of budget, and schedules until that task ends (S8a1).
+/// What an earlier call left waiting stays in the queue; the tasks that ended are forgotten.
+fn callIn(shared: RunShared, fi: int, args: uint64[], fuel: int): Outcome {
+    let first = shared.module.functions[fi];
     let main = TaskState {
         s = [0 as uint64] * grown(0, first.scalars),
         r = refArray(grown(0, first.refs)),
@@ -587,21 +738,40 @@ fn runOn(
         main.s[k] = args[k];
         k += 1;
     }
-    // the script's top-level bindings (07 Top), alive for this run; the descriptors of this run:
-    // the compiler's, and those shared copies make (S3i)
-    let shared = RunShared {
-        module = module,
-        gs = [0 as uint64] * module.globalsS,
-        gr = refArray(module.globalsR),
-        interning = Interning.of(module),
-        budget = fuel,
-        argv = argv,
-        queue = List<TaskState>.new(),
-        tasks = List<ScriptTask>.new(),
-        feeds = feeds,
-    };
-    // the scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits
+    shared.budget = fuel;
+    shared.failed = null;
+    forgetEnded(shared);
     shared.queue.push(main);
+    return schedule(shared);
+}
+
+/// Drops from `shared` what an earlier call left behind and nobody needs: the queue's entries
+/// before its head, and the tasks that ended — an instance called many times does not grow with
+/// its calls (S8a1).
+fn forgetEnded(shared: RunShared): void {
+    if (shared.head > 0) {
+        let rest = List<TaskState>.new();
+        var k = shared.head;
+        while (k < shared.queue.length()) {
+            rest.push(shared.queue[k]);
+            k += 1;
+        }
+        shared.queue = rest;
+        shared.head = 0;
+    }
+    let live = List<ScriptTask>.new();
+    for (t in shared.tasks) {
+        if (t.result == null) {
+            live.push(t);
+        }
+    }
+    shared.tasks = live;
+}
+
+/// The scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits, until the first
+/// task of the call ends, the budget ends, or the script calls `exit`.
+fn schedule(shared: RunShared): Outcome {
+    let module = shared.module;
     while (true) {
         // S6d3: the timers whose time came wake behind the ready tasks; with none ready, the run
         // waits for the earliest — without timers that is a deadlock

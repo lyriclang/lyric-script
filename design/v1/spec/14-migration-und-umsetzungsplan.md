@@ -2991,3 +2991,31 @@ Offen, vor dem Bau des jeweiligen Slices nach Empfehlung zu entscheiden:
 - die Form des Callbacks in der C-ABI (h)
 
 Größe: L laut Tabelle. Mit neun Slices liegt sie eher an XL; das wird in S8a geprüft, bevor gebaut wird.
+
+**S8a, geteilt (2026-11-12).** Gelesen gegen den Code: Heute lebt der Zustand eines Laufs (`RunShared`:
+Globals, Tasks, Timer, Budget, Deskriptoren) nur während `run`. Eine Funktion im Modul kennt nur die Zahl
+ihrer Slots, nicht ihre Typen. Drei Teile:
+- **S8a1 Instanz:** `Instance` hält ein `RunShared` über Aufrufe hinweg. `inst.init(fuel)` führt den
+  Top-Level-Code aus (07 Top), `inst.call(name, args, fuel)` danach eine Funktion des Einstiegsmoduls als
+  ersten Task dieses Aufrufs. Tasks, die er losgelöst startet, bleiben in der Instanz und laufen beim
+  nächsten Aufruf weiter. **Nach einer Panik bleibt die Instanz benutzbar** (01 S11): Der Aufruf und seine
+  Frames sind weg, Globals und andere Tasks bleiben. Ein `call` vor dem Ende von `init` ist ein Fehler des
+  Hosts (eine Lyric-5-Ausnahme, kein Ergebnis). Der CLI-Lauf geht über die Instanz, damit Konformanz und
+  Tests die API mitprüfen.
+- **S8a2 Laden:** `Vm` mit dem Cache-Verzeichnis des Hosts. `vm.load(name, source, rights)` übersetzt mit
+  Cache (01 S10) und prüft die Rechte gegen die Freigabe des Hosts. Ein Fehler wirft `LoadError` mit den
+  Diagnosen als Werten. `vm.loadTrusted(bytes, rights)` lädt ohne Übersetzen.
+- **S8a3 Werte an der Grenze:** Das Modul trägt eine Tabelle der Exporte, also der öffentlichen
+  Top-Level-Funktionen mit den Typen ihrer Parameter und ihres Ergebnisses. Das ändert das Format.
+  `Value` ist `Void`, `Int`, `Float`, `Bool`, `Char`, `Str` oder `List` davon. Das `CallResult`
+  ist `.Ok(Value)`, `.Error` (Typname, Meldung, Ursachen, Backtrace), `.Panic`, `.Suspended`,
+  `.Aborted` oder `.Stale` (01 S11). Eine Funktion mit einem anderen Typ an der Grenze weist der Aufruf
+  mit einem Fehler des Hosts ab. Maps und Objekte folgen als Handles mit S8g.
+
+Entschieden nach Empfehlung, mit den Alternativen:
+- Der Top-Level-Code läuft über ein **ausdrückliches `init`**, nicht beim Laden: Er kann wie jeder Aufruf
+  anhalten (`.Suspended`) und braucht deshalb dieselbe Ergebnisform. Verworfen: `load` führt ihn aus und
+  wirft bei einer Panik (zwei Formen für ein Ergebnis), oder der erste `call` führt ihn implizit aus (der
+  Host sieht nicht, wessen Budget er zahlt).
+- **Losgelöste Tasks gehören der Instanz**, nicht dem Aufruf. Verworfen: sie am Ende des Aufrufs
+  abzubrechen; ein Mod, der einen Timer startet, braucht sie über den Aufruf hinaus.

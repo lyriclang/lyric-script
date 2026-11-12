@@ -64,6 +64,12 @@ fn load(source: string): ?Module {
     if (root == null) {
         return null;
     }
+    return loadIn(root, source);
+}
+
+/// The module of a source cached under `root`, as `load` finds it in the user's cache; a host
+/// names its own directory (01 S10; S8a2).
+fn loadIn(root: string, source: string): ?Module {
     let key = sourceKey(source);
     let path = pathOf(root, key);
     if (!exists(path)) {
@@ -89,6 +95,11 @@ fn store(source: string, module: Module): void {
     if (root == null) {
         return;
     }
+    storeIn(root, source, module);
+}
+
+/// Keeps a source's module under `root`, as `store` does in the user's cache (S8a2).
+fn storeIn(root: string, source: string, module: Module): void {
     let key = sourceKey(source);
     let path = pathOf(root, key);
     let partial = f"{path}.{pid()}.tmp";

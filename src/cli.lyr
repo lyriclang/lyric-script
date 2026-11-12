@@ -9,9 +9,8 @@ import std.term { StdStream, isTerminal };
 import lyric_script { version };
 import lyric_script.cache { clean, load, store };
 import lyric_script.compiler.diagnostic { Diagnostic };
-import lyric_script.compiler.checker { ProgramUnit, checkModule };
-import lyric_script.compiler.codegen { generate };
 import lyric_script.compiler.render { SourceLines, renderJson, renderSummary, renderText };
+import lyric_script.embed { compileLoaded };
 import lyric_script.loader { LoadOptions, Loaded, loadProgram, packageRoot };
 import lyric_script.package { manifestName };
 import lyric_script.rights { allowed, classesOf, missing };
@@ -432,57 +431,25 @@ fn compile(l: Loaded, json: bool): Compiled {
         docLines = docLines.toArray(),
         json = json,
     };
-    var broken = l.errors.length();
-    for (parsed in l.parses) {
-        r.all(parsed.errors, parsed.warnings);
-        broken += parsed.errors.length();
-    }
-    r.all(l.errors.toArray(), []);
-    if (broken > 0) {
-        r.summary();
-        return Compiled { module = null, warnings = r.warnings };
-    }
-    // the checker reads trees without faults: a fault of the parse would only echo
-    let imported = List<ProgramUnit>.new();
-    for (k in l.order) {
-        if (k != 0) {
-            imported.push(
-                ProgramUnit {
-                    name = l.names[k],
-                    module = l.parses[k].module,
-                    file = k,
-                    submodules = l.subs[k],
-                    package = l.pkgOf[k],
-                }
-            );
+    // what the host's API compiles with (S8a2), said here in the form asked for
+    let c = compileLoaded(l);
+    for (s in c.said) {
+        if (s.error) {
+            r.all([s.d], []);
+        } else {
+            r.all([], [s.d]);
         }
     }
-    let checked = checkModule(
-        l.parses[0].module,
-        imported.toArray(),
-        l.collections,
-        l.numbers,
-        l.bytes
-    );
-    r.all(checked.errors, checked.warnings);
     r.summary();
-    if (checked.errors.length() > 0) {
-        return Compiled { module = null, warnings = r.warnings };
-    }
-    let module = generate(checked.program, path);
-    // the rights its imports ask for travel with the bytecode (01 S1)
-    module.rights = l.rights.toArray();
-    let faults = check(module);
-    if (faults.length() > 0) {
+    if (c.faults.length() > 0) {
         // the compiler's fault, not the script's
-        for (fault in faults) {
+        for (fault in c.faults) {
             eprintln(
                 f"error[LYS-ICE0002]: {path}: the compiler made faulty bytecode: {fault.function} at {fault.pc}: {fault.message}"
             );
         }
-        return Compiled { module = null, warnings = r.warnings };
     }
-    return Compiled { module = module, warnings = r.warnings };
+    return Compiled { module = c.module, warnings = r.warnings };
 }
 
 /// Says a script's diagnostics, in the form asked for, and counts them.

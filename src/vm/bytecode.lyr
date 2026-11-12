@@ -123,8 +123,14 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
     return w.out.toArray();
 }
 
-/// The module in `bytes`, when their head names this format, version and source.
-fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Module throws NotOurs {
+/// The module in `bytes`, when their head names this format, version and source; `sourceHash`
+/// `null` takes the bytecode of any source, as `loadTrusted` does (01 S10; S8a2).
+fn decode(
+    bytes: uint8[],
+    format: int,
+    version: string,
+    sourceHash: ?string
+): Module throws NotOurs {
     let r = Reader { bytes = bytes };
     for (b in magic) {
         if (try r.byte() != b) {
@@ -137,7 +143,8 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
     if (try r.text() != version) {
         throw NotOurs { reason = "another compiler's bytecode" };
     }
-    if (try r.text() != sourceHash) {
+    let hash = try r.text();
+    if (sourceHash != null && hash != sourceHash) {
         throw NotOurs { reason = "the bytecode of another source" };
     }
     let name = try r.text();

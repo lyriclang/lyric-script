@@ -1,0 +1,258 @@
+//! The host's side of Lyric-Script (design/v1, 01 S10; 11 Emb a; S8a2): a `Vm` loads a script from
+//! its source — compiled, its rights checked against what the host gives, kept in the host's
+//! cache directory — or from bytecode the host trusts, and gives an `Instance` to call. What the
+//! source gets wrong comes back as values, never printed: the host decides who sees it.
+import std.collections { List };
+import lyric_script { version };
+import lyric_script.cache { loadIn, sourceKey, storeIn };
+import lyric_script.compiler.checker { ProgramUnit, checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.diagnostic { Diagnostic };
+import lyric_script.loader { Loaded, loadProgram };
+import lyric_script.rights { classesOf, missing };
+import lyric_script.vm { bytecodeFormat };
+import lyric_script.vm.bytecode { NotOurs, decode, encode };
+import lyric_script.vm.interp { Instance, instanceOf };
+import lyric_script.vm.module { CheckError, Module, RightUse, check };
+
+/// A diagnostic of a load, as the host reads it: an error or a warning, its code from the catalog
+/// (`diagnostics.toml`), its message, the file and the line and column (from 1) it is about, and
+/// what to do about it where there is a short answer.
+pub struct Finding :: [Debug] {
+    pub error: bool,
+    pub code: string,
+    pub message: string,
+    pub path: string,
+    pub line: int,
+    pub column: int,
+    pub help: ?string,
+}
+
+/// A load that gave no instance: the source's errors (its warnings beside them), the rights its
+/// imports ask for that the host did not give (01 S1), or bytecode that is none of this
+/// toolchain's.
+pub struct LoadError :: [Error] {
+    pub findings: Finding[] = [],
+    pub missing: RightUse[] = [],
+    pub reason: string = "",
+
+    /// The first error, or the rights not given, or why the bytecode did not load.
+    pub fn message(): string {
+        for (f in this.findings) {
+            if (f.error) {
+                return f"{f.path}:{f.line}:{f.column}: error[{f.code}]: {f.message}";
+            }
+        }
+        if (this.missing.length() > 0) {
+            return f"the script asks for rights it was not given: {classesOf(this.missing).join(", ")}";
+        }
+        return this.reason;
+    }
+}
+
+/// The VM of a host (11 Emb a): the code it compiled is shared by the instances it gives; its
+/// cache directory is the host's to name, `null` for none.
+pub class Vm {
+    cacheDir: ?string,
+
+    /// An instance of the script `source`, named `name` — its diagnostics' path, and where its
+    /// own imports are looked for —, with the rights in `allow` (`file`, `net`, `process`, `os`,
+    /// `native`), or every right with `all`. Its top level has not run: `init` runs it.
+    pub fn load(
+        name: string,
+        source: string,
+        allow: string[] = [],
+        all: bool = false
+    ): Instance throws LoadError {
+        let module = try this.compiled(name, source);
+        return try granted(module, name, allow, all);
+    }
+
+    /// The bytecode of the script `source`, for `loadTrusted` (01 S10): an artefact of the
+    /// host's own, as `pack` makes one.
+    pub fn compile(name: string, source: string): uint8[] throws LoadError {
+        let module = try this.compiled(name, source);
+        return encode(module, bytecodeFormat, version, sourceKey(source));
+    }
+
+    /// An instance of bytecode the host trusts (01 S10): not compiled and not checked — the name
+    /// says that what is foreign passes the sandbox here; bytecode of another format or
+    /// toolchain does not load.
+    pub fn loadTrusted(
+        bytes: uint8[],
+        allow: string[] = [],
+        all: bool = false
+    ): Instance throws LoadError {
+        let module = try decode(bytes, bytecodeFormat, version, null) catch (e: NotOurs) {
+            throw LoadError { reason = f"the bytecode does not load: {e.message()}" };
+        };
+        return try granted(module, module.name, allow, all);
+    }
+
+    // the module of a source: from the cache where it is there, else compiled — and kept where it
+    // had no warning, so that they are found again
+    fn compiled(name: string, source: string): Module throws LoadError {
+        let l = loadProgram(name, source);
+        let key = l.cacheText();
+        let root = this.cacheDir;
+        if (root != null && l.errors.length() == 0) {
+            if (let cached = loadIn(root, key)) {
+                return cached;
+            }
+        }
+        let c = compileLoaded(l);
+        let module = c.module;
+        if (module == null) {
+            throw LoadError { findings = findingsOf(l, c), reason = faultsOf(name, c.faults) };
+        }
+        if (root != null && c.warnings == 0) {
+            storeIn(root, key, module);
+        }
+        return module;
+    }
+}
+
+/// A host's VM; `cacheDir` where compiled scripts are kept, `null` for none.
+pub fn vmOf(cacheDir: ?string = null): Vm {
+    return Vm { cacheDir = cacheDir };
+}
+
+// an instance of `module` where the host gave every right its imports ask for
+fn granted(module: Module, name: string, allow: string[], all: bool): Instance throws LoadError {
+    let lacking = missing(module.rights, allow, all);
+    if (lacking.length() > 0) {
+        throw LoadError { missing = lacking };
+    }
+    return instanceOf(module, [name]);
+}
+
+/// A diagnostic as it was said, an error or a warning.
+struct Said {
+    error: bool,
+    d: Diagnostic,
+}
+
+/// What compiling a loaded program gave (S8a2; the command line's and the host's): its findings
+/// in the order they are said, its module where it has no error, how many warnings it had, and
+/// the faults of bytecode the compiler made wrong — the compiler's, not the script's.
+struct Compilation {
+    said: Said[],
+    module: ?Module,
+    warnings: int,
+    faults: CheckError[],
+}
+
+/// Compiles the program `l` loaded: the parses' findings, the loader's, then the checker's; a
+/// program whose parse has an error is not checked — the checker would only echo it.
+fn compileLoaded(l: Loaded): Compilation {
+    let said = List<Said>.new();
+    var warnings = 0;
+    var broken = l.errors.length();
+    for (parsed in l.parses) {
+        for (d in parsed.errors) {
+            said.push(Said { error = true, d = d });
+        }
+        for (d in parsed.warnings) {
+            said.push(Said { error = false, d = d });
+            warnings += 1;
+        }
+        broken += parsed.errors.length();
+    }
+    for (d in l.errors) {
+        said.push(Said { error = true, d = d });
+    }
+    if (broken > 0) {
+        return Compilation {
+            said = said.toArray(),
+            module = null,
+            warnings = warnings,
+            faults = [],
+        };
+    }
+    let imported = List<ProgramUnit>.new();
+    for (k in l.order) {
+        if (k != 0) {
+            imported.push(
+                ProgramUnit {
+                    name = l.names[k],
+                    module = l.parses[k].module,
+                    file = k,
+                    submodules = l.subs[k],
+                    package = l.pkgOf[k],
+                }
+            );
+        }
+    }
+    let checked = checkModule(
+        l.parses[0].module,
+        imported.toArray(),
+        l.collections,
+        l.numbers,
+        l.bytes
+    );
+    for (d in checked.errors) {
+        said.push(Said { error = true, d = d });
+    }
+    for (d in checked.warnings) {
+        said.push(Said { error = false, d = d });
+        warnings += 1;
+    }
+    if (checked.errors.length() > 0) {
+        return Compilation {
+            said = said.toArray(),
+            module = null,
+            warnings = warnings,
+            faults = [],
+        };
+    }
+    let module = generate(checked.program, l.paths[0]);
+    // the rights its imports ask for travel with the bytecode (01 S1)
+    module.rights = l.rights.toArray();
+    let faults = check(module);
+    return Compilation {
+        said = said.toArray(),
+        module = if (faults.length() > 0) null else module,
+        warnings = warnings,
+        faults = faults,
+    };
+}
+
+/// The file a diagnostic is about: the program's file by its place, a manifest's as `-2 - k`, the
+/// prelude's — no file of the program — as the entry's.
+fn pathOf(l: Loaded, d: Diagnostic): string {
+    let doc = -2 - d.file;
+    if (d.file >= 0 && d.file < l.paths.length()) {
+        return l.paths[d.file];
+    }
+    if (doc >= 0 && doc < l.docPaths.length()) {
+        return l.docPaths[doc];
+    }
+    return l.paths[0];
+}
+
+fn findingsOf(l: Loaded, c: Compilation): Finding[] {
+    let out = List<Finding>.new();
+    for (s in c.said) {
+        out.push(
+            Finding {
+                error = s.error,
+                code = s.d.code,
+                message = s.d.message,
+                path = pathOf(l, s.d),
+                line = s.d.line,
+                column = s.d.column,
+                help = s.d.help,
+            }
+        );
+    }
+    return out.toArray();
+}
+
+// the compiler's faults as one reason; empty where there are none
+fn faultsOf(name: string, faults: CheckError[]): string {
+    if (faults.length() == 0) {
+        return "";
+    }
+    let f = faults[0];
+    return f"{name}: the compiler made faulty bytecode: {f.function} at {f.pc}: {f.message}";
+}

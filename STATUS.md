@@ -444,7 +444,7 @@ VM's call path, S7k measurement point 3.
   build does not compile `topwords` (P48, lyric#667). The two target programs of 02 are examples in CI
   (`examples/targets`). 382 tests. **S7k done.**
 - **S7 closed** — design 12's lines against the code (14, "S7, Abschluss"); the target programs in CI.
-- Next: **S8** — security and embedding; plan its slices in 14 first.
+- Next: **S8a** — the instance and its result form (14, "S8 — Slices"; planned 2026-11-12).
 
 ## Working mode
 

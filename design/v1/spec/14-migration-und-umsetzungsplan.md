@@ -2937,3 +2937,57 @@ Lehren:
 - Die Konformanz liest ihren Cache nie zurück; diesen Weg prüfen nur die Unit-Tests.
 
 382 Tests, 865 Fälle; Bytecode-Format 47.
+
+## S8 — Slices (Plan, Entwurf 2026-11-09)
+
+Ziel aus der Meilensteintabelle: **Sicherheit und Einbettung** — eine VM, die ein Host hält, mit
+Instanzen, die er unter Rechten und Budget aufruft, aus Lyric 5 und über die C-ABI. Quellen: 01 S1–S6,
+S8–S11 (S7 ist S9); 07 Wait, N6, N8; 11 Co, Thr, Emb, Hst, Perf, std; 06 für `PermissionError` und
+die Ergebnisform; 09 At für `@Requires`. Mit Uhr aus früheren Meilensteinen hierher:
+- Fortsetzen nach `.Suspended` (S1f)
+- `.Error` an der Grenze (S4, E6)
+- Bereiche auf Rechten und Rechte von Host-Modulen (S5)
+- das eingebettete Warten, das Anhalten der Instanz samt Tasks über das Budget, Callbacks aus Natives
+  (S6)
+- die Kostenregeln der älteren Natives (P33) und die Frage, ob Zuteilungen sich addieren (P34)
+- die Fehlermenge einer Host-Implementierung (P14)
+- das Feld `owner` im Objektkopf (S1e)
+
+**Bestand (vor dem Plan gelesen):**
+- Gebaut sind die groben Rechte mit Abfrage, `--allow` und `-A` (17 Regel 1), Fuel, das einen Lauf anhält
+  (S1f), und `charge` für die Natives von S7f–S7h.
+- Es fehlen ganz:
+  - Instanz, `resume`, `abort`, Deadline
+  - Allokationsbudget, Instanz-Seed, Eigentum und tiefe Kopie
+  - Bereiche, Host-Rechte, Host-API
+  - `call`/`start`/`step`, eine Lyric-5-API, eine C-ABI über `lyrs_abi_version` hinaus
+  - Beispiel-Hosts
+
+Der CLI-Lauf ruft heute `run(module, entry, args, fuel, argv)` direkt.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S8a Instanz und Ergebnis** | Paket `lyric_script` als Bibliothek: `Vm` (geteilter, unveränderlicher Code, Cache-Verzeichnis vom Host) und `Instance` (Globals, Scheduler, Ressourcen-Register); `vm.load(source)` übersetzt mit Cache (01 S10) und führt den Top-Level-Code aus; `vm.loadTrusted(bytes)`; `inst.call(name, args)` → `CallResult` `.Ok(v)` · `.Error(e)` (Typname, Meldung, Ursachen, Backtrace) · `.Panic(p)` · `.Suspended` · `.Aborted` · `.Stale` (01 S11); **nach einer Panik bleibt die Instanz benutzbar** (Frames weg, Globals bleiben); Werte an der Grenze: Skalare, `string`, Listen und Maps davon (der Rest über Handles, S8f); der CLI-Lauf geht über dieselbe API | Lyric-5-Tests der API; Konformanz unverändert grün |
+| **S8b Budget** | Fuel **und/oder** Deadline je Aufruf (01 S5a), an denselben Prüfstellen; `.Suspended` hebt Frame-Stack und Tasks auf, `inst.resume(budget)` setzt fort, `inst.abort()` wirkt immer, auch auf geparkte Tasks, ohne `defer`, und schließt die Ressourcen der Instanz (01 S5b, 07 N8); eine angehaltene Instanz nimmt nur `resume`/`abort` an; P34 entscheiden (Zuteilungen addieren sich, oder das Ergebnis sagt, was der nächste Schritt braucht); die Deadline in langen Schleifen der Natives; **P33**: `sort`, `repeat`, `replace`, `split`, `+`, `*` rechnen ab | Fuel-Fälle bis auf die Einheit; Kostenregel je Native mit Test; Anhalten mitten in einem Native nie |
+| **S8c Speicher** | Allokationsbudget je Aufruf (`alloc`, deterministisch, Zähler im Allokationspfad der VM und der Natives; Erschöpfung wie Fuel: `.Suspended` mit Grund) und die Prozessgrenze über Lyric 5s `heap_limit` (01 S6) | Zähler je Allokationsart; Fall über der Grenze |
+| **S8d Warten eingebettet** | `inst.start(f, …)` liefert ein Handle, der Host pumpt mit `inst.step()`; `call` pumpt synchron (07 Wait); dieselbe Mechanik wie `.Suspended`; ein Skript-Callback, den ein Native ruft, darf nicht warten (11 Co: Fehler mit eigenem Code) | Host-Test mit einem wartenden Task; `step` blockiert nie |
+| **S8e Rechte fein** | Bereiche `--allow file=./data`, `net=host:port` (01 S1), geprüft beim Aufruf mit `PermissionError` (06), Pfade normalisiert (Symlinks, `..`, Groß-/Kleinschreibung nach Plattform); dieselben Bereiche über die API | Konformanz in 17 mit Dateien im Fallordner; die bekannten Pfadfallen je ein Fall |
+| **S8f Host-API** | Attribute in Script, nur die Syntax und Art 2 (09 At; aus P43 vorgezogen, `@Test` und Art 1 bleiben bei S11/S10), mit **`@Requires`**; ein Host-Modul als `.lyrs` mit Deklarationen ohne Rumpf (Typen, Handle-Klassen; 11 Hst), `import host.<m>`; Implementierungen nach Namen registriert, beim Laden geprüft (jede Deklaration hat eine); host-definierte Rechte-Tags im selben Mechanismus wie `std` (01 S2); die Fehlermenge einer Host-Implementierung aus ihrer Deklaration (P14); Callbacks des Hosts in Script | Konformanz mit einem Test-Host; fehlende Implementierung = Ladefehler |
+| **S8g Isolation, Determinismus, Threads** | jedes Objekt gehört einer Instanz (`owner`), über die Grenze nur tiefe Kopie oder `string` (01 S9; welche Typen kopierbar sind, Handles nicht — Fehler); der Instanz-Seed setzt den Hasher-Schlüssel (01 S8); eine Instanz wechselt den Thread nur, wenn sie ruht, mehrere Instanzen laufen parallel (11 Thr) | Kopie-Tests; zwei Instanzen auf zwei Threads; gleicher Seed = gleiche Reihenfolge der Hashes |
+| **S8h C-ABI** | `liblyricscript` über `@Export` (11 Emb b): VM und Instanz anlegen und freigeben, laden, aufrufen mit Werten, Ergebnis lesen, Budget, `resume`/`abort`, Rechte, Host-Funktionen als C-Callbacks; Header; die Fehlerform an der C-Grenze | ein C-Test gegen die Bibliothek in CI auf allen Zielen |
+| **S8i `@ScriptApi`** | Makro für Lyric-5-Hosts (Lyric 5 M9b): aus einem annotierten Lyric-5-Modul die `.lyrs`-Datei und die Registrierung (11 Hst) | ein Lyric-5-Host mit generierter API |
+| **Abschluss** | Beispiel-Hosts in C und in Lyric 5 mit einem Mod unter Budget, in CI auf allen Tier-1-Zielen; **Messpunkt 4**: eingebettet VM + kleine Instanz ≤ 5 ms, leere Instanz ≤ 100 KiB, Erwartung vorab; STATUS, PR, CI, Merge, Tag `s8-complete`; Bereichszeilen gegen den Code | Beispiel-Hosts in CI; Bericht Messpunkt 4 |
+
+Reihenfolge: a vor allem (die Instanz trägt alles Weitere); b vor c und d (dieselbe Anhalte-Mechanik);
+e vor f (ein Rechte-Mechanismus); g nach a; h nach a–f; i nach f und h. **Spec**: 13 und 17 wachsen je
+Slice; `PermissionError` und die Ergebnisform gehen nach 06; Attribute nach 02 und 11.
+Austrittskriterium: die Beispiel-Hosts laufen in CI, Messpunkt 4 gemessen.
+
+Offen, vor dem Bau des jeweiligen Slices nach Empfehlung zu entscheiden:
+- die Werte an der Grenze (a)
+- P34 (b)
+- der Grund bei Erschöpfung des Allokationsbudgets (c)
+- welche Typen kopierbar sind (g)
+- die Form des Callbacks in der C-ABI (h)
+
+Größe: L laut Tabelle. Mit neun Slices liegt sie eher an XL; das wird in S8a geprüft, bevor gebaut wird.

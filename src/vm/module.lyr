@@ -106,6 +106,30 @@ pub class Module :: [Identity] {
     errorCause: int = -1,
     /// The rights its imports ask for, each with where (01 S1, S5e): checked when it is loaded.
     var rights: RightUse[] = [],
+    /// The functions a host may call, with the types at their boundary (S8a3).
+    var exports: Callable[] = [],
+}
+
+/// A type at a call's boundary between host and script (S8a3): the scalars, `string`, and lists
+/// of them; `Other` for any other type, which a host does not call with.
+pub enum Boundary :: [Equatable, Debug] {
+    Void,
+    Int,
+    Float,
+    Bool,
+    Char,
+    Str,
+    List(Box<Boundary>),
+    Other,
+}
+
+/// A function of the entry module a host may call (S8a3): a public one of the top level, not
+/// generic — its place among the module's functions, its parameters' types and its result's.
+pub struct Callable :: [Debug] {
+    pub name: string,
+    pub function: int,
+    pub params: Boundary[],
+    pub result: Boundary,
 }
 
 /// A right a module's import asks for: its class — `file`, `net`, `process`, `os`, `native` —,

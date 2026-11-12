@@ -78,7 +78,8 @@ import lyric_script.vm.bigint {
 import lyric_script.vm.elementary { mathOne, mathTwo };
 import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
 import lyric_script.vm.op { Instr };
-import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
+import lyric_script.vm.module { Boundary, Callable, Function, Handler, Module, TypeDesc };
+import lyric_script.vm.value { Value, bitsOf, fits, isScalarAt, refOf, valueOfBits, valueOfRef };
 import lyric_script.vm.heap {
     ScriptArray,
     ScriptIndex,
@@ -597,7 +598,65 @@ pub class Instance {
     }
 
     /// Runs the script's top level (07 Top) with `fuel` units of budget, `-1` without a limit.
-    pub mut fn init(fuel: int): Outcome throws InstanceMisuse {
+    pub mut fn init(fuel: int): CallResult throws InstanceMisuse {
+        return resultOf(try this.initOutcome(fuel), Boundary.Void);
+    }
+
+    /// Calls the function `name` a host may call (S8a3) with `args`, of the types its parameters
+    /// have, and `fuel` units of budget, `-1` without a limit; only after `init`. A function the
+    /// host may not call, an argument of another type, or a parameter or result of a type the
+    /// host does not pass is the host's mistake.
+    pub mut fn call(name: string, args: Value[], fuel: int): CallResult throws InstanceMisuse {
+        if (this.at != InstancePhase.Ready) {
+            throw InstanceMisuse { reason = f"a call on an instance that is {phaseName(this.at)}" };
+        }
+        var found: ?Callable = null;
+        for (x in this.shared.module.exports) {
+            if (x.name == name) {
+                found = x;
+            }
+        }
+        if (found == null) {
+            throw InstanceMisuse {
+                reason = f"the script has no function '{name}' a host may call",
+            };
+        }
+        let x = found;
+        if (x.result == Boundary.Other) {
+            throw InstanceMisuse {
+                reason = f"'{name}' gives a value of a type the host does not take",
+            };
+        }
+        if (args.length() != x.params.length()) {
+            throw InstanceMisuse {
+                reason = f"'{name}' takes {x.params.length()} arguments, given {args.length()}",
+            };
+        }
+        let s = List<uint64>.new();
+        let r = List<HeapRef>.new();
+        var k = 0;
+        while (k < args.length()) {
+            let b = x.params[k];
+            if (b == Boundary.Other) {
+                throw InstanceMisuse {
+                    reason = f"'{name}' takes a parameter {k + 1} of a type the host does not pass",
+                };
+            }
+            if (!fits(args[k], b)) {
+                throw InstanceMisuse { reason = f"argument {k + 1} of '{name}' is not a {b:?}" };
+            }
+            if (isScalarAt(b)) {
+                s.push(bitsOf(args[k]));
+            } else {
+                r.push(refOf(args[k], b));
+            }
+            k += 1;
+        }
+        return resultOf(this.enter(x.function, s.toArray(), r.toArray(), fuel), x.result);
+    }
+
+    /// `init` as the VM ends it, for the command line, which reports it itself.
+    mut fn initOutcome(fuel: int): Outcome throws InstanceMisuse {
         if (this.at != InstancePhase.Fresh) {
             throw InstanceMisuse { reason = f"init on an instance that is {phaseName(this.at)}" };
         }
@@ -605,20 +664,7 @@ pub class Instance {
         if (fi < 0) {
             throw InstanceMisuse { reason = "the module has no top level" };
         }
-        return this.enter(fi, [], fuel);
-    }
-
-    /// Calls the function `name` with `args` in its first scalar registers and `fuel` units of
-    /// budget, `-1` without a limit; only after `init`.
-    pub mut fn call(name: string, args: uint64[], fuel: int): Outcome throws InstanceMisuse {
-        if (this.at != InstancePhase.Ready) {
-            throw InstanceMisuse { reason = f"a call on an instance that is {phaseName(this.at)}" };
-        }
-        let fi = functionIndex(this.shared.module, name);
-        if (fi < 0) {
-            throw InstanceMisuse { reason = f"the module has no function '{name}'" };
-        }
-        return this.enter(fi, args, fuel);
+        return this.enter(fi, [], [], fuel);
     }
 
     /// Ends the instance: the subscriptions to signals its script left open end (S7h4); it takes
@@ -632,9 +678,9 @@ pub class Instance {
         }
     }
 
-    mut fn enter(fi: int, args: uint64[], fuel: int): Outcome {
+    mut fn enter(fi: int, s: uint64[], r: HeapRef[], fuel: int): Outcome {
         let shared = this.shared;
-        let out = onOwnTask(() => callIn(shared, fi, args, fuel));
+        let out = onOwnTask(() => callIn(shared, fi, s, r, fuel));
         this.at = match (out) {
             .Suspended => InstancePhase.Suspended,
             .Exit(_) => InstancePhase.Ended,
@@ -648,6 +694,40 @@ pub class Instance {
         }
         return out;
     }
+}
+
+/// How a host's call ended (01 S11; S8a3): its value, an error that left every frame, a panic of
+/// the script, the budget's end (01 S5b), `abort` (S8b), a function value of a script reloaded
+/// since (S9), or the script's `exit`, which ends the instance.
+pub enum CallResult {
+    Ok(Value),
+    Error(ScriptError),
+    Panic(ScriptPanic),
+    Suspended,
+    Aborted,
+    Stale,
+    Exit(int),
+}
+
+/// How the VM ended a call, as the host reads it, the result of type `result`.
+fn resultOf(out: Outcome, result: Boundary): CallResult {
+    return match (out) {
+        .Void => CallResult.Ok(Value.Void),
+        .Scalar(bits) => CallResult.Ok(valueOfBits(result, bits)),
+        .Ref(o) => CallResult.Ok(valueOfRef(result, o)),
+        .Slots(_, _) => CallResult.Ok(Value.Void),
+        .Panic(p) => CallResult.Panic(p),
+        .Error(e) => CallResult.Error(e),
+        .Suspended => CallResult.Suspended,
+        .Exit(code) => CallResult.Exit(code),
+        .Switch => CallResult.Panic(
+            ScriptPanic {
+                code = "LYS-ICE0001",
+                message = "the VM gave way with no task to run",
+                trace = [],
+            }
+        ),
+    };
 }
 
 /// A new instance of `module`, its top level not run yet; `argv` is what `args` gives the script,
@@ -689,7 +769,7 @@ fn runOn(
             ScriptPanic { code = "LYS-ICE0001", message = f"no function '{entry}'", trace = [] }
         );
     }
-    return callIn(newShared(module, fuel, argv, feeds), fi, args, fuel);
+    return callIn(newShared(module, fuel, argv, feeds), fi, args, [], fuel);
 }
 
 /// The place of the function named `name` in `module`, the last of that name; -1 where none is.
@@ -725,7 +805,7 @@ fn newShared(module: Module, fuel: int, argv: string[], feeds: List<Channel<Sign
 /// Calls function `fi` of `shared`'s module with `args` in its first scalar registers, as the
 /// first task of this call, with `fuel` units of budget, and schedules until that task ends (S8a1).
 /// What an earlier call left waiting stays in the queue; the tasks that ended are forgotten.
-fn callIn(shared: RunShared, fi: int, args: uint64[], fuel: int): Outcome {
+fn callIn(shared: RunShared, fi: int, args: uint64[], refs: HeapRef[], fuel: int): Outcome {
     let first = shared.module.functions[fi];
     let main = TaskState {
         s = [0 as uint64] * grown(0, first.scalars),
@@ -736,6 +816,11 @@ fn callIn(shared: RunShared, fi: int, args: uint64[], fuel: int): Outcome {
     var k = 0;
     while (k < args.length() && k < first.paramsS) {
         main.s[k] = args[k];
+        k += 1;
+    }
+    k = 0;
+    while (k < refs.length() && k < first.paramsR) {
+        main.r[k] = refs[k];
         k += 1;
     }
     shared.budget = fuel;

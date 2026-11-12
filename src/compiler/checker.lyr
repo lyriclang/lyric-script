@@ -5869,6 +5869,7 @@ class Checker {
             isStatic = f.isStatic || owner < 0,
             line = f.span.line,
             file = this.fileText(fileModule(f.span.file)),
+            isPub = f.isPub && !f.isInternal,
         };
         // `Self` in its signature: its type's (S3i)
         let savedSelf = this.selfTyIs;

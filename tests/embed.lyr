@@ -4,11 +4,11 @@
 import std.fs { readDir, removeAll, tempDir };
 import std.test { assertEq, assertTrue };
 import lyric_script.embed { LoadError, Vm, vmOf };
-import lyric_script.vm.interp { Instance, Outcome };
+import lyric_script.vm.interp { CallResult, Instance };
 
-fn scalar(o: Outcome): int {
+fn scalar(o: CallResult): int {
     return match (o) {
-        .Scalar(bits) => bits as int,
+        .Ok(.Int(i)) => i,
         .Panic(_) => -1000,
         .Error(_) => -2000,
         _ => -999999,

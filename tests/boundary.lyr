@@ -1,0 +1,114 @@
+// Values at the boundary between a host and a script (S8a3; Script 01 S11, 11 Emb): the
+// scalars, `string` and lists of them go in and come out as the host's values; a function the
+// host may not call, or an argument of another type, is the host's mistake; the functions a host
+// may call travel with the bytecode.
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { vmOf };
+import lyric_script.vm.interp { CallResult, Instance, InstanceMisuse };
+import lyric_script.vm.value { Value };
+
+fn ready(source: string): Instance {
+    let inst = try! vmOf().load("t.lyrs", source);
+    try! inst.init(-1);
+    return inst;
+}
+
+fn ok(r: CallResult): Value {
+    return match (r) {
+        .Ok(v) => v,
+        _ => Value.Str("not ok"),
+    };
+}
+
+// whether the instance refuses the call as the host's mistake
+fn refuses(inst: Instance, name: string, args: Value[]): bool {
+    try {
+        inst.call(name, args, -1);
+    } catch (e: InstanceMisuse) {
+        return true;
+    }
+    return false;
+}
+
+@Test
+fn scalarsAndStringsCrossTheBoundary(): void {
+    let inst = ready(
+        "fn greet(name: string, n: int): string = f\"{name} x{n}\"\nfn mix(f: float, b: bool, c: char): string = f\"{f} {b} {c}\"\nfn half(x: float): float = x / 2.0\nfn next(c: char): char = (c as int + 1) as char\nfn no(b: bool): bool = !b\n"
+    );
+    assertEq(
+        ok(try! inst.call("greet", [Value.Str("ada"), Value.Int(2)], -1)),
+        Value.Str("ada x2")
+    );
+    assertEq(
+        ok(try! inst.call("mix", [Value.Float(1.5), Value.Bool(true), Value.Char('z')], -1)),
+        Value.Str("1.5 true z")
+    );
+    assertEq(ok(try! inst.call("half", [Value.Float(5.0)], -1)), Value.Float(2.5));
+    assertEq(ok(try! inst.call("next", [Value.Char('a')], -1)), Value.Char('b'));
+    assertEq(ok(try! inst.call("no", [Value.Bool(true)], -1)), Value.Bool(false));
+}
+
+@Test
+fn listsCrossBothWays(): void {
+    let inst = ready(
+        "fn sum(xs: int[]): int {\n    var t = 0\n    for (x in xs) {\n        t += x\n    }\n    return t\n}\nfn pair(a: string, b: string): string[] = [a, b]\nfn lengths(xss: int[][]): int[] {\n    var out: int[] = []\n    for (xs in xss) {\n        out.push(xs.length())\n    }\n    return out\n}\n"
+    );
+    assertEq(
+        ok(try! inst.call("sum", [Value.List([Value.Int(1), Value.Int(2), Value.Int(3)])], -1)),
+        Value.Int(6)
+    );
+    assertEq(
+        ok(try! inst.call("pair", [Value.Str("a"), Value.Str("b")], -1)),
+        Value.List([Value.Str("a"), Value.Str("b")])
+    );
+    let xss = Value.List(
+        [Value.List([Value.Int(1)]), Value.List([]), Value.List([Value.Int(1), Value.Int(2)])]
+    );
+    assertEq(
+        ok(try! inst.call("lengths", [xss], -1)),
+        Value.List([Value.Int(1), Value.Int(0), Value.Int(2)])
+    );
+}
+
+@Test
+fn anErrorAndAPanicComeBackAsResults(): void {
+    let inst = ready(
+        "fn bad(): int {\n    throw Exception(\"no\")\n}\nfn worse(): int {\n    panic(\"never\")\n}\n"
+    );
+    match (try! inst.call("bad", [], -1)) {
+        .Error(e) => assertEq(e.message, "no"),
+        _ => assertTrue(false, "an error"),
+    }
+    match (try! inst.call("worse", [], -1)) {
+        .Panic(p) => assertEq(p.message, "never"),
+        _ => assertTrue(false, "a panic"),
+    }
+}
+
+@Test
+fn whatTheHostMayNotCallIsItsMistake(): void {
+    let inst = ready(
+        "struct P {\n    x: int\n}\nfn f(n: int): int = n\nprivate fn hidden(): int = 1\nfn takes(p: P): int = p.x\nfn gives(): P = P { x = 1 }\nfn id<T>(x: T): T = x\n"
+    );
+    assertTrue(refuses(inst, "f", [Value.Str("1")]), "an argument of another type");
+    assertTrue(refuses(inst, "f", []), "too few arguments");
+    assertTrue(refuses(inst, "f", [Value.Int(1), Value.Int(2)]), "too many arguments");
+    assertTrue(refuses(inst, "hidden", []), "a private function");
+    assertTrue(refuses(inst, "takes", [Value.Int(1)]), "a parameter the host does not pass");
+    assertTrue(refuses(inst, "gives", []), "a result the host does not take");
+    assertTrue(refuses(inst, "id", [Value.Int(1)]), "a generic function");
+    assertTrue(refuses(inst, "<script>", []), "the top level");
+    assertEq(ok(try! inst.call("f", [Value.Int(4)], -1)), Value.Int(4));
+}
+
+@Test
+fn whatAHostMayCallTravelsWithTheBytecode(): void {
+    let vm = vmOf();
+    let bytes = try! vm.compile("t.lyrs", "fn twice(s: string): string[] = [s, s]\n");
+    let inst = try! vm.loadTrusted(bytes);
+    try! inst.init(-1);
+    assertEq(
+        ok(try! inst.call("twice", [Value.Str("x")], -1)),
+        Value.List([Value.Str("x"), Value.Str("x")])
+    );
+}

@@ -1,0 +1,134 @@
+//! What a host passes to a script and gets back (design/v1, 01 S11; 11 Emb; S8a3): the scalars,
+//! `string`, and lists of them, as values of the host's — a copy, never a reference into the
+//! instance (01 S9). Other types at the boundary come as handles with S8g.
+import std.collections { List };
+import lyric_script.vm.heap { HeapRef, ScriptArray, ScriptString };
+import lyric_script.vm.module { Boundary };
+
+/// A value at a call's boundary.
+pub enum Value :: [Equatable, Debug] {
+    Void,
+    Int(int),
+    Float(float),
+    Bool(bool),
+    Char(char),
+    Str(string),
+    List(Value[]),
+}
+
+/// Whether `v` is a value of the type `b` — every element of a list too.
+fn fits(v: Value, b: Boundary): bool {
+    return match (v) {
+        .Void => b == Boundary.Void,
+        .Int(_) => b == Boundary.Int,
+        .Float(_) => b == Boundary.Float,
+        .Bool(_) => b == Boundary.Bool,
+        .Char(_) => b == Boundary.Char,
+        .Str(_) => b == Boundary.Str,
+        .List(xs) => match (b) {
+            .List(e) => {
+                for (x in xs) {
+                    if (!fits(x, e.value)) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => false,
+        },
+    };
+}
+
+/// Whether a value of the type `b` lies in a scalar register; else it is a reference.
+fn isScalarAt(b: Boundary): bool {
+    return match (b) {
+        .Int | .Float | .Bool | .Char => true,
+        _ => false,
+    };
+}
+
+/// The bits of a scalar value, as its register holds them.
+fn bitsOf(v: Value): uint64 {
+    return match (v) {
+        .Int(i) => i as uint64,
+        .Float(f) => f.toBits(),
+        .Bool(x) => if (x) 1 else 0,
+        .Char(c) => (c as uint32) as uint64,
+        _ => 0,
+    };
+}
+
+/// A new object of the instance for a value of reference type `b`: a string, or a list whose
+/// elements are made the same way.
+fn refOf(v: Value, b: Boundary): HeapRef {
+    match (v) {
+        .Str(text) => {
+            return ScriptString { text = text };
+        }
+        _ => { }
+    }
+    let none: Value[] = [];
+    let xs = match (v) {
+        .List(xs) => xs,
+        _ => none,
+    };
+    let e = match (b) {
+        .List(e) => e.value,
+        _ => Boundary.Other,
+    };
+    let scalar = isScalarAt(e);
+    let s = List<uint64>.new();
+    let r = List<HeapRef>.new();
+    for (x in xs) {
+        if (scalar) {
+            s.push(bitsOf(x));
+        } else {
+            r.push(refOf(x, e));
+        }
+    }
+    return ScriptArray {
+        ns = if (scalar) 1 else 0,
+        nr = if (scalar) 0 else 1,
+        s = s,
+        r = r,
+        n = xs.length(),
+    };
+}
+
+/// The value of type `b` whose register holds `bits`.
+fn valueOfBits(b: Boundary, bits: uint64): Value {
+    return match (b) {
+        .Int => Value.Int(bits as int),
+        .Float => Value.Float(float.fromBits(bits)),
+        .Bool => Value.Bool(bits != 0),
+        .Char => Value.Char((bits as uint32) as char),
+        _ => Value.Void,
+    };
+}
+
+/// The value of type `b` the object `o` is, copied out of the instance.
+fn valueOfRef(b: Boundary, o: HeapRef): Value {
+    match (b) {
+        .Str => {
+            if (o is ScriptString) {
+                return Value.Str(o.text);
+            }
+        }
+        .List(e) => {
+            if (o is ScriptArray) {
+                let out = List<Value>.new();
+                var k = 0;
+                while (k < o.n) {
+                    out.push(
+                        if (isScalarAt(e.value)) valueOfBits(e.value, o.s[k])
+                            else valueOfRef(e.value, o.r[k])
+                    );
+                    k += 1;
+                }
+                return Value.List(out.toArray());
+            }
+        }
+        _ => { }
+    }
+    return Value.Void;
+}

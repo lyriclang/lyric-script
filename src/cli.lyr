@@ -379,7 +379,7 @@ fn runModule(module: Module, grant: Grant): int {
     }
     // the run of a script is an instance's top level (S8a1): the host's API, used by its own CLI
     let inst = instanceOf(module, grant.argv);
-    let out = try! inst.init(-1);
+    let out = try! inst.initOutcome(-1);
     inst.close();
     return finishScript(out);
 }

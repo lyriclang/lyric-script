@@ -7,7 +7,8 @@ import std.test { assertEq, assertTrue };
 import lyric_script.compiler.checker { ProgramUnit, checkModule };
 import lyric_script.compiler.codegen { generate };
 import lyric_script.loader { loadProgram };
-import lyric_script.vm.interp { Instance, InstanceMisuse, InstancePhase, Outcome, instanceOf };
+import lyric_script.vm.interp { CallResult, Instance, InstanceMisuse, InstancePhase, instanceOf };
+import lyric_script.vm.value { Value };
 import lyric_script.vm.module { Module };
 
 // the module of a script with the prelude, compiled as the command line does
@@ -42,15 +43,15 @@ fn moduleOf(source: string): Module {
 fn ready(source: string): Instance {
     let inst = instanceOf(moduleOf(source));
     match (try! inst.init(-1)) {
-        .Void => { }
+        .Ok(_) => { }
         _ => assertTrue(false, "the top level did not end"),
     }
     return inst;
 }
 
-fn scalar(o: Outcome): int {
+fn scalar(o: CallResult): int {
     return match (o) {
-        .Scalar(bits) => bits as int,
+        .Ok(.Int(i)) => i,
         .Panic(_) => -1000,
         .Error(_) => -2000,
         .Suspended => -3000,
@@ -86,7 +87,7 @@ fn theTopLevelRunsOnceAndItsGlobalsStay(): void {
 @Test
 fn aCallTakesItsArguments(): void {
     let inst = ready("fn add(a: int, b: int): int = a + b\n");
-    assertEq(scalar(try! inst.call("add", [40 as uint64, 2 as uint64], -1)), 42);
+    assertEq(scalar(try! inst.call("add", [Value.Int(40), Value.Int(2)], -1)), 42);
 }
 
 @Test

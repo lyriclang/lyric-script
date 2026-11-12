@@ -1,0 +1,193 @@
+//! The number tower: its names are the prelude's, added where a module names one (S7f1b; P21,
+//! as std.collections is) — what most scripts never reach and every script would check.
+
+// the number tower (Lyric 5 12 §Numbers; S7f1): what a number is stands at its type — its range,
+// its bits, where its arithmetic would leave it —, what one computes with numbers is std.math's.
+// Script has one integer and one float type (03 K3): `int` is the `Integer`, `float` the `Float`
+interface Num :: [
+    Equatable,
+    Ordered,
+    Add<Out = Self>,
+    Sub<Out = Self>,
+    Mul<Out = Self>,
+    Div<Out = Self>,
+    Rem<Out = Self>,
+    Display,
+    Debug,
+    Parse,
+    Default
+] {
+    static let zero: Self
+    static let one: Self
+    // whether this is the type's zero
+    fn isZero(): bool = this == Self.zero
+}
+// a number with a sign: what std.math's `abs` and `signum` take
+interface Signed :: [Num, Neg<Out = Self>] { }
+// an integer: its range, a total order, a hash, the bit operators; where its arithmetic would
+// leave the type — the members are `int`'s, the one integer type
+interface Integer :: [
+    Num,
+    TotalOrder,
+    Hashable,
+    BitAnd<Out = Self>,
+    BitOr<Out = Self>,
+    BitXor<Out = Self>,
+    BitNot<Out = Self>,
+    Shl<Out = Self>,
+    Shr<Out = Self>
+] {
+    static let min: Self
+    static let max: Self
+    static let bitWidth: int
+    static let isSigned: bool
+    // the result, or `null` where it does not fit — a zero divisor, `min / -1`; a remainder by
+    // `-1` is `0`
+    fn checkedAdd(o: Self): ?Self
+    fn checkedSub(o: Self): ?Self
+    fn checkedMul(o: Self): ?Self
+    fn checkedDiv(o: Self): ?Self
+    fn checkedRem(o: Self): ?Self
+    // the result held at `min` or `max`, by the sign it would have
+    fn saturatingAdd(o: Self): Self
+    fn saturatingSub(o: Self): Self
+    fn saturatingMul(o: Self): Self
+    // the result modulo 2^bitWidth, as `+%`, `-%`, `*%`; `min / -1` wraps to `min`, a remainder by
+    // `-1` is `0`, a zero divisor panics as `/` does
+    fn wrappingAdd(o: Self): Self
+    fn wrappingSub(o: Self): Self
+    fn wrappingMul(o: Self): Self
+    fn wrappingDiv(o: Self): Self
+    fn wrappingRem(o: Self): Self
+    // `this` to the `n`th power, by squaring; an overflow panics as `*` does
+    fn pow(n: int): Self
+    // the zero bits above the highest one bit, below the lowest — `bitWidth` for zero —, the ones
+    fn leadingZeros(): int
+    fn trailingZeros(): int
+    fn popCount(): int
+    // the bits rotated modulo the width; a negative `n` the other way
+    fn rotateLeft(n: int): Self
+    fn rotateRight(n: int): Self
+}
+// a float: what describes the type and the value — its constants, its bits, NaN and the
+// infinities
+interface Float :: [Signed] {
+    // the distance from `1.0` to the next value above it
+    static let epsilon: Self
+    static let infinity: Self
+    // the quiet NaN with its sign clear
+    static let nan: Self
+    // the most negative finite value, the greatest
+    static let min: Self
+    static let max: Self
+    // the least positive value, a subnormal
+    static let leastPositive: Self
+    // the value a bit pattern names, as an `int` holds its 64 bits
+    static fn fromBits(b: int): Self
+    // whether this is NaN, the one value unequal to itself
+    fn isNan(): bool = this != this
+    fn isInfinite(): bool = this == Self.infinity || this == -Self.infinity
+    fn isFinite(): bool = !this.isNan() && !this.isInfinite()
+    // the bit pattern, as an `int`
+    fn toBits(): int
+}
+fn __intBits(v: int, kind: int): int = __int_bits(v, kind)
+fn __intRotate(v: int, n: int): int = __int_rotate(v, n)
+fn __floatFromBits(b: int): float = __float_fromBits(b)
+fn __floatToBits(v: float): int = __float_toBits(v)
+extend int :: [Num, Signed, Integer] {
+    static let zero: int = 0
+    static let one: int = 1
+    static let min: int = -9223372036854775808
+    static let max: int = 9223372036854775807
+    static let bitWidth: int = 64
+    static let isSigned: bool = true
+
+    fn checkedAdd(o: int): ?int {
+        let r = this +% o
+        return if ((o >= 0) == (r >= this)) r else null
+    }
+    fn checkedSub(o: int): ?int {
+        let r = this -% o
+        return if ((o >= 0) == (r <= this)) r else null
+    }
+    fn checkedMul(o: int): ?int {
+        if (this == 0 || o == 0) {
+            return 0
+        }
+        if (o == -1) {
+            return if (this == int.min) null else -this
+        }
+        if (this == -1) {
+            return if (o == int.min) null else -o
+        }
+        let r = this *% o
+        return if (r / o == this) r else null
+    }
+    fn checkedDiv(o: int): ?int = if (o == 0 || (this == int.min && o == -1)) null else this / o
+    fn checkedRem(o: int): ?int = if (o == 0) null else if (o == -1) 0 else this % o
+    fn saturatingAdd(o: int): int = this.checkedAdd(o) ?? (if (o < 0) int.min else int.max)
+    fn saturatingSub(o: int): int = this.checkedSub(o) ?? (if (o < 0) int.max else int.min)
+    fn saturatingMul(o: int): int = this.checkedMul(o)
+        ?? (if ((this < 0) != (o < 0)) int.min else int.max)
+    fn wrappingAdd(o: int): int = this +% o
+    fn wrappingSub(o: int): int = this -% o
+    fn wrappingMul(o: int): int = this *% o
+    fn wrappingDiv(o: int): int = if (this == int.min && o == -1) int.min else this / o
+    fn wrappingRem(o: int): int = if (o == -1) 0 else this % o
+    fn pow(n: int): int {
+        if (n < 0) {
+            __argumentPanic(f"pow: a negative exponent {n}")
+        }
+        var result = 1
+        var base = this
+        var k = n
+        while (k > 0) {
+            if (k % 2 == 1) {
+                result = result * base
+            }
+            k = k / 2
+            if (k > 0) {
+                base = base * base
+            }
+        }
+        return result
+    }
+    fn leadingZeros(): int = __intBits(this, 0)
+    fn trailingZeros(): int = __intBits(this, 1)
+    fn popCount(): int = __intBits(this, 2)
+    fn rotateLeft(n: int): int = __intRotate(this, n)
+    fn rotateRight(n: int): int = __intRotate(this, -(n % 64))
+}
+extend float :: [Num, Signed, Float] {
+    static let zero: float = 0.0
+    static let one: float = 1.0
+    static let epsilon: float = 2.220446049250313e-16
+    static let infinity: float = __floatFromBits(0x7FF0000000000000)
+    static let nan: float = __floatFromBits(0x7FF8000000000000)
+    static let min: float = -1.7976931348623157e308
+    static let max: float = 1.7976931348623157e308
+    static let leastPositive: float = __floatFromBits(1)
+
+    static fn fromBits(b: int): float = __floatFromBits(b)
+    fn toBits(): int = __floatToBits(this)
+}
+
+// the sum and the product of an iterator's numbers: zero and one where there is no value (Lyric 5
+// std.iter; S7f1c, P25: on `int` and `float` items alone until here)
+extend<I :: [Iterator<Item = T>], T :: [Num]> I {
+    fn sum(): T {
+        var s = T.zero
+        while (let x = this.next()) {
+            s = s + x
+        }
+        return s
+    }
+    fn product(): T {
+        var p = T.one
+        while (let x = this.next()) {
+            p = p * x
+        }
+        return p
+    }
+}

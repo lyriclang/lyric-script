@@ -1,0 +1,198 @@
+//! Comma-separated values (12 rule 34; RFC 4180): `parse` reads a text into its records, `format` writes records
+//! as a text. A record is a list of fields, each a string; what a field means — a number, a date — the script
+//! reads itself, with `int.parse` and the others. A module of no right: a script reads its file whole
+//! (`fs.readText`) and hands the text over.
+
+/// How a text separates its fields and ends its records.
+struct CsvOptions {
+    /// What separates two fields: `,`, or the `;` and `\t` some texts take. A quote or a line break cannot.
+    separator: char = ','
+    /// Whether `format` ends a record with CRLF, as RFC 4180 writes, or with LF; `parse` reads both.
+    crlf: bool = true
+}
+
+/// The error for a text that is no CSV, where it stops being one: `a quote in an unquoted field at 2:4`. Lines
+/// and columns count from 1, columns in characters.
+struct CsvError :: Error {
+    line: int
+    column: int
+    detail: string
+
+    fn message(): string = f"{this.detail} at {this.line}:{this.column}"
+}
+
+/// The records of `text`, each a list of its fields. A record ends at CRLF or LF, the last one's line break is
+/// free, and an empty line is no record. A field in quotes holds separators, line breaks and `""` for a quote;
+/// a byte order mark at the start is skipped. Every record has as many fields as the first, else `CsvError`,
+/// as for a quote in a field without them, a quote left open and text after a closing one.
+fn parse(text: string, options: CsvOptions = CsvOptions { }): string[][] throws CsvError {
+    let r = CsvReader { cs = charsOf(text), separator = checked(options.separator) }
+    if (!r.atEnd() && r.cs[0] == '\u{FEFF}') {
+        r.at = 1
+        r.lineStart = 1
+    }
+    let records: string[][] = []
+    var width = -1
+    while (!r.atEnd()) {
+        if (r.atBreak()) {
+            r.skipBreak()
+            continue
+        }
+        let line = r.line
+        let record: string[] = []
+        record.push(r.field())
+        while (!r.atEnd() && r.cs[r.at] == r.separator) {
+            r.at += 1
+            record.push(r.field())
+        }
+        if (!r.atEnd()) {
+            r.skipBreak()
+        }
+        if (width < 0) {
+            width = record.length()
+        } else if (record.length() != width) {
+            throw CsvError { line = line, column = 1, detail = f"{fieldCount(record.length())}, expected {width}" }
+        }
+        records.push(record)
+    }
+    return records
+}
+
+/// `rows` as a text RFC 4180 reads: a field in quotes where it holds the separator, a quote, CR, LF or a byte
+/// order mark, a quote in it doubled, every record ended by CRLF — LF with `crlf = false`. A record of one empty
+/// field is written `""`, since an empty line is no record; a record of no field is an empty line, and reads
+/// back as none. Records of one number of fields, at least one, `parse` reads back as they were.
+fn format(rows: string[][], options: CsvOptions = CsvOptions { }): string {
+    let separator = checked(options.separator)
+    let end = if (options.crlf) "\r\n" else "\n"
+    let out = StringBuilder.new()
+    for (record in rows) {
+        if (record.length() == 1 && record[0] == "") {
+            out.appendStr("\"\"")
+        } else {
+            var first = true
+            for (field in record) {
+                if (!first) {
+                    out.appendChar(separator)
+                }
+                first = false
+                writeField(out, field, separator)
+            }
+        }
+        out.appendStr(end)
+    }
+    return out.toString()
+}
+
+/// `1 field`, `3 fields`.
+private fn fieldCount(n: int): string = if (n == 1) "1 field" else f"{n} fields"
+
+/// `field`, in quotes where it needs them.
+private fn writeField(out: StringBuilder, field: string, separator: char) {
+    var quoted = false
+    for (c in field.chars()) {
+        if (c == separator || c == '"' || c == '\r' || c == '\n' || c == '\u{FEFF}') {
+            quoted = true
+        }
+    }
+    if (!quoted) {
+        out.appendStr(field)
+        return
+    }
+    out.appendChar('"')
+    for (c in field.chars()) {
+        if (c == '"') {
+            out.appendChar('"')
+        }
+        out.appendChar(c)
+    }
+    out.appendChar('"')
+}
+
+/// `separator`, which a quote or a line break cannot be: either would make a text that reads two ways.
+private fn checked(separator: char): char {
+    if (separator == '"' || separator == '\r' || separator == '\n') {
+        panic(f"a CSV separator cannot be {separator.debug()}")
+    }
+    return separator
+}
+
+/// Reads a text's fields, keeping where it is for the errors.
+private class CsvReader {
+    cs: List<char>
+    separator: char
+    var at: int = 0
+    var line: int = 1
+    var lineStart: int = 0
+
+    fn atEnd(): bool = this.at >= this.cs.length()
+
+    /// Whether a line break starts here: LF, or CR before LF; a CR alone is a character of the field.
+    fn atBreak(): bool {
+        if (this.atEnd()) {
+            return false
+        }
+        let c = this.cs[this.at]
+        return c == '\n' || (c == '\r' && this.at + 1 < this.cs.length() && this.cs[this.at + 1] == '\n')
+    }
+
+    fn skipBreak() {
+        this.at += if (this.cs[this.at] == '\r') 2 else 1
+        this.line += 1
+        this.lineStart = this.at
+    }
+
+    fn column(): int = this.at - this.lineStart + 1
+
+    /// The field starting here, up to the separator, the line break or the end that ends it.
+    fn field(): string {
+        let out = StringBuilder.new()
+        if (!this.atEnd() && this.cs[this.at] == '"') {
+            let line = this.line
+            let column = this.column()
+            this.at += 1
+            while (true) {
+                if (this.atEnd()) {
+                    throw CsvError { line = line, column = column, detail = "an unclosed quote" }
+                }
+                let c = this.cs[this.at]
+                if (c == '"') {
+                    if (this.at + 1 < this.cs.length() && this.cs[this.at + 1] == '"') {
+                        out.appendChar('"')
+                        this.at += 2
+                        continue
+                    }
+                    this.at += 1
+                    break
+                }
+                out.appendChar(c)
+                this.at += 1
+                if (c == '\n') {
+                    this.line += 1
+                    this.lineStart = this.at
+                }
+            }
+            if (!this.atEnd() && this.cs[this.at] != this.separator && !this.atBreak()) {
+                throw CsvError { line = this.line, column = this.column(), detail = "text after a closing quote" }
+            }
+            return out.toString()
+        }
+        while (!this.atEnd() && this.cs[this.at] != this.separator && !this.atBreak()) {
+            let c = this.cs[this.at]
+            if (c == '"') {
+                throw CsvError { line = this.line, column = this.column(), detail = "a quote in an unquoted field" }
+            }
+            out.appendChar(c)
+            this.at += 1
+        }
+        return out.toString()
+    }
+}
+
+private fn charsOf(s: string): List<char> {
+    let cs = List<char>.new()
+    for (c in s.chars()) {
+        cs.push(c)
+    }
+    return cs
+}

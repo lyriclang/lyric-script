@@ -15,14 +15,81 @@
 //! leaves every frame is reported: the VM calls its `message()` and its `cause()` in the same
 //! run, each call returning to a frame of function `-1`, and the run ends with `Outcome.Error`,
 //! the record's frames its trace.
-import std.collections { List };
+import std.collections { List, Map };
+import std.core { StringBuilder, UnicodeCategory };
 import std.core { arrayOf };
-import std.io { print, println, stdin };
-import std.task { Channel, Select, sleep, spawn, spawnDetached, yieldNow };
-import std.time { Duration, Monotonic };
+import std.core { fstringFormatted, fstringPadded };
+import std.fs {
+    File,
+    OpenOptions,
+    ReadDirIter,
+    absolute as fsAbsolute,
+    canonicalize as fsCanonicalize,
+    createDir as fsCreateDir,
+    metadata as fsMetadata,
+    readDir as fsReadDir,
+    remove as fsRemove,
+    removeDir as fsRemoveDir,
+    rename as fsRename,
+    tempDir as fsTempDir,
+    tempFile as fsTempFile,
+};
+import std.hash { DefaultHasher };
+import std.io { IoError, SeekFrom, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
+import std.os {
+    arch as osArch,
+    cpuCount as osCpuCount,
+    cwd as osCwd,
+    env,
+    envs as osEnvs,
+    hostname as osHostname,
+    pid as osPid,
+    platform as osPlatform,
+    setCwd as osSetCwd,
+    setEnv as osSetEnv,
+    tempDir as osTempRoot,
+};
+import std.os { Signal, signals };
+import std.process { Child, Command, Stdio };
+import std.path { separator as pathSeparator };
+import std.random { Random };
+import std.task { Cancelled, Channel, Select, sleep, spawn, spawnDetached, yieldNow };
+import std.time { Duration, Instant, Monotonic, TimeError as HostTimeError, Zone as HostZone };
+import lyric_script.vm.bigint {
+    Big,
+    add as bigAdd,
+    bitLength as bigBitLength,
+    cmp as bigCmp,
+    divRem as bigDivRem,
+    fitsInt as bigFitsInt,
+    fromInt as bigFromInt,
+    hashOf as bigHash,
+    isZero as bigIsZero,
+    mul as bigMul,
+    neg as bigNeg,
+    parse as bigParse,
+    shl as bigShl,
+    shr as bigShr,
+    sub as bigSub,
+    text as bigText,
+    toFloat as bigToFloat,
+    toInt as bigToInt,
+};
+import lyric_script.vm.elementary { mathOne, mathTwo };
+import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
 import lyric_script.vm.heap {
+    ScriptArray,
+    ScriptIndex,
+    ScriptBigInt,
+    ScriptBytes,
+    ScriptChild,
+    ScriptDir,
+    ScriptZone,
+    ScriptFile,
+    ScriptRandom,
+    ScriptBuilder,
     ErrorRecord,
     HeapRef,
     Nil,
@@ -34,7 +101,7 @@ import lyric_script.vm.heap {
     sameRef,
 };
 import lyric_script.vm.descriptor { Interning, conforms };
-import lyric_script.vm.native { nativeOf };
+import lyric_script.vm.native { NativeFn, nativeCancels, nativeOf };
 
 /// How a run ended.
 pub enum Outcome {
@@ -52,6 +119,8 @@ pub enum Outcome {
     Error(ScriptError),
     /// The fuel ran out (design/v1, 01 S5); the run stopped at a backward jump or a call.
     Suspended,
+    /// The script called `exit` with this code: no defer ran and no other task (12 rule 25).
+    Exit(int),
     /// A task waits or gave way (S6a): the scheduler runs another; never the outcome of a run.
     Switch,
 }
@@ -102,11 +171,69 @@ struct CallFrame {
     baseR: int,
 }
 
+/// The callers' frames while their callees run, in one array doubled where it runs out (S7j). A
+/// `List<CallFrame>` cost a call a frame: its `push` lives in the instance unit of
+/// `std.collections`, which no build inlines, and its `pop` gives an optional. The growth is a
+/// method of its own, so that `push` stays small enough to be inlined.
+class FrameStack {
+    var data: CallFrame[],
+    var n: int = 0,
+
+    static fn new(): FrameStack {
+        return FrameStack {
+            data = [CallFrame { function = 0, pc = 0, baseS = 0, baseR = 0 }] * 256,
+        };
+    }
+
+    fn length(): int {
+        return this.n;
+    }
+
+    mut fn push(fr: CallFrame): void {
+        if (this.n == this.data.length()) {
+            this.grow();
+        }
+        this.data[this.n] = fr;
+        this.n += 1;
+    }
+
+    mut fn grow(): void {
+        let bigger = [CallFrame { function = 0, pc = 0, baseS = 0, baseR = 0 }] * (this.n * 2);
+        var k = 0;
+        while (k < this.n) {
+            bigger[k] = this.data[k];
+            k += 1;
+        }
+        this.data = bigger;
+    }
+
+    /// The frame on top, taken off; the stack holds one.
+    mut fn take(): CallFrame {
+        this.n -= 1;
+        return this.data[this.n];
+    }
+
+    /// Frame `i`, the outermost 0.
+    fn get(i: int): CallFrame {
+        return this.data[i];
+    }
+
+    mut fn clear(): void {
+        this.n = 0;
+    }
+}
+
 /// Runs `entry` of `module` with `args` in its first scalar registers, with `fuel` units of
 /// budget (a backward jump or a call costs one; `-1` runs without a limit), on a task of its
 /// own: a panic of the VM itself becomes `Outcome.Panic` with the code `LYS-ICE0001`.
-pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
-    let task = spawn(() => run(module, entry, args, fuel));
+pub fn execute(
+    module: Module,
+    entry: string,
+    args: uint64[],
+    fuel: int,
+    argv: string[] = []
+): Outcome {
+    let task = spawn(() => run(module, entry, args, fuel, argv));
     while (!task.isDone()) {
         try? yieldNow();
         // a VM that sleeps until a timer leaves this task nothing to wait for: no spinning (S6d3)
@@ -138,7 +265,7 @@ pub fn execute(module: Module, entry: string, args: uint64[], fuel: int): Outcom
 class TaskState {
     var s: uint64[],
     var r: HeapRef[],
-    var frames: List<CallFrame>,
+    var frames: FrameStack,
     var fi: int,
     var pc: int = 0,
     var bs: int = 0,
@@ -167,8 +294,9 @@ class TaskState {
     // S6e: a native it waits for — the ticket of the one it waits for now, and what came
     var nativePending: bool = false,
     var nativeTicket: int = 0,
+    var nativeToItsEnd: bool = false,
     var nativeDone: bool = false,
-    var nativeText: ?string = null,
+    var nativeAnswer: ?WaitAnswer = null,
     // what an error that left the task threw, and its record: what `await` throws again
     var thrown: HeapRef = nilRef(),
     var record: HeapRef = nilRef(),
@@ -181,7 +309,7 @@ class TaskState {
 class Context {
     var s: uint64[],
     var r: HeapRef[],
-    var frames: List<CallFrame>,
+    var frames: FrameStack,
     var fi: int,
     var pc: int,
     var bs: int,
@@ -238,7 +366,7 @@ fn coroutineStart(module: Module, env: HeapRef): ?Context {
     let x = Context {
         s = [0 as uint64] * grown(0, callee.scalars),
         r = refArray(grown(0, callee.refs)),
-        frames = List<CallFrame>.new(),
+        frames = FrameStack.new(),
         fi = target,
         pc = 0,
         bs = 0,
@@ -284,6 +412,8 @@ pub class ScriptChannel :: [HeapRef] {
     // S6d2: the tasks whose select watches it: woken when it can be received from
     watchers: List<TaskState> = List<TaskState>.new(),
     var closed: bool = false,
+    // S7h4: what else ends with it — a subscription to signals, which ends at the close itself
+    var closer: ?fn() -> void = null,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -319,9 +449,15 @@ class RunShared {
     gr: HeapRef[],
     interning: Interning,
     var budget: int,
+    // what the run was started with, its own name first; a sandbox's are its host's to give
+    argv: string[],
+    // the code of an `exit`, which ends the run where a budget ends it
+    var exitCode: ?int = null,
     // the tasks ready to run, from `head` on; every task spawned, in order (S6a)
     queue: List<TaskState>,
     var head: int = 0,
+    // the objects numbered so far, for a hash by identity (01 S8; S7d1)
+    var objects: int = 0,
     tasks: List<ScriptTask>,
     // the first task to end with an error or a panic: what the top level's end gives (07 End;
     // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
@@ -334,6 +470,10 @@ class RunShared {
     // signals its end on
     var pendingNatives: int = 0,
     wakeups: Channel<int> = Channel<int>.new(64),
+    // S7h4: the run's subscriptions to signals, each Lyric 5's channel, and how many are still open:
+    // an open one keeps a run whose tasks all wait waiting for a signal, not ended
+    feeds: List<Channel<Signal>>,
+    var openFeeds: int = 0,
 }
 
 /// A timer of the run (S6d3): its deadline, in nanoseconds of the run's clock — its sequence
@@ -402,8 +542,26 @@ fn earliestDeadline(shared: RunShared): int {
     return best;
 }
 
-/// Runs `entry` of `module` on the current task; see `execute`.
-pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
+/// Runs `entry` of `module` on the current task; see `execute`. Its end ends the subscriptions to
+/// signals its script left open (S7h4): no signal is swallowed after it.
+pub fn run(module: Module, entry: string, args: uint64[], fuel: int, argv: string[] = []): Outcome {
+    let feeds = List<Channel<Signal>>.new();
+    let out = runOn(module, entry, args, fuel, argv, feeds);
+    for (f in feeds) {
+        f.close();
+    }
+    return out;
+}
+
+/// Runs `entry` of `module`, its subscriptions to signals in `feeds`; see `run`.
+fn runOn(
+    module: Module,
+    entry: string,
+    args: uint64[],
+    fuel: int,
+    argv: string[],
+    feeds: List<Channel<Signal>>
+): Outcome {
     var fi = -1;
     var i = 0;
     while (i < module.functions.length()) {
@@ -421,7 +579,7 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
     let main = TaskState {
         s = [0 as uint64] * grown(0, first.scalars),
         r = refArray(grown(0, first.refs)),
-        frames = List<CallFrame>.new(),
+        frames = FrameStack.new(),
         fi = fi,
     };
     var k = 0;
@@ -437,8 +595,10 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
         gr = refArray(module.globalsR),
         interning = Interning.of(module),
         budget = fuel,
+        argv = argv,
         queue = List<TaskState>.new(),
         tasks = List<ScriptTask>.new(),
+        feeds = feeds,
     };
     // the scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits
     shared.queue.push(main);
@@ -446,13 +606,14 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
         // S6d3: the timers whose time came wake behind the ready tasks; with none ready, the run
         // waits for the earliest — without timers that is a deadlock
         fireDueTimers(shared);
-        // S6e: a native's Lyric 5 task gets its turn at every step while one is waited for
-        if (shared.pendingNatives > 0) {
+        // S6e: a native's Lyric 5 task gets its turn at every step while one is waited for, and
+        // a subscription's while it is open (S7h4)
+        if (shared.pendingNatives + shared.openFeeds > 0) {
             try? yieldNow();
         }
         if (shared.head >= shared.queue.length()) {
-            // a native's end, or the earliest timer, ends the run's wait
-            if (shared.pendingNatives > 0) {
+            // a native's end, a signal, or the earliest timer, ends the run's wait
+            if (shared.pendingNatives + shared.openFeeds > 0) {
                 if (shared.timers.length() > 0) {
                     let wait = earliestDeadline(shared) - nowNs(shared);
                     if (wait > 0) {
@@ -479,8 +640,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int): Outcome {
         let out = runTask(t, shared);
         match (out) {
             .Switch => { }
-            // the budget holds the whole instance (N8, 01 S5b)
-            .Suspended => {
+            // the budget holds the whole instance (N8, 01 S5b), and `exit` ends it, from any task
+            .Suspended | .Exit(_) => {
                 return out;
             }
             _ => {
@@ -615,7 +776,7 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
         shared.queue.push(st);
     }
     // S6e: and a native's
-    if (st.nativePending) {
+    if (st.nativePending && !st.nativeToItsEnd) {
         st.nativePending = false;
         shared.pendingNatives -= 1;
         shared.queue.push(st);
@@ -643,6 +804,11 @@ fn closeChannel(ch: ScriptChannel, shared: RunShared): void {
         return;
     }
     ch.closed = true;
+    let closer = ch.closer;
+    ch.closer = null;
+    if (let f = closer) {
+        f();
+    }
     wakeWatchers(ch, shared);
     for (w in ch.receivers) {
         wake(w, shared);
@@ -750,6 +916,549 @@ fn ended(s: uint64[], r: HeapRef[], a: int, b: int, ns: int, nr: int): void {
     }
 }
 
+/// A native's panic: the dispatch, which holds the frames, reports it.
+struct NativeFault {
+    code: string,
+    message: string,
+}
+
+/// Runs the native `which` on its scalars from `s[x]` and its references from `r[y]`; what it returns goes
+/// where its first argument stood; its panic where it has one. Out of `runTask` (S7f2): Lyric 5
+/// checks a function's entry against twice its temporaries, and the natives' arms in the loop took
+/// that past a task's stack in the release profile, 256 KiB, whatever the frame really was.
+fn callNative(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    shared: RunShared
+): ?NativeFault {
+    match (which) {
+        .Print => print(textOf(r[y])),
+        .Println => println(textOf(r[y])),
+        .ConsoleEprint => eprint(textOf(r[y])),
+        .ConsoleEprintln => eprintln(textOf(r[y])),
+        .ConsoleFlushAll => flush(),
+        .ConsolePut => {
+            let p = r[y];
+            if (!(p is ScriptBytes)) {
+                return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+            }
+            if (charge(shared, bytesCost(p.data.length()))) {
+                s[x] = consolePut(s[x] as int, p.data) as uint64;
+            }
+        }
+        .ConsoleFlush => s[x] = consoleFlush(s[x] as int) as uint64,
+        // the verifier keeps these to `call.w`
+        .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose | .OsCwd | .OsSetCwd | .OsHostname | .ProcessSpawn | .ProcessRead | .ProcessWrite | .ProcessClose | .ProcessWait | .ProcessSignal | .TimeZoneOpen => {
+            return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
+        }
+        .FsFile => r[y] = ScriptFile { },
+        .ProcessChild => r[y] = ScriptChild { },
+        .TimeZone => r[y] = ScriptZone { },
+        .OsSignals => {
+            if (let ch = signalChannel(r[y], r[y + 1], shared)) {
+                r[y] = ch;
+            } else {
+                return bytesFault("LYS-RT0007", "signals takes the signals and a form of each");
+            }
+        }
+        .FsDir => r[y] = ScriptDir { },
+        .PathSeparator => r[y] = ScriptString { text = pathSeparator },
+        .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
+        .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
+        // Lyric 5's shortest text that reads back, `1.0` for an integral float
+        .FloatToStr => r[y] = ScriptString { text = f"{float.fromBits(s[x])}" },
+        .BoolToStr => r[y] = ScriptString { text = if (s[x] != 0) "true" else "false" },
+        .CharToStr => r[y] = ScriptString { text = f"{(s[x] as uint32) as char}" },
+        .StrEq => s[x] = truth(textOf(r[y]) == textOf(r[y + 1])),
+        .StrCmp => {
+            let p = textOf(r[y]);
+            let q = textOf(r[y + 1]);
+            s[x] = (if (p < q) -1 else if (p == q) 0 else 1) as uint64;
+        }
+        .TraceText => {
+            let lines = List<string>.new();
+            for (line in recordLines(shared.module, r[y])) {
+                lines.push(f"    {line}");
+            }
+            r[y] = ScriptString { text = lines.toArray().join("\n") };
+        }
+        .OsArgCount => {
+            s[x] = shared.argv.length() as uint64;
+        }
+        .OsArg => {
+            r[y] = ScriptString { text = shared.argv[s[x] as int] };
+        }
+        .OsExit => {
+            shared.exitCode = s[x] as int;
+            shared.budget = -2;
+        }
+        // the whole environment, `name=value` each and a NUL after it (S7h2)
+        .OsEnvs => {
+            let out = StringBuilder.new();
+            for ((name, value) in osEnvs()) {
+                out.appendStr(name);
+                out.appendChar('=');
+                out.appendStr(value);
+                out.appendChar('\0');
+            }
+            let text = out.toString();
+            if (charge(shared, bytesCost(text.length()))) {
+                r[y] = ScriptString { text = text };
+            }
+        }
+        .OsSetEnv => {
+            let name = textOf(r[y]);
+            let value = textOf(r[y + 1]);
+            if (charge(shared, bytesCost(name.length() + value.length()))) {
+                osSetEnv(name, value);
+            }
+        }
+        .OsPlatform => {
+            s[x] = match (osPlatform()) {
+                .Linux => 1 as uint64,
+                .MacOS => 2 as uint64,
+                .Windows => 3 as uint64,
+                _ => 0 as uint64,
+            };
+        }
+        .OsArch => {
+            s[x] = match (osArch()) {
+                .X86_64 => 1 as uint64,
+                .Aarch64 => 2 as uint64,
+                _ => 0 as uint64,
+            };
+        }
+        .OsTempRoot => {
+            r[y] = ScriptString { text = osTempRoot() };
+        }
+        .OsCpuCount => {
+            s[x] = osCpuCount() as uint64;
+        }
+        .OsPid => {
+            s[x] = osPid() as uint64;
+        }
+        // the wall clock's nanoseconds since 1970, and the run's own monotonic clock (S7h5): the one
+        // its timers keep
+        .TimeRealtime => {
+            s[x] = epochNanos(Instant.now()) as uint64;
+        }
+        .TimeMonotonic => {
+            s[x] = nowNs(shared) as uint64;
+        }
+        // what a zone of rules says at a moment, its nanoseconds since 1970 (S7h6a): the offset in
+        // seconds twice, the lowest bit daylight time; the abbreviation into the holder
+        .TimeZoneAt => {
+            let o = r[y];
+            if (o is ScriptZone) {
+                if (let zone = o.zone) {
+                    let epoch = try! Instant.parse("1970-01-01T00:00:00Z");
+                    let info = zone.infoAt(epoch + Duration.ofNanos(s[x] as int));
+                    let h = r[y + 1];
+                    if (h is ScriptArray) {
+                        h.r[0] = ScriptString { text = info.abbreviation };
+                    }
+                    s[x] = (info.offset.secs() * 2 + (if (info.isDst) 1 else 0)) as uint64;
+                    return null;
+                }
+            }
+            return bytesFault("LYS-RT0007", "a Zone's field holds no zone");
+        }
+        .OsEnv => {
+            if (let v = env(textOf(r[y]))) {
+                r[y] = ScriptString { text = v };
+            } else {
+                r[y] = nil;
+            }
+        }
+        // the sign bit set: the other bits turned over, so the integers' order is the
+        // total order (S7c5b)
+        .FloatOrderKey => {
+            let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
+            let b = s[x];
+            s[x] = if ((b >> 63) != 0) b ^ mask else b;
+        }
+        // a hash's mixing (S7d1): SipHash-1-3 under the process's key, a word or a
+        // string's bytes into the state
+        .HashMixInt => {
+            var h = DefaultHasher.new();
+            h.writeUint(s[x]);
+            h.writeUint(s[x + 1]);
+            s[x] = h.finish();
+        }
+        .HashMixStr => {
+            var h = DefaultHasher.new();
+            h.writeUint(s[x]);
+            textOf(r[y]).hash(&h);
+            s[x] = h.finish();
+        }
+        // an object's number for a hash by identity, given at its first (01 S8); a
+        // value the VM holds otherwise has none of its own
+        .ObjectNumber => {
+            let o = r[y];
+            if (o is ScriptObject) {
+                if (o.number == 0) {
+                    shared.objects += 1;
+                    o.number = shared.objects;
+                }
+                s[x] = o.number as uint64;
+            } else {
+                s[x] = 0;
+            }
+        }
+        // a map's index (S7d2): where each hash is, the places in the order they came
+        .IndexNew => {
+            r[y] = ScriptIndex { table = Map<uint64, List<int>>.new() };
+        }
+        .IndexAdd => {
+            let o = r[y];
+            if (o is ScriptIndex) {
+                if (let places = o.table.get(s[x])) {
+                    places.push(s[x + 1] as int);
+                } else {
+                    let places = List<int>.new();
+                    places.push(s[x + 1] as int);
+                    o.table.insert(s[x], places);
+                }
+            }
+        }
+        .IndexFirst => {
+            let o = r[y];
+            var found = -1;
+            if (o is ScriptIndex) {
+                if (let places = o.table.get(s[x])) {
+                    if (places.length() > 0) {
+                        found = places[0];
+                    }
+                }
+            }
+            s[x] = found as uint64;
+        }
+        .IndexNext => {
+            let o = r[y];
+            var found = -1;
+            if (o is ScriptIndex) {
+                if (let places = o.table.get(s[x])) {
+                    let at = s[x + 1] as int;
+                    var k = 0;
+                    while (k < places.length() - 1 && found < 0) {
+                        if (places[k] == at) {
+                            found = places[k + 1];
+                        }
+                        k += 1;
+                    }
+                }
+            }
+            s[x] = found as uint64;
+        }
+        .IndexRemove => {
+            let o = r[y];
+            if (o is ScriptIndex) {
+                if (let places = o.table.get(s[x])) {
+                    let at = s[x + 1] as int;
+                    let kept = List<int>.new();
+                    for (p in places) {
+                        if (p != at) {
+                            kept.push(p);
+                        }
+                    }
+                    if (kept.length() == 0) {
+                        o.table.remove(s[x]);
+                    } else {
+                        o.table.insert(s[x], kept);
+                    }
+                }
+            }
+        }
+        .IndexClear => {
+            let o = r[y];
+            if (o is ScriptIndex) {
+                o.table.clear();
+            }
+        }
+        // the strings' members (S7e1): Lyric 5's string under them, its bytes read
+        // once for the bounds of the characters
+        .StrLen => s[x] = textOf(r[y]).length() as uint64,
+        .StrAt => {
+            let o = r[y];
+            let t = textOf(o);
+            let i = s[x] as int;
+            let n = t.length();
+            if (i < 0 || i >= n) {
+                return NativeFault {
+                    code = "LYS-RT0003",
+                    message = f"index {i} out of bounds for length {n}",
+                };
+            }
+            if (!beginsChar(o, i)) {
+                return NativeFault {
+                    code = "LYS-RT0003",
+                    message = f"byte {i} does not begin a character",
+                };
+            }
+            s[x] = (t[i] as uint32) as uint64;
+        }
+        .StrNext => {
+            let b = bytesOf(r[y]);
+            var i = (s[x] as int) + 1;
+            while (i < b.length() && (b[i] & 192) == 128) {
+                i += 1;
+            }
+            s[x] = i as uint64;
+        }
+        .StrPrev => {
+            let b = bytesOf(r[y]);
+            var i = (s[x] as int) - 1;
+            while (i > 0 && (b[i] & 192) == 128) {
+                i -= 1;
+            }
+            s[x] = i as uint64;
+        }
+        .StrSlice => {
+            let o = r[y];
+            let t = textOf(o);
+            let a = s[x] as int;
+            let e = s[x + 1] as int;
+            let n = t.length();
+            if (a < 0 || a > e || e > n) {
+                return NativeFault {
+                    code = "LYS-RT0003",
+                    message = f"range {a}..{e} out of bounds for length {n}",
+                };
+            }
+            for (at in [a, e]) {
+                if (!beginsChar(o, at)) {
+                    return NativeFault {
+                        code = "LYS-RT0003",
+                        message = f"byte {at} does not begin a character",
+                    };
+                }
+            }
+            r[y] = ScriptString { text = t[a..e].toString() };
+        }
+        .StrCharCount => s[x] = textOf(r[y]).charCount() as uint64,
+        .StrUpper => r[y] = ScriptString { text = textOf(r[y]).toUpper() },
+        .StrLower => r[y] = ScriptString { text = textOf(r[y]).toLower() },
+        .StrTrim => {
+            let t = textOf(r[y]);
+            let mode = s[x] as int;
+            let kept = if (mode == 1) t.trimStart() else if (mode == 2) t.trimEnd() else t.trim();
+            r[y] = ScriptString { text = kept.toString() };
+        }
+        .StrRepeat => {
+            let n = s[x] as int;
+            if (n < 0) {
+                return NativeFault {
+                    code = "LYS-RT0007",
+                    message = f"repeat count {n} is negative",
+                };
+            }
+            r[y] = ScriptString { text = textOf(r[y]) * n };
+        }
+        .StrFromChars => {
+            let o = r[y];
+            let out = StringBuilder.new();
+            if (o is ScriptArray) {
+                var k = 0;
+                while (k < o.n) {
+                    out.appendChar(charOfCode(o.s[k]));
+                    k += 1;
+                }
+            }
+            r[y] = ScriptString { text = out.toString() };
+        }
+        .StrFind => {
+            let o = r[y];
+            let t = textOf(o);
+            let from = s[x] as int;
+            var found = -1;
+            if (from >= 0 && from <= t.length() && beginsChar(o, from)) {
+                if (let k = t[from..t.length()].find(textOf(r[y + 1]))) {
+                    found = from + k;
+                }
+            }
+            s[x] = found as uint64;
+        }
+        .StrMatchesAt => {
+            let o = r[y];
+            let t = textOf(o);
+            let at = s[x] as int;
+            s[x] = truth(
+                at >= 0
+                    && at <= t.length()
+                    && beginsChar(o, at)
+                    && t[at..t.length()].startsWith(textOf(r[y + 1]))
+            );
+        }
+        .CharCategory => s[x] = categoryIndex(charOfCode(s[x]).category()) as uint64,
+        .CharWhite => s[x] = truth(charOfCode(s[x]).isWhitespace()),
+        .CharUpper => s[x] = (charOfCode(s[x]).toUpper() as uint32) as uint64,
+        .CharLower => s[x] = (charOfCode(s[x]).toLower() as uint32) as uint64,
+        // a builder of text (S7e3)
+        .BuilderNew => r[y] = ScriptBuilder { sb = StringBuilder.new() },
+        .BuilderAppendStr => {
+            let o = r[y];
+            if (o is ScriptBuilder) {
+                o.sb.appendStr(textOf(r[y + 1]));
+            }
+        }
+        .BuilderAppendChar => {
+            let o = r[y];
+            if (o is ScriptBuilder) {
+                o.sb.appendChar(charOfCode(s[x]));
+            }
+        }
+        .BuilderLength => {
+            let o = r[y];
+            s[x] = (if (o is ScriptBuilder) o.sb.length() else 0) as uint64;
+        }
+        .BuilderClear => {
+            let o = r[y];
+            if (o is ScriptBuilder) {
+                o.sb.clear();
+            }
+        }
+        .BuilderText => {
+            let o = r[y];
+            r[y] = ScriptString { text = if (o is ScriptBuilder) o.sb.toString() else "" };
+        }
+        .StrDebug => r[y] = ScriptString { text = textOf(r[y]).debug() },
+        .CharDebug => r[y] = ScriptString { text = charOfCode(s[x]).debug() },
+        // the format language (S7e4b): Lyric 5's own formatting, the spec checked
+        // before — by the compiler, or at run time through `fmt.problem`
+        .FmtInt => {
+            let b = StringBuilder.new();
+            fstringFormatted(b, s[x] as int, textOf(r[y]));
+            r[y] = ScriptString { text = b.toString() };
+        }
+        .FmtFloat => {
+            let b = StringBuilder.new();
+            fstringFormatted(b, float.fromBits(s[x]), textOf(r[y]));
+            r[y] = ScriptString { text = b.toString() };
+        }
+        .FmtStr => {
+            let b = StringBuilder.new();
+            fstringFormatted(b, textOf(r[y]), textOf(r[y + 1]));
+            r[y] = ScriptString { text = b.toString() };
+        }
+        .FmtPad => {
+            let b = StringBuilder.new();
+            fstringPadded(b, textOf(r[y]), textOf(r[y + 1]));
+            r[y] = ScriptString { text = b.toString() };
+        }
+        // an integer's bits (S7f1): Lyric 5's own `Integer` members; a float is its
+        // bits in a register already
+        .IntBits => {
+            let v = s[x] as int;
+            let k = s[x + 1] as int;
+            let n = if (k == 0) v.leadingZeros()
+                else if (k == 1) v.trailingZeros() else v.popCount();
+            s[x] = n as uint64;
+        }
+        .IntRotate => s[x] = (s[x] as int).rotateLeft(s[x + 1] as int) as uint64,
+        .FloatFromBits | .FloatToBits => { }
+        .BigFromInt | .BigAdd | .BigSub | .BigMul | .BigDiv | .BigRem | .BigNeg | .BigCmp | .BigText | .BigParse | .BigFitsInt | .BigToInt | .BigToFloat | .BigShl | .BigShr | .BigBitLength | .BigHash => {
+            return bigNative(which, s, r, x, y, shared);
+        }
+        .BytesCopy | .BytesFind | .BytesNew | .BytesOfText | .BytesOfLatin1 | .BytesOfList | .BytesToList | .BytesLen | .BytesGet | .BytesSet | .BytesPush | .BytesTruncate | .BytesSlice | .BytesAppend | .BytesCmp | .BytesMix | .BytesFill | .BytesBadUtf8 | .BytesText => {
+            return bytesNative(which, s, r, x, y, shared);
+        }
+        .RandomSeeded => r[y] = ScriptRandom { gen = Random.seeded(s[x]) },
+        .RandomFresh => r[y] = ScriptRandom { gen = Random.fresh() },
+        .RandomInt | .RandomInRange | .RandomFloat | .RandomNormal => {
+            let o = r[y];
+            if (!(o is ScriptRandom)) {
+                return NativeFault {
+                    code = "LYS-RT0007",
+                    message = "a Random's field holds no generator",
+                };
+            }
+            s[x] = match (which) {
+                .RandomInt => o.gen.nextUint64(),
+                .RandomInRange => o.gen.nextInRange(s[x] as int..s[x + 1] as int) as uint64,
+                .RandomFloat => o.gen.nextFloat().toBits(),
+                _ => o.gen.nextNormal(float.fromBits(s[x]), float.fromBits(s[x + 1])).toBits(),
+            };
+        }
+        .MathOne => s[x] = mathOne(s[x] as int, float.fromBits(s[x + 1])).toBits(),
+        .MathTwo => s[x] = mathTwo(
+            s[x] as int,
+            float.fromBits(s[x + 1]),
+            float.fromBits(s[x + 2])
+        ).toBits(),
+        .FmtProblem => {
+            let problem = fmtProblem(textOf(r[y]), fmtKindOf(s[x] as int));
+            r[y] = ScriptString { text = problem ?? "" };
+        }
+        .FloatOfText => {
+            let v = (try? float.parse(textOf(r[y]))) ?? 0.0;
+            s[x] = v.toBits();
+        }
+        // a list sorted in place (S7c6c2): its length unchanged, a walk goes on
+        .ListSortInts => {
+            let o = r[y];
+            if (o is ScriptArray) {
+                let keys = List<int>.new();
+                var k = 0;
+                while (k < o.n) {
+                    keys.push(o.s[k] as int);
+                    k += 1;
+                }
+                let sorted = keys.toArray();
+                sorted.sort();
+                k = 0;
+                while (k < o.n) {
+                    o.s[k] = sorted[k] as uint64;
+                    k += 1;
+                }
+            }
+        }
+        // a float's place in the total order as an int, and back
+        .ListSortFloats => {
+            let o = r[y];
+            if (o is ScriptArray) {
+                let mask: uint64 = 0x7FFFFFFFFFFFFFFF;
+                let keys = List<int>.new();
+                var k = 0;
+                while (k < o.n) {
+                    let b = o.s[k];
+                    keys.push((if ((b >> 63) != 0) b ^ mask else b) as int);
+                    k += 1;
+                }
+                let sorted = keys.toArray();
+                sorted.sort();
+                k = 0;
+                while (k < o.n) {
+                    let key = sorted[k] as uint64;
+                    o.s[k] = if ((key >> 63) != 0) key ^ mask else key;
+                    k += 1;
+                }
+            }
+        }
+        .ListSortStrings => {
+            let o = r[y];
+            if (o is ScriptArray) {
+                let items = List<HeapRef>.new();
+                var k = 0;
+                while (k < o.n) {
+                    items.push(o.r[k]);
+                    k += 1;
+                }
+                let sorted = items.toArray();
+                sorted.sortByKey((h) => textOf(h));
+                k = 0;
+                while (k < o.n) {
+                    o.r[k] = sorted[k];
+                    k += 1;
+                }
+            }
+        }
+    }
+    return null;
+}
+
 /// Runs task `t` from where it stands until it ends — its outcome — or waits.
 fn runTask(t: TaskState, shared: RunShared): Outcome {
     let module = shared.module;
@@ -771,9 +1480,9 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
     // above the frame's
     var inject = false;
     while (true) {
+        // the injected throw is the `Throw` arm's to clear: no write a step (S7j)
         let ins = if (inject) Instr { op = .Throw, a = f.refs as uint16, b = 0, c = 0 }
             else code[pc];
-        inject = false;
         let a = ins.a as int;
         let b = ins.b as int;
         let c = ins.c as int;
@@ -839,7 +1548,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     );
                 }
                 let x = s[bs + b] as int;
-                let z = if (ins.op == .DivI) x.checkedDiv(y) else x.checkedRem(y);
+                // a match, not `==`: `==` on `Op` is a call into std.core (S7j)
+                let z = match (ins.op) {
+                    .DivI => x.checkedDiv(y),
+                    _ => x.checkedRem(y),
+                };
                 if (z == null) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
                 }
@@ -932,20 +1645,30 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             }
             .Jump => {
                 if (a <= pc) {
-                    shared.budget = spend(shared.budget);
-                    if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                    // without a limit (-1) nothing is spent: one read, no write (S7j)
+                    if (shared.budget != -1) {
+                        shared.budget = spend(shared.budget);
+                        if (shared.budget == -2) {
+                            return Outcome.Suspended;
+                        }
                     }
                 }
                 pc = a;
             }
             .JumpIf | .JumpIfNot => {
-                let taken = (s[bs + a] != 0) == (ins.op == .JumpIf);
+                let whenTrue = match (ins.op) {
+                    .JumpIf => true,
+                    _ => false,
+                };
+                let taken = (s[bs + a] != 0) == whenTrue;
                 if (taken) {
                     if (b <= pc) {
-                        shared.budget = spend(shared.budget);
-                        if (shared.budget == -2) {
-                            return Outcome.Suspended;
+                        // without a limit (-1) nothing is spent: one read, no write (S7j)
+                        if (shared.budget != -1) {
+                            shared.budget = spend(shared.budget);
+                            if (shared.budget == -2) {
+                                return Outcome.Suspended;
+                            }
                         }
                     }
                     pc = b;
@@ -956,9 +1679,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             .JumpLtI => {
                 if ((s[bs + a] as int) < (s[bs + b] as int)) {
                     if (c <= pc) {
-                        shared.budget = spend(shared.budget);
-                        if (shared.budget == -2) {
-                            return Outcome.Suspended;
+                        // without a limit (-1) nothing is spent: one read, no write (S7j)
+                        if (shared.budget != -1) {
+                            shared.budget = spend(shared.budget);
+                            if (shared.budget == -2) {
+                                return Outcome.Suspended;
+                            }
                         }
                     }
                     pc = c;
@@ -967,9 +1693,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 }
             }
             .Call => {
-                shared.budget = spend(shared.budget);
-                if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                // without a limit (-1) nothing is spent: one read, no write (S7j)
+                if (shared.budget != -1) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
+                        return Outcome.Suspended;
+                    }
                 }
                 if (frames.length() >= maxDepth) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
@@ -990,26 +1719,30 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc = 0;
             }
             .Ret | .RetS | .RetR | .RetN => {
-                if (ins.op == .RetS) {
-                    s[bs] = s[bs + a];
-                } else if (ins.op == .RetR) {
-                    r[br] = r[br + a];
-                } else if (ins.op == .RetN) {
-                    // the result's slots to the bases: from higher registers to lower ones, in
-                    // order, so an overlap reads before it writes
-                    var k = 0;
-                    while (k < f.retS) {
-                        s[bs + k] = s[bs + a + k];
-                        k += 1;
+                match (ins.op) {
+                    .RetS => {
+                        s[bs] = s[bs + a];
                     }
-                    k = 0;
-                    while (k < f.retR) {
-                        r[br + k] = r[br + b + k];
-                        k += 1;
+                    .RetR => {
+                        r[br] = r[br + a];
                     }
+                    .RetN => {
+                        // the result's slots to the bases: from higher registers to lower ones,
+                        // in order, so an overlap reads before it writes
+                        var k = 0;
+                        while (k < f.retS) {
+                            s[bs + k] = s[bs + a + k];
+                            k += 1;
+                        }
+                        k = 0;
+                        while (k < f.retR) {
+                            r[br + k] = r[br + b + k];
+                            k += 1;
+                        }
+                    }
+                    _ => { }
                 }
-                let back = frames.pop();
-                if (back == null) {
+                if (frames.length() == 0) {
                     // S6b: a coroutine's body ended — its result kept, its pull answers that no
                     // value came (Lyric 5 10 §1 rules 3–5)
                     let p = t.pullers.pop();
@@ -1054,6 +1787,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         _ => Outcome.Void,
                     };
                 }
+                let back = frames.take();
                 if (back.function < 0) {
                     // a report's call returned: the message, then the cause, then its message
                     let rep = report;
@@ -1228,7 +1962,11 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     );
                 }
                 let x = s[bs + b] as int;
-                s[bs + a] = (if (ins.op == .Shl) x << count else x >> count) as uint64;
+                let shifted = match (ins.op) {
+                    .Shl => x << count,
+                    _ => x >> count,
+                };
+                s[bs + a] = shifted as uint64;
                 pc += 1;
             }
             .BNot => {
@@ -1285,9 +2023,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // a call through a function value: the value is the callee's first reference argument,
             // and its first scalar field names the function
             .CallV => {
-                shared.budget = spend(shared.budget);
-                if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                // without a limit (-1) nothing is spent: one read, no write (S7j)
+                if (shared.budget != -1) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
+                        return Outcome.Suspended;
+                    }
                 }
                 if (frames.length() >= maxDepth) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
@@ -1325,9 +2066,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // a call through an interface value: the receiver is the callee's first reference
             // argument, and its type's table names the function of slot `a`
             .CallI => {
-                shared.budget = spend(shared.budget);
-                if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                // without a limit (-1) nothing is spent: one read, no write (S7j)
+                if (shared.budget != -1) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
+                        return Outcome.Suspended;
+                    }
                 }
                 if (frames.length() >= maxDepth) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
@@ -1341,6 +2085,24 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     }
                 }
                 if (target < 0 || target >= module.functions.length()) {
+                    // a field of the standard library's holds the VM's own object, and a script
+                    // can read the field: that is no fault of the compiler's
+                    if (recv is ScriptBigInt
+                        || recv is ScriptBytes
+                        || recv is ScriptFile
+                        || recv is ScriptDir
+                        || recv is ScriptRandom
+                        || recv is ScriptBuilder
+                        || recv is ScriptIndex) {
+                        return panicOut(
+                            module,
+                            frames,
+                            fi,
+                            pc,
+                            "LYS-RT0007",
+                            "an object of the VM has no members"
+                        );
+                    }
                     return panicOut(
                         module,
                         frames,
@@ -1368,9 +2130,12 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // S3i: a static member through a type's descriptor: the function in slot `a` of the
             // descriptor in reference register `c`, its arguments after it
             .CallS => {
-                shared.budget = spend(shared.budget);
-                if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                // without a limit (-1) nothing is spent: one read, no write (S7j)
+                if (shared.budget != -1) {
+                    shared.budget = spend(shared.budget);
+                    if (shared.budget == -2) {
+                        return Outcome.Suspended;
+                    }
                 }
                 if (frames.length() >= maxDepth) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0006", "stack overflow");
@@ -1563,6 +2328,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // in a caller the call (06 §5 rule 1); `throw` starts its record, `rethrow` goes on
             // with the one in register `b` (S4b)
             .Throw | .Rethrow => {
+                inject = false;
                 let value = r[br + a];
                 let held = if (ins.op == .Rethrow) r[br + b] else nilRef();
                 let record = if (held is ErrorRecord) held else recordOf(frames, fi, pc);
@@ -1574,8 +2340,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                             pc = h.target;
                             break;
                         }
-                        let back = frames.pop();
-                        if (back == null) {
+                        if (frames.length() == 0) {
                             return panicOut(
                                 module,
                                 frames,
@@ -1585,6 +2350,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                                 "an error caught by no frame"
                             );
                         }
+                        let back = frames.take();
                         fi = back.function;
                         f = module.functions[fi];
                         code = f.code;
@@ -1664,8 +2430,8 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     }
                     // the frames are left: the report's call runs where the entry ran
                     if (frames.length() > 0) {
-                        bs = frames[0].baseS;
-                        br = frames[0].baseR;
+                        bs = frames.get(0).baseS;
+                        br = frames.get(0).baseR;
                     }
                     frames.clear();
                     frames.push(CallFrame { function = -1, pc = 0, baseS = bs, baseR = br });
@@ -2281,21 +3047,19 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
             // S6e: a line of standard input at `r[a]`, none at its end — the first native that
             // waits: a Lyric 5 task reads it while the script's task waits, and the others run
             // (07 N6, 11 Co)
-            .ReadLine => {
+            .CallW => {
                 if (t.nativeDone) {
                     t.nativeDone = false;
-                    let line = t.nativeText;
-                    t.nativeText = null;
-                    if (line != null) {
-                        r[br + a] = ScriptString { text = line };
-                    } else {
-                        r[br + a] = nil;
+                    if (let answer = t.nativeAnswer) {
+                        takeAnswer(nativeOf(a), answer, s, r, bs + b, br + c);
                     }
+                    t.nativeAnswer = null;
                     pc += 1;
                     continue;
                 }
+                let waiting = nativeOf(a);
                 let own = t.handle;
-                if (own != null && own.cancelled) {
+                if (own != null && own.cancelled && nativeCancels(waiting)) {
                     if (br + f.refs + 1 > r.length()) {
                         r = growRefs(r, br + f.refs + 1);
                     }
@@ -2303,23 +3067,28 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     inject = true;
                     continue;
                 }
+                if (let fault = waitFault(waiting, r, br + c)) {
+                    return panicOut(module, frames, fi, pc, fault.code, fault.message);
+                }
+                // a wait the budget does not cover does not start: this call again on `resume`
+                let job = waitJob(waiting, s, r, bs + b, br + c, shared);
+                if (shared.budget == -2) {
+                    return Outcome.Suspended;
+                }
                 t.nativePending = true;
+                t.nativeToItsEnd = !nativeCancels(waiting);
                 t.nativeTicket += 1;
                 let ticket = t.nativeTicket;
                 let st = t;
                 shared.pendingNatives += 1;
                 spawnDetached(
                     () => {
-                        var text: ?string = null;
-                        let got = try? stdin().readLine();
-                        if (let g = got) {
-                            text = g;
-                        }
-                        // a task cancelled meanwhile waits no more: the line is dropped
+                        let answer = job();
+                        // a task cancelled meanwhile waits no more: what came is dropped
                         if (st.nativePending && st.nativeTicket == ticket) {
                             st.nativePending = false;
                             st.nativeDone = true;
-                            st.nativeText = text;
+                            st.nativeAnswer = answer;
                             shared.pendingNatives -= 1;
                             shared.queue.push(st);
                             try? shared.wakeups.send(1);
@@ -2570,7 +3339,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 let child = TaskState {
                     s = [0 as uint64] * grown(0, callee.scalars),
                     r = refArray(grown(0, callee.refs)),
-                    frames = List<CallFrame>.new(),
+                    frames = FrameStack.new(),
                     fi = target,
                 };
                 child.r[0] = env;
@@ -2753,31 +3522,225 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 }
                 pc += 1;
             }
-            .CallN => {
-                let x = bs + b;
-                let y = br + c;
-                match (nativeOf(a)) {
-                    .Print => print(textOf(r[y])),
-                    .Println => println(textOf(r[y])),
-                    .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
-                    .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
-                    // Lyric 5's shortest text that reads back, `1.0` for an integral float
-                    .FloatToStr => r[y] = ScriptString { text = f"{float.fromBits(s[x])}" },
-                    .BoolToStr => r[y] = ScriptString { text = if (s[x] != 0) "true" else "false" },
-                    .CharToStr => r[y] = ScriptString { text = f"{(s[x] as uint32) as char}" },
-                    .StrEq => s[x] = truth(textOf(r[y]) == textOf(r[y + 1])),
-                    .StrCmp => {
-                        let p = textOf(r[y]);
-                        let q = textOf(r[y + 1]);
-                        s[x] = (if (p < q) -1 else if (p == q) 0 else 1) as uint64;
+            .ListNew => {
+                let shape = b;
+                r[br + a] = ScriptArray {
+                    ns = shape / 256,
+                    nr = shape % 256,
+                    s = List<uint64>.new(),
+                    r = List<HeapRef>.new(),
+                };
+                pc += 1;
+            }
+            .ListPush => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a push on no list");
+                }
+                var k = 0;
+                while (k < o.ns) {
+                    o.s.push(s[bs + a + k]);
+                    k += 1;
+                }
+                k = 0;
+                while (k < o.nr) {
+                    o.r.push(r[br + c + k]);
+                    k += 1;
+                }
+                o.n += 1;
+                o.changes += 1;
+                pc += 1;
+            }
+            .ListGetS | .ListGetR | .ListSetS | .ListSetR => {
+                let reads = match (ins.op) {
+                    .ListGetS | .ListGetR => true,
+                    _ => false,
+                };
+                let o = r[br + (if (reads) b else a)];
+                let i = (s[bs + (if (reads) c else b)]) as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an index into no list");
+                }
+                if (i < 0 || i >= o.n) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0003",
+                        f"index {i} out of bounds for length {o.n}"
+                    );
+                }
+                match (ins.op) {
+                    .ListGetS => s[bs + a] = o.s[i],
+                    .ListGetR => r[br + a] = o.r[i],
+                    .ListSetS => o.s[i] = s[bs + c],
+                    _ => o.r[i] = r[br + c],
+                }
+                pc += 1;
+            }
+            .ListGetN | .ListSetN => {
+                let o = r[br + b];
+                let i = s[bs + a] as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "an index into no list");
+                }
+                if (i < 0 || i >= o.n) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0003",
+                        f"index {i} out of bounds for length {o.n}"
+                    );
+                }
+                // a write's value stands after the index and the list
+                let writes = match (ins.op) {
+                    .ListSetN => true,
+                    _ => false,
+                };
+                let at = if (writes) 1 else 0;
+                var k = 0;
+                while (k < o.ns) {
+                    if (writes) {
+                        o.s[i * o.ns + k] = s[bs + a + at + k];
+                    } else {
+                        s[bs + a + k] = o.s[i * o.ns + k];
                     }
-                    .TraceText => {
-                        let lines = List<string>.new();
-                        for (line in recordLines(module, r[y])) {
-                            lines.push(f"    {line}");
+                    k += 1;
+                }
+                k = 0;
+                while (k < o.nr) {
+                    if (writes) {
+                        o.r[i * o.nr + k] = r[br + b + at + k];
+                    } else {
+                        r[br + b + k] = o.r[i * o.nr + k];
+                    }
+                    k += 1;
+                }
+                pc += 1;
+            }
+            .ListLen => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "the length of no list");
+                }
+                s[bs + a] = o.n as uint64;
+                pc += 1;
+            }
+            .ListPop => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a pop of no list");
+                }
+                let plain = c == 1;
+                if (o.n == 0) {
+                    if (plain) {
+                        r[br + b] = nil;
+                    } else {
+                        s[bs + a + o.ns] = 0 as uint64;
+                        var k = 0;
+                        while (k < o.nr) {
+                            r[br + b + k] = nil;
+                            k += 1;
                         }
-                        r[y] = ScriptString { text = lines.toArray().join("\n") };
                     }
+                } else {
+                    o.n -= 1;
+                    var k = 0;
+                    while (k < o.ns) {
+                        s[bs + a + k] = o.s[o.n * o.ns + k];
+                        k += 1;
+                    }
+                    k = 0;
+                    while (k < o.nr) {
+                        r[br + b + k] = o.r[o.n * o.nr + k];
+                        k += 1;
+                    }
+                    if (!plain) {
+                        s[bs + a + o.ns] = 1 as uint64;
+                    }
+                    o.s.truncate(o.n * o.ns);
+                    o.r.truncate(o.n * o.nr);
+                    o.changes += 1;
+                }
+                pc += 1;
+            }
+            .ListTrunc => {
+                let o = r[br + a];
+                let n = s[bs + b] as int;
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a truncate of no list");
+                }
+                if (n >= 0 && n < o.n) {
+                    o.n = n;
+                    o.s.truncate(n * o.ns);
+                    o.r.truncate(n * o.nr);
+                    o.changes += 1;
+                }
+                pc += 1;
+            }
+            .ListSupp => {
+                let out = ScriptArray {
+                    ns = 0,
+                    nr = 1,
+                    s = List<uint64>.new(),
+                    r = List<HeapRef>.new(),
+                };
+                let rec = r[br + b];
+                if (rec is ErrorRecord) {
+                    for (x in rec.suppressed) {
+                        out.r.push(x);
+                        out.n += 1;
+                    }
+                }
+                r[br + a] = out;
+                pc += 1;
+            }
+            .ListChanges => {
+                let o = r[br + b];
+                if (!(o is ScriptArray)) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-ICE0001",
+                        "the changes of no list"
+                    );
+                }
+                s[bs + a] = o.changes as uint64;
+                pc += 1;
+            }
+            .ListCheck => {
+                let o = r[br + a];
+                if (!(o is ScriptArray)) {
+                    return panicOut(module, frames, fi, pc, "LYS-ICE0001", "a walk over no list");
+                }
+                if (o.changes != s[bs + b] as int) {
+                    return panicOut(
+                        module,
+                        frames,
+                        fi,
+                        pc,
+                        "LYS-RT0016",
+                        "List: changed while it was walked"
+                    );
+                }
+                pc += 1;
+            }
+            .CallN => {
+                if (let fault = callNative(nativeOf(a), s, r, bs + b, br + c, shared)) {
+                    return panicOut(module, frames, fi, pc, fault.code, fault.message);
+                }
+                // a native the budget does not cover did nothing: this call again on `resume`,
+                // as a backward jump is taken again (01 S5c; S7f4); `exit` leaves the same way
+                if (shared.budget == -2) {
+                    if (let code = shared.exitCode) {
+                        return Outcome.Exit(code);
+                    }
+                    return Outcome.Suspended;
                 }
                 pc += 1;
             }
@@ -2787,14 +3750,14 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
 
 /// The record of an error thrown at `pc` of function `fi`: that frame, then its callers at their
 /// calls; a report's call stands for none.
-fn recordOf(frames: List<CallFrame>, fi: int, pc: int): ErrorRecord {
+fn recordOf(frames: FrameStack, fi: int, pc: int): ErrorRecord {
     let functions = List<int>.new();
     let pcs = List<int>.new();
     functions.push(fi);
     pcs.push(pc);
     var i = frames.length() - 1;
     while (i >= 0) {
-        let fr = frames[i];
+        let fr = frames.get(i);
         if (fr.function >= 0) {
             functions.push(fr.function);
             pcs.push(fr.pc - 1);
@@ -2833,13 +3796,13 @@ fn handlerAt(f: Function, pc: int): ?Handler {
 
 /// Whether a frame takes an error thrown at `pc` of `f`: `f`'s, or a caller's at its call, down
 /// to the first frame or to a report's call.
-fn caught(module: Module, frames: List<CallFrame>, f: Function, pc: int): bool {
+fn caught(module: Module, frames: FrameStack, f: Function, pc: int): bool {
     if (handlerAt(f, pc) != null) {
         return true;
     }
     var k = frames.length() - 1;
-    while (k >= 0 && frames[k].function >= 0) {
-        if (handlerAt(module.functions[frames[k].function], frames[k].pc - 1) != null) {
+    while (k >= 0 && frames.get(k).function >= 0) {
+        if (handlerAt(module.functions[frames.get(k).function], frames.get(k).pc - 1) != null) {
             return true;
         }
         k -= 1;
@@ -2885,6 +3848,69 @@ fn textOf(v: HeapRef): string {
     return if (v is ScriptString) v.text else "";
 }
 
+/// A string's bytes, read the first time they are asked for and kept (S7e1).
+fn bytesOf(v: HeapRef): uint8[] {
+    if (v is ScriptString) {
+        if (let b = v.bytes) {
+            return b;
+        }
+        let b = v.text.toBytes();
+        v.bytes = b;
+        return b;
+    }
+    return [];
+}
+
+/// Whether a character begins at byte `i` of a string, or `i` is its length.
+fn beginsChar(v: HeapRef, i: int): bool {
+    let b = bytesOf(v);
+    return i >= b.length() || (b[i] & 192) != 128;
+}
+
+/// The character of a scalar slot; U+FFFD for a value that is no Unicode scalar value.
+fn charOfCode(v: uint64): char {
+    if (v > 1114111) {
+        return '\u{FFFD}';
+    }
+    return char.fromUint32(v as uint32) ?? '\u{FFFD}';
+}
+
+/// A general category's place in `UnicodeCategory`, the order of Lyric 5's enum.
+fn categoryIndex(c: UnicodeCategory): int {
+    return match (c) {
+        .UppercaseLetter => 0,
+        .LowercaseLetter => 1,
+        .TitlecaseLetter => 2,
+        .ModifierLetter => 3,
+        .OtherLetter => 4,
+        .NonspacingMark => 5,
+        .SpacingMark => 6,
+        .EnclosingMark => 7,
+        .DecimalNumber => 8,
+        .LetterNumber => 9,
+        .OtherNumber => 10,
+        .ConnectorPunctuation => 11,
+        .DashPunctuation => 12,
+        .OpenPunctuation => 13,
+        .ClosePunctuation => 14,
+        .InitialPunctuation => 15,
+        .FinalPunctuation => 16,
+        .OtherPunctuation => 17,
+        .MathSymbol => 18,
+        .CurrencySymbol => 19,
+        .ModifierSymbol => 20,
+        .OtherSymbol => 21,
+        .SpaceSeparator => 22,
+        .LineSeparator => 23,
+        .ParagraphSeparator => 24,
+        .Control => 25,
+        .Format => 26,
+        .Surrogate => 27,
+        .PrivateUse => 28,
+        .Unassigned => 29,
+    };
+}
+
 fn firstScalars(s: uint64[], from: int, n: int): uint64[] {
     var out: uint64[] = [0 as uint64] * n;
     var k = 0;
@@ -2913,6 +3939,1242 @@ fn descIn(v: HeapRef): ?TypeDesc {
 
 fn truth(b: bool): uint64 {
     return if (b) 1 else 0;
+}
+
+/// `n` units of budget taken before a native's work: false where they are not there, and the
+/// budget is out then — what a native costs is known from its operands, so it never starts what it
+/// cannot pay (01 S5c).
+fn charge(shared: RunShared, n: int): bool {
+    if (shared.budget < 0) {
+        return shared.budget == -1;
+    }
+    if (shared.budget < n) {
+        shared.budget = -2;
+        return false;
+    }
+    shared.budget -= n;
+    return true;
+}
+
+/// What a native that waits brought (S7g2): a number, a failure as `-(kind << 32 | code)`; a text; bytes.
+struct WaitAnswer {
+    n: int,
+    text: ?string = null,
+    bytes: ?uint8[] = null,
+}
+
+/// What `call.w` runs on a Lyric 5 task, charged here, before it starts: nothing the task does
+/// touches the script's values. The budget's end is the caller's to read.
+fn waitJob(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    shared: RunShared
+): fn() -> WaitAnswer {
+    match (which) {
+        .ConsoleRead => {
+            let n = bytesAt(r[y]).length();
+            charge(shared, bytesCost(n));
+            return () => consoleRead(n);
+        }
+        .FsOpen => {
+            let handle = r[y];
+            let name = textOf(r[y + 1]);
+            let how = s[x] as int;
+            charge(shared, bytesCost(name.length()));
+            return () => fileOpen(handle, name, how);
+        }
+        .FsRead => {
+            let file = fileAt(r[y]);
+            let n = bytesAt(r[y + 1]).length();
+            charge(shared, bytesCost(n));
+            return () => fileRead(file, n);
+        }
+        .FsWrite => {
+            let file = fileAt(r[y]);
+            let data = bytesAt(r[y + 1]);
+            charge(shared, bytesCost(data.length()));
+            // another task may change the bytes meanwhile: these are the ones the call was handed
+            let from = data.toArray();
+            return () => fileWrite(file, from);
+        }
+        .FsSeek => {
+            let file = fileAt(r[y]);
+            let offset = s[x] as int;
+            let whence = s[x + 1] as int;
+            charge(shared, 1);
+            return () => fileSeek(file, offset, whence);
+        }
+        .FsClose => {
+            let file = fileAt(r[y]);
+            charge(shared, 1);
+            return () => fileClose(file);
+        }
+        .FsMetadata => {
+            let name = pathCharged(r[y + 1], shared);
+            return () => pathLook(name);
+        }
+        .TimeZoneOpen => {
+            let handle = r[y + 1];
+            let name = textOf(r[y + 2]);
+            let how = s[x] as int;
+            let text = textOf(r[y + 3]);
+            let data = r[y + 4];
+            // a TZif file's bytes as the call was handed them; a POSIX rule as text
+            var bytes: uint8[] = [];
+            if (data is ScriptBytes) {
+                bytes = data.data.toArray();
+            }
+            charge(shared, bytesCost(bytes.length() + text.length()));
+            return () => zoneOpen(handle, how, name, bytes, text);
+        }
+        .FsCreateDir => {
+            let name = pathCharged(r[y], shared);
+            return () => pathDone(() => try fsCreateDir(name));
+        }
+        .FsRemove => {
+            let name = pathCharged(r[y], shared);
+            return () => pathDone(() => try fsRemove(name));
+        }
+        .FsRemoveDir => {
+            let name = pathCharged(r[y], shared);
+            return () => pathDone(() => try fsRemoveDir(name));
+        }
+        .FsRename => {
+            let from = pathCharged(r[y], shared);
+            let to = pathCharged(r[y + 1], shared);
+            return () => pathDone(() => try fsRename(from, to));
+        }
+        .FsCanonicalize => {
+            let name = pathCharged(r[y + 1], shared);
+            return () => pathMade(() => try fsCanonicalize(name));
+        }
+        .FsAbsolute => {
+            let name = pathCharged(r[y + 1], shared);
+            return () => pathMade(() => try fsAbsolute(name));
+        }
+        .OsCwd => {
+            charge(shared, 1);
+            return () => pathMade(() => try osCwd());
+        }
+        .OsSetCwd => {
+            let name = pathCharged(r[y], shared);
+            return () => pathDone(() => try osSetCwd(name));
+        }
+        .OsHostname => {
+            charge(shared, 1);
+            return () => pathMade(() => try osHostname());
+        }
+        // S7h3: a child, its pipes, its end
+        .ProcessSpawn => {
+            let handle = r[y];
+            let program = pathCharged(r[y + 1], shared);
+            let args = partsOf(pathCharged(r[y + 2], shared), s[x + 1] as int);
+            let names = partsOf(pathCharged(r[y + 3], shared), s[x + 2] as int);
+            let values = partsOf(pathCharged(r[y + 4], shared), s[x + 2] as int);
+            let cwd = pathCharged(r[y + 5], shared);
+            let modes = s[x] as int;
+            return () => childSpawn(handle, program, args, names, values, cwd, modes);
+        }
+        .ProcessRead => {
+            let child = childAt(r[y]);
+            let which = s[x] as int;
+            let n = bytesAt(r[y + 1]).length();
+            charge(shared, bytesCost(n));
+            return () => pipeRead(child, which, n);
+        }
+        .ProcessWrite => {
+            let child = childAt(r[y]);
+            let data = bytesAt(r[y + 1]);
+            charge(shared, bytesCost(data.length()));
+            // another task may change the bytes meanwhile: these are the ones the call was handed
+            let from = data.toArray();
+            return () => pipeWrite(child, from);
+        }
+        .ProcessClose => {
+            let child = childAt(r[y]);
+            let which = s[x] as int;
+            charge(shared, 1);
+            return () => pipeClose(child, which);
+        }
+        .ProcessWait => {
+            let child = childAt(r[y + 1]);
+            charge(shared, 1);
+            return () => childWait(child);
+        }
+        .ProcessSignal => {
+            let child = childAt(r[y]);
+            let signal = signalFrom(s[x] as int, s[x + 1] as int);
+            charge(shared, 1);
+            return () => pathDone(() => try child.signal(signal));
+        }
+        .FsTempDir => {
+            charge(shared, 1);
+            return () => pathMade(() => try fsTempDir());
+        }
+        .FsTempFile => {
+            charge(shared, 1);
+            return () => pathMade(() => try fsTempFile());
+        }
+        .FsDirOpen => {
+            let handle = r[y];
+            let name = pathCharged(r[y + 1], shared);
+            return () => dirOpen(handle, name);
+        }
+        .FsDirNext => {
+            let dir = dirAt(r[y + 1]);
+            charge(shared, 1);
+            return () => dirNext(dir);
+        }
+        .FsDirClose => {
+            let dir = dirAt(r[y]);
+            charge(shared, 1);
+            return () => dirClose(dir);
+        }
+        _ => {
+            charge(shared, 1);
+            return () => consoleLine();
+        }
+    }
+}
+
+/// What stops a native that waits before it starts: a field of the standard library's that holds
+/// something else, since a script can build a `File` or a `Bytes` of its own.
+fn waitFault(which: NativeFn, r: HeapRef[], y: int): ?NativeFault {
+    let bytesOnly = which == NativeFn.ConsoleRead;
+    let holdsFile = which == NativeFn.FsRead
+        || which == NativeFn.FsWrite
+        || which == NativeFn.FsSeek
+        || which == NativeFn.FsClose;
+    if (bytesOnly && !(r[y] is ScriptBytes)) {
+        return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
+    if (holdsFile) {
+        let o = r[y];
+        if (!(o is ScriptFile) || o.file == null) {
+            return bytesFault("LYS-RT0007", "a File's field holds no file");
+        }
+    }
+    if ((which == NativeFn.FsRead || which == NativeFn.FsWrite) && !(r[y + 1] is ScriptBytes)) {
+        return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
+    if (which == NativeFn.ProcessSpawn && !(r[y] is ScriptChild)) {
+        return bytesFault("LYS-RT0007", "a Child's field holds no child");
+    }
+    let holdsChild = which == NativeFn.ProcessRead
+        || which == NativeFn.ProcessWrite
+        || which == NativeFn.ProcessClose
+        || which == NativeFn.ProcessWait
+        || which == NativeFn.ProcessSignal;
+    if (holdsChild) {
+        let o = if (which == NativeFn.ProcessWait) r[y + 1] else r[y];
+        if (!(o is ScriptChild) || o.child == null) {
+            return bytesFault("LYS-RT0007", "a Child's field holds no child");
+        }
+    }
+    if ((which == NativeFn.ProcessRead || which == NativeFn.ProcessWrite)
+        && !(r[y + 1] is ScriptBytes)) {
+        return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
+    if (which == NativeFn.TimeZoneOpen && !(r[y + 1] is ScriptZone)) {
+        return bytesFault("LYS-RT0007", "a Zone's field holds no zone");
+    }
+    if (which == NativeFn.FsDirNext || which == NativeFn.FsDirClose) {
+        let o = if (which == NativeFn.FsDirNext) r[y + 1] else r[y];
+        if (!(o is ScriptDir) || o.dir == null) {
+            return bytesFault("LYS-RT0007", "a ReadDirIter's field holds no directory");
+        }
+    }
+    return null;
+}
+
+/// The bytes `waitFault` saw.
+fn bytesAt(o: HeapRef): List<uint8> {
+    if (o is ScriptBytes) {
+        return o.data;
+    }
+    unreachable("waitFault looked");
+}
+
+/// The file `waitFault` saw.
+fn fileAt(o: HeapRef): File {
+    if (o is ScriptFile) {
+        if (let f = o.file) {
+            return f;
+        }
+    }
+    unreachable("waitFault looked");
+}
+
+/// The child `waitFault` saw.
+fn childAt(o: HeapRef): Child {
+    if (o is ScriptChild) {
+        if (let c = o.child) {
+            return c;
+        }
+    }
+    unreachable("waitFault looked");
+}
+
+/// The first `count` parts of `text`, each ended by a NUL.
+fn partsOf(text: string, count: int): string[] {
+    let out = List<string>.new();
+    for (part in text.split('\0')) {
+        if (out.length() < count) {
+            out.push(part.toString());
+        }
+    }
+    return out.toArray();
+}
+
+/// What a mode of `std.process` says, 0 to 2.
+fn stdioOf(mode: int): Stdio {
+    return match (mode) {
+        1 => Stdio.Piped,
+        2 => Stdio.Null,
+        _ => Stdio.Inherit,
+    };
+}
+
+/// Starts the child into `handle`: 0, or the failure. What the console holds is written first,
+/// so that a child that inherits a stream writes after it.
+fn childSpawn(
+    handle: HeapRef,
+    program: string,
+    args: string[],
+    names: string[],
+    values: string[],
+    cwd: string,
+    modes: int
+): WaitAnswer {
+    let pairs = List<(string, string)>.new();
+    var k = 0;
+    while (k < names.length()) {
+        pairs.push((names[k], values[k]));
+        k += 1;
+    }
+    let command = Command {
+        program = program,
+        args = args,
+        cwd = if (cwd.isEmpty()) null else cwd,
+        env = pairs.toArray(),
+        stdin = stdioOf(modes & 3),
+        stdout = stdioOf((modes >> 2) & 3),
+        stderr = stdioOf((modes >> 4) & 3),
+    };
+    consoleFlush(1);
+    consoleFlush(2);
+    let child = try command.spawn() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    if (handle is ScriptChild) {
+        handle.child = child;
+    }
+    return WaitAnswer { n = 0 };
+}
+
+/// The answer of a pipe the command did not make: closed.
+fn noPipe(): WaitAnswer {
+    return WaitAnswer { n = failureCode(IoError { kind = .Closed, detail = "" }) };
+}
+
+/// Up to `n` bytes of the child's output (1) or errors (2), into an array of their own.
+fn pipeRead(child: Child, which: int, n: int): WaitAnswer {
+    let pipe = if (which == 2) child.stderr else child.stdout;
+    if (let p = pipe) {
+        let into = [0 as uint8] * n;
+        try {
+            let got = p.read(into);
+            return WaitAnswer { n = got, bytes = into };
+        } catch (e: IoError) {
+            return WaitAnswer { n = failureCode(e) };
+        } catch (_: Cancelled) {
+            unreachable("nobody cancels a native's task");
+        }
+    }
+    return noPipe();
+}
+
+fn pipeWrite(child: Child, from: uint8[]): WaitAnswer {
+    if (let p = child.stdin) {
+        try {
+            return WaitAnswer { n = p.write(from) };
+        } catch (e: IoError) {
+            return WaitAnswer { n = failureCode(e) };
+        } catch (_: Cancelled) {
+            unreachable("nobody cancels a native's task");
+        }
+    }
+    return noPipe();
+}
+
+/// Closes the child's input (0), output (1) or errors (2).
+fn pipeClose(child: Child, which: int): WaitAnswer {
+    if (which == 0) {
+        if (let p = child.stdin) {
+            return pathDone(() => try p.close());
+        }
+    } else if (let p = if (which == 2) child.stderr else child.stdout) {
+        return pathDone(() => try p.close());
+    }
+    return noPipe();
+}
+
+/// The child's end: its code, or a signal as `signalAnswer` writes it, and its text.
+fn childWait(child: Child): WaitAnswer {
+    var c = child;
+    try {
+        let status = c.wait();
+        if (let code = status.code()) {
+            return WaitAnswer { n = code, text = f"{status}" };
+        }
+        return WaitAnswer { n = signalAnswer(status.signal()!), text = f"{status}" };
+    } catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    } catch (_: Cancelled) {
+        unreachable("nobody cancels a native's task");
+    }
+}
+
+/// A child's end by a signal: bit 40, the signal's kind from bit 16, the number of an `Other`.
+fn signalAnswer(s: Signal): int {
+    let kind = match (s) {
+        Signal.Interrupt => 0,
+        Signal.Terminate => 1,
+        Signal.Hangup => 2,
+        Signal.Quit => 3,
+        Signal.User1 => 4,
+        Signal.User2 => 5,
+        Signal.WindowChange => 6,
+        Signal.Other(n) => (7 << 16) + n,
+    };
+    return (1 << 40) + (if (kind >= 7 << 16) kind else kind << 16);
+}
+
+/// A channel the signals of `wanted` come in on (Lyric 5 10 §12; S7h4): Lyric 5's subscription to
+/// them, whose signals a job of the host hands over as the script's values — `forms` holds one of
+/// each variant, `Other`'s last. Sixteen fit; one that finds them taken is lost for this channel
+/// (rule 3). Closing it ends the subscription at once (rule 4), the run's end each one left open.
+/// `null` where the two are no arrays of the eight forms.
+fn signalChannel(wanted: HeapRef, forms: HeapRef, shared: RunShared): ?HeapRef {
+    if (!(wanted is ScriptArray)) {
+        return null;
+    }
+    if (!(forms is ScriptArray)) {
+        return null;
+    }
+    if (forms.n != 8 || forms.nr != 1 || wanted.nr != 1) {
+        return null;
+    }
+    let ch = ScriptChannel {
+        capacity = 16,
+        ns = 0,
+        nr = 1,
+        buffer = List<Item>.new(),
+        receivers = List<TaskState>.new(),
+        senders = List<TaskState>.new(),
+    };
+    let asked = List<Signal>.new();
+    var k = 0;
+    while (k < wanted.n) {
+        let o = wanted.r[k];
+        if (o is ScriptObject) {
+            let number = if (o.scalars.length() > 1) o.scalars[1] as int else 0;
+            asked.push(signalFrom(o.scalars[0] as int, number));
+        }
+        k += 1;
+    }
+    // none asked: a channel no signal comes in on, which keeps no run waiting
+    if (asked.length() == 0) {
+        return ch;
+    }
+    let incoming = signals(asked.toArray()...);
+    shared.feeds.push(incoming);
+    shared.openFeeds += 1;
+    ch.closer = () => {
+        incoming.close();
+        shared.openFeeds -= 1;
+    };
+    let shapes = forms;
+    spawnDetached(
+        () => {
+            while (true) {
+                let got = try incoming.recv() catch (_: Cancelled) null;
+                if (let s = got) {
+                    if (!ch.closed) {
+                        offerSignal(ch, signalValue(s, shapes), shared);
+                        try? shared.wakeups.send(1);
+                    }
+                } else {
+                    return;
+                }
+            }
+        }
+    );
+    return ch;
+}
+
+/// Hands `value` to a task waiting on `ch`, or into its buffer while it has room; a full buffer
+/// loses it for this channel (Lyric 5 10 §12 rule 3).
+fn offerSignal(ch: ScriptChannel, value: HeapRef, shared: RunShared): void {
+    let item = Item { s = [0 as uint64] * 0, r = [value] };
+    if (ch.receivers.length() > 0) {
+        let w = ch.receivers.removeAt(0);
+        w.handoff = item;
+        wake(w, shared);
+    } else if (ch.buffer.length() < ch.capacity) {
+        ch.buffer.push(item);
+        wakeWatchers(ch, shared);
+    }
+}
+
+/// The script's value of `s`: its form, an `Other` with its number in a new one.
+fn signalValue(s: Signal, forms: ScriptArray): HeapRef {
+    let (kind, number) = match (s) {
+        Signal.Interrupt => (0, 0),
+        Signal.Terminate => (1, 0),
+        Signal.Hangup => (2, 0),
+        Signal.Quit => (3, 0),
+        Signal.User1 => (4, 0),
+        Signal.User2 => (5, 0),
+        Signal.WindowChange => (6, 0),
+        Signal.Other(n) => (7, n),
+    };
+    let form = forms.r[kind];
+    if (kind < 7 || !(form is ScriptObject)) {
+        return form;
+    }
+    let scalars = [0 as uint64] * form.scalars.length();
+    scalars[0] = 7 as uint64;
+    if (scalars.length() > 1) {
+        scalars[1] = number as uint64;
+    }
+    return ScriptObject {
+        typeDesc = form.typeDesc,
+        scalars = scalars,
+        refs = form.refs,
+        owner = form.owner,
+        version = form.version,
+    };
+}
+
+/// The signal of a kind as `std.os`'s `Signal` counts its variants, `number` for an `Other`.
+fn signalFrom(kind: int, number: int): Signal {
+    return match (kind) {
+        0 => Signal.Interrupt,
+        1 => Signal.Terminate,
+        2 => Signal.Hangup,
+        3 => Signal.Quit,
+        4 => Signal.User1,
+        5 => Signal.User2,
+        6 => Signal.WindowChange,
+        _ => Signal.Other(number),
+    };
+}
+
+/// The iterator `waitFault` saw.
+fn dirAt(o: HeapRef): ReadDirIter {
+    if (o is ScriptDir) {
+        if (let d = o.dir) {
+            return d;
+        }
+    }
+    unreachable("waitFault looked");
+}
+
+/// The path a native takes, charged by its bytes.
+fn pathCharged(o: HeapRef, shared: RunShared): string {
+    let name = textOf(o);
+    charge(shared, bytesCost(name.length()));
+    return name;
+}
+
+/// What a native read: copied to the script's bytes here, where it is not running on another
+/// task, and no more than they hold now: another task may have cut them meanwhile.
+fn deliverBytes(a: WaitAnswer, o: HeapRef): int {
+    let bytes = a.bytes;
+    if (!(o is ScriptBytes) || bytes == null) {
+        return a.n;
+    }
+    let n = if (a.n > o.data.length()) o.data.length() else a.n;
+    var k = 0;
+    while (k < n) {
+        o.data[k] = bytes[k];
+        k += 1;
+    }
+    return n;
+}
+
+/// Puts what a native that waits brought where the script sees it: the number at the scalar base,
+/// and what goes with it into the object at the reference base, which the script's task kept.
+fn takeAnswer(which: NativeFn, a: WaitAnswer, s: uint64[], r: HeapRef[], x: int, y: int): void {
+    var n = a.n;
+    match (which) {
+        .ConsoleRead => n = deliverBytes(a, r[y]),
+        .FsRead => n = deliverBytes(a, r[y + 1]),
+        .ProcessRead => n = deliverBytes(a, r[y + 1]),
+        _ => {
+            let o = r[y];
+            let text = a.text;
+            if (o is ScriptArray && text != null) {
+                o.r[0] = ScriptString { text = text };
+            }
+        }
+    }
+    s[x] = n as uint64;
+}
+
+/// The next line of the standard input: 1 and the line, 0 at its end, or the failure and its detail.
+fn consoleLine(): WaitAnswer {
+    let line = try stdin().readLine() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e), text = failureDetail(e) };
+    };
+    if (let l = line) {
+        return WaitAnswer { n = 1, text = l };
+    }
+    return WaitAnswer { n = 0 };
+}
+
+/// Up to `n` bytes of the standard input, into an array of their own: the script's stay its own.
+fn consoleRead(n: int): WaitAnswer {
+    let into = [0 as uint8] * n;
+    let got = try stdin().read(into) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = got, bytes = into };
+}
+
+/// Opens the path as the bits say, `File.openWith`'s options; what they refuse, the script refused.
+fn fileOpen(handle: HeapRef, name: string, how: int): WaitAnswer {
+    let options = OpenOptions {
+        read = how & 1 != 0,
+        write = how & 2 != 0,
+        append = how & 4 != 0,
+        create = how & 8 != 0,
+        truncate = how & 16 != 0,
+    };
+    let file = try File.openWith(name, options) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    if (handle is ScriptFile) {
+        handle.file = file;
+    }
+    return WaitAnswer { n = 0 };
+}
+
+/// Up to `n` bytes of a file, into an array of their own.
+fn fileRead(file: File, n: int): WaitAnswer {
+    let into = [0 as uint8] * n;
+    let got = try file.read(into) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = got, bytes = into };
+}
+
+fn fileWrite(file: File, from: uint8[]): WaitAnswer {
+    return WaitAnswer { n = try file.write(from) catch (e: IoError) failureCode(e) };
+}
+
+fn fileSeek(file: File, offset: int, whence: int): WaitAnswer {
+    let to = if (whence == 0) SeekFrom.Start(offset)
+        else if (whence == 1) SeekFrom.Current(offset) else SeekFrom.End(offset);
+    return WaitAnswer { n = try file.seek(to) catch (e: IoError) failureCode(e) };
+}
+
+fn fileClose(file: File): WaitAnswer {
+    try file.close() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = 0 };
+}
+
+/// What a path names, as `std.fs`'s `Metadata` reads it.
+fn pathLook(name: string): WaitAnswer {
+    let m = try fsMetadata(name) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    let bits = (if (m.isFile) 1 else 0)
+        | (if (m.isDir) 2 else 0)
+        | (if (m.isSymlink) 4 else 0)
+        | (if (m.readonly) 8 else 0);
+    // the moment it was last written, its nanoseconds since 1970 as text: the holder's
+    return WaitAnswer { n = m.size << 4 | bits, text = f"{epochNanos(m.modified)}" };
+}
+
+/// A zone Lyric 5 reads (S7h6a), by `how`: 0 the database's of the name, 1 a TZif file's bytes, 2 a
+/// POSIX rule, 3 the system's own. 0 and the zone in the handle, its name in the holder; 1 where it is
+/// UTC, which the script holds itself; the failure's kind below zero — -1 `Invalid`, -2 `NoZoneData`,
+/// -3 `NoSuchZone` — and its detail in the holder.
+fn zoneOpen(handle: HeapRef, how: int, name: string, bytes: uint8[], text: string): WaitAnswer {
+    let zone = try zoneOf(how, name, bytes, text) catch (e: HostTimeError) {
+        let n = match (e.kind) {
+            .Invalid => -1,
+            .NoZoneData => -2,
+            .NoSuchZone => -3,
+        };
+        return WaitAnswer { n = n, text = e.message() };
+    };
+    if (zone.isFixed()) {
+        return WaitAnswer { n = 1, text = zone.name() };
+    }
+    if (handle is ScriptZone) {
+        handle.zone = zone;
+    }
+    return WaitAnswer { n = 0, text = zone.name() };
+}
+
+fn zoneOf(how: int, name: string, bytes: uint8[], text: string): HostZone throws HostTimeError {
+    return match (how) {
+        0 => try HostZone.load(name),
+        1 => try HostZone.fromTzif(name, bytes[..]),
+        2 => try HostZone.fromPosix(name, text),
+        _ => HostZone.local(),
+    };
+}
+
+/// The nanoseconds of `at` since 1970-01-01T00:00:00Z: Lyric 5's `Instant` answers no count of them (S7h5).
+fn epochNanos(at: Instant): int {
+    let epoch = try! Instant.parse("1970-01-01T00:00:00Z");
+    return at.since(epoch).nanos();
+}
+
+/// A call that answers nothing: 0, or its failure.
+fn pathDone(call: fn() -> void throws IoError): WaitAnswer {
+    try call() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = 0 };
+}
+
+/// A call that answers a path: 0 and the path, or its failure and the path it was at.
+fn pathMade(call: fn() -> string throws IoError): WaitAnswer {
+    let made = try call() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e), text = e.path ?? "" };
+    };
+    return WaitAnswer { n = 0, text = made };
+}
+
+/// Opens the directory, the handle on it from now on.
+fn dirOpen(handle: HeapRef, name: string): WaitAnswer {
+    let dir = try fsReadDir(name) catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    if (handle is ScriptDir) {
+        handle.dir = dir;
+    }
+    return WaitAnswer { n = 0 };
+}
+
+/// A directory's next entry: its kind and name, 0 at the end, or the failure and its detail.
+fn dirNext(dir: ReadDirIter): WaitAnswer {
+    let next = try dir.next() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e), text = e.detail };
+    };
+    if (let entry = next) {
+        let kind = if (entry.isFile) 1 else if (entry.isDir) 2 else if (entry.isSymlink) 3 else 4;
+        return WaitAnswer { n = kind, text = entry.name };
+    }
+    return WaitAnswer { n = 0 };
+}
+
+fn dirClose(dir: ReadDirIter): WaitAnswer {
+    try dir.close() catch (e: IoError) {
+        return WaitAnswer { n = failureCode(e) };
+    };
+    return WaitAnswer { n = 0 };
+}
+
+fn consolePut(stream: int, data: List<uint8>): int {
+    let from = data.toArray();
+    let w = if (stream == 2) stderr() else stdout();
+    return try w.write(from) catch (e: IoError) failureCode(e);
+}
+
+fn consoleFlush(stream: int): int {
+    let w = if (stream == 2) stderr() else stdout();
+    try w.flush() catch (e: IoError) {
+        return failureCode(e);
+    };
+    return 0;
+}
+
+/// An `IoError` as a number, the way the runtime's calls answer: the kinds counted from 1 in their
+/// order, and what `std.core`'s prelude reads back in `__ioFailure`.
+fn failureCode(e: IoError): int {
+    let kind = match (e.kind) {
+        .NotFound => 1,
+        .PermissionDenied => 2,
+        .AlreadyExists => 3,
+        .IsDirectory => 4,
+        .NotDirectory => 5,
+        .InvalidInput => 6,
+        .InvalidData => 7,
+        .UnexpectedEof => 8,
+        .TimedOut => 9,
+        .ConnectionRefused => 10,
+        .ConnectionReset => 11,
+        .AddrInUse => 12,
+        .BrokenPipe => 13,
+        .Closed => 14,
+        .Unsupported => 15,
+        .Other { code } => {
+            return -((16 << 32) | (code & 0xFFFFFFFF));
+        }
+        _ => 16,
+    };
+    return -(kind << 32);
+}
+
+/// What a failure says more than its kind: what caused it, or else what was being done.
+fn failureDetail(e: IoError): string {
+    if (let cause = e.cause()) {
+        return cause.message();
+    }
+    return e.detail;
+}
+
+/// What a native of `Bytes` costs for `n` bytes (12 rule 17): a unit for every 32 and one for the call.
+fn bytesCost(n: int): int {
+    return 1 + n / 32;
+}
+
+fn bytesFault(code: string, message: string): NativeFault {
+    return NativeFault { code = code, message = message };
+}
+
+fn notAByte(v: int): NativeFault {
+    return bytesFault("LYS-RT0002", f"{v} is no byte: a byte holds 0 to 255");
+}
+
+/// The natives of `Bytes` (S7f5). Those that walk the bytes charge first: where the budget does
+/// not cover them they leave everything as it is, and the instance stops at the call.
+fn bytesNative(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    shared: RunShared
+): ?NativeFault {
+    match (which) {
+        .BytesNew => {
+            let n = s[x] as int;
+            if (n < 0) {
+                return bytesFault("LYS-RT0003", f"a length of {n}: a length is never negative");
+            }
+            if (charge(shared, bytesCost(n))) {
+                let data = List<uint8>.withCapacity(n);
+                var k = 0;
+                while (k < n) {
+                    data.push(0);
+                    k += 1;
+                }
+                r[y] = ScriptBytes { data = data };
+            }
+            return null;
+        }
+        .BytesOfText => {
+            let t = textOf(r[y]);
+            if (charge(shared, bytesCost(t.length()))) {
+                r[y] = ScriptBytes { data = List<uint8>.of(t.toBytes()) };
+            }
+            return null;
+        }
+        .BytesOfLatin1 => {
+            let t = textOf(r[y]);
+            if (charge(shared, bytesCost(t.length()))) {
+                let data = List<uint8>.withCapacity(t.length());
+                for (c in t.chars()) {
+                    data.push((c as uint32) as uint8);
+                }
+                r[y] = ScriptBytes { data = data };
+            }
+            return null;
+        }
+        .BytesOfList => {
+            let o = r[y];
+            if (!(o is ScriptArray)) {
+                return bytesFault("LYS-RT0007", "a list of bytes is no list");
+            }
+            if (charge(shared, bytesCost(o.n))) {
+                let data = List<uint8>.withCapacity(o.n);
+                var k = 0;
+                while (k < o.n) {
+                    let v = o.s[k] as int;
+                    if (v < 0 || v > 255) {
+                        return notAByte(v);
+                    }
+                    data.push(v as uint8);
+                    k += 1;
+                }
+                r[y] = ScriptBytes { data = data };
+            }
+            return null;
+        }
+        _ => { }
+    }
+    let o = r[y];
+    if (!(o is ScriptBytes)) {
+        return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+    }
+    let data = o.data;
+    let n = data.length();
+    match (which) {
+        .BytesToList => {
+            if (charge(shared, bytesCost(n))) {
+                let out = List<uint64>.withCapacity(n);
+                var k = 0;
+                while (k < n) {
+                    out.push(data[k] as uint64);
+                    k += 1;
+                }
+                r[y] = ScriptArray { ns = 1, nr = 0, s = out, r = List<HeapRef>.new(), n = n };
+            }
+        }
+        .BytesLen => s[x] = n as uint64,
+        .BytesGet => {
+            let i = s[x] as int;
+            if (i < 0 || i >= n) {
+                return bytesFault("LYS-RT0003", f"index {i} out of bounds for length {n}");
+            }
+            s[x] = data[i] as uint64;
+        }
+        .BytesSet => {
+            let i = s[x] as int;
+            let v = s[x + 1] as int;
+            if (i < 0 || i >= n) {
+                return bytesFault("LYS-RT0003", f"index {i} out of bounds for length {n}");
+            }
+            if (v < 0 || v > 255) {
+                return notAByte(v);
+            }
+            data[i] = v as uint8;
+        }
+        .BytesPush => {
+            let v = s[x] as int;
+            if (v < 0 || v > 255) {
+                return notAByte(v);
+            }
+            data.push(v as uint8);
+        }
+        .BytesTruncate => data.truncate(s[x] as int),
+        .BytesSlice => {
+            let a = s[x] as int;
+            let e = s[x + 1] as int;
+            if (a < 0 || a > e || e > n) {
+                return bytesFault("LYS-RT0003", f"range {a}..{e} out of bounds for length {n}");
+            }
+            if (charge(shared, bytesCost(e - a))) {
+                let out = List<uint8>.withCapacity(e - a);
+                var k = a;
+                while (k < e) {
+                    out.push(data[k]);
+                    k += 1;
+                }
+                r[y] = ScriptBytes { data = out };
+            }
+        }
+        .BytesCopy => {
+            let p = r[y + 1];
+            if (!(p is ScriptBytes)) {
+                return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+            }
+            let at = s[x] as int;
+            let from = s[x + 1] as int;
+            let to = s[x + 2] as int;
+            if (from < 0 || from > to || to > n) {
+                return bytesFault(
+                    "LYS-RT0003",
+                    f"the range {from}..{to} out of bounds for length {n}"
+                );
+            }
+            let m = to - from;
+            if (at < 0 || at > p.data.length() - m) {
+                return bytesFault(
+                    "LYS-RT0003",
+                    f"{m} bytes at {at} out of bounds for length {p.data.length()}"
+                );
+            }
+            if (charge(shared, bytesCost(m))) {
+                // from the back where the bytes may be one and the target stands behind the source
+                if (at > from) {
+                    var k = m - 1;
+                    while (k >= 0) {
+                        p.data[at + k] = data[from + k];
+                        k -= 1;
+                    }
+                } else {
+                    var k = 0;
+                    while (k < m) {
+                        p.data[at + k] = data[from + k];
+                        k += 1;
+                    }
+                }
+            }
+        }
+        .BytesFind => {
+            let v = s[x] as int;
+            let from = s[x + 1] as int;
+            let to = s[x + 2] as int;
+            if (from < 0 || from > to || to > n) {
+                return bytesFault(
+                    "LYS-RT0003",
+                    f"the range {from}..{to} out of bounds for length {n}"
+                );
+            }
+            if (charge(shared, bytesCost(to - from))) {
+                var found = -1;
+                var k = from;
+                while (k < to && found < 0) {
+                    if (data[k] as int == v) {
+                        found = k;
+                    }
+                    k += 1;
+                }
+                s[x] = found as uint64;
+            }
+        }
+        .BytesAppend => {
+            let p = r[y + 1];
+            if (!(p is ScriptBytes)) {
+                return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+            }
+            // its own length first: a value may be appended to itself
+            let m = p.data.length();
+            if (charge(shared, bytesCost(m))) {
+                var k = 0;
+                while (k < m) {
+                    data.push(p.data[k]);
+                    k += 1;
+                }
+            }
+        }
+        .BytesCmp => {
+            let p = r[y + 1];
+            if (!(p is ScriptBytes)) {
+                return bytesFault("LYS-RT0007", "a Bytes' field holds no bytes");
+            }
+            let m = p.data.length();
+            let least = if (n < m) n else m;
+            if (charge(shared, bytesCost(least))) {
+                var k = 0;
+                var c = if (n < m) -1 else if (n > m) 1 else 0;
+                while (k < least) {
+                    if (data[k] != p.data[k]) {
+                        c = if (data[k] < p.data[k]) -1 else 1;
+                        break;
+                    }
+                    k += 1;
+                }
+                s[x] = c as uint64;
+            }
+        }
+        .BytesMix => {
+            if (charge(shared, bytesCost(n))) {
+                var h = DefaultHasher.new();
+                h.writeUint(s[x]);
+                var k = 0;
+                while (k < n) {
+                    h.writeByte(data[k]);
+                    k += 1;
+                }
+                s[x] = h.finish();
+            }
+        }
+        .BytesFill => {
+            let v = s[x] as int;
+            if (v < 0 || v > 255) {
+                return notAByte(v);
+            }
+            if (charge(shared, bytesCost(n))) {
+                var k = 0;
+                while (k < n) {
+                    data[k] = v as uint8;
+                    k += 1;
+                }
+            }
+        }
+        .BytesBadUtf8 => {
+            if (charge(shared, bytesCost(n))) {
+                let _ = try string.fromUtf8(data.asSlice()) catch (e) {
+                    s[x] = e.offset as uint64;
+                    return null;
+                };
+                s[x] = (-1) as uint64;
+            }
+        }
+        _ => {
+            if (charge(shared, bytesCost(n))) {
+                r[y] = ScriptString { text = string.fromUtf8Lossy(data.asSlice()) };
+            }
+        }
+    }
+    return null;
+}
+
+/// The most words a `BigInt` holds, 2^31 bits: past it a program's shift or product would end the
+/// process for want of memory, where a script's fault is due.
+let bigMaxWords: int = 67108864;
+
+fn bigFault(code: string, message: string): ?NativeFault {
+    return NativeFault { code = code, message = message };
+}
+
+/// The natives of a `BigInt` (S7f4), each charging before it works (12 rule 16): one unit stands for
+/// about eight words, as a backward jump's cost stands for a few instructions; a product or quotient
+/// is the product of the lengths it walks, a text the square of its length.
+fn bigNative(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    shared: RunShared
+): ?NativeFault {
+    match (which) {
+        .BigFromInt => {
+            r[y] = ScriptBigInt { big = bigFromInt(s[x] as int) };
+            return null;
+        }
+        .BigParse => {
+            let radix = s[x] as int;
+            if (radix < 2 || radix > 36) {
+                return bigFault("LYS-RT0007", f"radix {radix} is outside 2..36");
+            }
+            let text = textOf(r[y]);
+            let w = text.length() / 8 + 1;
+            if (!charge(shared, 1 + w * w / 4)) {
+                return null;
+            }
+            if (let v = bigParse(text, radix)) {
+                r[y] = ScriptBigInt { big = v };
+            } else {
+                r[y] = nilRef();
+            }
+            return null;
+        }
+        _ => { }
+    }
+    let o = r[y];
+    if (!(o is ScriptBigInt)) {
+        return bigFault("LYS-RT0007", "a BigInt's field holds no number");
+    }
+    let a = o.big;
+    let n = a.mag.length();
+    let cheap = 1 + n / 8;
+    match (which) {
+        .BigNeg => {
+            if (charge(shared, cheap)) {
+                r[y] = ScriptBigInt { big = bigNeg(a) };
+            }
+        }
+        .BigText => {
+            let radix = s[x] as int;
+            if (radix < 2 || radix > 36) {
+                return bigFault("LYS-RT0007", f"radix {radix} is outside 2..36");
+            }
+            if (charge(shared, 1 + n * n / 4)) {
+                r[y] = ScriptString { text = bigText(a, radix) };
+            }
+        }
+        .BigFitsInt => s[x] = truth(bigFitsInt(a)),
+        .BigToInt => s[x] = bigToInt(a) as uint64,
+        .BigToFloat => s[x] = bigToFloat(a).toBits(),
+        .BigBitLength => s[x] = bigBitLength(a) as uint64,
+        .BigHash => {
+            if (charge(shared, cheap)) {
+                s[x] = bigHash(a);
+            }
+        }
+        .BigShl => {
+            let count = s[x] as int;
+            if (count < 0) {
+                return bigFault("LYS-RT0002", f"shift by {count}: a count is never negative");
+            }
+            if (bigIsZero(a)) {
+                r[y] = o;
+                return null;
+            }
+            let words = count / 32 + n + 1;
+            if (words > bigMaxWords) {
+                return bigFault("LYS-RT0002", "integer overflow: a BigInt holds at most 2^31 bits");
+            }
+            if (charge(shared, 1 + words / 8)) {
+                r[y] = ScriptBigInt { big = bigShl(a, count) };
+            }
+        }
+        .BigShr => {
+            let count = s[x] as int;
+            if (count < 0) {
+                return bigFault("LYS-RT0002", f"shift by {count}: a count is never negative");
+            }
+            if (charge(shared, cheap)) {
+                r[y] = ScriptBigInt { big = bigShr(a, count) };
+            }
+        }
+        _ => {
+            let p = r[y + 1];
+            if (!(p is ScriptBigInt)) {
+                return bigFault("LYS-RT0007", "a BigInt's field holds no number");
+            }
+            return bigTwo(which, s, r, x, y, a, p.big, shared);
+        }
+    }
+    return null;
+}
+
+/// The natives of two `BigInt`s (S7f4).
+fn bigTwo(
+    which: NativeFn,
+    s: uint64[],
+    r: HeapRef[],
+    x: int,
+    y: int,
+    a: Big,
+    b: Big,
+    shared: RunShared
+): ?NativeFault {
+    let n = a.mag.length();
+    let m = b.mag.length();
+    let cheap = 1 + (if (n > m) n else m) / 8;
+    match (which) {
+        .BigAdd => {
+            if (charge(shared, cheap)) {
+                r[y] = ScriptBigInt { big = bigAdd(a, b) };
+            }
+        }
+        .BigSub => {
+            if (charge(shared, cheap)) {
+                r[y] = ScriptBigInt { big = bigSub(a, b) };
+            }
+        }
+        .BigCmp => {
+            if (charge(shared, cheap)) {
+                s[x] = bigCmp(a, b) as uint64;
+            }
+        }
+        .BigMul => {
+            if (n + m > bigMaxWords) {
+                return bigFault("LYS-RT0002", "integer overflow: a BigInt holds at most 2^31 bits");
+            }
+            if (charge(shared, 1 + n * m / 8)) {
+                r[y] = ScriptBigInt { big = bigMul(a, b) };
+            }
+        }
+        _ => {
+            if (bigIsZero(b)) {
+                return bigFault("LYS-RT0001", "integer division by zero");
+            }
+            let span = if (n >= m) n - m + 1 else 1;
+            if (charge(shared, 1 + span * m / 8)) {
+                let (q, rem) = bigDivRem(a, b);
+                r[y] = ScriptBigInt { big = if (which == .BigDiv) q else rem };
+            }
+        }
+    }
+    return null;
 }
 
 /// One unit of budget spent: the budget left, `-1` for none, `-2` once it ran out.
@@ -2963,7 +5225,7 @@ fn growRefs(r: HeapRef[], need: int): HeapRef[] {
 /// The panic outcome, with the script's frames: the current one first, then its callers.
 fn panicOut(
     module: Module,
-    frames: List<CallFrame>,
+    frames: FrameStack,
     fi: int,
     pc: int,
     code: string,
@@ -2976,12 +5238,12 @@ fn panicOut(
 
 /// The script's frames: the current one first, then its callers; a report's call stands for
 /// none.
-fn traceOf(module: Module, frames: List<CallFrame>, fi: int, pc: int): string[] {
+fn traceOf(module: Module, frames: FrameStack, fi: int, pc: int): string[] {
     let trace = List<string>.new();
     trace.push(frameText(module.functions[fi], pc));
     var i = frames.length() - 1;
     while (i >= 0) {
-        let fr = frames[i];
+        let fr = frames.get(i);
         if (fr.function >= 0) {
             trace.push(frameText(module.functions[fr.function], fr.pc - 1));
         }

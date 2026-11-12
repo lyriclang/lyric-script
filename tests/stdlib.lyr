@@ -1,0 +1,176 @@
+// The standard library's modules (S7a; Script 12 Src): Script sources in the binary, compiled with
+// the program as a package of their own; the VM's natives, which only they call.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.compiler.checker { Checked, ProgramUnit, checkModule };
+import lyric_script.compiler.codegen { generate };
+import lyric_script.compiler.parser { parse };
+import lyric_script.loader { loadProgram };
+import lyric_script.stdsrc { stdBelow, stdModules, stdPackage, stdSource };
+
+/// The codes of a program whose entry is `entry` and which imports the module `name`, `text`, of
+/// the package `pkg`.
+fn codesWith(entry: string, name: string, text: string, pkg: int): string[] {
+    let unit = ProgramUnit { name = name, module = parse(text, 1).module, file = 1, package = pkg };
+    let c = checkModule(parse(entry).module, [unit]);
+    let codes = List<string>.new();
+    for (e in c.errors) {
+        codes.push(f"{e.code}@{e.file}:{e.line}");
+    }
+    return codes.toArray();
+}
+
+@Test
+fn theNumberTowerComesWhereAModuleNamesIt(): void {
+    // what most scripts never reach, none pays for (S7f1b; P21): no name of it, no tower
+    assertTrue(!loadProgram("t.lyrs", "println(1 + 2)").numbers);
+    // a name of its own, not a part of one (S7f6): std.random's `nextFloat` cost every user the tower
+    assertTrue(!loadProgram("t.lyrs", "let nextFloat = 1").numbers);
+    assertTrue(!loadProgram("t.lyrs", "let x = y.nextFloat()").numbers);
+    assertTrue(!loadProgram("t.lyrs", "let x = y.power()").numbers);
+    assertTrue(loadProgram("t.lyrs", "fn f<T :: [Float]>(x: T) { }").numbers);
+    assertTrue(loadProgram("t.lyrs", "let x = y.pow(2)").numbers);
+    assertTrue(!loadProgram("t.lyrs", "import std.random { Random }").numbers);
+    // `.join` after a module's name is the module's, while the word is nothing else (S7g3)
+    let iterIn = (src: string) => loadProgram("t.lyrs", src).names.toArray()[..].contains(
+        "std.iter"
+    );
+    assertTrue(!iterIn("import std.path\nprintln(path.join(\"a\"))"));
+    assertTrue(iterIn("println(path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path\nlet path = [1].iter()\nprintln(path.join(\",\"))"));
+    assertTrue(iterIn("import std.path\nfn f(path: string) {\n}\nprintln(path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path\nprintln(this.path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path\nprintln(path.join(\"a\"))\nprintln(x.join(\"a\"))"));
+    assertTrue(iterIn("import std.path as p\nprintln(path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path { join }\nprintln(path.join(\"a\"))"));
+    assertTrue(!iterIn("import a.b.path\nprintln(path.join(\"a\"))"));
+    assertTrue(iterIn("import std.path\nprintln(path.join(\"a\"))\nlet q = path"));
+    // `Bytes` comes the same way (S7f5): its names, a byte string; a string that ends in b is none
+    assertTrue(!loadProgram("t.lyrs", "println(\"ab\")").bytes);
+    assertTrue(!loadProgram("t.lyrs", "let b_ = 1").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = b\"a\"").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = [b\"a\"]").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = \"a\".toBytes()").bytes);
+    assertTrue(loadProgram("t.lyrs", "fn f(x: Bytes) { }").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = string.fromUtf8Lossy(y)").bytes);
+    assertTrue(loadProgram("t.lyrs", "let x = string.fromUtf8(y)").bytes);
+    assertTrue(loadProgram("t.lyrs", "catch (e: Utf8Error) { }").bytes);
+    assertTrue(!loadProgram("t.lyrs", "let myBytes = 1").bytes);
+    // a constant, a member after a dot, an interface
+    assertTrue(loadProgram("t.lyrs", "println(int.max)").numbers);
+    assertTrue(loadProgram("t.lyrs", "println(2.pow(3))").numbers);
+    assertTrue(loadProgram("t.lyrs", "fn f<T :: [Num]>(x: T): T = x").numbers);
+    // an adapter adds std.iter, and std.iter's own text adds no tower (S7f1c); `sum` is the tower's
+    assertTrue(!loadProgram("t.lyrs", "println([1].iter().map((x: int) => x).toArray())").numbers);
+    assertTrue(loadProgram("t.lyrs", "println([1].iter().sum())").numbers);
+}
+
+@Test
+fn theStandardLibrarysModulesAreInTheBinary(): void {
+    for (m in stdModules) {
+        assertTrue(stdSource(m) != null, m);
+    }
+    assertEq(stdSource("std.nothere"), null);
+    assertEq(stdSource("std"), null);
+    assertEq(
+        stdBelow("std"),
+        [
+            "cli",
+            "csv",
+            "fmt",
+            "fs",
+            "io",
+            "iter",
+            "log",
+            "math",
+            "os",
+            "path",
+            "process",
+            "random",
+            "test",
+            "time",
+        ]
+    );
+    assertEq(stdBelow("std.random"), ["system"]);
+    assertEq(stdBelow("std.time"), ["instant"]);
+    assertEq(stdBelow("std.fs"), []);
+}
+
+@Test
+fn everyModuleOfTheStandardLibraryCompiles(): void {
+    // its natives' slots meet the VM's table, or the code generator stops; through the loader, which
+    // knows what a module stands on: the number tower, `Bytes`, another module
+    for (m in stdModules) {
+        let l = loadProgram("t.lyrs", f"import {m}");
+        assertEq(l.errors.length(), 0, m);
+        let units = List<ProgramUnit>.new();
+        for (k in l.order) {
+            if (k != 0) {
+                units.push(
+                    ProgramUnit {
+                        name = l.names[k],
+                        module = l.parses[k].module,
+                        file = k,
+                        submodules = l.subs[k],
+                        package = l.pkgOf[k],
+                    }
+                );
+            }
+        }
+        let c = checkModule(l.parses[0].module, units.toArray(), l.collections, l.numbers, l.bytes);
+        assertEq(c.errors.length(), 0, m);
+        generate(c.program, "t");
+    }
+}
+
+@Test
+fn onlyTheStandardLibraryCallsTheVmsNatives(): void {
+    let text = "fn e(): ?string = __os_env(\"X\")\n";
+    assertEq(codesWith("import t { e }\nlet v = e()", "t", text, 0), ["LYS-SEM0002@1:1"]);
+    assertEq(codesWith("import std.t { e }\nlet v = e()", "std.t", text, stdPackage), []);
+}
+
+@Test
+fn aModuleOfTheStandardLibraryKeepsItsInternalNames(): void {
+    let text = "internal fn helper(): int = 1\nfn open(): int = helper()\n";
+    assertEq(codesWith("import std.t { open }\nlet v = open()", "std.t", text, stdPackage), []);
+    assertEq(
+        codesWith("import std.t { helper }\nlet v = helper()", "std.t", text, stdPackage),
+        ["LYS-RES0009@0:1"]
+    );
+    // the same module in the program's own package shows it
+    assertEq(codesWith("import t { helper }\nlet v = helper()", "t", text, 0), []);
+}
+
+@Test
+fn aProgramLoadsStdIterWhereItNamesAMemberOfItsBlocks(): void {
+    // std.iter's blocks reach every module; a program that names none of them does not pay for
+    // checking it (S7c6b, P21)
+    let plain = loadProgram("nowhere/plain.lyrs", "println(1)\n");
+    let mapped = loadProgram(
+        "nowhere/mapped.lyrs",
+        "let xs: int[] = [1].iter().map((v) => v).collect()\n"
+    );
+    let skipped = loadProgram("nowhere/skipped.lyrs", "fn f(it: ListIter<int>) = it.skip\n");
+    assertEq(loads(plain.names, "std.iter"), false);
+    assertEq(loads(mapped.names, "std.iter"), true);
+    assertEq(loads(skipped.names, "std.iter"), true);
+    // a whole name (S7g1): std.io's `this.taken` is no `.take`, and cost every user of it 200 ms
+    assertEq(
+        loads(loadProgram("nowhere/taken.lyrs", "let x = y.taken\n").names, "std.iter"),
+        false
+    );
+    assertEq(
+        loads(loadProgram("nowhere/take.lyrs", "let x = y.take(1)\n").names, "std.iter"),
+        true
+    );
+}
+
+fn loads(names: List<string>, name: string): bool {
+    for (n in names) {
+        if (n == name) {
+            return true;
+        }
+    }
+    return false;
+}

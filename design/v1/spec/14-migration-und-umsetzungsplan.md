@@ -1013,3 +1013,1927 @@ nicht (seit S3); der Runner hatte kein Zeitlimit; `execute` hätte im Leerlauf g
 `scope.spawn` markierte das Programm als Task-startend. Lehren: Wächter in Patch-Skripten (Löschung
 gegen Einfügung), Testwerte, die keine Konstante der Nachbarschaft sind, Mutanten vor der Vorhersage
 auf Beobachtbarkeit prüfen. 344 Tests, 331 Fälle; Bytecode-Format 19.
+
+## S7 — Slices (Plan, Entwurf 2026-10-29)
+
+Ziel aus der Meilensteintabelle: der std-Kern — die nativen Kerntypen und die Module, die die
+Zielprogramme „Terminal-Werkzeug“ und „Automatisierung“ (02) brauchen, die feste Rechtetabelle,
+die Kostenregeln der schweren Natives (01 S5c), dazu der Slice „Aufrufpfad der VM“ aus dem
+Ergebnis von Messpunkt 1 und **Messpunkt 3**. Quellen: 12 Um, Src und die Einzelheiten; 03 S,
+Str, Eq, Leer, Lit, Index; 05 Iteratoren und E7; 07 V3 I8; 01 S5c, S8; 11 V3, Gen, std. Die API
+folgt Lyric 5s `std` (Namensgesetz N1–N13), angepasst an Script-Typen; was Lyric 5 nicht hat
+(`BigInt`, `cli`, `csv`, `log`, `fs.glob`), entscheidet der Slice, der es bringt, nach 12. Mit
+Uhr aus früheren Meilensteinen hierher: Array-Muster und `Hashable` (S3), `typeOf([1, 2])`
+(S3i), Display mit den Prelude-Interfaces (S3), `e.suppressed()` (S4b), die Prelude-Zusätze
+`eprintln`, `args`, `exit` und die feste Rechtetabelle (S5), `Coroutine :: Iterator`, `for` über
+jedes Iterable, Tasks/Koroutinen/Kanäle als Interfacewerte, `IoError` für `readLine` und
+`os.signals` (S6).
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S7a std als Script-Module** | `import std.<m>` löst auf Quelltexte im Binary auf (`std/*.lyrs`, eingebettet mit Lyric 5s `comptime embed`): Logik in Script (12 Src), übersetzt wie ein Paket und mit dem Programm im Bytecode-Cache; *vorkompiliert* ins Binary (11 std) kommt mit `pack` (S13), das dieselbe Mechanik braucht — bis dahin übersetzt der erste Lauf nach einem Update die importierten std-Module mit. Natives der std als `__name(…)`-Intrinsics, nur in std-Dateien erkannt (wie die der Prelude seit S6), mit Signaturen aus einer Tabelle, die Checker und VM teilen. Die Rechtetabelle je Modul fest (12 Rechte) statt der vorläufigen aus S5e; die Testtabelle `LYRIC_SCRIPT_RIGHTS` retiriert mit ihr, ihre Fälle importieren echte Module | ein std-Modul importiert und gerufen; Rechte-Fälle gegen echte Importe |
+| **S7b Listen** | `T[]` nativ in der VM (`ScriptArray`, getrennt für Skalare und Referenzen — `List<int>` ungeboxt, 11 Gen), `List<T>` als Alias; Literale, `[]` mit Leer-Inferenz (03 Leer), `FromArrayLiteral` (03 Lit); `xs[i]`, `xs[^n]`, `xs[i] = v` mit Bereichsprüfung, `xs[a..b]` kopiert (03 S); die Methoden von Lyric 5s `List` ohne die Sichten (`length()`, `push`, `pop`, `insert`, `remove…`, `contains` …), `+` und `xs * n` (12 Container), `in`/`!in`, `==` über `Equatable`-Elemente; `Index<K>`/`IndexSet<K>` für eigene Typen (03 Index); Array-Muster; `typeOf([1, 2])` sagt `int[]`; `e.suppressed()`; der Text einer Liste in der Debug-Form | Konformanzfälle; Kostenregeln für `+` und `xs * n` |
+| **S7c Iteratoren** | generische Interfaces (`interface I<T>`, Lyric 5 §5 — seit S3 ohne Uhr, gefunden in S7b2b); `FromArrayLiteral<T>`; eine Liste als Interfacewert mit Deskriptor (`typeOf([1, 2])`); `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator`; `for` über jedes Iterable, auch eigene Typen, und `for` schließt `Closeable`-Iteratoren (05 E7); `Coroutine :: Iterator`; Tasks, Koroutinen und Kanäle als Interfacewerte mit Deskriptoren; `std.iter` in Script mit den Adaptern von Lyric 5s `iter` und den Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …); `sort` nativ | Konformanzfälle; Kostenregel für `sort` |
+| **S7d Map und Set** | `Map<K, V>` und `Set<T>` nativ, eine eigene Hash-Tabelle in Einfügereihenfolge (12 Src; 01 S8: keine Adress-Hashes), `string`-Schlüssel ohne Hülle (11 Gen); **Synthese** von `Equatable` und `Hashable` für Structs, Enums und Tupel, deren Felder es sind (03 Eq; `float` nicht `Hashable`), Klassen über `Identity` mit einer Objektnummer statt der Adresse; Map-Literal, `[:]` (`FromMapLiteral`), `m[k]` → `?V`, `m[k] = v`, `in`, die Methoden von Lyric 5s `Map`/`Set`; `Deque` und `Heap` in Script (12 Container) | Konformanzfälle; Reihenfolge mit mehr als einem Dutzend Einträgen |
+| **S7e Strings und Formate** | die String-Methoden von Lyric 5s `core`/`string` an `string` (03 Str: `length()` in Bytes, `s[i]` das Zeichen ab Byte `i`, `s[a..b]` neu, `chars()`, `lines()`, `split`, `trim…`, `lower`/`upper`, `replace`, `repeat`, `Pattern` …), Zahlen aus Text; `Display` und `Debug` als Prelude-Interfaces, jeder Wert druckbar — `{x}` fällt auf `Debug` zurück (03 Eq); `std.fmt` mit Formatangaben in f-Strings (`{n:>6}`, `{x:.2}`, `{x:?}`); `print`/`println` für jeden Wert | Konformanzfälle; Kostenregeln für `repeat`, `replace`, `split` |
+| **S7f Zahlen, `BigInt`, `Bytes`** | Konversion über `From`/`Into` (05 D6, P19) mit 05 §13 Regel 9; die Zahl-Interfaces `Num`, `Signed`, `Integer`, `Float` von Lyric 5 (12 §Numbers, ohne Uhr — P25), `sum`/`product` von `std.iter` darauf; Typkonstanten am Typ (`int.max`, `float.epsilon`), `std.math` (Weltkonstanten, die Funktionen von Lyric 5s `math`), `checked*`/`saturating*`/`wrapping*` und `+% -% *%` (03 Überlauf); `BigInt` nativ (Lyric 5 hat keins: eine eigene Implementierung in der VM, 02 T1) mit Literalen über `FromIntLiteral`; `Bytes` mit `b"…"`, Index, kopierenden Slices, UTF-8 hin und zurück; `std.random` — geseedet ohne Recht, ungeseedet mit `os` (01 S8) | Konformanzfälle; Kostenregeln für `BigInt`-Multiplikation, -Division und -Text |
+| **S7g I/O und Dateien** | `std.io`: `Reader`/`Writer` über `Bytes` (Go-Form), `IoError { kind }`, stdin/stdout/stderr, die `print`-Familie, `readLine()` wirft `IoError`; `eprintln` in der Prelude (07 V3 I8); `std.fs` als Adapter über Lyric 5s `fs` (wartende Natives über Lyric-5-Tasks wie seit S6e), `fs.glob` und `std.path` in Script | Konformanzfälle mit Dateien im Fallordner |
+| **S7h Prozesse, Umgebung, Zeit** | `std.process` (`Command`-Struct, Lauf mit Ausgabe und Exit-Code), `std.os` (Umgebung; `signals` als Kanal mit dem Recht `os`), `args` und `exit` in der Prelude; `std.time` als Adapter über Lyric 5s `time` | Konformanzfälle |
+| **S7i Batterien** | in Script, je eine API (12 Um): `std.test` (`assert…` nach Lyric 5s `test`; `@Test`, Subtests, `@Bench` und `lyric-script test` mit S11), `std.cli` (Argumente, Flags, Optionen, `--help`), `std.log`, `std.csv` (RFC 4180) | Konformanzfälle |
+| **S7j Aufrufpfad der VM** | aus Messpunkt 1: Frames ohne `List`, aufgelöste Funktionstabelle, eine Wachstumsprüfung je Aufruf, Fuel an Rücksprüngen statt je Aufruf | Bench von S1 vorher/nachher, Erwartung vorab |
+| **S7k Messpunkt 3** | Bench-Suite: die Programme von Messpunkt 1 als Script-Quelltext, dazu Programme über die Kerntypen (Wörter zählen, Sortieren, Map-Last, Strings bauen), je auch als 4.x-Programm; dieselbe Maschine; Ratchet ≥ 5× | Bericht `bench/README.md` mit Erwartung vorab und Kontrolle |
+| **Abschluss** | die Zielprogramme Terminal-Werkzeug und Automatisierung (02) in der Form der entschiedenen API als Beispiele in der CI; STATUS, PR, CI, Merge, Tag `s7-complete`; Bereichszeilen gegen den Code | Zielprogramme in der CI auf allen Tier-1-Zielen |
+
+Reihenfolge: a bis i in dieser Folge — Listen vor Iteratoren (Adapter liefern Listen), beide vor
+Map und Set (`keys()`, `entries()`), Listen vor Strings (`split`), `Bytes` vor I/O; j unabhängig,
+aber vor k; k zuletzt, wenn alle Kerntypen stehen. Ein Slice, der zu groß wird, wird wie in S5
+und S6 geteilt, bevor er gebaut wird. **Kostenregeln**: jedes schwere Native rechnet proportional
+ab (`budget.charge(n)`, 01 S5c) und bekommt seinen Test im Slice, der es bringt; das Prüfen der
+Deadline in langen Schleifen kommt mit dem Budget (S8). **Spec**: Kapitel 12 wächst je Slice um
+Regeln und Fälle; die Sprachteile (Literale, Index, `for`, Synthese) gehen in 03, 07, 08 und 09.
+Austrittskriterium: die Zielprogramme laufen in der CI; Messpunkt 3 ≥ 5×.
+
+**S7a, Ergebnis (2026-10-29).** Die Script-Quellen der std liegen in `std/` neben `src/` und kommen
+über Lyric 5s `comptime embed` ins Binary (`src/stdsrc.lyr`: Modulliste, Quelltext je Name, die
+Prelude); auch die Prelude ist jetzt eine Datei statt eines Strings im Checker. `import std.<m>`
+nimmt nie eine Datei des Programms oder ein Paket — ein Pfad mit `std` vorn geht in die Tabelle,
+ein fehlendes Modul ist `RES0003`; die Module bilden ein eigenes Paket (`internal` bleibt ihres)
+und werden mit dem Programm übersetzt, ihr Text geht also in den Cache-Schlüssel. Natives der
+std: `__os_env(name)` im Rumpf einer std-Funktion ruft `os.env` der VM-Tabelle, der Typ ist die
+Signatur der Funktion; der Codegenerator vergleicht die Slots mit der Tabelle. Erste Module:
+`std.os` (`env`) und `std.fs` (`exists`), Format 20. Die Rechtetabelle ist fest (Spec 17 Regel 1):
+`std.fs` → `file`, `std.net`/`std.http` → `net`, `std.process` → `process`, `std.os`, `std.time`
+und `std.random` → `os` — `std.random` nur bis S7f, das den geseedeten Generator vom System
+trennt —, jedes andere Modul nichts; `LYRIC_SCRIPT_RIGHTS` retiriert, die Rechte-Fälle
+importieren echte Module. Gefunden: der Runner ignorierte `stderr-has:` in einem abgelehnten
+Fall still (ein neuer Fall war darum gegen S6 grün) — er liest jetzt die Diagnosen. Spec 12
+Regel 2, vier Fälle neu, drei Rechte-Fälle umgeschrieben und einer dazu; sieben rot gegen S6, der
+achte (nur die std erreicht die Natives) hütet den Zugang. Mutanten in drei Läufen: alle
+gefangen, einer zusätzlich von einem S6d2-Test, den die Vorhersage vergessen hatte; das Entfernen
+der Slot-Prüfung ist heute unbeobachtbar (kein Native weicht ab). Tests 344 → 348, Fälle 331 → 336.
+
+**S7b, geteilt (2026-10-29).** Zu groß für einen Slice; drei Teile. **S7b1** das Listen-Objekt der
+VM, Literale mit dem Typ des Orts, Index lesen und schreiben, `length`/`push`/`pop`, `for` über
+eine Liste, die Debug-Form. **S7b2** die übrigen Methoden von Lyric 5s `List` ohne Sichten, `^n`,
+kopierende Slices, `+`, `xs * n` (Kostenregeln), `in`/`!in`, `==`, das leere Literal mit der
+ersten Verwendung (03 Leer), `FromArrayLiteral`, eine Liste als Interfacewert mit Deskriptor,
+`typeOf([1, 2])`, `e.suppressed()`. **S7b3** `Index<K>`/`IndexSet<K>` für eigene Typen und die
+Array-Muster.
+
+**S7b1, Ergebnis (2026-10-29).** `ScriptArray` hält die Skalar- und die Referenz-Slots seiner
+Elemente getrennt, `ns` und `nr` je Element (`List<int>` ungeboxt, ein Tupel als seine Slots);
+zehn Ops (`list.new`, `list.push`, `list.get.s/.r/.n`, `list.set.s/.r/.n`, `list.len`,
+`list.pop`), die Ein-Slot-Formen am Ort, die mehrteiligen über Index und Liste an den Basen;
+Format 21. Im Compiler ein `TExpr.ListOp` für alle Operationen und ein `Place.Item` für
+`xs[i] = v` und `xs[i] op= v` (Liste und Index einmal ausgewertet). Ein Literal hat den Typ des
+Orts, sonst den seiner Elemente — ein `int` unter `float`s wird `float` (03 Mix) —; `[]` braucht
+den Ort bis S7b2. `for (x in xs)` ist eine Indexschleife über die einmal gehaltene Liste, die
+Länge vor jedem Schritt gelesen, die Bindung je Element frisch. Die Debug-Form ist eine
+Funktion je Listentyp; über einem Typparameter erst mit S7c. Ein Index außerhalb ist
+`LYS-RT0003` (Lyric 5s Nummer). Was bis S7b2 fehlt — `==`, eine Liste als Interfacewert —, sagt
+jetzt `NYI0001` statt eines Fehlers, der wie eine Regel klang; ein Pin auf „Listenliteral noch
+nicht“ retirierte mit seiner Regel. Spec 03 Regeln 16–17, 07 Regel 6, 08 Regel 3, acht Fälle,
+alle rot gegen S7a; drei VM-Tests in Assembler halten die Konvention der Basen fest. Vier
+Mutanten in einem Lauf, alle wie vorhergesagt gefangen; ein fünfter (`pop` ohne die Kennung der
+schlichten Referenz) ist äquivalent. Tests 348 → 351, Fälle 336 → 344.
+
+**S7b2, geteilt (2026-10-29).** **S7b2a** `extend<T> T[]` (eine Sprachlücke: der Block meldete
+`SEM0124`, obwohl 03 ihn entschieden hat), die Methoden in Script, Operatoren, Slices; **S7b2b**
+`^n` und offene Bereiche, das leere Literal mit der ersten Verwendung (03 Leer),
+`FromArrayLiteral`, eine Liste als Interfacewert mit Deskriptor, `typeOf([1, 2])`,
+`e.suppressed()`.
+
+**S7b2a, Ergebnis (2026-10-29).** Ein eingebauter Typeintrag `List` mit einem Typparameter trägt
+die Methoden aller Listen; `extend<T> T[] { … }` (auch `List<T>`) fügt hinzu, `this` ist die
+Liste, der Empfänger bindet das Element, und die Kopien bekommen ihre Deskriptoren als versteckte
+Parameter, weil eine Liste keinen hält. Die Methoden, die nicht vergleichen, stehen in Script in
+der Prelude (`isEmpty`, `get`, `first`, `last`, `pushAll`, `insert`, `removeAt`, `removeWhere`,
+`clear`, `truncate`, `swap`, `reverse`, `reversed`, `fill`), ebenso die Helfer von `+`, `*` und
+Slices; drei Intrinsics dazu (`__listTruncate`, `__listChanges`, `__listCheck`) und
+`__boundsPanic` für `RT0003` aus Script. `__`-Namen nennt nur die Bibliothek. **Abweichung vom
+Plan:** `Equatable` gibt es in Script noch nicht als Interface (S3h synthetisiert Gleichheit je
+Typ), also schreibt der Checker `contains`, `indexOf`, `remove`, `dedup`, `==` und `in` je
+konkretem Elementtyp; über einem Typparameter erst mit S7d. Kostenregeln für `+` und `xs * n`
+entfallen: sie sind Bytecode, den das Fuel zählt, kein Native. **Korrektur an S7b1:** dessen `for`
+besuchte nachgeschobene Elemente — eine Erfindung; Lyric 5s `List`-Iterator paniert nach einer
+Längenänderung (`RT0016`), also zählt die Liste jetzt ihre Änderungen (`list.changes`,
+`list.check`, Format 22) und jeder Schritt prüft. Typnamen klammern `(?int)[]` und
+`(fn() -> int)[]`. Spec 03 Regel 16, 05 Regel 12, 07 Regel 6, 08 Regel 3; elf Fälle neu, einer
+umgeschrieben; alle rot gegen S7b1 außer dem umgeschriebenen `for` (dessen andere Hälfte). Vier
+Mutanten: einer überlebte wie vorhergesagt (Element an Index 0), einer gegen die Vorhersage (der
+Deskriptor-Fall brauchte den Deskriptor gar nicht — der Text eines `T` geht über die Tabelle des
+Werts); beide Fälle geschärft, beide Mutanten danach gefangen; ein Unit-Test fing einen dritten
+mit, den die Vorhersage nur dem Fall zugeschrieben hatte. Tests 351 → 353, Fälle 344 → 355.
+
+**S7b2b, Ergebnis (2026-10-29).** In den Klammern einer Liste zählt `^n` vom Ende — Lesen,
+Schreiben, Bereichsenden; die Liste wird dafür einmal gehalten —, und ein Bereich darf seine
+Enden auslassen (`xs[a..]` ist `xs[a..^0]`, `xs[..b]`, `xs[..]`); der Parser kennt `^` nur dort
+(`Expr.FromEnd`). `var xs = []` und `let xs = []` nehmen den Typ der ersten festlegenden
+Verwendung (03 Leer) über den zweiten Durchlauf, den `var x = null` schon hat: ein `push`, eine
+Zuweisung, die Bindung an einer Stelle, die eine Liste nimmt; sonst `SEM0010` mit dem zu
+schreibenden Typ. `e.suppressed()` an der Bindung einer Klausel ist ein `Error[]` (Op
+`list.supp`, Format 23). **Gefunden:** der erste Durchlauf verwirft die Funktionen, die er
+schreibt, aber die Caches synthetisierter Funktionen behielten deren Indizes — neben `var x =
+null` auf oberster Ebene druckte `println(P { a = 1 })` eine leere Zeile (seit S3b/S3h);
+`dropFunctionsFrom` räumt jetzt jeden Cache. **Lücke ohne Uhr gefunden:** generische Interfaces
+(`interface I<T>`, Lyric 5 §5; 03 übernimmt Lyric 5s Generics) lehnt der Parser ab, und kein Plan
+nennt sie — Uhr jetzt **S7c**, wo `FromIterator<T>` sie braucht; mit ihnen gehen
+`FromArrayLiteral<T>` (Mitglied `fromArrayLiteral` nach der Namensregel von Spec 03 Regel 14)
+und die Liste als Interfacewert mit Deskriptor samt `typeOf`-Prüfstein dorthin, die dieselbe
+Tabellenmechanik brauchen (P18). Spec 03 Regel 8, 06 Regel 10, 08 Regel 3; sieben Fälle, alle rot
+gegen S7b2a. Vier Mutanten in einem Lauf, alle wie vorhergesagt. Fälle 355 → 362.
+
+**S7b3, Ergebnis (2026-10-30).** `Index<K>`/`IndexSet<K>` sind in Lyric 5 generische Interfaces
+und gehen mit P18 nach S7c; S7b3 sind die Listenmuster (Lyric 5 §9s Array-Muster): `[p, q]`,
+`[first, ..rest]`, `[a, .., z]`, ein `..` höchstens (`LYS-PAR0033`, gemeldet ohne Abbruch wie in
+Lyric 5), vor dem `..` von vorn, danach vom Ende gezählt, `..name` eine Kopie (09 Y6), die Länge
+vor jedem Element geprüft, durch ein Optional hindurch, in `match`, `let … else`, `if let`. Die
+Abdeckung zählt Längen wie Rust: jede Länge bis zur ersten, die kein Muster ohne `..` erreicht
+und jedes mit `..` deckt, diese für alle längeren (`Space.Seq`); der Zeuge zeigt `[_, _, ..]`.
+Spec 09 Regel 5, acht Fälle, alle rot gegen S7b2b. Vier Mutanten in drei Läufen (drei hätten
+denselben Fall getroffen), alle wie vorhergesagt; ein Lauf griff erst nicht, weil `fmt` eine
+Zeile des Ankers umgebrochen hatte. **Gefunden in der eigenen Arbeit:** das Aufräumen aus S7b2b
+löschte aus `instances` auch Typinstanzen (Schlüssel `type …`, Werte Typindizes), sobald ein
+Typindex über der Funktionszahl lag — `Box<S299>` gab es dann zweimal (`SEM0001`); ein Test mit
+300 Typen war rot, ist es nach dem Fix nicht mehr. Tests 353 → 354, Fälle 362 → 370.
+
+**S7b, Abschluss (2026-10-30).** Listen sind gebaut: das native Objekt mit Slots je Element,
+Literale, Index mit `^n`, Slices mit offenen Enden, die Methoden von Lyric 5s `List` (in Script
+über `extend<T> T[]`, vergleichende je Elementtyp synthetisiert), `+`, `*`, `in`, `==`, `for` mit
+Lyric 5s Änderungspanik, das leere Literal über die erste Verwendung, `e.suppressed()`, Muster.
+Mit Uhr woanders: `Index<K>`/`IndexSet<K>`, `FromArrayLiteral<T>`, eine Liste als Interfacewert
+und `typeOf([1, 2])` mit den generischen Interfaces (**S7c**, P18); die vergleichenden Methoden
+über einem Typparameter mit `Equatable` als Interface (**S7d**); `sort` mit den Iteratoren
+(**S7c**). Gefunden über den Teil-Meilenstein: der erfundene „nachgeschobenes Element wird
+besucht“-Satz von S7b1 (Lyric 5 paniert), veraltete Funktionen nach dem ersten Durchlauf von 03
+Leer (seit S3b/S3h), die fehlenden generischen Interfaces (seit S3), der Runner, der
+`stderr-has:` in Ablehnungen überging. 354 Tests, 370 Fälle; Bytecode-Format 23.
+
+**S7c, geteilt (2026-10-30).** S7c trägt jetzt die generischen Interfaces (P18) vor den Iteratoren;
+fünf Teile, jeder braucht den vorigen.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S7c1 Generische Interfaces** | `interface I<T> { … }` (Lyric 5 §5): Typparameter am Interface, Instanzen `I<int>` als eigene Interfaces mit eigener Tabelle, Konformanz `:: [I<int>]` am Typ und im Extend-Block, Constraints `T :: [I<int>]`, `I<int>` als Wert (Interfacewert), Defaults über `T`; Objektsicherheit wie für `Self` | Konformanzfälle |
+| **S7c2 Index und Literal** | `Index<K>`/`IndexSet<K>` in der Prelude: `x[k]`, `x[k] = v`, `x[k] op= v` auf eigenen Typen (03 Index), Objekt und Schlüssel einmal ausgewertet; `FromArrayLiteral<T>` mit `fromArrayLiteral` (Namensregel Spec 03 Regel 14) | Konformanzfälle |
+| **S7c3 Werte ohne Deskriptor** | eine Liste als Interfacewert (Deskriptor `T[]`, Tabelle des `List`-Eintrags je Element, `is int[]`, Debug über `Any`), Konformanzen `extend<T> T[] :: [I]`; Tasks, Koroutinen, Kanäle als Interfacewerte (Uhr aus S6) | Konformanzfälle |
+| **S7c4 Iteratoren** | (aus S7c3: Tasks, Koroutinen, Kanäle und Listen eines Typparameters als Interfacewerte) `Iterator { type Item; fn next(): ?Item }` ohne Fehlertyp (05), `Iterable`, `FromIterator<T>`, `collect()`; `for` über jedes Iterable, `Closeable`-Iteratoren geschlossen (05 E7); `T[] :: Iterable` mit der Änderungspanik; `Coroutine :: Iterator` | Konformanzfälle |
+| **S7c5 Vergleiche und Operatoren** | (05 D6, ohne Uhr seit S3 — P19) `Equatable`, `Ordered` (`?Ordering`), `TotalOrder` als Prelude-Interfaces, synthetisiert für Structs, Enums und Tupel, deren Felder es sind (03 Eq; `float :: TotalOrder`), `==`/`<` … über sie, die vergleichenden Listen-Methoden über einen Typparameter; Operator-Interfaces `Add<Rhs = Self> { type Out = Self }` …, `Neg`, `Contains<T>` (`in`, `!in`), `+=` abgeleitet, `++`/`--` als Ausdrücke; gemischte Arithmetik über eingebaute Konformanzen (03 Mix) | Konformanzfälle |
+| **S7c5d Mehrere Instanzen** | (aus S7c5c, 05 Regel 13) mehrere Instanzen eines generischen Interfaces an einem Typ (Lyric 5 05 §3 Regeln 4–5: Mitglieder je Block, `SEM0122`; nebeneinander je Instanz), Antworten je Konformanz-Instanz (§8 Regel 3), die eingebauten gemischten Konformanzen (`int :: Add<float>`, 03 Mix) | Konformanzfälle |
+| **S7c6 `std.iter`** | `Range<T>` als Wert (`let r = 1..5`, `x in r`, `r.iter()` — die NYI-Uhr zeigte auf S3, gefunden in S7c5c3), die Adapter von Lyric 5s `iter` in Script, die Listen-Methoden darüber (`map`, `filter`, `sortedBy`, `retain` …), `sort` nativ über `TotalOrder` mit Kostenregel; der Platzhalter `_` unter Typargumenten (Lyric 5 §9.2 Regeln 4–5, §9.3 Regel 2) | Konformanzfälle; Kostenregel für `sort` |
+| **S7c6a Bereiche als Werte** | `Range<T>` und `RangeInclusive<T>` über `int` und `char` in der Prelude (Lyric 5 12 Iteration: `Iterator` und `DoubleEnded`, `start`/`end` veränderlich, ein Bereich aus `char` ohne die Surrogate, kein Wert über die Grenze des Typs), `a..b` und `a..=b` als Ausdruck ein solcher Wert — `for` über das Literal bleibt die native Schleife —, `x in r` über `Contains<T>`, `r.iter()`; `DoubleEnded { fn nextBack(): ?Item }`, `Iterator.sizeHint()` mit dem Default `(0, null)`; `ListIter` von beiden Enden | Konformanzfälle |
+| **S7c6b Adapter und Terminatoren** | `std.iter` als Script-Modul (`std/iter.lyrs`), das der Lader mit der Prelude lädt (Lyric 5 04 Regel 5: seine Blöcke reichen jedes Modul, die Typen werden importiert, wo sie stehen); Blanket-Blöcke über `I :: [Iterator]` mit den Adaptern als Klassen unter Lyric 5s Namen (`MapIter`, `FilterIter`, `TakeIter` …, `enumerate`, `zip`, `chain`, `flatMap`, `flatten`, `scan`, `peekable`, `rev`, `stepBy`, `dedup` …) und den Terminatoren (`count`, `fold`, `reduce`, `first`, `last`, `nth`, `any`, `all`, `none`, `find`, `position`, `forEach`, `toArray`, `minBy`, `maxBy`; je Element-Art `sum`, `product`, `min`, `max`, `join`, `average`; `chunks`, `windows`, `partition`, `sorted`, `sortedBy`) — ohne `throws` (12 Src); was eine `Map` oder ein `Set` baut (`groupBy`, `toMap`, `toSet`), mit S7d | Konformanzfälle; Kaltstart gegen P21 gemessen |
+| **S7c6c `Clone`, `Default`, Listen-Methoden, `sort`** | Synthese von `Clone` und `Default` (Script 09 Syn, ohne Uhr — P23; `Clone` nur für Klassen sinnvoll, 05 D13), `cycle()` über einen `Clone`-Iterator; die Methoden von Lyric 5s Array und `List` an `T[]` (`map`, `filter`, `retain`, `sortedBy`, `reverse` …), `sort()`/`sortBy` nativ über `TotalOrder`, stabil | Konformanzfälle; Kostenregel für `sort` |
+| **S7c6d Platzhalter `_`** | `_` unter Typargumenten (Lyric 5 §9.2 Regeln 4–5, §9.3 Regel 2): `f<_, int>(x)`, `let xs: List<_> = …`, die Stelle bindet, was sie offen lässt | Konformanzfälle |
+
+**S7c1, geteilt (2026-10-30).** **S7c1a** generische Interfaces ohne `Self` und ohne Defaults;
+**S7c1b** `Self` in einem generischen Interface (seine Mitglieder generisch über die Parameter
+und `Self` zugleich) und Default-Mitglieder über `T` — beides brauchen `FromArrayLiteral<T>`
+(statisch, gibt `Self`) und `Index<K>` (`Self.Output`).
+
+**S7c1a, Ergebnis (2026-10-30).** `interface I<T, …>` deklariert Typparameter (mit Constraints
+wie eine generische Funktion); seine Mitglieder sind generisch über sie wie die Methoden eines
+generischen Typs. `I<int>` — in einer Konformanz, einem Constraint, als Elternteil oder als Typ
+eines Werts — ist eine Instanz über `typeInstance`, ein Interface eigenen Rechts mit den Slots der
+Vorlage; Eltern einer Instanz werden bei Bedarf an ihren Argumenten gebildet (`parentsOf`), weil
+eine Instanz vor den Eltern der Vorlage entstehen kann. Eine Konformanz prüft die Signaturen an den
+Argumenten der Instanz; ein Aufruf über einen `I<int>`-Wert oder ein `T :: [I<int>]` belegt die
+Typparameter des Mitglieds mit den Argumenten der Instanz, die es deklariert (`memberBinds`).
+Ein generischer Typ konformiert an seinen eigenen Parametern (`class Cell<T> :: Store<T>`), jede
+Instanz an ihren Argumenten (`ifaceAt`). Gefunden beim Bauen: die Typparameter einer generischen
+Funktion wurden an einer zweiten Stelle nur über den Namen aufgelöst; `Source<T>` in einer
+generischen Funktion fällt über die Abkürzung „eigene Parameter“ auf die Vorlage zurück — die
+Vorlage steht darum für sich selbst an ihren Parametern. Spec 05 Regel 15, fünf Fälle, alle rot
+gegen S7b. Vier Mutanten in zwei Läufen, alle wie vorhergesagt. Fälle 370 → 375.
+
+**S7c1b, Ergebnis (2026-10-30).** Ein Mitglied eines Interfaces, das über `Self` generisch ist,
+nimmt `Self` zuerst und die Parameter des Interfaces danach (`selfFirst`) — so bleiben `Self =
+Param(0)` und alle Stellen, die es so belegen, gültig; ein Aufruf belegt `[Self] ++ Argumente
+der Instanz` (`bindsOf`), an allen acht Stellen, die vorher nur `[t]` kannten. Ein Default über
+`T` wird je Konformer an den Argumenten seiner Instanz kopiert: `conform()` merkt sich je Slot
+die Argumente (`slotArgs`), `tableSelf`/`tableInstance` kopieren damit (`selfCopyIn`), auch für
+die Instanzen eines generischen Konformers; auf dem Konformer selbst liest eine Instanz die
+Interfaces ihrer Vorlage an ihren Argumenten (`ifacesOf`). Der `Self`-Constraint eines Mitglieds
+nennt die Vorlage: eine Instanz zählt als Konformanz zu ihr (`isOf`). Gefunden: ein Anker, dessen
+Ersatz anderswo schon stand, hätte das Patch-Skript als erledigt übersprungen — der Trockenlauf
+fing es. Spec 05 Regel 15 ergänzt, zwei Fälle, beide rot gegen S7c1a. Drei Mutanten in zwei
+Läufen, alle wie vorhergesagt. Fälle 375 → 377. **S7c1 fertig** (P18 gebaut).
+
+**S7c2, Ergebnis (2026-10-30).** Die Prelude deklariert `Index<K>` (`type Output`, `fn
+index(k: K): Self.Output`), `IndexSet<K> :: Index<K>` (`fn setIndex(k: K, v: Self.Output)`) und
+`FromArrayLiteral<T>` (`static fn fromArrayLiteral(items: T[]): Self`, das Mitglied nach der
+Namensregel von Spec 03 Regel 14). `x[k]` auf einem eigenen Typ ist ein Methodenaufruf
+`index` — damit gelten alle Wege: am Typ, über einen Constraint, über einen Interfacewert —,
+`x[k] = v` ist `setIndex`, `x[k] op= v` hält `x` und `k` in verborgenen Lokalen; was kein
+`Index` ist, `SEM0007` (Lyric 5s Nummer und Bedeutung, der Katalogeintrag erweitert), was kein
+`IndexSet`, `SEM0019`. Ein Listenliteral an einer Stelle, deren Typ `FromArrayLiteral<T>`
+ist, wird als Liste von `T` an dessen `fromArrayLiteral` gegeben; über einen Typparameter mit
+der Instanz aus seinen Constraints (`instanceFor`). **Gefunden beim Bauen:** assoziierte Typen
+in einem generischen Interface wurden an der Instanz gelesen (`assocNames`, Schranken,
+Defaults, das Interface eines `Ty.Assoc`) — jetzt an der Vorlage; erst damit trägt `Index<K>`
+sein `Output`. Spec 03 Regel 14, 08 Regel 4; vier Fälle, alle rot gegen S7c1b. Drei Mutanten
+in einem Lauf, alle wie vorhergesagt. Fälle 377 → 381.
+
+**S7c3, Ergebnis (2026-10-30).** Eine Liste ist ein Interfacewert in einer Box wie ein Skalar oder
+ein String; der Typ der Box ist ein Eintrag je Elementtyp, eine Instanz des `List`-Eintrags
+(`entryOf`), mit eigener Tabelle — `Any`, `x is int[]`, die Debug-Form über die Tabelle — und
+`extend<T> T[] :: [I]` macht jede Liste zu einem `I`, als Wert und über einen Constraint.
+**Gefunden beim Bauen:** die Box eines eingebauten Typs hatte nur für `string` einen
+Referenzslot (die Box einer Liste brachte die VM zum Absturz); ein generischer Unboxer hielt
+seinen Rumpf in `body` statt in `template` (seine Kopien waren leer); `memberCallOn` rief die
+generische Methode einer Liste ohne Kopie; Extend-Blöcke auf `T[]` meldeten ihre Konformanzen
+nie an. Eine Liste eines Typparameters als Interfacewert braucht ihren Deskriptor zur Laufzeit —
+mit **S7c4**, wohin auch Tasks, Koroutinen und Kanäle als Interfacewerte gehen: `Coroutine ::
+Iterator` zieht deren Methoden in die Prelude, erst dann tragen ihre Tabellen. Spec 03 Regel 16,
+05 Regel 12; zwei Fälle, beide rot gegen S7c2. Vier Mutanten in drei Läufen, alle wie
+vorhergesagt; ein fünfter (der Referenzslot der Box) zeigte sich beim Bauen. Fälle 381 → 383.
+
+**S7c4, geteilt (2026-10-30).** **S7c4a** `Iterator`, `Iterable`, `for` über beide, `T[] ::
+Iterable`; **S7c4b** `Coroutine :: Iterator` und Tasks, Koroutinen, Kanäle als Interfacewerte —
+ihre Methoden wandern dafür als Funktionen über Intrinsics in die Prelude; **S7c4c**
+`FromIterator<T>` mit `collect()` (ein generisches statisches Mitglied eines Interfaces, das
+über `Self` generisch ist — seit S3i NYI), die Blanket-Blöcke (`extend<I :: [Iterator]> I ::
+[Iterable<Iter = I>]`, 05 Regeln 6–9) und Listen eines Typparameters als Interfacewerte.
+
+**S7c4a, Ergebnis (2026-10-30).** Die Prelude deklariert `Iterator` (`type Item`, `fn next():
+?Self.Item`, ohne Fehlertyp — 05) und `Iterable` (`type Iter :: [Iterator]`, `fn iter():
+Self.Iter`). `for (x in e)` über ein `Iterator` ist `while (let x = e.next())` über `e`, einmal
+gehalten, über ein `Iterable` über dessen `iter()`; ist der Iterator ein `Closeable`, schließt
+ihn ein `defer` an jedem Ausgang (05 E7); sonst `SEM0007`. Jede Liste ist ein `Iterable`
+(`extend<T> T[] :: Iterable` mit `ListIter<T>`, das nach einer Längenänderung wie die Schleife
+paniert). **Gefunden beim Bauen:** `classifyInterfaces` löste jeden Interfacenamen im Modul des
+letzten Items auf — ein eigenes `Iterator` des Skripts bekam die Klassifizierung der Prelude, die
+Prelude brach (seit S3i, latent, bis die Prelude ein Interface trug, das Skripte selbst
+schreiben); ein generischer Extend-Block trug die Antworten seiner assoziierten Typen nie ein;
+die Debug-Form eines `T[]`-Felds in einem generischen Typ war NYI — jetzt eine Schleife am Ort.
+Spec 03 Regel 16, 07 Regel 7; fünf Fälle, alle rot gegen S7c3. Vier Mutanten in einem Lauf, alle
+gefangen; einer traf drei Fälle mehr als vorhergesagt (die S3i-Fälle schreiben ihr eigenes
+`Iterator`, wie die Unit-Tests). Fälle 383 → 388.
+
+**S7c4b, Ergebnis (2026-10-30).** `Coroutine<Y, R> :: Iterator` mit `type Item = Y`; ihre Methoden,
+die eine Tabelle erreicht, sind jetzt Funktionen der Prelude über Intrinsics (`__coNext`,
+`__coClose`, `__scopeClose` — dieselben Ops wie der statische Aufruf). Tasks, Koroutinen,
+Scopes, Kanäle und Semaphore sind Interfacewerte: die VM hält sie ohne Deskriptor, also trägt
+ihn eine Box wie bei Listen (S7c3; Kennung `vmHeld`, Box mit Referenzslot); `x is Task<int>`,
+die Debug-Form `<Task>`. Damit die Tabelle des rohen VM-Objekts nie gefragt wird, sind solche
+Typen keine geteilte Form: jede Instanz bekommt ihre Kopie. Die Pins aus S6 („kein
+Interfacewert“) retirieren mit ihrer Regel: zwei Unit-Zusicherungen erwarten jetzt keinen
+Fehler, ein Konformanzfall entfällt. Spec 10 Regeln 8 und 19, die Abweichung zurückgezogen;
+zwei Fälle, beide rot gegen S7c4a. Vier Mutanten in drei Läufen, alle wie vorhergesagt.
+Fälle 388 → 389.
+
+**S7c4c, geteilt (2026-10-30).** Vor `FromIterator<T>` (ein generisches statisches Mitglied) und
+den Adaptern (`map<U>` …) fehlte die Grundlage: **S7c4c1** generische Methoden generischer
+Besitzer; **S7c4c2** `FromIterator<T>`, `collect()`, die Blanket-Blöcke, Listen eines
+Typparameters als Interfacewerte.
+
+**S7c4c1, Ergebnis (2026-10-30).** **Lücke seit S3, ohne Uhr:** eine generische Methode eines
+generischen Typs (`fn map<U>` in `Box<T>`) meldete „'T' names no type“ — die eigenen Parameter
+ersetzten den Scope des Besitzers; generische Mitglieder eines Interfaces mit `Self` waren NYI
+(S3i). Jetzt sind die Parameter des Besitzers zuerst — die eines generischen Typs, `Self` und die
+eines Interfaces, die eines Extend-Blocks (`outerParams`) —, die eigenen danach; ein Aufruf belegt
+die des Besitzers als Präfix, der Rest kommt aus den Argumenten. Die Deskriptoren einer Kopie
+teilen sich auf (`fromThisAt`): die eines generischen Typs und `Self` vom Empfänger, die eigenen
+und die eines generischen Interfaces als versteckte Parameter; eine Tabellenkopie ist darum
+immer exakt (ein Aufruf über die Tabelle reicht keinen versteckten Deskriptor). Spec 03 Regel
+12, 05 Regel 10; drei Fälle, alle rot gegen S7c4b. Drei Mutanten in drei Läufen, alle wie
+vorhergesagt. Fälle 389 → 392.
+
+**S7c4c2, neu geschnitten (2026-10-30).** `collect()` als Mitglied von `Iterator` hätte
+`Iterator` zur reinen Constraint gemacht (ein generisches Mitglied, `SEM0126`), kein
+`Iterator<Item = int>` mehr als Werttyp — Lyric 5 legt es darum in den Blanket-Block
+`extend<I :: [Iterator]> I`. Die Blanket-Blöcke mit Mitgliedern (05 §13 Regel 7) gehen deshalb
+in **S7c4c2**; ihre Konformanzen (Regeln 8–9), ihre statischen Mitglieder, ein Block auf einer
+Instanz und Listen eines Typparameters als Interfacewerte in **S7c4c3**. Der Platzhalter `_`
+unter Typargumenten (Lyric 5 §9.2 Regeln 4–5, §9.3 Regel 2) hat bisher keine Uhr: **S7c5**, wo
+die Adapter viele Typargumente tragen.
+
+**S7c4c2, Ergebnis (2026-10-30).** Die Prelude deklariert `FromIterator<T>` (`static fn
+fromIter<I :: [Iterator<Item = T>]>(it: I): Self`), jede Liste ist eines ihres Elements, und
+`collect<C :: [FromIterator<I.Item>]>()` steht im Blanket-Block über jedem Iterator. Dafür:
+Lyric 5 §9.2 Regel 2 — der erwartete Typ bindet, was die Argumente offen lassen, ohne sie zu
+überstimmen — und Regel 4 — Typargumente am Methodenaufruf, die eigenen nach denen des
+Empfängers (`SEM0026` bei anderer Zahl); Blanket-Blöcke mit Mitgliedern, der Empfänger bindet
+den Zielparameter, eine Fixierung die übrigen (`SEM0170` für einen, den nichts bindet,
+`SEM0168` für ein vom Typ verdecktes Mitglied, `SEM0121` für zwei Blöcke eines Namens); ein
+Interface-Mitglied mit eigenen Typparametern wird gegen das des Konformers geprüft (gleich
+viele, gleich beschränkt, `SEM0042`) und über einen Typparameter für das Argument kopiert.
+**Gefunden beim Bauen:** (1) **Lücke seit S3, ohne Uhr:** der Schlüssel der Instanzen und
+Kopien war der angezeigte Name — jeder Typparameter hieß `T`, ein Typ nur bei seinem Namen:
+`Pair<B, A>` und `Pair<A, A>` in einem Generic waren *eine* Instanz („expected B, found A“),
+`Holder<a.Item>` und `Holder<b.Item>` aus zwei Modulen auch; jetzt `tyKey`, injektiv. (2) Die
+Arität eines generischen Interfaces stand erst mit seiner Deklaration — zwei, die einander
+nennen (`Iterator`, `FromIterator`), scheiterten; jetzt ein Vorlauf. (3) Eine generische
+Konformanz der Listen (`T[] :: FromIterator<T>`) wurde nie am Element gelesen. (4) Ein
+statisches Mitglied mit eigenen Typparametern lief in einer geteilten Kopie über die Tabelle,
+deren Kopie das eigene `I` mit `Self` band (`Sum.build` gab 0, ein eigenes `fromIter` lief nie);
+ein Constraint mit einem solchen Mitglied macht die Kopien jetzt exakt, wie assoziierte Typen.
+(5) Die übrigen Methoden einer Koroutine erreichten ihre Prelude-Klasse nicht. Spec 03 Regeln
+12, 16; 05 Regeln 12, 15; 07 Regel 7; zwölf Fälle, elf rot gegen S7c4c1 — der zwölfte hält das
+`SEM0042` einer falschen Implementierung fest, das vorher für jede kam. Fünf Läufe mit sieben Mutanten: vier wie vorhergesagt; im fünften machte der alte Schlüssel auch `an_iterator_collects` rot — die Instanzen der Prelude selbst (`FromIterator` an verschiedenen Parametern) kollidierten, `collect` braucht den injektiven Schlüssel.
+Fälle 392 → 404.
+
+**S7c5/S7c6 und S7f, neu geschnitten (2026-10-30). Lücke seit S3, ohne Uhr (P19):** 05 D6
+entscheidet die Operator-Interfaces (`Add<Rhs = Self> { type Out = Self }` …), `++`/`--` als
+Ausdrücke, `+=` abgeleitet, `Equatable`, `Ordered`, `TotalOrder`, `Contains` und die Konversion
+über `From`/`Into`; die S3f-Präzisierung schob die Operatoren „mit S3h“, S3h nahm sie nicht
+auf, keine Zeile nannte sie. Da `sort` ein `TotalOrder` braucht und `Ordered :: [Equatable]`
+ist, kommen die Vergleiche als Interfaces und die Operatoren als **S7c5** vor `std.iter`, das
+**S7c6** wird; S7d behält Map, Set und `Hashable` (die Synthese von `Equatable` kommt mit S7c5).
+`From`/`Into` gehen mit 05 §13 Regel 9 (ein Parameter, den nur die Konformanz nennt — ihr
+einziger Nutzer, `extend<T, U :: [From<T>]> T :: [Into<U>]`) nach **S7f**, zu den Zahlen.
+
+**S7c4c3, Zuschnitt (2026-10-30).** Blanket-Konformanzen (05 §13 Regel 8: der Block gibt `J`
+jedem Typ, den seine Constraints zulassen — Constraints, Werte von `J` mit den Mitgliedern des
+Blocks, Antworten aus der Fixierung der Konformanz, `extend<I :: [Iterator]> I ::
+[Iterable<Iter = I>]` wie in Lyric 5; die Ausschlüsse `SEM0133`), statische Mitglieder eines
+Blanket-Blocks, ein Block auf einer Instanz (`extend Box<int> { … }`, Regeln 1–2), Listen eines
+Typparameters als Interfacewerte.
+
+**S7c4c3, geteilt (2026-10-30).** **S7c4c3a** Blanket-Konformanzen und statische Mitglieder
+eines Blanket-Blocks; **S7c4c3b** ein Block auf einer Instanz — die Instanzen teilen heute die
+Methodentabelle der Vorlage, `extend Box<int> { … }` landet still auf jedem `Box<T>` —, Listen
+eines Typparameters als Interfacewerte und die Werte eines Interfaces, das ein Blanket-Block
+einer Liste, einem VM-gehaltenen generischen Typ oder einem nur bedingt erreichten gibt.
+
+**S7c4c3a, Ergebnis (2026-10-30).** Ein Blanket-Block darf konformieren: er gibt das Interface
+und seine Kette jedem Typ, den seine Constraints zulassen, die Signaturen am Ziel geprüft
+(`SEM0042`, `SEM0020`), die assoziierten Typen im Rumpf oder per Fixierung in der Liste
+beantwortet (`SEM0128`, `SEM0129`); `conformsTo` fragt die Blöcke, eine exakte Kopie ruft das
+Mitglied des Blocks für den Typ, und jeder erreichte Typ bekommt das Interface, die Antworten und
+die Mitglieder des Blocks in seine Tabelle — kopiert erst nach der Prüfung, in `tableSelf` bzw.
+je Instanz in `tableInstance`. Ein Typ, der selbst zu einem Glied der Kette konformiert, und ein
+zweiter Block für eine Kette sind `SEM0133`. Statische Mitglieder über den Typ und über einen
+Typparameter. Die Prelude gibt jedem Iterator `Iterable<Iter = I>` wie Lyric 5. **Gefunden beim
+Bauen:** (1) **seit S3i:** die Schranke einer Antwort wurde gefragt, bevor die übrigen
+Konformanzen derselben Liste standen — `type Iter = Both` eines `Both :: [Iterator, Iterable]`
+war `SEM0160`; (2) eine Tabellenkopie bei der Deklaration war leer (Rümpfe noch ungeprüft); (3)
+ein VM-gehaltener generischer Typ ohne Tabelle hatte keine Antwort `Iter`, `C.Iter` blieb in
+der Kopie offen, und der Codegenerator überging `TExpr.Unknown` still — die Schleife lief ewig;
+jetzt bekommt jeder erreichte Typ die Antworten, und ein unaufgelöster Ausdruck paniert mit
+`LYS-ICE0001`; (4) eine geteilte Kopie über einen nur bedingt erreichten Typ rief über eine
+Tabelle ohne den Eintrag (ICE) — jetzt `NYI0001` mit Uhr S7c4c3b, wie ein solcher Wert. Spec 05
+Regel 12, 07 Regel 7; fünf Fälle, alle rot gegen S7c4c2. Sechs Mutanten in drei Läufen: einer wie vorhergesagt; drei Fehlgriffe — ein Default lief über die Box-Tabelle des materialisierten Typs statt über die Blöcke; ein Ablehnungsfall prüft nur, dass seine Codes vorkommen, ein zusätzliches `SEM0160` bleibt dort unsichtbar; und die offene Antwort führte nicht zu `TExpr.Unknown`, sondern zur Kopie des **abstrakten** `next` — die Schleife hing weiter. Seitdem gibt `memberCallOn` für ein abstraktes Mitglied `TExpr.Unknown` (die laute Panik); die Wiederholung paniert wie vorhergesagt.
+Fälle 404 → 409.
+
+**S7c4c3b, Ergebnis (2026-10-30).** Ein Block auf einer Instanz (`extend Box<int> { … }`,
+`extend int[] { … }`) gibt seine Mitglieder und Konformanzen dieser Instanz allein, am
+Instanztyp geprüft (`ownMethods`, `instIfaces`; `SEM0012` anderswo, `SEM0133` neben einer
+Konformanz der Vorlage). Eine Liste eines Typparameters ist ein Interfacewert: die Kopie legt
+sie in die Box ihres Elements, eine geteilte Kopie macht den Deskriptor zur Laufzeit (`inst.t`
+über `List<Any>`, `new.d`); `x is T[]` prüft gegen ihn. Ein Blanket-Block gibt seine
+Konformanz mit Tabelle auch einer Liste, einem VM-gehaltenen generischen Typ und einem nur
+bedingt erreichten (dort unter der Bedingung) — die NYI-Sperren von S7c4c3a sind weg.
+**Gefunden beim Bauen:** (1) ein Block auf einer Instanz landete auf der Vorlage und wurde
+gegen `T` geprüft (die Instanzen teilen die Methodentabelle); (2) **seit S3g:** ein generischer
+Typ, mit Argumenten vor seiner Deklaration genannt, war `SEM0026` — ein Aritätsvorlauf wie für
+Interfaces; (3) `fn f<T>(xs: T[]): Any = xs` kompilierte **still** zur Box des Vorlageneintrags
+und stürzte zur Laufzeit ab — die NYI-Sperre in `coerce` war tot, `fit` boxte vorher; der
+Deskriptor eines Listentyps war im Codegenerator immer `Any`; (4) ein Listeneintrag, den erst
+eine Kopie machte, hatte keine Debug-Form; (5) **seit S3i:** der Laufzeit-Deskriptor einer
+Instanz führte die bedingten Konformanzen der Vorlage ohne Bedingung — `Cond<int> is Named` war
+`true`. Spec 03 Regeln 12, 16; 05 Regel 12; sechs Fälle, alle rot gegen S7c4c3a. Sieben Mutanten in vier Läufen, die Fälle alle wie vorhergesagt; bei einem (der Listendeskriptor wieder `Any`) stimmte der Mechanismus nicht — statt `false` paniert der Lauf, `inst.t` über einen Deskriptor ohne Argumente.
+Fälle 409 → 415. Damit ist **S7c4** fertig.
+
+**S7c5, geschnitten (2026-10-30).** Nach Lyric 5 05 §12 (Script 05 D6, 03 Mix): **S7c5a**
+`Equatable` als Interface — `==` über einen Typparameter, das eigene `equals`, Klassen über
+`:: Equatable` oder `:: Identity`, die vergleichenden Listen-Methoden über `T`; **S7c5b**
+`Ordered`, `TotalOrder` und `Ordering` (`float :: TotalOrder`, Fl), `<` … über sie, die
+Synthese; **S7c5c** die Operator-Interfaces (`Add<Rhs = Self> { type Out = Self }` …, `Neg`,
+die Bit-Operatoren), die Auflösung am rechten Operanden, `+=` abgeleitet, `++`/`--` als
+Ausdrücke, `Contains<T>` für `in`, die gemischte Arithmetik über eingebaute Konformanzen.
+
+**S7c5a, Ergebnis (2026-10-30).** Die Prelude deklariert `Equatable { fn equals(o: Self): bool }`
+(eine reine Constraint) und die vergleichenden Listen-Methoden als Script-Quelltext,
+`extend<T :: [Equatable]> T[]` — die synthetisierten `#indexOf`/`#dedup` und der eigene Weg von
+`in` sind weg, `x in xs` ist `xs.contains(x)`. Ein Struct, ein Enum, ein Tupel, eine Liste, ein
+Optional sind `Equatable`, wenn ihre Teile es sind; eine Klasse über `:: Equatable` (ihr
+`equals`, sonst feldweise) oder `:: Identity`. `==` eines Typs, der einen Typparameter nennt,
+wartet als `GenericEq` auf die Kopie und vergleicht dort mit der einen Gleichheit, die es gibt;
+ein Parameter unter `Equatable` wird dafür nie geteilt (wie unter assoziierten Typen). Das eigene
+`equals(o: Self): bool` eines Typs ruft `==`, `x.equals(y)` ist `x == y`, wo der Typ keins hat.
+**Gefunden beim Bauen (seit S3g):** ein Initialisierer eines generischen Typs an einem Parameter
+`Box<T>` wurde gegen das offene `T` geprüft („expected T, found int“) — die Vorlage bei ihren
+eigenen Parametern zählte nicht als „nennt einen Parameter“. Spec 05 Regel 8, 03 Regel 16; vier
+Fälle, alle rot gegen S7c4. Sechs Mutanten in fünf Läufen: vier wie vorhergesagt; im ersten (kein `GenericEq`) wurde auch ein S7b-Fall rot — die Listen-Methoden der Prelude vergleichen selbst über `T`, das hatte die Vorhersage übersehen.
+Fälle 415 → 419.
+
+**S7c5b, Ergebnis (2026-10-30).** Die Prelude deklariert `Ordering`, `Ordered :: Equatable`
+und `TotalOrder :: Ordered` (reine Constraints) und gibt beide `int`, `char`, `string` und
+`float` als Script-Blöcke wie Lyric 5s `core` — `float` total geordnet (Fl) über den neuen
+Native `float.orderKey` (die Bits, bei gesetztem Vorzeichen die übrigen umgedreht; Format 24).
+`<`, `<=`, `>`, `>=` eines anderen Typs lesen sein `compare` (`null` macht alle vier falsch),
+über einen Typparameter in der Kopie (`GenericCompare`, das `GenericEq` von S7c5a). Ein Typ, der
+`Ordered` oder `TotalOrder` ohne das Mitglied aufführt, bekommt es synthetisiert,
+lexikographisch, ein Enum zuerst nach der Variantenposition; seine Teile werden geprüft,
+sobald alle Konformanzen stehen (`SEM0020`, einmal je Typ). Spec 05 Regel 16; drei Fälle, alle
+rot gegen S7c5a. Sechs Mutanten in vier Läufen, die Fälle wie vorhergesagt; im ersten Lauf deckte ein Mutant (der `compare`-Weg für `<`) auch den Zweig über Typparameter ab und überdeckte damit den Native-Mutanten — der lief allein nach und scheiterte wie vorhergesagt.
+Fälle 419 → 422.
+
+**S7c5c, geschnitten (2026-10-30). Lücke ohne Uhr (P20):** Standardwerte für Typparameter
+(Lyric 5 03 §9.1 Regel 5, T18: `interface Add<Rhs = Self>`, `class Map<K, V, H =
+DefaultHasher>`) sind im Script-Design 03 („Generics: … Default-Typargumente, `_`“) übernommen,
+die Spec zog nur §9.1 Regeln 1–3 nach, keine Zeile nannte sie; `interface Add<Rhs = Self>` ist
+heute `PAR0004`. Und ein Typ hält in Script einen Namen einmal (05 Regel 13): zwei `mul` — eines
+für `Mul`, eines für `Mul<float>` — und zwei Antworten `Out` gibt es erst mit Lyric 5 §3 Regeln
+4–5 und §8 Regel 3 (05 Regel 13 nannte nur „S7“). Darum: **S7c5c1** Standard-Typargumente;
+**S7c5c2** die Operator-Interfaces (`Add<Rhs = Self> { type Out = Self }` …, `Neg`, die
+Bit-Operatoren, `Shl<Rhs = int>`), die Operatoren eigener Typen über sie nach dem statischen Typ
+des rechten Operanden — eine Instanz je Operator-Interface und Typ —, `+=` abgeleitet, Generika
+über `T :: [Add<Out = T>]`, die Skalare in Prelude-Blöcken; **S7c5c3** `++`/`--` als Ausdrücke,
+`Contains<T>` für `in`; **S7c5d** mehrere Instanzen eines generischen Interfaces an einem Typ
+(Mitglieder je Block, `SEM0122`; nebeneinander je Instanz), Antworten je Konformanz-Instanz, die
+eingebauten gemischten Konformanzen (`int :: Add<float>`, 03 Mix).
+
+**S7c5c1, Ergebnis (2026-10-30).** Ein Typparameter darf einen Standardwert tragen (`= T` nach
+seinen Constraints); eine Verwendung mit weniger Argumenten — eines Typs, eines Interfaces, an
+einem Aufruf, einer Methode — nimmt die nachfolgenden, gelesen, wo das Generic deklariert ist:
+seine früheren Parameter die Argumente, `Self` in einer Konformanz der Konformer, in einem
+Constraint der Parameter (`V :: [Add]` ist `V :: [Add<V>]`); ein Extend-Block nimmt keine
+(`SEM0026`). `Coroutine<Y>` ist jetzt das `R = void` der Prelude — der fest eingebaute
+Sonderfall ist weg. **Gefunden über einen überlebenden Mutanten (seit S7c1):** `T :: [Combine<T>]` einer `fn f<T>` war die Vorlage selbst — `typeInstance` gibt sie für Argumente zurück, die wie ihre eigenen Parameter lauten —, und die erfüllt jede Instanz: ein `B :: Combine<int>` ging als `T` durch, der Aufruf las ein `B` als `int`; ein geschriebenes Interface ist jetzt immer eine Instanz. Spec 03 Regel 12; drei Fälle, alle rot gegen S7c5b. Drei Mutanten in drei Läufen: zwei wie vorhergesagt (der ohne Standardwerte traf alle 30 Fälle mit `Coroutine<X>` und 15 Tests); der dritte (das `Self` einer Konformanz) überlebte zuerst — wegen des Fehlers oben — und scheiterte nach dem Fix wie vorhergesagt.
+Fälle 422 → 425.
+
+**S7c5c2, Ergebnis (2026-10-30).** Die Prelude deklariert die Operator-Interfaces — `Add`, `Sub`,
+`Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor` mit `Rhs = Self`, `Shl`/`Shr` mit `Rhs = int`,
+`Neg`, `BitNot`, je `type Out = Self` — und gibt sie den Skalaren als Script-Blöcke. Ein
+Operator eines Typs des Programms ist der Aufruf über die Konformanz, die der statische Typ des
+rechten Operanden wählt (`v * 2.5` → `Mul<float>`, ein `int`-Literal passt sich an), über einen
+Typparameter durch den Constraint; `-a`, `~a` über `Neg`, `BitNot`; `a op= b` ist `a = a op b`,
+der Empfänger eines Felds, eine Liste samt Index einmal gehalten, `Out` der Typ des Orts. Spec 05
+Regel 17; vier Fälle, alle rot gegen S7c5c1. Vier Mutanten in zwei Läufen, alle wie vorhergesagt.
+Fälle 425 → 429.
+
+**Uhren nachgeschärft (2026-10-30).** NYI-Meldungen nannten abgelaufene Uhren: ein Bereich als
+Wert „S3“ (jetzt S7c6), die Konstante eines Blanket-Blocks „S7c4c3b“ und ein generischer Block auf
+anderem Ziel „S3i“ (beides gibt es in Lyric 5 §13 nicht: jetzt `SEM0124`), ein `[]` ohne Typ
+„S7b2“ (Lyric 5 §9.2 Regel 3: jetzt `SEM0060`); die Mitglieder eingebauter Typen nennen S7d,
+S7e oder S7f statt „S7“; ein toter `??=`-Zweig ist weg.
+
+**S7c5c3, Ergebnis (2026-10-30).** `++` und `--` (Lyric 5 08 §6) auf einem Zahlenort — Variable,
+Feld, Element einer Liste oder eines `IndexSet` —, `x++` der alte Wert, `++x` der neue, was zum
+Ort führt einmal ausgewertet: auf Ausdrucksebene über die vorhandene Zuweisung `ort op= 1`. Die
+Prelude deklariert `Contains<T>`, der Listen-Block ist eines; `x in xs` ist `xs.contains(x)` über
+das `Contains<T>` des rechten Operanden, `x` zuerst ausgewertet (Lyric 5 §12 Regel 10 — Script
+wertete seit S7b2a den Behälter zuerst aus). **Gefunden beim Bauen:** (1) **seit S7c1:** eine
+bedingte Konformanz zu einer *Instanz* eines generischen Interfaces wurde unter der gefragten
+Instanz gesucht, nie unter dem Interface des Blocks — keine Bedingung griff (`Box<int>` galt als
+`Holds<int>` ohne `int :: Show`); (2) die Tabelle einer Instanz kopierte die Mitglieder einer
+bedingten Konformanz, deren Bedingung sie nicht erfüllt; (3) `operatorMember` rief die
+Block-Methode einer Liste ohne ihr Element. Spec 05 Regel 8, 08 Regel 5; sechs Fälle (zwei davon
+für die Uhren), alle rot gegen S7c5c2. Sieben Mutanten in zwei Läufen, alle wie vorhergesagt.
+Fälle 429 → 435.
+
+**S7c5d, Ergebnis (2026-10-30).** Mehrere Mitglieder eines Namens und mehrere Instanzen eines
+generischen Interfaces an einem Typ (Lyric 5 05 §3 Regeln 1, 4–5, §8 Regel 3, 08 §1.2), in drei
+Schritten. (d1) Jede Instanz eines generischen Interfaces hat eigene Slots: eine Tabelle hält
+`From<int>`s und `From<string>`s Mitglied auseinander, eine Instanz eines generischen Typs bekommt
+die Slots ihrer Interface-Instanzen. (d2) Die Mitglieder eines Typs teilen einen Namen bei
+verschiedener Anzahl, je Konformanz-Block (der unqualifizierte Aufruf `LYS-SEM0122`) oder je
+Instanz (Wahl nach den Argumenttypen, `LYS-SEM0086`; zwei für eine Instanz `LYS-SEM0085`); ein
+Lesen ohne Aufruf nimmt das, das der Funktionstyp der Stelle sagt (`LYS-SEM0089`). (d3) Eine
+Antwort gehört ihrer Konformanz-Instanz: `extend V :: [Mul<float>] { type Out = float }` neben
+`V :: [Mul]`, `T.Out` unter `T :: [Mul<float>]` liest sie; die Prelude gibt `int :: [Add<float>,
+…]` und `float :: [Add<int>, …]` (03 Mix). **Gefunden:** (1) **seit S2d** weitete ein Default
+keine Anzahl — `fn f(a)` neben `fn f(a, b = 0)` kompilierte (Lyric 5 08 §1.2 Regel 2); (2) beim
+Bauen von d3 sickerte die Antwort eines Blocks typweit in andere Konformanzen (`int`s `Neg` nahm
+`Add<float>`s `Out`); (3) Lyric-5-ICE bei `Map<string, Map<string, Ty>>` als Feld (lyric#612).
+Ein Block auf einer Instanz hält ein Mitglied je Namen (P22, Uhr S7f). Spec 05 Regel 18, Regeln 13
+und 17 verweisen darauf; sieben Fälle, sechs rot gegen S7c5c3 — der siebte hält eine Ablehnung
+fest, die schon galt. Mutanten: vier Läufe, 437, 437, 441 und 440 von 442; drei Abweichungen von der Vorhersage, alle erklärt (eine bestehende Prüfung von `5.add(3)` und eine von `G.Output` mehr getroffen als vorhergesagt; die Kopien über Klassen und Structs rufen über die Tabelle, nicht über `memberFor`).
+Fälle 435 → 442.
+
+**S7c6, geschnitten (2026-10-30).** Lyric 5s Iteration (12 §Iteration) in vier Teilen: **S7c6a**
+die Bereiche als Werte und die Protokoll-Ergänzungen (`DoubleEnded`, `sizeHint`), auf denen `rev`
+und `collect` stehen; **S7c6b** `std.iter`, die Adapter und Terminatoren in Script — ein Modul,
+das der Lader mit der Prelude lädt, weil Lyric 5s Blöcke jedes Iterators ohne Import reichen;
+jedes Programm prüft es dann mit, der Kaltstart wird gegen P21 gemessen (über der Ratsche: das
+Modul erst laden, wo ein Iterator ein Mitglied nicht findet); **S7c6c** die Synthese von `Clone`
+und `Default`, die keine Planzeile hatte (P23) und die `cycle()` braucht, dazu die Listen-Methoden
+und `sort` mit seiner Kostenregel; **S7c6d** der Platzhalter `_`. Was eine `Map` oder ein `Set`
+baut (`groupBy`, `toMap`, `toSet`), geht mit S7d.
+
+**S7c6a, Ergebnis (2026-10-30).** `a..b` und `a..=b` sind außerhalb eines `for`-Kopfes Werte von
+`Range<T>` und `RangeInclusive<T>` der Prelude, `T` der Typ, den die Stelle nennt, sonst der der
+ersten Grenze; über `int` und `char` `Iterable` durch `RangeIter<T>` und `RangeInclusiveIter<T>`
+(beide Enden, Zeichen ohne Surrogate, kein Wert über die Grenze des Typs), über einem geordneten
+Typ `Contains`; `for` über Grenzen aus `char` geht über den Wert. Dazu `sizeHint()` am `Iterator`
+und `DoubleEnded`, der Listen-Iterator von beiden Enden. **Entschieden nach Empfehlung (P24):**
+ein Bereich ist ein Wert, kein Iterator — Lyric 5s Struct mit `var`-Grenzen widerspräche 02 T7;
+`r.next()` und `(0..n).map(f)` sind abgelehnt, `r.iter()` läuft ihn. **Gefunden:** (1) `internal`
+wirkt in der Prelude nicht gegen das Programm — ihr `Step` heißt deshalb `__Step` wie ihre
+übrigen eigenen Namen; (2) vor dem Commit, durch den eigenen Fall: `let f: Range<float> = 0..3`
+nahm `T` von der ersten Grenze statt von der Stelle. Spec 07 Regel 8 mit Abweichung; fünf Fälle, alle rot gegen S7c5d.
+Mutanten: drei Läufe, 444, 445 und 444 von 447; einer traf zwei Fälle mehr als vorhergesagt (dasselbe `for` über Grenzen, die kein `int` sind, stand noch in zwei der neuen Fälle).
+Fälle 442 → 447.
+
+**S7c6b, geteilt (2026-10-30).** **S7c6b1** die Adapter und das Laden von `std.iter`, **S7c6b2**
+die Terminatoren — ihre Element-Arten brauchen Entscheidungen (`join` über `Display`, das mit S7e
+kommt; `sum`/`product` über ein `Num`, das Script nicht hat).
+
+**S7c6b1, Ergebnis (2026-10-30).** `std/iter.lyrs` mit den Adaptern von Lyric 5s `std.iter` als
+Klassen (`map` … `rev`, ohne `cycle`), Blanket-Blöcke über jeden Iterator, `close()`
+weitergereicht. Der Lader fügt das Modul dem Programm hinzu, wo ein Modul ein Mitglied dieser
+Blöcke nennt (die Namen aus dem Modultext gelesen): immer geladen kostete es jedes Programm
+(kaltes `hello` im Debug-Bau ~190 → ~330 ms), so nur die, die es erreichen können (P21).
+**Gefunden:** (1) **seit S3g** nahm ein Initialisierer eines generischen Typs an einer Stelle, die
+die Instanz nennt, keinen Feld-Default (`let h: Holder<int> = Holder { }` war `SEM0106`); (2) ein
+unbekannter Name mit Typargumenten meldete `SEM0026` „takes 0 type arguments“ statt `SEM0011`;
+(3) eine Instanz über einem Typparameter teilen alle Generics, die einen nennen — `I.Item` im
+Feldtyp eines Adapters blieb offen, wo die Einschränkung des geprüften Generics es festlegt
+(`settle`); (4) über einen Mutanten (jedes Programm lädt `std.iter`): ein Programm, das einen
+Adapter nennt und über eine Tabelle druckt, baute die Debug-Form der Instanz, die die Signatur von
+`flatMap` nennt — ihr Feld `?T.Iter` hatte keine (NYI); ein offenes Argument nimmt in der Kopie
+die Form über die Tabelle. Spec 12 Regel 3 mit Abweichung; acht Fälle, sieben rot gegen S7c6a,
+der achte gegen den WIP-Stand vor (4). Mutanten: vier Läufe, 449, 448, 440 und 441 von 454, dazu eine Wiederholung (453 von 455); Abweichungen von der Vorhersage: ein überlebender Mutant (`collect` hält beim ersten `null`, der Fall zog nie nach einem gescheiterten `takeWhile` — ergänzt), der Fund (4) und eine größere Reichweite, weil Teilnamen wie `.dedup` und `.reverse` das Modul in bestehende Fälle laden.
+Fälle 447 → 455.
+
+**S7c6b2, Ergebnis (2026-10-30).** Die Terminatoren von Lyric 5s `std.iter` in Script: `count`
+… `windows`, `join` über jedes Element, wie `{x}` es schreibt (Scripts `Display` kommt mit S7e,
+drucken kann jeder Wert schon), `sum`/`product`/`average` über `int` und `float` (P25: kein `Num`
+in Script), `min`/`max` über `Ordered`; `sorted`/`sortedBy` mit `sort` in S7c6c. Dazu der Text
+eines Werts vom offenen assoziierten Typ (`{x}` mit `x: I.Item`) in jeder Kopie: `TextOf`.
+**Gefunden: seit S3i** nahm der Text eines Optionals oder Tupels in einer Kopie
+(`fn show<T>(x: T) = f"{x}"` mit einem `?int`) eine Lokale des gerade geprüften Kontexts — der
+Code-Generator panikte; jetzt eine Funktion je Typ. Spec 12 Regel 4 mit Abweichung; acht Fälle,
+alle rot gegen S7c6b1. Mutanten: zwei Läufe, 460 und 458 von 463; einer traf zwei andere Fälle als vorhergesagt — der Fehler stürzt nur ab, wo die verirrte Lokale jenseits der Lokalen der Kopie liegt, darunter überschreibt er still einen ihrer Slots.
+Fälle 455 → 463.
+
+**S7c6c, geteilt (2026-10-30).** **S7c6c1** die Synthese von `Clone` und `Default` (Lyric 5 05
+§14; Script 05 D13: `Clone` ist bei Klassen sinnvoll, ein Struct wird geteilt) mit den Skalaren,
+Strings, Listen, Optionals und Tupeln als Konformern, `cycle()` über einen `Clone`-Iterator — der
+Listen-Iterator und die Bereichs-Iteratoren klonen ihren Lauf, nicht die Liste; **S7c6c2** die
+übrigen Glieder von Lyric 5s Array und `List` an `T[]`: die Sortierungen (`sort`, `sortBy`,
+`sortByKey`, `sortUnstable`, stabil bis auf die letzte, nativ mit Kostenregel), `binarySearch`,
+`partitionPoint`, `join`, `clone`, dazu `sorted`/`sortedBy` der Iteratoren und `List.of`/`from`/
+`withCapacity`. `map`, `filter` und `retain`, die die Planzeile von S7c nannte, hat Lyric 5s
+Array nicht — `xs.iter().map(f)` und `removeWhere` sind es; ein zweiter Weg wäre ein zweiter
+Mechanismus für dasselbe.
+
+**S7c6c1, Ergebnis (2026-10-30).** `Clone` und `Default` in der Prelude, synthetisiert wie
+`Equatable`: `clone` kopiert die Wertteile und klont die Referenzteile (Objekt, Liste, darin
+Optional und Tupel, Enum-Variante neu gebaut), `default` nimmt Initialisierer oder Typ-Default;
+bedingt bei generischen Typen; `SEM0020`, `SEM0135`. `cycle()` über einen `Clone`-Iterator; der
+Listen- und die Bereichs-Iteratoren klonen ihren Lauf. Die vier neuen Felder des Checkers stehen
+in einer Klasse: Lyric 5s synthetisierte Debug-Form der Klasse mit 97 Feldern schachtelte über
+ihre 192 Ebenen (`LYR-SEM0105`). **Gefunden:** (1) **seit S7c5a** ging ein synthetisiertes
+Mitglied über eine Einschränkung auf einem Objekt — `a.equals(b)` von `T :: [Equatable]` — über
+die Tabelle, die keins hält: `LYS-ICE0001`; (2) `memberCallOn` rief das Block-Mitglied einer Liste
+ohne ihr Element (die Lücke, die S7c5c3 in `operatorMember` schloss). Spec 05 Regel 19, 12 Regel 3;
+sechs Fälle, alle rot gegen S7c6b2. Mutanten: zwei Läufe, 465 und 466 von 469 — wie vorhergesagt.
+Fälle 463 → 469.
+
+**S7c6c2, Ergebnis (2026-10-30).** Die übrigen Glieder von Lyric 5s Array und `List` an `T[]`:
+`sortBy`, `sortByKey`, `sort`, `sortUnstable` (eine stabile Merge-Sortierung in Script über einen
+Puffer der Länge, `O(n log n)` Vergleiche; Listen aus `int`, `char`, `float` und `string` sortiert
+die VM selbst — drei Natives, Format 25), `binarySearch`, `partitionPoint`, `join`,
+`List<T>.new/of/from/withCapacity` (statische Aufrufe an `List<T>` gingen vorher gar nicht,
+`SEM0013`), `sorted`/`sortedBy` der Iteratoren. **Kostenregel gemessen** (Debug-Bau, warmer
+Cache, 100 000 `int`): die VM sortiert in ~40 ms; über ein Lambda in Script ~18 s — ~10 µs je
+Vergleich, drei VM-Aufrufe (P26, Hebel ist S7j). Vom Vollauf vor dem Abschluss gefangen: ein
+`join` im Listen-Block der Prelude schrieb `{x}` über `T` und belegte damit schon beim Prüfen der
+Prelude den Debug-Slot — jedes Programm baute die Debug-Formen aller Typen (und stieß an die
+NYI-Uhr der Form von `TaskStatus<void>`); `join` einer Liste entsteht jetzt am Aufruf. Spec 03
+Regel 16, 12 Regel 4; sieben Fälle, alle rot gegen S7c6c1. Mutanten: zwei Läufe, 472 und 473 von 476 — wie vorhergesagt.
+Fälle 469 → 476.
+
+**S7c6d, Ergebnis (2026-10-30) — damit S7c6 fertig.** Der Platzhalter `_` unter den
+Typargumenten eines Aufrufs, einer Methode, eines Initialisierers und eines Funktionswerts
+(Lyric 5 03 §9.2 Regeln 4–5, §9.3 Regel 2, §9.4): die Inferenz füllt ihn aus den Argumenten,
+den Feldern oder der Stelle; anderswo `SEM0117`. **Gefunden:** ein Initialisierer mit
+geschriebenen Typargumenten (`Pair<int, string> { … }`, §9.3 Regel 1) parste in Script nicht, und
+Scripts Spec nannte ihn nicht — mit dem Platzhalter, der in ihm steht, aufgenommen. Spec 03
+Regel 12; drei Fälle, alle rot gegen S7c6c2. Mutanten: drei Läufe, 476, 476 und 477 von 479; zwei trafen auch den Ablehnungsfall, dessen `none<_>()` an denselben Stellen hängt.
+Fälle 476 → 479.
+
+**S7d, geschnitten (2026-10-30).** `Map` und `Set` nativ in der VM (12 Src), in
+Einfügereihenfolge — ohne Rückrufe aus der VM in Script: die VM läuft in einer Schleife, ein
+`hash` oder `equals` des Programms mitten in einer nativen Operation bräuchte einen geschachtelten
+Lauf, den ein `yield` darin sprengt. **Entschieden nach Empfehlung (P27):** die VM hält die
+Einträge in Einfügereihenfolge und eine Hash-Tabelle über sie, gibt zu einem Hash die Plätze der
+Einträge mit diesem Hash; den Hash rechnet Script (synthetisiert oder eigen), die Gleichheit der
+Kandidaten auch — Schlüssel aus `int`, `char`, `bool` und `string` vergleicht und hasht die VM
+selbst, auf dem heißen Pfad ohne Aufruf. **S7d1** `Hashable` und `Hasher` in der Prelude (Lyric 5
+12 §Hashing ohne `&`: der `Hasher` ist eine Klasse), automatisch für Structs, Enums und Tupel aus
+hashbaren Teilen (03 Eq), `float` keins, Klassen über `Identity` mit einer Objektnummer (01 S8: keine
+Adressen); **S7d2** `Map<K, V>` (die Tabelle in der VM, `m[k]` → `?V`, `m[k] = v`, `m[k] = null`,
+das Map-Literal `["a": 1]` und `[:]` über `FromMapLiteral`, die Methoden von Lyric 5s `Map`, ihre
+Iteratoren, `in`, Debug `{"a": 1}`, Gleichheit); **S7d3** `Set<T>` über die Schlüssel einer Map,
+seine Methoden, `groupBy`/`toMap`/`toSet` von `std.iter`; **S7d4** `Deque` und `Heap` in Script
+(12 Container).
+
+**S7d1, Ergebnis (2026-10-30).** `Hashable :: Equatable { fn hash(h: Hasher) }` und die Klasse
+`Hasher` in der Prelude — ein Hasher, SipHash-1-3 unter dem Schlüssel des Prozesses, das Mischen
+nativ in der VM (Lyric 5s `DefaultHasher`; Script-`int` paniken beim Überlauf), Format 26. Structs,
+Enums, Tupel und Optionals aus hashbaren Teilen hashen von selbst (03 Eq), Klassen über
+`:: Hashable` oder als `Identity` über eine Objektnummer, die die VM beim ersten Hash vergibt (01 S8);
+`float` und Listen nicht. **Gefunden:** `clone()` und `hash(h)` direkt an einem Tupel waren NYI —
+die Haken der Synthese standen nur im Zweig der benannten Typen. Spec 05 Regel 20; fünf Fälle,
+alle rot gegen S7c6d. Mutanten: drei Läufe, 482, 481 und 483 von 484 — wie vorhergesagt.
+Fälle 479 → 484.
+
+**S7d2, Ergebnis (2026-10-30).** `std.collections` mit `class Map<K :: [Hashable], V>` in Script:
+die Einträge in Listen in Einfügereihenfolge (Schlüssel, Werte, Hashes, ein Lebend-Bit), die VM
+hält nur den Index — zu einem Hash die Plätze (`ScriptIndex`, sechs Natives, Format 27); tote
+Einträge werden verdichtet, wo es mehr als acht und mehr als lebende sind. Die Methoden von Lyric
+5s `Map`, `m[k]`, `m[k] = v` und `m[k] = null` über `IndexSet`, `k in m` über `Contains`, drei
+Iteratoren mit der Änderungspanik (`LYS-RT0016`), Gleichheit, `Clone`, `FromIterator`, das
+Literal `["a": 1]`/`[:]` über `FromMapLiteral`, die Debug-Form `{"a": 1}` (über ein eigenes
+`debug()`, das nur Typen der Prelude haben — `Debug` als Interface bringt S7e). Der Lader nimmt das
+Modul in ein Programm auf, das `Map` nennt oder ein Map-Literal schreibt; seine Namen sind die der
+Prelude. Dazu `for (P in e)` mit einem Muster, das nicht scheitern kann (Lyric 5 07 §2 Regel 2),
+und `Map.new()` über den Typ der Stelle (Lyric 5 03 §9.2 Regel 6). **Abweichung von P27:**
+Schlüssel aus `int`, `char`, `bool` und `string` gehen denselben Weg wie alle — Script hasht und
+vergleicht; ob der Weg allein durch die VM sich lohnt, misst P21 in S7k. **Gefunden, fünf Fehler
+früherer Slices, vier davon still:** (1) ein Ausdrucksrumpf ohne Wert, `fn say(s: string) =
+println(s)`, lief nie — Funktionen und Methoden, seit S2d; (2) `==` über das eigene `equals` eines
+generischen Typs rief es ohne die Typargumente der Instanz und antwortete falsch, seit S7c5a; (3)
+eine bedingte `Equatable`-Konformität galt auch, wo die Argumente die Bedingung nicht erfüllen —
+`Box<C> == Box<C>` lief —, seit S7c5a; (4) die geschriebenen Typargumente eines statischen
+Aufrufs, `Box<string>.none()`, fielen weg (`LYS-SEM0060`), seit S6d1; (5) `let P { x, y } = p`
+wurde als „kann scheitern“ abgelehnt, seit S3d. **Uhr:** `import std.collections { Map }` → S7d4
+(P28). Spec 12 Regel 5, 03 Regeln 4, 8, 12 und 14, 05 Regel 8, 07 Regel 9, 09 Regel 2; vierzehn
+Fälle, alle rot gegen S7d1. Mutanten: drei Läufe, 495, 494 und 495 von 498 — je genau die vorhergesagten Fälle; den Fall zweier Schlüssel eines Hashes gab es erst, als die Vorhersage zeigte, dass sonst kein Fall den zweiten Platz unter einem Hash erreicht.
+Fälle 484 → 498.
+
+**S7d3, Ergebnis (2026-10-31).** `class Set<T :: [Hashable]>` in `std.collections` über die
+Schlüssel einer `Map<T, bool>`, wie Lyric 5 sie baut, in Einfügereihenfolge: `new`, `of`,
+`withCapacity`, `insert` und `remove` mit ihren Antworten, `contains` und `in`, die sieben
+Mengenoperationen als Methoden, `Iterable` über `MapKeysIter` — die Änderungspanik nennt jetzt die
+Sammlung, Lyric 5s Text „Map: …“/„Set: …“ —, `FromArrayLiteral` (`let s: Set<int> = [1, 2]`),
+`FromIterator`, Gleichheit, `Clone`, Debug `{1, 2}`. `groupBy`, `toMap` und `toSet` als
+Blanket-Blöcke in `std.collections`, wo Lyric 5 sie hat (nicht in `std.iter`); der Lader nimmt das
+Modul auch bei den Wörtern `Set`, `groupBy`, `toMap` und `toSet` auf. **Gefunden, zwei Fehler
+früherer Slices:** (1) im generischen Rumpf bekam ein Argument keinen Typ von der Stelle, wo das
+Typargument des Empfängers die eigenen Parameter des Rumpfs nennt — `m.getOr(1, [])` einer
+`Map<int, T[]>` war `LYS-SEM0060`, seit S7c5a (ein Mutant, der genau das schrieb, prüfte nicht;
+so fiel es auf); (2) die Debug-Form eines generischen Typs, dessen Argument eine Liste eines
+offenen Parameters ist (`Box<T[]>` in einem generischen `k`), brachte den Codegenerator zum
+Absturz: die Kopie baute die Schleife über die Liste mit Locals eines fremden Kontexts, seit S7c4a.
+Behoben für Argumente, deren Werte Objekte sind; **offen, Uhr S7d4:** bei `T = int` fragt die
+geteilte Kopie die Tabelle einer rohen `int`-Liste, die keine hat — `LYS-ICE0001` zur Laufzeit
+statt beim Übersetzen. Spec 12 Regel 6; zehn Fälle, neun rot gegen S7d2 — `gathering_refused`
+grün, wie vorhergesagt: dort fehlten die Glieder ganz, die Ablehnung ist dieselbe; er bleibt für
+die Mutanten. Mutanten: A 504 und B 504 von 506, C nach dem Fund (1) 505 von 508 — je genau die vorhergesagten Fälle; Cs erster Lauf (493) war ein Mutant, der nicht prüfte.
+Fälle 498 → 508.
+
+**S7d4, Ergebnis (2026-10-31) — damit S7d fertig.** `class Deque<T>` als Ring wie Lyric 5s (Plätze
+`(?T)[]`, `head`, `count`, Verdopplung ab 8): `pushBack`/`pushFront`, `popFront`/`popBack`,
+`peekFront`/`peekBack`, `d[i]` über `Index<int>` (nie geschrieben, eine Panik außerhalb mit dem
+Text der Listen), `Iterable` mit der Änderungspanik „Deque: …“, Gleichheit, `Clone`,
+`FromArrayLiteral`, `FromIterator`, Debug `[1, 2]`; `class Heap<T :: [TotalOrder]>` als
+binärer Min-Heap, `Heap.of` nach Floyd, Debug wie die Liste, die er hält. P28 gebaut:
+`import std.collections { Map, Set, List, Deque, Heap }` nennt die Namen der Prelude, `{ Map as
+Dict }` unter eigenem Namen, ein fremder Name `LYS-RES0004`, das ganze Modul `LYS-RES0003`; der
+Lader nimmt das Modul dann auf. Der offene Fall aus S7d3 behoben: die Debug-Form einer Instanz,
+deren Argumente die Parameter des umgebenden Rumpfs nennen (`Box<T[]>`), ging als eigene,
+nicht-generische Funktion — gebaut für Objekte, von `k<int>` mit einer `int`-Liste gerufen; jetzt
+die Vorlage, für die Argumente kopiert, wie bei jedem generischen Typ. Abgeglichen: `Deque.of` und
+`Deque.clear`, die Lyric 5 nicht hat, wieder heraus. Spec 12 Regeln 5 und 7; acht Fälle, alle rot
+gegen S7d3. Mutanten: A 514, B 513, C 514 von 516 — je genau die vorhergesagten Fälle; A erst im zweiten Lauf: ein `head`, den das Wachsen stehen ließ, überlebte, weil der Deque-Fall nach dem Wachsen nur die Enden las — er druckt jetzt die ganze Deque.
+Fälle 508 → 516.
+
+**S7e, geschnitten (2026-10-31).** Strings nach 12 Src: die Operationen nativ in der VM, als dünne
+Adapter über Lyric 5s `string`; die API in der Prelude als `extend string { … }` mit Lyric 5s Namen
+und Formen (`string` statt `StringView`, `T[]` statt `Slice`, keine `throws`-Klauseln); die
+Format-Logik in Script. **S7e1** die Glieder von `string` und `char`: `length()` in Bytes,
+`isEmpty()`, `s[i]` das Zeichen ab Byte `i` (`Index<int>`), `s[a..b]` ein neuer String, `chars()`,
+`charIndices()`, `charCount()`; `Pattern` über einen String und ein `char` mit `contains`,
+`startsWith`, `endsWith`, `find`, `rfind`, `count`, `stripPrefix`, `stripSuffix`, `replace`,
+`replaceN` und `trimMatches…`; `trim…`, `isBlank`, `toUpper`/`toLower`, `padStart`/`padEnd`,
+`s * n`, `string.fromChars`; die Glieder von `char` (`isDigit` … `toDigit`, `char.fromDigit`).
+**S7e2** die Iteratoren `split`, `splitN`, `splitOnce`, `matches`, `lines`; `Parse` und
+`ParseError`, Zahlen aus Text (`int.parse(s)`, `s.parse<int>()`); dazu Blöcke auf Funktionstypen,
+Optionals und Tupeln (Lyric 5 05 §13 Regel 6 — Scripts Spec nahm nur die Regeln 1–4, gebaut waren
+Listen allein; seit S7e1 abgelehnt statt still verschluckt) und damit `fn(char) -> bool` als
+`Pattern`. **S7e3** `Display` und `Debug`
+als Prelude-Interfaces (Lyric 5 05 §14, 12) mit `StringBuilder`: `{x}` über `Display`, sonst über
+`Debug` (03 Eq); die synthetisierte Debug-Form wird die Konformanz zu `Debug`, das eigene
+`debug()` der Prelude-Typen (die Brücke aus S7d2) ihre; `join` über `Display`. **S7e4**
+Formatangaben in f-Strings (`{n:>6}`, `{x:.2}`, `{x:?}`; `Format`) und `std.fmt.format` — dazu
+**variadische Parameter** und `xs...` (Lyric 5 08 §1): Lyric 5 hat sie, Scripts Spec übernimmt
+§8 ohne Abweichung, der Plan hatte keine Zeile, also keine Uhr; jetzt S7e4, wo `format` sie
+braucht. `toBytes()` und `string.fromUtf8` kommen mit `Bytes` (S7f).
+
+**S7e1, Ergebnis (2026-10-31).** Die Glieder von `string` und `char` in der Prelude über 17
+Natives (Format 28): Länge in Bytes, `s[i]` und `s[a..b]` — ein neuer String, `^n` als
+Bereichsgrenze, `^n` als Index `LYS-SEM0114` —, `chars()` von beiden Enden, `charIndices()`,
+`charCount()`, die Fallabbildungen, die Trims, `s * n`, `string.fromChars`; `Pattern` über String
+und `char` mit Lyric 5s `matchAt`/`matchBefore`/`nextIn` und den suchenden, trimmenden,
+abstreifenden, ersetzenden und auffüllenden Gliedern, wie Lyric 5 sie darüber schreibt; `c in s`.
+Die Natives prüfen Zeichengrenzen mit Lyric 5s Texten („byte i does not begin a character“); die
+VM hält die Bytes eines Strings faul, weil Lyric 5 sie nur als Kopie gibt. Statische Glieder an
+Skalaren und `string` (`char.fromDigit`, `string.fromChars`) waren `LYS-SEM0052`, jetzt
+gerufen. **Gefunden:** (1) `xs * n` mit negativem `n` war `LYS-RT0008`, Lyric 5s ist `LYS-RT0007`
+— seit S7b2a, ohne Fall; (2) ein eigenes `class Map` war seit S7d2 `LYS-RES0011`
+(„ein eingebauter Typname“) statt die Prelude zu verdecken; (3) ein Syntaxfehler in der Prelude
+oder in `std.collections` verschwand still mit seinen Deklarationen — jetzt `LYS-ICE0001` mit Zeile
+und Grund (so fiel ein `extend fn(…)`-Block auf, den der Parser nicht nahm); (4) `extend` auf einem
+Funktionstyp nahm der Checker hin, ohne dass er wirkte — jetzt abgelehnt mit Uhr S7e2; (5) eine
+Kopie setzte eine `else if`-Kette mit einem Frame je Glied ein — die dreißig Varianten von
+`UnicodeCategory` sprengten den 2-MiB-Stapel der Unit-Tests (235 rot); `specIfChain` geht sie
+iterativ; (6) eine `match` von 400 Armen brachte den Codegenerator, eine `else if`-Kette von 400
+Gliedern den Checker zum Absturz (seit S2/S3) — der Codegenerator geht die Kette jetzt in einem
+Frame (`ifChain`), und ein Glied einer `else if`-Kette zählt im Parser als Verschachtelungsebene:
+über der Grenze `LYS-PAR0045` mit dem Hinweis auf `match`, statt eines Absturzes. Der alte Fall der
+Listenwiederholung erwartete RT0008 „wie Lyric 5“ — mit der Regel gezogen. Kosten: der kalte
+`hello` ging um etwa 20–35 ms hoch (P21). Spec 12 Regel 8, 02 Regel 1, 03 Regel 16, 05 Regeln 3
+und 8, 08; vierzehn Fälle, alle rot gegen S7d4. Mutanten: A 527, B 526, C 527 von 529 — je genau die vorhergesagten Fälle und der veraltete alte Fall (die Unit-Tests dieser Läufe waren am Stand selbst rot, Fund 5); für die Ketten D 528 von 530 und zwei Unit-Tests wie vorhergesagt, E (die Kopie wieder rekursiv) 237 rote Unit-Tests und — anders als vorhergesagt — auch der Fall der 400 Arme: die CLI hält die rekursive Kopie dort ebenfalls nicht.
+Fälle 516 → 530.
+
+**S7e2, Ergebnis (2026-10-31).** `split`, `splitN`, `splitOnce`, `matches` und `lines` als
+Iteratoren über jedes `Pattern`, neue Strings statt Sichten; `Parse` und `ParseError` (`Empty`,
+`Invalid`, `Overflow`, Lyric 5s Texte) für `bool`, `int` — auch `int.parse(s, radix)` — und
+`float` (die Form prüft Script nach Lyric 5s `checkFloatText`, den Wert liest ein Native über
+Lyric 5s `float.parse`, Format 29); `s.parse<T>()`. Die Ganzzahl nach Lyric 5s Verfahren, die
+negative abwärts gezählt, der Überlauf vor jedem Schritt gefragt, weil Scripts `int` beim Überlauf
+panikt. Blöcke auf Funktionstypen, Optionals und Tupeln zu festen Typen (Lyric 5 05 §13 Regel 6):
+ein Eintrag je Form, `this` die Form, Glieder und Konformitäten; die Defaults einer Konformität
+über eine Box, die die Slots der Form trägt, wie bei Skalaren; Kopien für Funktionstypen jetzt
+exakt statt geteilt, so wird ein Aufruf über eine Bedingung das Glied des Blocks — damit
+`fn(char) -> bool` als `Pattern`. Der Parser nimmt `extend ?T` und `extend (…)` (an dem, was der
+Klammer folgt, von einem Aufruf unterschieden). Unbekannte Glieder eines Strings sind
+`LYS-SEM0012`, nur `toBytes` (S7f) und die Formen (S7e3) NYI; die `withCapacity`-Panik in Lyric 5s
+Worten. **Uhr:** Blöcke über Formen mit Parametern des Blocks (`extend<T> ?T`) → S7e2c, bis dahin
+`LYS-NYI0001`. Spec 12 Regeln 8 und 9, 05 Regel 3; acht Fälle, alle rot gegen S7e1; der Fall,
+der `extend fn(…)` als NYI verlangte, ging mit seiner Regel. Mutanten: A 535, B 535, C 534 von 537 — je genau die vorhergesagten Fälle.
+Fälle 530 → 537.
+
+**S7e2c, Ergebnis (2026-10-31) — damit S7e2 fertig.** Blöcke über eine Form ihrer eigenen Parameter
+(Lyric 5 05 §13 Regel 6): `extend<T> ?T`, `extend<A, B> (A, B)`, `extend<A, R> fn(A) -> R` — eine
+Vorlage je Art und Stelligkeit, generisch über die Teile wie der Eintrag der Listen über das
+Element; der Empfänger bindet die Teile, ein Block zu festen Typen antwortet zuerst; die
+Konformitäten bedingt auf die Bedingungen des Blocks, die Defaults über die Box einer Instanz der
+Vorlage. Wie bei generischen Typen nennt der Block jeden Parameter einmal in Reihenfolge
+(`LYS-SEM0124`), wo Lyric 5 jede Form nimmt (`fn(T) -> T`) — als Abweichung festgehalten. **Gefunden
+beim Bauen:** eine Tabelle, schon beim Prüfen eines Aufrufs gebaut, kopierte die Glieder der Vorlage,
+bevor deren Rümpfe geprüft waren — leer, und die leere Kopie galt danach überall; die Tabelle kommt
+nun erst mit den Kopien (`instantiate`), die Instanz bekommt beim Prüfen nur ihre Konformitäten.
+Spec 05 Regel 3 und Abweichungen; zwei Fälle, beide rot gegen S7e2; der NYI-Fall von S7e2 ging mit
+seiner Regel. Mutanten: A 536, B 537, C 537 von 538 — je genau die vorhergesagten Fälle.
+Fälle 537 → 538.
+
+**S7e3, geschnitten (2026-10-31).** Lyric 5 rendert über `Display` (`show`, `showTo`) und `Debug`
+(`debug`, `debugTo`) in einen `StringBuilder`; Script druckt jeden Wert (03 Eq), `{x}` ohne
+`Display` in der Debug-Form. **S7e3a** `StringBuilder` (ein Objekt der VM über Lyric 5s Builder),
+`Display` und `Debug` in der Prelude, die Skalare und `string` konform; die Debug-Form eines Strings
+und eines Zeichens maskiert wie Lyric 5s `escapeTo` (`\"`, `\\`, `\n`, `\r`, `\t`, `\0`,
+`\u{…}` für nicht Druckbares) — Script setzte seit S3h nur Anführungszeichen; jeder Wert ist ein
+`Debug` (synthetisiert, `x.debug()`, `T :: [Debug]`); ein eigenes `Display` trägt `{x}`, ein eigenes
+`Debug` die Debug-Form — die Brücke aus S7d2 (ein `debug()` nur für Typen der Prelude) wird die
+Konformität der Collections. **S7e3b** Tupel als `Display` und `Debug` über Blöcke wie Lyric 5s
+(Stelligkeit 2–8; `{(1, "a")}` wird `(1, a)`, Ausgaben bestehender Fälle ändern sich), `{x}` eines
+Typparameters in einer geteilten Kopie über einen Text-Slot der Tabelle (`Display`, sonst `Debug`),
+`StringBuilder.append<T :: [Display]>`.
+
+**Ergebnis S7e3a (2026-10-31).** `StringBuilder` ist ein Objekt der VM über Lyric 5s Builder (sechs
+Natives, Format 30); `Display` und `Debug` stehen in der Prelude, die Skalare und `string` sind
+`Display`. Ein String und ein Zeichen in einer Debug-Form maskiert ein Native mit Lyric 5s
+`debug()` (zwei weitere, `nativeCount` 51). `Debug` gehört zu den synthetisierten Interfaces wie
+`Clone` und `Hashable`: `x.debug()` und `x.debugTo(out)` jedes Werts gehen über die Debug-Form, die
+ein Typ mit `:: Debug` und eigenem `debug()` selbst schreibt — die Collections listen `Debug` nun,
+die Brücke „nur Typen der Prelude“ aus S7d2 ist weg; `T :: [Debug]` nimmt jeden Typ, `x is Debug`
+gilt für jeden Wert. `{x}` eines `Display` geht über `show()` — ein Interface-Wert und ein
+Typparameter, den `Display` bindet, über die Tabelle. Lyric 5 macht einen Typ mit eigenem `debug()`
+ohne Listung zu keinem `Debug`; Script druckt jeden Wert, also bleibt dessen Form synthetisiert
+(05 Abweichungen). `debugTo` ist in der Prelude abstrakt: ein Default hätte `this.debug()` über
+eine Tabelle gerufen und so jedem Programm den Debug-Slot angelegt (S7c6c2s Lehre) — der Compiler
+schreibt es für jeden Wert, über einen Typparameter oder einen `Debug`-Wert ohne ein eigenes
+`debugTo` (P30). Gefunden: ein void-Task-Status druckte nicht, sobald irgendetwas über eine Tabelle
+druckte (`text of a void`, seit S6a) — der eine Wert von `void` ist nun `()` (Lyric 5 03 M6-5: `void`
+steht für das leere Tupel), die Uhr „Text eines void → S7e“ ist eingelöst; ein Zeichenliteral im
+Loch eines f-Strings, `'"'`, `'}'`, `':'`, öffnete einen String, schloss das Loch oder begann eine
+Format-Spec (seit S2c, Lexer und Leser des Lochs; Lyric 5 liest es); im Slice selbst, über Mutant C:
+die synthetisierte Form eines Builders druckte sein Feld, ein Objekt der VM ohne Tabelle
+(`LYS-ICE0001`) — seine Debug-Form ist sein Typ, `<StringBuilder>`, wie die einer Task (10 Regel
+19). In S7e3b auch: `{x}` eines
+`Any`, der ein `Display` hält, über denselben Text-Slot; Listen und Collections als `Display`
+(Lyric 5: ihr `show` ist die Debug-Form) für `T :: [Display]`. Kalter `hello`: S7e2 ≈ 263 ms, S7e3a
+≈ 280 ms (Median von zehn, dieselbe Maschine und Stunde, laut); die fünf `Display`-Blöcke tragen
+≈ 5 ms davon (A/B). Spec 05 Regeln 9 und 21 und Abweichungen, 12 Regel 10 und Abweichungen; neun
+Fälle, alle rot gegen S7e2c. Mutanten (elf): A–I, M und N trafen je genau die vorhergesagten Fälle; C verfehlte die Vorhersage (≥4 Fälle der Collections, tatsächlich 13 und einer aus 03, zehn davon Paniken) — und führte zum Fund am Builder.
+Fälle 538 → 547.
+
+**Ergebnis S7e3b (2026-10-31) — S7e3 fertig.** Ein Text-Slot neben dem Debug-Slot: je Typ sein
+Text — ein `Display` sein `show()` (eine Funktion des Typs, die einer Vorlage generisch wie die der
+Debug-Form; ein `show()` eines Blanket-Blocks über `memberCallOn`, dessen Kopie beim Füllen ganz
+ist), ein Skalar und ein String ihr eigener aus der Box, jeder andere Wert seine Debug-Form, ein
+Funktionswert `<fn>`. `{x}` eines Interface-Werts und eines Typparameters in einer geteilten Kopie
+gehen darüber; drinnen in einem anderen Wert bleibt es die Debug-Form. Tupel aus `Display`s sind
+eins über sieben Blöcke der Prelude (Stelligkeit 2–8, Lyric 5s; `{(1, "a")}` druckt `(1, a)`, sechs
+bestehende Fälle angepasst); Debug-Blöcke für Tupel braucht es nicht, die Debug-Form ist
+synthetisiert. Listen sind `Display` ohne Block — Lyric 5s `extend<T :: [Debug]> T[]` druckte über
+`T` und legte in jedem Programm den Debug-Slot an (S7c6c2) —: `conformsDirect`, `xs.show()` und
+`showTo` neben `debug()`, die Kopie in `memberCallOn`, der Slot in der Tabelle jeder Listeninstanz;
+die Tupel bleiben Blöcke, weil ihre Rümpfe über `T :: [Display]` ohne Tabelle laufen. Map, Set und
+Deque sind `:: [Debug, Display]`, `show()` ihre Debug-Form; `StringBuilder.append<T :: [Display]>`.
+Gefunden: ein String in einem Interface-Wert druckte allein in Anführungszeichen — gegen 05 Regel 9,
+und ein Fall und ein Unit-Test pinnten die falsche Form (seit S3i); `{x}` einer Instanz einer
+generischen Klasse mit eigenem `Display` druckte leer, und danach auch ihr direkter `show()`-Aufruf
+(S7e3a selbst, an dessen Build geprüft; ein Tupel ebenso): `shownBy` rief beim Prüfen
+`memberCallOn`, das für die Kopien gebaut ist — belegt ist der Ort (Bisektion über vier Builds),
+nicht, warum die Kopie leer ausfiel. `shownBy` ruft ein eigenes `show()` jetzt über eine Funktion
+des Typs, wie die Debug-Form erreicht wird, ein Tupel und einen Blanket-Block wie geschrieben
+(`showCall`). Ein erster Mutant dazu überlebte: er drehte den Zweig der Vorlagen zurück, den eine
+konkrete Instanz nicht nimmt; der zweite (T2) traf den richtigen und tötete auch die Fälle der
+Collections, die nun generische `Display`-Klassen sind. Kalter `hello`, zwanzig Runden im
+Wechsel: S7e3a ≈ 283 ms, S7e3b ≈ 300 ms; die Tupel-Blöcke tragen ≈ 13 ms davon (A/B im Wechsel — eine Messung in Zehnerblöcken hatte sie unter
+der Drift der Maschine verdeckt), P21. Spec 05 Regeln 9 und 21, eine Abweichung weniger, 12 Regel
+10; drei Fälle neu, einer verstärkt, sechs angepasst — alle zehn rot gegen S7e3a. Mutanten (elf): P, Q, S, V, W und Z trafen je genau die vorhergesagten Fälle; R, U und X trafen mehr (R auch den eigenen `show` über `showFnOf`, U zwölf statt sechs Fälle — Tupel aus Zahlen ebenso —, X zwei bestehende Fälle, die Listen über `Display` erreichen); T überlebte, T2 tötete (oben).
+Fälle 547 → 550.
+
+**S7e4, geschnitten (2026-10-31).** Lyric 5 12 §2 gibt die Formatsprache (`[[fill]align][sign][#][0]
+[width][grouping][.precision][type]`, was auf welchen Typ passt, `LYR-SEM0164`, die Rundung „half away
+from zero“ auf den exakten Binärziffern) und `std.fmt.format(template, args: Display...)`, das sie
+zur Laufzeit liest; 08 §1 Regel 1 die variadischen Parameter, die `format` braucht. Scripts Parser
+lehnt `xs: int...` und `xs...` mit `LYS-PAR0008` ab, ohne NYI und ohne Uhr; eine Format-Spec im Loch
+ist NYI mit der Uhr S7e. **S7e4a** variadische Parameter: `xs: T...` zuletzt, ohne Default, nicht
+benannt, die übrigen Positionsargumente als `T[]` — ein Array darin ein Element, wo `T` es nimmt
+(`Any...`, `T...`) —, `xs...` breitet ein Array über den Parameter (`LYS-SEM0166` sonst), ohne Kopie;
+ein variadischer Funktionswert und eine Methode ebenso. **S7e4b** die Formatsprache in f-Strings:
+die Spec beim Übersetzen gelesen und geprüft (`LYS-SEM0164`), die Skalare über Natives auf Lyric 5s
+`format(spec, out)` — dieselbe Ausgabe, dieselbe Rundung —, ein `Display`-Typ und `?` über die
+Polsterung des Texts (Lyric 5s `string` als Format), `interface Format` für eigene Formate, die
+Spec wie geschrieben. **S7e4c** `std.fmt.format` in Script über dieselben Natives, `{}`, `{i}`,
+`{{`, Panik `LYS-RT0008` für alles, was der Compiler im f-String ablehnt.
+
+**Ergebnis S7e4a (2026-10-31).** Der Parser liest `xs: T...` als `T[]` mit einer Marke und `xs...`
+als Ausbreitung, wie Lyric 5s Parser. `callAmong` nimmt zuerst einen Kandidaten genau der Zahl,
+dann einen variadischen; `gatherRest` macht aus den übrigen Positionsargumenten ein Array-Literal,
+dem variadischen Parameter beim Namen gegeben — so prüft und bindet es wie jedes Literal
+(`count<T>(xs: T...)` mit `count([1, 2])` ist `T = int[]`, gegen Lyric 5 geprüft); eine Ausbreitung
+ist das Array selbst. `LYS-SEM0024` (zuletzt, ohne Default), `LYS-SEM0166` (eine Ausbreitung, am
+variadischen Parameter, allein im Rest — auch wo ein Aufruf `callAmong` nie erreicht, `println(xs...)`),
+`LYS-SEM0119` für den benannten variadischen Parameter, `LYS-PAR0060` für eine lokale Funktion mit
+Lyric 5s Wortlaut. Eine abgelehnte Ausbreitung wird wie in Lyric 5 als nichts geprüft, ihr Parameter
+nicht zusätzlich fehlend genannt — ein Unit-Test, weil ein Konformanzfall nur Vorhandenes prüft. Ein
+Funktionswert einer variadischen Funktion ist `fn(T[]) -> R`, mit dem Array gerufen (Lyric 5
+ebenso). Spec 08 Regel 6; drei Fälle, alle rot gegen S7e3b. Mutanten (acht): jeder traf genau die vorhergesagten Fälle und Tests — auch H, der allein am Unit-Test hängt.
+Fälle 550 → 553, Tests 357 → 358.
+
+**Ergebnis S7e4b (2026-10-31).** Ein Modul `vm/fmt.lyr` liest eine Spec wie std.cores `readSpec` und
+sagt mit dessen Worten, was an ihr für welche Art Wert nicht passt — einmal für zwei Nutzer: der
+Checker lehnt eine Spec im f-String ab (`LYS-SEM0164`), und das Native `fmt.problem` lässt die
+Prelude eine zur Laufzeit gelesene als Script-Panik ablehnen (`LYS-RT0008`), bevor Lyric 5s
+Formatierung sie sieht — deren eigene Panik beendete sonst den Prozess. Geschrieben wird mit Lyric 5s
+öffentlichen `fstringFormatted` und `fstringPadded` (vier Natives `fmt.int`, `fmt.float`, `fmt.str`,
+`fmt.pad`, Format 31): dieselben Vorgaben und dieselbe Rundung („half away from zero“ auf den
+exakten Binärziffern, `{2.675:.2f}` ist `2.67`); ein `char`, ein `bool` und jeder andere Wert werden
+auf ihrem Text gepolstert, `?` auf der Debug-Form. `interface Format { fn format(spec: string, out:
+StringBuilder) }` mit den Skalaren und `string` als Konformern; ein eigener Typ liest die Spec wie
+geschrieben, über eine generische Hilfe der Prelude. Ein Native braucht in der Prelude einen
+getypten Mantel (`__fmtProblem`), sonst `LYS-ICE0001`. Der Pin `whatLyricScriptHasNot` (die
+Format-Spec als NYI) ging mit seiner Uhr; er nimmt jetzt `toBytes()` (S7f). Kalter `hello`, zwanzig
+Runden im Wechsel: S7e4a ≈ 313 ms, S7e4b ≈ 328 ms; die fünf `Format`-Konformitäten ≈ 8 ms davon (A/B
+im Wechsel), P21. Spec 12 Regel 11 und Abweichungen; fünf Fälle, alle rot gegen S7e4a. Mutanten (acht): jeder traf genau die vorhergesagten Fälle.
+Fälle 553 → 558.
+
+**Ergebnis S7e4c (2026-10-31) — S7e fertig.** `std.fmt` ist ein Modul in Script (`std/fmt.lyrs`, ohne
+Recht): `format(template, args: Display...)` liest die Vorlage beim Lauf wie Lyric 5s `std.fmt`, mit
+dessen Paniktexten (`LYS-RT0008`); ein `Format` liest seine Spec selbst — die Skalare über die Natives
+aus S7e4b, geprüft vor Lyric 5 —, jeder andere Wert wird auf seinem Text gepolstert, `?` auf der
+Debug-Form, die in Script jeder Wert hat. Gefunden: das Modul las die Zeichen über
+`chars().toArray()`, einen Adapter aus `std.iter`, den der Lader im CLI nachzieht, weil der Text
+`.toArray` nennt — allein übersetzt (der Unit-Test jedes Moduls) war es ein Fehler; es sammelt die
+Zeichen jetzt selbst. Spec 12 Regeln 2 und 12; fünf Fälle, alle rot gegen S7e4b. Mutanten (acht): jeder traf genau die vorhergesagten Fälle.
+Fälle 558 → 563.
+
+**Ergebnis S7e4d (2026-10-31) — die Uhren, die S7e hinterließ.** Mit S7e fertig zeigten noch Uhren
+auf S7e: `laterClock` gab jedem Typ außer den Zahlen „S7e“ — ein unbekanntes Glied an `bool`, `char`,
+einem Tupel, einem Optional und einem Funktionswert war `LYS-NYI0001` statt `LYS-SEM0012`, und
+`[null]` druckte nicht („text of a null“). Jetzt `LYS-SEM0012`, und `null` druckt `null`; die Zahlen
+behalten ihre Uhr (S7f). Die Zweige über `Ty.Map` mit der Uhr S7d sind fort — `Ty.Map` entsteht
+seit S7d2 nicht mehr, die Maps sind Klassen —, ebenso `laterClock` und der Leise-Modus der
+Debug-Form (`quietDebug`): was der Rest-Zweig noch erreicht, `never` und eine Zelle, hält keinen
+Wert, den ein Programm druckt. Gefunden beim Abschluss von S7e, mit `grep` nach den Uhren im Code.
+Ein Fall neu, einer verstärkt, beide rot gegen S7e4c. Mutanten (zwei): beide trafen genau den vorhergesagten Fall.
+Fälle 563 → 564.
+
+**S7f, geschnitten (2026-10-31).** Lyric 5 12 §Numbers gibt den Turm `Num`, `Signed`, `Integer`,
+`Float` (P25), die Glieder von `Integer` (`checked…`, `saturating…`, `wrapping…`, `pow`, Bitzählungen,
+Rotationen) und von `Float` (Statics, `isNan` …, `totalCompare`, `toBits`/`fromBits`), `clamp` an
+`Ordered` und `std.math`. Script hat eine Ganzzahl und eine Gleitkommazahl (03 K3): Lyric 5s
+Verengungen (`int8.exact`, `clamping`) haben kein Ziel. `static let` in einem Interface und `T.zero`
+über eine Einschränkung gehen schon; eine Konstante am Namen eines Skalars, `int.max`, ist heute
+`LYS-SEM0052`. **S7f1** der Turm in der Prelude mit seinen Gliedern, Konstanten am Skalarnamen,
+`+% -% *%` (03 Überlauf), `clamp`, `sum`/`product` über `Num` statt über `int` und `float` (P25).
+**S7f2** `std.math` — die Funktionen über Natives auf Lyric 5s `math` (dieselben Bits auf jeder
+Plattform), `abs`/`signum` über `Signed`, `min`/`max`, `gcd`/`lcm`, `lerp`, `pi`/`e`/`tau`.
+**S7f3** `From`/`Into` mit 05 §13 Regel 9 (P19) und P22. **S7f4** `BigInt` in der VM, Literale über
+`FromIntLiteral`, die Kostenregeln. **S7f5** `Bytes`, `b"…"`, `toBytes()`, `string.fromUtf8`.
+**S7f6** `std.random`, geseedet ohne Recht, ungeseedet mit `os` (01 S8).
+
+**S7f1, neu geschnitten, und Ergebnis S7f1a (2026-10-31).** Der Turm braucht, was Lyric 5 05 §8
+Regel 7 sagt und Scripts Spec über die Basis zusagt, gebaut war es nie: eine Elternliste ist eine
+Einschränkung auf `Self`. Ein Elternteil `Add<Out = Self>` — oder `Add`, dessen `Rhs` `Self`
+vorgibt — wurde gelesen, wo `Self` kein Typ war: `Add<?>`; durch `T :: [Ring]` war `T` kein
+`Add<T>`, und `float` mit seinen zwei `add` meldete `LYS-SEM0085` (seit S7c5c1, mit den
+Operator-Interfaces). **S7f1a** behält einen Elternteil über `Self` geschrieben am Interface
+(`Synthesized.selfParents`) und liest ihn, wo `Self` bekannt ist: an der Einschränkung eines
+Typparameters samt seinen Fixierungen — `a + b` ist ein `T`, unfixiert ein `T.Out`, wie Lyric 5,
+gegen den Compiler geprüft —; am eigenen `Self` der Rümpfe des Interfaces (`selfFirst`); an einem
+Typ, der das Interface listet — dort kommt ein Elternteil mit, wo der Typ ihm nicht schon
+konformiert, seine Glieder aus derselben Liste, und der Typ antwortet wie fixiert
+(`LYS-SEM0042`). **S7f1b** der Turm, **S7f1c** `clamp`, `sum`/`product` über `Num`. Spec 05
+Regel 22; zwei Fälle, beide rot gegen S7e4d. Mutanten (sechs): A, B, C, E und F trafen je genau die vorhergesagten Fälle; D (der Typ nimmt keinen Elternteil mit) traf auch den Lauffall — die Kopie ruft `add` nicht beim Namen, wie vorhergesagt, sondern über die Konformanz.
+Fälle 564 → 566.
+
+**Ergebnis S7f1b (2026-10-31).** Der Turm steht in der Prelude: `Num` mit `zero`, `one`,
+`isZero()` und den Operatoren `<Out = Self>` als Eltern (S7f1a trägt sie), `Signed`, `Integer`
+(`min`, `max`, `bitWidth`, `isSigned`, `checked…`, `saturating…`, `wrapping…`, `pow`, Bitzählungen,
+Rotationen), `Float` (`epsilon`, `infinity`, `nan`, `min`, `max`, `leastPositive`, `fromBits`, `isNan`
+…, `toBits`); `int` und `float` konform. Die Glieder schreibt `int` selbst, über `+%`, `-%`, `*%` in
+Script; Bitzählungen und Rotation über Natives auf Lyric 5s eigene `Integer`-Glieder, die Bits einer
+Gleitkommazahl über zwei Natives, die nichts tun — die VM hält sie als Bits (Format 32). Eine
+Konstante steht am Namen eines Skalars, `int.max` (`LYS-SEM0052` bis hier). Gefunden: der Durchgang,
+der „nur Einschränkung“ von den Eltern erbt, las jede Deklaration im Modul der letzten — das `Num`
+der Prelude machte ein eigenes `Num` eines Skripts zur bloßen Einschränkung (seit S7c4a, dessen
+Korrektur nur den ersten Durchgang traf). Zwei Fälle — einer aus S7f1a — und ein Unit-Test gaben
+`int` ein eigenes `zero`: jetzt das der Prelude (Lyric 5 lehnt das zweite ebenso ab), der Block leer. In der Prelude kostete der Turm einen kalten `hello` rund 74 ms (Median 367 → 441 ms, dreißig Runden im Wechsel) statt der vorhergesagten 15–30. Kein einzelner Schuldiger: Phasenzeiten zeigen 100 Funktionen und 37 Slots mehr, `declare` doppelt so lang; das Merken in `selfFirst` brachte nichts. Allein das Parsen der Prelude nimmt rund 140 von 430 ms. Also dasselbe wie bei `std.iter` (S7c6b1) und den Collections: `std/numbers.lyrs`, vom Lader dazugemischt, wo ein Modul einen Namen des Turms nennt, seine Namen die der Prelude — `hello` wieder gleichauf mit S7f1a (519 gegen 520 ms); ein Unit-Test pinnt die Erkennung in beide Richtungen.
+Spec 12 Regel 13 und Abweichungen; fünf Fälle neu, zwei angepasst, alle sieben rot gegen S7f1a.
+Mutanten (neun): B, C, D, F, G, H und J trafen je genau die vorhergesagten Fälle; I traf die Fälle, die den Turm nennen, bis auf `a_scalar_names_only_its_constants`, das auch ohne Turm `LYS-SEM0012` ist; A verfehlte die Vorhersage — die Prelude las `int.min` damals selbst, ohne die Konstante übersetzte nichts.
+Fälle 566 → 571, Tests 358 → 359.
+
+**Ergebnis S7f1c (2026-11-05) — S7f1 fertig.** `clamp` ist eine Vorgabe von `Ordered` in der
+Prelude. `sum` und `product` stehen auf `Num`, in `std/numbers.lyrs`, nicht in `std.iter`: ein
+Programm mit einem Adapter zahlt so den Turm nicht mit, und die Erkennung liest `std.iter`s eigenen
+Text nicht mehr; `average` bleibt in `std.iter`, Scripts Zugabe über `int` und `float`. Gefunden: eine
+Vorgabe, die generisch über `Self` ist, bekam an einem Skalar den Empfänger in einer Box — der
+Zweig für benannte Typen hatte den Fall „der Empfänger, wie er ist“, der für Skalare nicht. Mit zwei
+`Self`-Parametern war das fehlerhafter Bytecode (`LYS-ICE0002`), mit einem las die Kopie falsche
+Register, still (seit S7c1b); `5.clamp(1, 3)` panikte. Spec 12 Regeln 4 und 13, eine Abweichung
+weniger; vier Fälle, alle rot gegen S7f1b. Mutanten (sechs): jeder traf genau den vorhergesagten Fall.
+Fälle 571 → 575.
+
+**Ergebnis S7f2 (2026-11-05).** `std.math` ist ein Modul in Script: `min`/`max`, `gcd`/`lcm`, `lerp`,
+`abs`/`signum` über den Turm wie in Lyric 5 geschrieben, die Elementarfunktionen über zwei Natives
+(`math.one`, `math.two`, Format 33) auf Lyric 5s `std.math`: die Ausgabe zweier Programme ist
+bytegleich mit dem, was Lyric 5 selbst druckt, und daraus stammen die Sollwerte der Fälle. Geplant
+war `float` statt `T :: [Float]`, weil Script nur einen Float hat; das wäre eine Abweichung gewesen,
+und ein generisches Programm wäre abgelehnt worden. `T.fromBits(native(x.toBits()))` hält sie auf,
+kostet aber das Dreifache des Aufrufs (14,0 µs gegen 4,4 µs, Debug, abwechselnd gemessen). Der Native
+nimmt die Bits darum direkt aus dem Register, der Aufruf kostet so viel wie der über `float`; ein
+eigener `Float` eines Programms erreicht, was über den Turm geschrieben ist, und ist an einer
+Elementarfunktion `LYS-SEM0028`, dort, wo die Kopie entsteht.
+
+**Gefunden, weil die Messung ein Release-Binary brauchte: es lief nicht.** Die CI und jeder Lauf
+hier bauen Debug. (a) Seit S7e1 endete das Release-Binary schon bei `println("hi")` mit `LYR-RT0006`:
+Lyric 5 prüft beim Eintritt das Doppelte aller IR-Slots einer Funktion, bei `runTask` 265 KB gegen die
+256 KiB eines Tasks in Release, bei einem realen Frame von rund 4 KB. Die Natives stehen jetzt in
+`callNative` (`runTask` fragt noch 217 KB, das bleibt knapp); lyric#668. (b) Unter `-O2` zerlegt SROA
+einen Zeiger im Keller, wo eine Enum-Variante am selben Offset ein Byte hat; der konservative Scan
+liest ausgerichtete Worte und sieht ihn nicht, die Zeile gilt als frei, und `memset` trifft das
+lebende Objekt. Belegt an `parseIf` mit Hardware-Watchpoint und Keller-Dump: Release 543/582, Debug
+582/582; `opt = 1` ist schlechter, Boehm auch kaputt, nachbauen ließ es sich klein nicht; lyric#667.
+Das ist in Lyric 5 zu beheben, Script läuft bis dahin auf Debug (P31). Spec 12 Regeln 2 und 14; sieben
+Fälle, alle rot gegen S7f1c. Mutanten (acht): sieben wie vorhergesagt; der achte, `lerp` naiv am fernen Ende, überlebte, weil `lerp(0.1, 0.3, 1.0)` auch naiv exakt ist: der Fall prüfte die Grenze nicht und nimmt jetzt `lerp(0.7, 0.1, 1.0)`, naiv 0.09999999999999998; danach getroffen.
+Fälle 575 → 582.
+
+**Ergebnis S7f3 (2026-11-06).** `From<T>` und `Into<T>` stehen in der Prelude, `Into` als Block
+`extend<T, U :: [From<T>]> T :: [Into<U>]`: `U` nennt nur die Konformanz (05 §13 Regel 9, Spec 05
+Regel 23). So ein offener Block fragt zur Übersetzung erst, wo eine Instanz verlangt wird, und ein
+Block, der ohne Annahme reicht, geht ihm vor (`blanketPick` in zwei Stufen; zwei offene sind
+SEM0121). Was keine Stelle fragt, aber `is` zur Laufzeit sucht, gibt `conformOpen` vorab durch
+Aufzählen der Typen, die `From` an sich tragen. P22 mit: ein Block auf einer Instanz hält mehrere
+Glieder eines Namens (`anotherOnInstance`, `setOf`), und ein abgelehntes Glied wählt nichts mehr.
+Dazu `util.f<int>(x)` durch den Modulnamen und der Positionstyp an einem Modulaufruf.
+Stiller Fehlschlag unterwegs: `fn twice2<U :: [From<Meters>]>(m) = m.into()` druckte 2 statt 3, weil
+ein geteilter Aufrufer `Any` an die exakte Kopie von `into` gab. Jede Instanz eines generischen
+Interfaces ist jetzt exakt, festgehalten von `a_conversion_handed_on_by_a_generic`.
+Drei Fehler in Lyric 5, wo Script der Spec folgt: lyric#670 (ein Wert `Into<X>` → ICE), lyric#671
+(ein Block auf einer Instanz hält keine zwei Glieder zweier Instanzen), lyric#672 (die Beschränkung
+einer generischen Methode, die den Parameter des Typs nennt). Spec 05 Regeln 12, 18, 23; 12 Regel 15.
+Rot-Lauf: 15 von 19 rot gegen S7f2; zwei Vorhersagen falsch, weil der Runner überzählige Codes nicht
+bemängelt. Mutanten (15): 13 treffen wie vorhergesagt oder mehr, zwei Lücken. Der Mutant „eigenes
+`into` antwortet in der Kopie" ließ den dafür geschriebenen Fall grün: ein Struct läuft über die
+Tabelle, nur eine Kopie am Skalar erreicht den direkten Aufruf; neuer Fall
+`a_values_own_into_at_another_instance`, an Lyric 5 geprüft. Der Mutant „ein abgelehntes Glied wählt
+mit" überlebte, weil überzählige Codes nicht zählen; neuer Test `aRefusedMemberChoosesNothing`.
+Fälle 582 → 602, Tests 359 → 360.
+
+**Ergebnis S7f4 (2026-11-06).** `BigInt` steht in `std.math`: ein `Signed`, `TotalOrder`, `Hashable`,
+`Clone`, `From<int>`, `FromIntLiteral`, `Shl`, `Shr`, kein `Integer`, denn das ist eine feste Breite.
+Die Zahl selbst ist `src/vm/bigint.lyr` in Lyric 5, 32-Bit-Wörter mit Vorzeichen, Division nach
+Knuth D; 17 neue Natives (`big.*`, 62–78), Format 34. Die Kostenregeln (01 S5c) gelten erstmals für
+ein Native: `charge` nimmt die Kosten aus den Operanden **vor** der Arbeit, und reicht das Budget
+nicht, hält `.CallN` die Instanz an dieser Stelle an, ohne dass gerechnet wurde. Spec 12 Regel 16
+nennt die Formeln, `theNativesOfABigIntChargeByTheirOperands` prüft jede genau: mit der Summe läuft
+es durch, mit einer Einheit weniger hält es an. Die Grenze von 2^31 Bits fragt Shift und Produkt vor
+dem Anlegen (`LYS-RT0002`). `x + 1` bleibt `LYS-SEM0003` (ein Operand ist keine Stelle mit Zieltyp,
+03 Lit) und ein Literal jenseits von `int` `LYS-PAR0007`: P32.
+Zwei Fehler im Compiler dabei gefunden, beide von `std.math` selbst ausgelöst. Ein Struct mit eigenem
+`equals` und einem `Any`-Feld war `LYS-SEM0059`, gegen die Spec und gegen Lyric 5: `notEquatable`
+fragt das eigene `equals` jetzt vor den Feldern. Und **still falsch**: der Wert eines `static let`
+wurde im Namensraum des Importeurs geprüft, der das Skript ausführt; `fn helper(): int = 99` im
+Importeur machte aus `P.one.v` 99 statt 1. `staticInitStmts` prüft ihn jetzt im Modul, das ihn
+erklärt; `a_types_constant_reads_its_modules_names` hält es fest. Gefunden, weil ein nacktes
+`import std.math` plötzlich SEM0002 auf `BigInt` meldete, in `everyModuleOfTheStandardLibraryCompiles`.
+Kein älteres schweres Native bucht seine Kosten (`sort`, `repeat`, `replace`, `split`): P33.
+Rot-Lauf: 20 von 21 rot gegen S7f3, grün nur `a_big_int_literal_is_an_ints`, wie vorhergesagt.
+Mutanten (21): alle getötet. Mutant Q und R treffen mehr als vorhergesagt, auch die älteren
+`std.math`-Fälle, weil das Modul jetzt `BigInt` lädt. Kaltstart von `import std.math`: 582 → 623 ms;
+wer es nicht nennt, zahlt nichts.
+Fälle 602 → 623, Tests 360 → 362.
+
+**Ergebnis S7f5 (2026-11-06).** `std/bytes.lyrs`, geladen, wo ein Modul `Bytes`, `fromUtf8`, `Utf8Error`
+oder ein `b"…"` nennt; ein String, der auf `b` endet, nennt nichts. Hinter der Klasse 17 Natives über
+`ScriptBytes`, die wie `BigInt` vor der Arbeit buchen: `1 + n / 32`, eine Scheibe, was sie kopiert. Ein
+`b"…"` wird eine Textkonstante mit einem Zeichen je Byte (Latin-1) und bei jeder Auswertung neu.
+`string.fromUtf8` wirft `Utf8Error` mit dem Offset, `fromUtf8Lossy` ersetzt. Eine Schleife über eine
+Million Bytes braucht im Debug-Bau rund das 1,45-fache einer Liste (17–18 s gegen 12 s). Zwei Dinge
+stehen noch aus und kommen mit S7g: `fs.readBytes`, `fs.writeBytes`.
+Gefunden: `{b:?}` war `LYS-ICE0001`, weil `Bytes` `Debug` nicht sagte, und damit das Allgemeine dahinter:
+`{x.v:?}` auf einem `BigInt` erreichte aus einem Skript den ICE, denn das Feld ist lesbar. Jetzt
+`LYS-RT0007` („an object of the VM has no members“), zwei Fälle, ein Satz in Regel 17.
+Der Fall `string_members_to_come` verlangte `NYI0001` für `toBytes` und fiel erst im Prüflauf auf: auf
+`SEM0012` gekürzt, `a_member_no_string_has`.
+Rot-Lauf: 30 von 33 rot gegen S7f4, grün die zwei des Lexers und der Fall zu `^n` auf fremdem Typ, wie
+vorhergesagt. Mutanten (29): alle getötet. **Drei davon erst im Nachlauf:** `mutS7f5A.py` und
+`mutS7f5a.py` sind unter Windows eine Datei, im ersten Lauf waren die Zeilen A, B, C in Wahrheit `a`,
+`b`, `c`; auffällig, weil ihre Treffer nicht zur Vorhersage passten. Kaltstart (Median aus 20): `println(1)`
+315 → 328 ms, also auch wer `Bytes` nicht nennt, zahlt etwas, in dieser Streuung (302–485) nicht sicher
+von null zu trennen; mit `b"a"` 380 ms.
+Fälle 623 → 656, Tests 362 → 364.
+
+**Ergebnis S7f6 (2026-11-06).** `std.random` hält `class Random` über Lyric 5s Generator: `Random.seeded(n)`
+gibt **denselben Strom** wie Lyric 5, der Fall `random_is_lyric_5s_stream` vergleicht gegen die Ausgabe
+desselben Programms dort, auch wie viele Züge jede Operation nimmt. Das Modul fragt nach keinem Recht.
+Was aus dem System zieht, steht in **`std.random.system`**, Recht `os`: `fresh()` und die freien
+`nextInRange`, `nextFloat`, `shuffle` über den einen Generator des Programms. Lyric 5 hat beides in einem
+Modul, Rechte hängen hier aber am Modul (P35). `nextBytes`, `shuffle`, `choice`, `sample` sind Script.
+Gefunden, und im Prüflauf nicht sichtbar: **`import std.random` kostete +204 ms kalt**, weit über der
+Vorhersage. `namesNumbers` prüfte Teilstrings, `nextFloat` enthält `Float`, jeder Nutzer lud den Turm;
+auch ein eigenes `nextFloat` im Skript hätte das getan. `holdsName` prüft jetzt ganze Namen: rund +80 ms
+(`println(1)` 300 ms, mit `import std.random` 380 ms; `Bytes` bleibt, wegen `nextBytes`). `println(1)` selbst
+4,5 ms teurer, in der Streuung. `everyModuleOfTheStandardLibraryCompiles` geht jetzt durch den Loader: es
+kannte nur den Turm als Abhängigkeit.
+Rot-Lauf: 10 von 10 rot gegen S7f5. Mutanten (22): 21 getötet. **SH überlebte zuerst:** `k` über der Länge
+panikt auch ungeprüft mit `RT0008`, im nächsten Zug; der Fall prüft jetzt den Text. **SU überlebt** (ein
+geseedetes `own` in `std.random.system`): dazu müsste ein Fall zwei Läufe vergleichen, und das kann der
+Runner nicht; mit `std.process` (S7h) lässt es sich nachholen, dort als Fall vorgemerkt.
+Fälle 656 → 666, Tests 364.
+
+**S7f fertig.** `int`/`float`-Turm, `std.math`, `From`/`Into`, `BigInt`, `Bytes`, `std.random`.
+
+**S7g, neu geschnitten (2026-11-06).** Zu groß für einen Schritt; der Reihe nach, jeder mit Spec, Fällen,
+Rot-Lauf und Mutanten:
+- **S7g1** `std.io` über Speicher, ganz in Script: `IoError`, `IoErrorKind` (in die Prelude, weil `readLine`
+  sie wirft), `Reader`/`Writer`/`Seek` als Interfaces mit Vorgabe-Methoden statt `extend<R>`, `copy`,
+  `ByteReader`, `ByteBuffer`, `BufReader`, `BufWriter`, `TextReader`, `TextWriter`. Go-Form über `Bytes`:
+  `read(into)` füllt von vorn, einen Slice-Typ gibt es nicht. Ein Native `bytes.copy`, das nach Bytes bucht.
+- **S7g2** Die Konsole: `stdin()`, `stdout()`, `stderr()`, `flush()`, `eprint`; `readLine()` wirft `IoError` statt
+  `null` zu geben. Der allgemeine Weg, auf dem ein Native wartet, entsteht hier mit seinem ersten Nutzer.
+- **S7g3** `std.path` in Script, keine Natives außer dem Trenner; ohne Recht.
+- **S7g4** Auf dem Weg aus S7g2 `std.fs`: `File`, die Bequemen (`readText`, `readBytes`, `writeText`,
+  `writeBytes`, `appendText`, `lines`).
+- **S7g5** `std.fs`, Verzeichnisse: `metadata`, `createDir`, `remove`, `rename`, `readDir`, `canonicalize`,
+  `absolute`, `createDirAll`, `removeAll`, `copy`, `walk`, `tempDir`, `tempFile`.
+- **S7g6** `fs.glob` in Script (12 Um).
+
+**Ergebnis S7g1 (2026-11-07).** `std/io.lyrs`, 400 Zeilen Script: `Reader`, `Writer`, `Seek`, `copy`,
+`ByteReader`, `ByteBuffer`, `BufReader`, `BufWriter`, `TextReader`, `TextWriter`. `IoError` und `IoErrorKind`
+stehen in der Prelude, `import std.io { IoError }` nennt, was jedes Modul sieht. Zwei Natives: `bytes.copy`,
+nach Bytes gebucht und richtig bei Überlappung, und `bytes.find`, damit eine Zeile nicht Byte für Byte im
+Interpreter gesucht wird. Format 37. Abweichungen von Lyric 5, alle aus der Go-Form über `Bytes`: `read(into)`
+füllt von vorn, weil es keinen Slice-Typ gibt; `ByteBuffer.toBytes()` statt `toArray`; `readToEnd` gibt `Bytes`;
+Vorgabe-Methoden auf dem Interface statt `extend<R>`. `@NonExhaustive` gibt es in Script nicht: ein `match` über
+`IoErrorKind` wird nicht zum `_` gezwungen, die Spec sagt es nur (P36). Ein qualifiziertes `io.IoError` geht nicht;
+die Warnung für einen nie geschlossenen `BufWriter` kommt mit den Lints (S11).
+**Gefunden beim Messen, derselbe Fehler wie in S7f6:** `import std.io` kostete kalt über 600 ms unter Last, die
+Vorhersage war +40..80. Der Sprung lag an einem Feld: `this.taken` enthält `.take`, `namesIter` prüfte
+Teilstrings und lud `std.iter`. Beide übrigen Prüfungen gehen jetzt über `holdsName`. Danach, CPU-Minimum:
+`let b = b"a"` 511 ms, `import std.io` 619 ms, also +108; `println(1)` 428 → 474 im Minimum, im Median 562 → 522:
+Die Last einer parallelen Sitzung überdeckt, was die Prelude kostet. Das wird am Ende von S7g bei Ruhe nachgemessen.
+Wanduhr unter Last taugt nicht: `println(1)` allein streute dabei zwischen 352 und 576 ms.
+Rot-Lauf: 26 von 26 rot gegen S7f6. Mutanten (39): alle getötet außer IV (Kontrolle ohne Wirkung) und **IS**: ein
+Byte unter `0xC0` mit Größe 1 statt 0 ändert nichts, weil `fromUtf8` es genauso ablehnt. Der Zweig war tot und ist
+weg. Dass ein Byte ab `0xF8` nicht auf drei weitere wartet, prüft kein Fall: `ByteReader` wartet nie, sichtbar wäre
+es erst an einer Konsole. Fälle 666 → 692, Tests 364.
+
+**Ergebnis S7g2 (2026-11-07).** `stdin()`, `stdout()`, `stderr()`, `flush()`, `eprint`; `eprintln` und `readLine`
+sind Prelude und zugleich aus `std.io` importierbar, auch unter anderem Namen. `readLine` wirft jetzt
+`[IoError, Cancelled]`. **Der allgemeine Weg:** `Op.CallW` ersetzt `Op.ReadLine` an derselben Stelle (Format 38);
+`nativeWaits` sagt, welches Native wartet, der Verifier lehnt ein Native am falschen Op ab. Gebucht wird vor dem
+Start, das Native läuft in einer Lyric-5-Task, die Antwort landet wie ein Rückgabewert. Ein Fehler kommt als Zahl
+`-(art << 32 | code)` zurück und wird in Script zum `IoError` (`__ioFailure`), ein Text über ein Halter-Argument:
+So baut die VM kein Script-Objekt, Vorbild sind die Task-Zustände. Gelesen wird in ein eigenes Feld und erst bei der
+Ablieferung kopiert, gekürzt auf das, was die `Bytes` dann noch sind (Fall `bytes_cut_while_a_read_waits`). Ausgabe
+wartet nicht: Wie `print` hält eine volle Pipe die Instanz auf, gebucht nach Bytes.
+**Echter Fehler, gefunden durch die neue Richtlinie `merge-streams`:** Der Bericht eines Panics oder Fehlers stand
+vor der noch gepufferten Ausgabe. `finish` leert jetzt zuerst.
+Abweichung von Lyric 5: Dort bricht `cancel` die Konsole nicht ab, hier schon (10 Regel 18), daher `Cancelled`.
+Von Hand, ohne Fall: `stdout().flush()` in `| head -1` gibt `broken pipe (written to the standard output)`; ein
+bloßes `println` dort endet mit Status 141, kein Weiterlaufen.
+Runner: `stdin-hex`, `merge-streams`, `stdout-gone`, `stdin-refuses`; ein Lauf liest Bytes statt Text.
+Kaltstart in Ruhe, `println(1)`, 20 Runden, CPU: 303 → 311 ms im Minimum, 308 → 320 im Median, also etwa +10.
+Das ist die Prelude mit `__ioFailure`. Die Sorge aus S7g1 war Last, nicht Kosten.
+Rot-Lauf: 23 von 27 rot gegen S7g1; grün bleiben, was zu Recht schon stimmte (zwei Ablehnungen ohne den Namen,
+`readLine` ohne Fehler, beide Zeilenenden). Mutanten (36): alle getötet außer drei. **KP:** ein leeres `into` vorab
+abzufangen ändert nichts, der Zweig ist weg, Fall `stdin_read_into_nothing_takes_nothing`. **KQ:** eine Eingabe, die
+der Lauf verweigert, konnte der Runner nicht herstellen; jetzt `stdin-refuses`, Fall
+`an_input_that_refuses_throws`. **LE:** `fn eprintln` warnte vor dem Verdecken in keinem Test; jetzt Unit-Zeile.
+Fälle 692 → 721, Tests 366.
+
+**Ergebnis S7g3 (2026-11-07).** `std/path.lyrs`, 260 Zeilen Script, ein Native für den Trenner, kein Recht (Format 39).
+Lyric 5 rechnet auf Bytes über `Slice<uint8>`; hier liest `scan` den Pfad mit `/` an jeder Stelle, jeder Offset bleibt
+gültig. **Differential gegen Lyric 5:** dieselben rund 80 Pfade durch jede Funktion, 31 × 31 Paare durch `relative`,
+1956 Zeilen, 0 Unterschiede. Die Windows-Formen laufen dabei auf Linux, mit eingesetztem Trenner auf beiden Seiten;
+der Kontrolllauf gegen ein veraltetes Binary gab 1538 Unterschiede, die Probe sieht also etwas. Dieselbe Technik
+trägt die Mutanten: `std.path` als Nutzermodul neben dem Fall, je Mutant beide Formen, in Minuten statt in einer Stunde.
+Die Fälle laufen auf jedem System: Was die Formen trennt, geht durch `show`, was nur eine Form hat, vergleicht
+`path_forms_of_the_system` im Skript unter dem Trenner des Systems.
+**Gefunden beim Messen:** `import std.path` mit `path.join` kostete kalt 330 ms, vorhergesagt waren 10 bis 30. Meine
+erste Erklärung war falsch: `.find` im Modul lud zwar `std.iter`, nach dem Umbau auf `nextIn` blieb die Zeit gleich.
+Der Bisekt zeigte `.join` im Text des Nutzers: Der Loader hielt es für die Methode eines Iterators. Jetzt zählt
+ein Modulname als Empfänger, wenn der Text das Wort nur vor einem Punkt und nach keinem benutzt; jede andere
+Verwendung (`let path`, ein Parameter, `x.path`) lädt wie bisher, das kostet nur Zeit und fehlt nie. Danach, in
+Ruhe, 20 Runden, CPU: `println(1)` 311 ms, `path.join` 446, also +135. Das meiste davon sind die generischen
+`Pattern`-Aufrufe, `startsWith` allein bringt schon rund +100 (Debug-Build). Offen bleibt: `"abc".find("b")` lädt
+weiter `std.iter`, `.find` ist beides.
+Mutanten (32 über `std.path`, 6 über den Loader): getötet außer MM (die Abkürzung am Anfang von `relative` war
+wirkungslos, gestrichen), WC und WP (`1:a` normalisiert mit und ohne Volumen gleich, jetzt über `parent`). MP überlebt
+nur auf POSIX, dort gleichwertig. Eine Vorhersage war falsch: `stem("")` ist leer, nicht `.`; das Differential
+bestätigt das. Rot-Lauf: 13 von 14 rot gegen S7g2, `path_lives_in_its_module` grün, `join` war schon unbekannt.
+Fälle 721 → 735, Tests 366.
+
+**Ergebnis S7g4 (2026-11-07).** `std.fs` trägt `File` (`Reader`, `Writer`, `Seek`, `Closeable`), `OpenOptions`,
+`readText`, `readBytes`, `writeText`, `writeBytes`, `appendText`, `lines` und `exists`, alles in Script über sechs
+Natives (Format 40). `fs.open`, `read`, `write`, `seek` und `close` gehen über `call.w`, andere Tasks laufen also
+weiter. Ein Abbruch beendet einen Dateiaufruf nicht (Lyric 5 §Files Regel 5): `nativeCancels` ist jetzt von
+`nativeWaits` getrennt, ein Abbruch wirkt beim nächsten echten Warten. `File.close` führt keine eigene Prüfung: Lyric 5s
+`File` sagt `Closed`, die Antwortzahl trägt es. Die Kosten stehen vor dem Start fest (`aFilesCallsChargeBeforeTheyStart`,
+exakte Budgets). Der Runner kennt `//! in-temp-dir`.
+**Gefunden:** Ein Lambda, das in `using` plus `return`, in if/else aus Returns oder in einem `match` aus Block-Armen
+endete, wurde abgelehnt (SEM0017/SEM0001), ebenso `let x = if (c) { return 1 } else { 2 }`. Lyric 5 nimmt das alles
+(Gegenprobe). Ein Wertblock, der nicht herauskommt, ist jetzt `never` (§7 Regel 10); mein erster Patch an einer
+Sonderstelle ist dafür wieder raus.
+**Eine falsche Annahme:** VB (`nativeToItsEnd` aus) überlebte, ich hielt das für ein Zeitfenster. Tatsächlich weckt
+der Abbruch die Task, `call.w` läuft von vorn, und bei `open` fällt das nicht auf. Bei `read` geht ein Stück verloren.
+Der Fall `a_cancelled_task_finishes_its_file_call` bricht jetzt ab, während genau ein `read` läuft; VB liefert dort
+`fghij` statt `abcde`. Der Fall hängt nicht am Timing.
+Kaltstart, 20 Runden in Ruhe, Median CPU: `println(1)` unverändert 320 ms, `import std.fs { exists }` von 322 auf
+519, also +197, weil `std.fs` nun `std.io` lädt (Debug-Build). Auch wer nur `exists` braucht, zahlt das; gemessen wird
+am Ende von S7g noch einmal.
+Mutanten (27 über `std.fs`, 15 über die VM): getötet außer GA, GB, GC, wie vorhergesagt: ein ausgelassenes `close`
+sieht man unter Linux nicht. VK tötet der Konsolenfall `bytes_cut_while_a_read_waits`, `deliverBytes` ist derselbe Weg.
+Keinen Mutanten gibt es für ein fehlschlagendes `close` und für `writeAll` bei `k == 0`: Beides lässt sich von
+einem Skript aus nicht auslösen. Rot-Lauf gegen S7g3: 17 von 18 rot, grün nur `a_lambda_with_a_using_gives_its_value`,
+ein Ablehnungsfall, der vorher schon ablehnte. Fälle 735 → 753, Tests 367.
+
+**Ergebnis S7g5 (2026-11-07).** Verzeichnisse in `std.fs`: `metadata`, `createDir`, `remove`, `removeDir`, `rename`, `canonicalize`,
+`absolute`, `readDir` mit `DirEntry`, `createDirAll`, `removeAll`, `copy`, `walk`, `tempDir`, `tempFile`, in Script über
+zwölf neue Natives (Format 41). `fs.exists` wird zu `metadata`, die Antwort trägt Größe und vier Bits in einer Zahl.
+`Metadata.modified` kommt mit `std.time` in S7h. Der Runner kennt `//! symlink:`; wo das System keine Links zulässt,
+meldet er eine NOTE und der Fall gilt als bestanden.
+**Gefunden, in der Sprache:** `s.startsWith("a")` unter einem geschriebenen `throws IoError` wurde abgelehnt (SEM0034).
+Ein Aufruf auf `P :: [Pattern]` vereinte die Mengen aller Implementierungen, auch die des Funktionswerts, der alles
+werfen darf. Jetzt merkt sich die Wurfmenge eines Generischen je Aufruf das offene Mitglied (`Through`), und
+`substituted` löst es am Aufrufer über die Bindung auf; außerhalb eines Generischen gilt die Vereinigung über alle
+Implementierungen (§6 Regel 5). Fünf neue Fälle in `06-errors`. Bleibt konservativ, siehe P37:
+`s.split("/").count()` unter einem geschriebenen `throws` gilt weiter als „wirft alles“.
+**Gefunden, in den Tests:** `aFilesCallsChargeBeforeTheyStart` aus S7g4 war nur auf Windows rot: Der Pfad stand
+ungeschützt im Assemblertext, seine Backslashes waren dort Escapes. Lokal nachgestellt mit einem Backslash in `TMPDIR`:
+vor der Korrektur beide Budgettests rot, danach alle grün. Der Windows-Lauf von S7g4 endete am Teststep, seine Fälle
+liefen dort also noch nicht.
+Kaltstart, 20 Runden in Ruhe, Median CPU: `println(1)` 323 → 322 ms, `import std.fs { exists }` 521 → 694, also +173
+(vorhergesagt: etwa 650, 44 ms zu wenig), Debug-Build. Das Modul trägt jetzt viel, und jeder Import zahlt alles.
+Mutanten (40 über `std.fs`, 20 über VM und Checker): Überlebt haben wie vorhergesagt HE und JM (ein schreibgeschützter
+Pfad lässt sich im Fall nicht verlässlich machen), HM (`absolute` scheitert nur ohne Arbeitsverzeichnis), IQ (die
+Antwort ist nie 0, außer bei „weder noch“ der Größe 0), XA–XD (Rennen, Windows, ein ausgelassenes `close`), JV und JW
+(Lockerungen, die sich mit einem einzigen Typparameter nicht zeigen). Rot-Lauf gegen S7g4: 17 von 21 rot, grün die vier
+Ablehnungsfälle, die vorher schon ablehnten. Fälle 753 → 774, Tests 368. Ein Verzeichnisname, der kein UTF-8 ist, wird
+zu einem `IoError` ohne den inneren `Utf8Error` (`dirNext`); ein Skript kann so einen Namen nicht selbst anlegen, also
+gibt es dafür keinen Fall.
+
+**Ergebnis S7g6 (2026-11-07).** `fs.glob(pattern)` in Script, ohne neue Natives. Lyric 5 hat kein `glob`, die API ist
+hier also **eigene Entscheidung, zum Prüfen** (§12 Regel 24): jeder Pfad einmal, in Bytereihenfolge des Texts; `*`, `?`,
+`[abc]`, `[a-z]`, `[!abc]`; `**` als ganzer Teil, als letzter Teil alles darunter, nicht der Ort selbst; ein Trenner am
+Ende verlangt Verzeichnisse; ein Punktname nur für einen Teil mit Punkt, `**` geht nicht hinein; `**` folgt keinem Link,
+die anderen Teile schon; ein Teil ohne Platzhalter wird das System gefragt, nicht im Verzeichnis gesucht; was nicht da
+ist, ist kein Treffer, jeder andere Fehler sein `IoError`; ein offenes `[` und `**` neben anderem sind `InvalidInput`.
+`..` wird lexikalisch aufgelöst, wie `path.join` es tut, also auch über einen Link hinweg: So verhält sich
+`std.path`, `glob` erbt das. Vorbild: Pythons `glob` und die Shell; ein Escape gibt es nicht, `[*]` trägt ein `*`.
+**Beim Lesen gefunden, nicht durch einen Fall:** Über `**/q/**/b` kam `q/q/b` doppelt, `**/` zählte einen Link auf ein
+Verzeichnis nicht mit, `*/` schon. Beides ist behoben, je mit Fall.
+**Eine teure Benennung:** Kaltstart erst +283 ms statt der vorhergesagten +20 bis +40. `namesIter` las in `this.take(`
+den Adapter `.take` und lud `std.iter` bei jedem `import std.fs`. Nach dem Umbenennen +41 ms, gemessen unter Last: In
+diesem Lauf lag auch `println` bei 440 statt 322 ms, die Absolutzahlen taugen also nicht, nur der Abstand (A 1000,
+B 1041). Die Falle bleibt für jedes `std`-Modul, siehe P38.
+**Windows:** Der erste vollständige Lauf dort zeigte einen Fehler im Runner: `os.symlink` macht ohne vorhandenes Ziel
+einen Dateilink, und ein Dateilink auf ein Verzeichnis antwortet „permission denied“. Der Runner kennt jetzt
+`//! symlink-dir:`.
+Mutanten (38 über `std.fs`): Überlebt haben GE, GG (nur auf Windows sichtbar), GF (`**/**` zusammenzufassen spart nur
+Zeit), GX, KB (ein anderer Fehler als „nicht da“ lässt sich nicht portabel erzeugen) und KC, das ich falsch vorhergesagt
+hatte: `NotFound` hat keine unteren Bits, der Wächter zählt also nur bei anderen Fehlern. KM überlebte zuerst
+unvorhergesehen; `ab*b.txt` auf `ab.txt` tötet ihn jetzt. Rot-Lauf gegen S7g5: 0 von 9 grün. Fälle 774 → 783, Tests 368.
+
+**Ergebnis S7h1 (2026-11-07).** S7h ist vor dem Bau in sechs Teile geschnitten, nicht in die zuerst notierten drei:
+S7h1 `args`, `exit` und das CLI; S7h2 der Rest von `std.os`; S7h3 `os.signals`; S7h4 `std.process`; S7h5 `std.time`
+ohne Zonen, dazu `Metadata.modified` und der Fall für `std.random.system`; S7h6 Zonen und Muster.
+`args` und `exit(n)` stehen in der Prelude (Format 42, Natives `os.argCount`, `os.arg`, `os.exit`). Was hinter der Datei
+steht, gehört dem Skript, auch was wie eine Option aussieht; ein Paket nennt keine Datei und trennt mit `--`; `check`
+führt nichts aus und lehnt alles hinter seiner Datei ab (§14 Regeln 1, 2, 4; §12 Regel 25). `exit` ist ein eigenes
+Ergebnis des Laufs, `Outcome.Exit`: Es nimmt denselben Weg wie ein erschöpftes Budget (die Marke `-2`), beendet jede
+Task, führt kein `defer` aus und schreibt, was die Konsole hält.
+**Vorhersage daneben:** Ich hatte erwartet, das CLI müsse Lyric 5s `exit` rufen, weil das Ende von `main` auf einen
+Lesejob warte. Mutant LL (der Code wird einfach zurückgegeben) blieb grün, und mit offen gehaltener Eingabe endete der
+Lauf nach 0,3 s. Der direkte Aufruf ist gestrichen.
+Mutanten (12): alle getötet außer LL, der zur Änderung führte. LF baute zuerst nicht (`found` war verengt), LF2 stirbt
+wie vorhergesagt. Rot-Lauf gegen S7g6: 10 von 11 rot; `check_takes_one_file` war schon grün, die Regel ist neu
+aufgeschrieben, nicht neu gebaut. Fälle 783 → 794, Tests 368 → 370.
+
+**Ergebnis S7h2 (2026-11-07).** Der Rest von `std.os` (Format 43, zehn Natives): `os.args()`, `env`, `envs`, `setEnv`,
+`cwd`, `setCwd`, `exit`, `platform`, `arch`, `homeDir`, `tempDir`, `hostname`, `cpuCount`, `pid` (§12 Regel 26).
+`cwd`, `setCwd` und `hostname` warten wie ein Dateiaufruf; `envs` und `setEnv` zahlen nach Bytes.
+**Eine Abweichung von Lyric 5, zum Prüfen (P40):** `envs()` gibt eine Liste von Paaren in Bytereihenfolge der Namen
+zurück, keine `Map`. Vorhergesagt waren +40 bis +100 ms Kaltstart für `import std.os`, gemessen +270. Die Bisektion
+fand das Wort `Map`: Der Lader lädt `std.collections` für jedes Modul, das es nennt, also für jedes Programm mit
+`import std.os`. Mit Paaren bleiben unter Last etwa +100 ms (A ohne std.os 481, B 574; `println` lag in diesem Lauf bei
+472–498 statt 322). Der Rest ist das Übersetzen des Moduls selbst: Ohne `envs` ändert sich nichts mehr.
+**Beim ersten Lauf gefunden:** Ein `std`-Modul, das einen Prelude-Namen verdeckt (`os.exit`), warnte mit SEM0153. Damit
+wurde jedes Programm mit `import std.os` nicht gecacht. Ein `std`-Modul warnt jetzt nicht mehr; der Import beim Nutzer
+warnt weiter.
+Mutanten: 18 schnelle über `std.os`, 10 über VM und Prüfer. Überlebt haben OB (ein Name mit `=` vorn kommt nur unter
+Windows vor), OH und OR (`cwd` und `hostname` scheitern nicht portabel), alle wie vorhergesagt. VE überlebte gegen die
+Vorhersage: Der Fall prüfte nur „eine der drei Plattformen“, und `homeDir` fragt dieselbe Zahl. Jetzt prüft der Fall
+Windows gegen den Trenner, VE stirbt. Rot-Lauf gegen S7h1: 0 von 13 grün. Fälle 794 → 807, Tests 370 → 371.
+**S7h3 und S7h4 getauscht:** Zuerst `std.process`, dann `os.signals`. So kann ein Fall ein echtes Signal an ein Kind
+schicken.
+
+**Ergebnis S7h3 (2026-11-08).** `std.process` (Format 44, sieben Natives, §12 Regel 27): `Command` mit `spawn`,
+`output` und `status`, `Child` mit `wait`, `kill` und `signal`, `ExitStatus`, `Output`, die Pipes als `Reader`/`Writer`.
+Dazu `os.Signal` in `std.os`. Start, Lesen, Schreiben, Schließen und Warten laufen als Wartejob wie ein Dateiaufruf.
+Lesen, Schreiben und Warten enden beim Abbruch. Der Start zahlt nach den Bytes von Programm, Argumenten, Variablen und
+Verzeichnis. Vor dem Start wird geschrieben, was die Konsole hält, damit ein Kind mit geerbtem Strom danach schreibt.
+**Zwei Regeln am Lader:** Ein `std`-Modul, das ein Modul mit Recht importiert (`std.process` → `std.os`), fragt kein
+Recht an; das Recht fragt der Import beim Nutzer an. Und der Konformanzläufer gibt den Fällen den Pfad des geprüften
+Binarys als `LYRIC_SCRIPT_UNDER_TEST`: Das Kind eines Falls ist ein Script.
+**Bekannte Grenze (P41):** Ein Lesen, das ein Abbruch beendet, läuft als Lyric-5-Job weiter und kann die nächsten
+Bytes nehmen, die dann verloren sind. Regel 27 schreibt das hin.
+Mutanten: 16 schnelle über `std.process`, 10 über VM und Lader. Überlebt haben PB und PC (Lyric 5 prüft Namen selbst,
+mit derselben Meldung), PG (Lyric 5s `wait` schließt die Eingabe selbst), PI und PJ (kein Fall hängt daran, dass
+`output` stderr schließt oder die Eingabe leert) und QG (das Budget eines Lesens prüft kein Fall), alle wie
+vorhergesagt. QH überlebte gegen die Vorhersage: Ein leeres Kind gibt `std.process` nie heraus. Jetzt prüft ein
+Unit-Test Bytecode, der aus einem leeren Kind liest; QH stirbt. Rot-Lauf gegen S7h2: 0 von 14 grün.
+**Kaltstart weit daneben (P42):** In Ruhe `println` 332 ms, mit `import std.os` 384, mit `import std.process` 571.
+Vorhergesagt waren +40 bis +100 gegen `std.os`, gemessen +187. Kein Name lädt ein weiteres Modul nach. Die Bisektion
+fand die Schnittstellen: Ohne `:: [Reader, …]` und `:: [Writer, …]` an den Pipes kostet das Modul 445. Jede der
+beiden allein kostet in einem Nutzermodul nichts, beide zusammen +110. Und schon `import std.io { ByteBuffer }` mit
+einer Nutzung kostet +100: Der Preis liegt bei jeder übersetzten Klasse, die beide Schnittstellen erfüllt, und galt
+schon vor diesem Slice. Die Ursache ist offen: Das Binary hat keine Symbole für perf.
+Fälle 807 → 821, Tests 371 → 373.
+
+**Ergebnis S7h4 (2026-11-08).** `os.signals(s…)` (Format 45, ein Native, §12 Regel 28): ein `Channel<Signal>` mit 16
+Plätzen, Recht `os`. Dahinter liegt die Anmeldung von Lyric 5. Ein Job des Hosts nimmt die Signale aus ihrem Kanal und
+gibt sie dem Script-Kanal als Script-Werte: `std.os` reicht eine Form jeder Variante mit, die VM braucht also keinen
+Typ im Modulkopf. Das Schließen beendet die Anmeldung sofort, über einen `closer` am Script-Kanal wie in Lyric 5. Das
+Ende des Laufs schließt jede offene Anmeldung. Solange eine offen ist, wartet ein Lauf, dessen Aufgaben alle warten,
+auf ein Signal statt mit RT0018 zu enden. Ein Signal kommt an, während die Aufgaben warten oder wechseln.
+Ein Fall schickt einem Kind-Script `User1` an zwei Kanäle, schließt sie nacheinander, und das dritte `User1` beendet das
+Kind. Unter Windows ist `signal` dort `Unsupported`.
+Mutanten: 10 über VM und `std.os`, alle wie vorhergesagt. Überlebt haben SC (das Ende des Laufs schließt nichts; die CLI
+endet ohnehin, nur eine Einbettung merkt es), SE (kein Fall liefert ein `Other`, die Nummern sind nicht portabel), SH
+(`std.os` gibt immer acht Formen) und SJ (ein geschlossener Kanal, den keiner liest). Rot-Lauf gegen S7h3: 0 von 3
+grün. Kaltstart `import std.os` +4 ms. Fälle 821 → 824, Tests 373 → 374.
+
+**Ergebnis S7h5a (2026-11-08).** Der Grund von `std.time` (Format 46, zwei Natives, §12 Regel 29), Recht `os`.
+`Duration` bleibt im Prelude, damit `sleep` ohne Import wartet. Ihre Arithmetik, Vergleiche, Hash, `Default`, der
+Text nach Go und `parse` hängen in `std.time` per `extend` an ihr: wer nichts davon nennt, zahlt nichts. `parse` zählt
+abwärts, damit die kleinste Spanne erreichbar bleibt. `Instant` liegt in einem eigenen kleinen Modul
+`std.time.instant`, das `std.time` per `pub import` weitergibt. So lädt `std.fs` für `Metadata.modified` nicht den
+Kalender von S7h5b. `Monotonic` liest die Uhr des Laufs, dieselbe, die seine Timer halten. `fs.metadata` gibt die
+Änderungszeit als Text in einem Halter zurück. Dazu kommt ein Fall für `std.random.system`: zwei Kind-Läufe ziehen
+zwei Ströme.
+Mutanten: 16 über VM, `std.time`, `std.time.instant`, `std.fs` und `std.random.system`, alle getötet wie vorhergesagt.
+Rot-Lauf gegen S7h4: 7 von 8 rot. Der Fall für `random.system` war schon grün, er ist neu, die Regel nicht.
+Kaltstart: `import std.fs` +13 ms gegen S7h4, `import std.time` +58 ms gegen `println` (vorhergesagt +60 bis +120).
+Fälle 824 → 832, Tests 374.
+
+**Ergebnis S7h5b (2026-11-08).** Der Kalender von `std.time` (§12 Regel 30), ganz in Script, ohne neue Natives
+(Format bleibt 46). Enthalten: `Date` (proleptisch gregorianisch, Jahre über 9999 mit `+`), `Time`, `Weekday`,
+`TimeError` mit allen drei Arten von Lyric 5, `Zone.utc` und `Zone.fixed`, `DateTime` an seinem Offset und strenges
+RFC 3339. `Instant` bekommt Text und `parse` per `extend` aus `std.time`; `std.time.instant` bleibt klein. Die Tage
+rechnen nach Hinnant. Gleichheit von `DateTime` vergleicht auch den Offset, wie in Lyric 5: dieselbe Ortszeit an zwei
+Offsets ist zweierlei. Zonen einer Datenbank, `withZone`, `zoneInfo` und die Muster folgen in S7h6.
+Mutanten: 18 über `std.time`, alle getötet. Zwei Fallzeilen kamen vor dem Mutantenlauf dazu, weil zwei Mutanten sonst
+sicher überlebt hätten (Offset in der Gleichheit, zweite Ziffer).
+Rot-Lauf gegen S7h5a: 6 von 6 rot.
+Kaltstart: `import std.time` +103 ms gegen S7h5a, vorhergesagt waren +30 bis +90. Die Vorhersage war verrechnet: der
+Preis wächst linear mit der Quelle (etwa 0,23 ms je Zeile, 225 → 669 Zeilen), weil die eingebettete std bei jedem
+kalten Lauf übersetzt wird. Das gehört zu P21 (S7k).
+Fälle 832 → 838, Tests 374.
+
+**Schnitt S7h6 (2026-11-08).** S7h6 teilt sich in zwei Teile. S7h6a bringt die Zonen mit Regeln, S7h6b die Muster.
+Entschieden nach Empfehlung: Die Daten einer Zone (TZif, POSIX-Regel, Datenbank unter `TZDIR`, `TZ` für `local`)
+liest und hält Lyric 5. Script hält nur einen Griff darauf und fragt „Offset und Kürzel zur Nanosekunde N“ ab. Die
+Auflösung einer Ortszeit (Lücke vorwärts, Überlappung früher) rechnet Script selbst, nach dem Code von Lyric 5.
+Die andere Möglichkeit wäre ein eigener TZif- und POSIX-Leser in Script gewesen. Das hieße zwei Leser für ein Format
+und doppelte Fehlermeldungen, die auseinanderlaufen. Die Muster (`format`, `parseWith`) sind reine Textlogik über
+Feldern, die Script schon hat. Sie werden deshalb in Script portiert, nicht über ein Native gereicht.
+
+**Ergebnis S7h6a (2026-11-08).** Zonen mit Regeln (§12 Regel 31), Format 47. Drei Natives: `time.zone` legt einen
+leeren Griff an. `time.zoneOpen` wartet und füllt ihn aus einer von vier Quellen (`load`, `fromTzif`, `fromPosix`,
+`local`). `time.zoneAt` gibt zu einer Nanosekunde Offset und Sommerzeit, das Kürzel in einem Halter. Eine feste
+Zone, auch `UTC` aus der Datenbank, bleibt ohne Griff. Neu sind `ZoneInfo`, `Zone.isFixed`, `offsetAt` und `infoAt`,
+außerdem `DateTime.zone`, `plusDays`, `withZone` und `zoneInfo`. Zonen sind gleich nach Name, Offset und Art.
+Abweichung von Lyric 5: Script reicht die Zeit als Nanosekunden ans Native. Eine Ortszeit jenseits der Jahre eines
+`Instant` (oder binnen eines Tages vor ihren Enden) läuft deshalb in Script über und panickt mit LYS-RT0002, wo
+Lyric 5 weiterliest. Ein eigener Fall hält das fest.
+Gefunden: Ein `string`, der als `Any`-Argument an ein Native geht, kommt verpackt an, und `textOf` liest dann "".
+Die POSIX-Regel bekommt deshalb einen eigenen `string`-Parameter.
+Mutanten: 16 über VM und `std.time`, alle getötet. Zwei Mutanten trafen mehr Fälle als vorhergesagt: `"CET"` allein
+ist keine Regel ohne Sommerzeit, sondern ein Fehler, und `at()` liest `zoneInfo`.
+Rot-Lauf gegen S7h5b: 4 von 4 rot.
+Kaltstart: `import std.time` +114 bis +141 ms gegen S7h5b (zwei Läufe, 20 und 30 Runden), vorhergesagt waren +15 bis
++45. `println` allein kostet +14 bis +19 ms. Abzüglich dessen sind es etwa 0,8 ms je neuer Zeile statt 0,23: Die
+Auflösung kostet mehr als ihre Länge. Das ist ein Befund zu P21 (S7k), dort wird nach Phase gemessen.
+Fälle 838 → 842, Tests 374.
+
+**Ergebnis S7h6b (2026-11-08).** Die Muster von UTS #35 (§12 Regel 32), ganz in Script, ohne Native (Format bleibt
+47). `format` und `parseWith` folgen dem Code von Lyric 5 Feld für Feld. Die Fehlermeldungen von `TimeError` sind die
+von Lyric 5. Eine Abweichung ist entschieden: Lyric 5 liest drei Felder nicht zurück, die es selbst schreibt, nämlich
+`ZZZZ` (`GMT+02:00`), `ZZZZZ` bei UTC (`Z`) und ein Jahr mit Vorzeichen (`-0044`). Seine Regel sagt aber „reads the
+same fields back“. Script folgt der Regel und liest alle drei. Gemeldet als lyric#690; folgt Lyric 5, fällt die
+Abweichung weg. Ein `ParseError` für ein Datum oder eine Uhrzeit, die es nicht gibt, trägt die Meldung von `Date.of`
+bzw. `Time.of` als Detail, wie `DateTime.parse` in Script.
+Fälle: der Fall von Lyric 5, portiert, und einer für das Zurücklesen und die Ränder. Eine Zeile (`12:05 am`) kam vor
+dem Mutantenlauf dazu, weil der Mutant `h % 12 → h` sonst sicher überlebt hätte.
+Mutanten: 22 über `std.time`, alle getötet, jeder mit genau den vorhergesagten Fällen.
+Rot-Lauf gegen S7h6a: 2 von 2 rot.
+Kaltstart: `import std.time` +416 ms gegen S7h6a, vorhergesagt waren +60 bis +130. Phasenzeiten in einer Kopie mit
+Zeitmessern, für `std.time` mit 669, 791 und 1160 Zeilen (S7h5b, S7h6a, S7h6b): Laden 45/55/140 ms, Prüfen
+280/345/525, Erzeugen 34/41/74, Verifizieren 24/29/67. Das Prüfen wächst linear, etwa 0,5 ms je Zeile im
+Debug-Compiler; zusammen ist es etwa 1 ms je Zeile. Das Wachstum ist also nicht überlinear. Falsch war die Schätzung
+von S7h5b (0,23 ms je Zeile), nicht die späteren Messungen. Ein kalter Lauf mit `import std.time` braucht im
+Debug-Build jetzt etwa 1,2 s, aus dem Cache nicht. Das gehört zu P21 (S7k): erst den Release-Build messen, dann
+Rümpfe nur prüfen, wo sie gebraucht werden, oder die std vorübersetzt mitliefern (11 std, mit `pack`).
+Fälle 842 → 844, Tests 374.
+
+**Schnitt und APIs S7i (2026-11-08).** S7i teilt sich in vier Teile: S7i1 `std.test` (die Asserts), S7i2 `std.csv`,
+S7i3 `std.log`, S7i4 `std.cli`. `std.test` folgt Lyric 5. Für `csv`, `log` und `cli` hat Lyric 5 keine Vorlage, dort
+sind es Ring-Pakete (Lyric 5 10 B1). Ihre APIs entscheidet dieser Schnitt nach Empfehlung (12 Um: je **eine** API).
+Die verworfenen Wege stehen dabei.
+
+- **`std.csv` (S7i2)** folgt der Form von Lyric 5s Formatmodulen `json` und `toml`. **`parse(text, options =
+  CsvOptions { }): string[][]`** liest RFC 4180. Datensätze enden an CRLF oder LF, der letzte Zeilenumbruch ist
+  frei. Ein Feld in `"…"` hält Trenner, Zeilenumbrüche und `""` für ein Anführungszeichen. Leere Zeilen zählen
+  nicht, wie in Go. Ein BOM am Anfang wird übersprungen, weil Excel ihn schreibt. Ein Anführungszeichen in einem
+  Feld ohne Anführung, ein offenes Anführungszeichen, Text nach dem schließenden und ein Datensatz mit anderer
+  Feldzahl als der erste werfen **`CsvError { line, column, detail }`** mit der Meldung `"{detail} at
+  {line}:{column}"`, wie `JsonError` und `TomlError`. **`format(rows, options): string`** schreibt RFC 4180. Es
+  setzt ein Feld in Anführungszeichen, wenn es den Trenner, ein `"`, CR oder LF hält, und beendet jeden Datensatz
+  mit CRLF. **`CsvOptions { separator: char = ',', crlf: bool = true }`**, `crlf = false` schreibt LF.
+  Verworfen:
+  - ein lesender Strom über `Reader`: eine zweite API für dasselbe; Skripte lesen ihre Datei ganz (`fs.readText`).
+  - Datensätze als `Map` über der Kopfzeile, wie Pythons `DictReader`: eine Zeile über `rows[0]`.
+  - `decode<T>` über `Codable`: das Paar gehört zu `codec` (S10), und für CSV hat es kein Format gefordert.
+  - Lazy Quotes wie in Go: ein zweiter Lesemodus.
+- **`std.log` (S7i3)**: die Stufen **`Level { Debug, Info, Warn, Error }`** wie in Go `slog`. Dazu `debug(message)`,
+  `info`, `warn` und `error`, außerdem `setLevel(level)` (Vorgabe `Info`) und `enabled(level): bool`. Eine Zeile ist
+  `LEVEL message`, `INFO server started`, und geht nach stderr. **`setSink(sink: fn(string) -> void)`** lenkt sie um,
+  in eine Datei, einen Test oder eine Liste. Ohne Zeitstempel: Wer ihn will, schreibt ihn in die Meldung, und
+  journald, systemd und CI setzen ihren eigenen. Ein Zeitstempel hieße außerdem `std.time` in jedem Programm, das
+  loggt (+1,2 s kalt im Debug-Build, P21). Kein Recht.
+  Verworfen:
+  - Felder als Schlüssel und Wert (`slog`): f-Strings tragen sie.
+  - Logger je Name wie in Python: eine zweite Ebene für Skripte.
+  - die Stufe aus einer Umgebungsvariable (`RUST_LOG`): sie gäbe `std.log` das Recht `os`; ein Skript liest
+    `os.env` selbst.
+- **`std.cli` (S7i4)**: ein Bauer wie Go `flag`, Rust `clap` als Builder oder Deno `parseArgs`. **`Cli.new(name,
+  about)`**, dann
+  - `.flag(name, short, help)`,
+  - `.option(name, short, help, default = null)`,
+  - `.positional(name, help, optional = false)`,
+  - `.rest(name, help)`,
+  - `.command(name, about): Cli` für Unterbefehle,
+  - `.version(text)`.
+
+  `cli.parse(args): Args` (`args` ist der Wert des Prelude, 12 Regel 25) gibt
+  - `flag(name): bool`,
+  - `option(name): ?string`,
+  - `positional(name): ?string`,
+  - `rest(): string[]`,
+  - `command(): ?(string, Args)`.
+
+  Gelesen werden `--name value`, `--name=value`, `-o value`, `-ovalue` und gebündelte Flags `-vq`; `--` beendet die
+  Optionen. `--help`/`-h` schreibt die Hilfe, aus den Angaben erzeugt, nach stdout und endet mit 0. `--version`
+  schreibt die Version, wo eine gesetzt ist. Was nicht passt, schreibt `error: …` und die Zeile `usage:` nach
+  stderr und endet mit 2, wie Go und clap. **`cli.tryParse(args)`** wirft stattdessen **`CliError`** für Tests und
+  Hosts. Werte sind Text; Zahlen liest `int.parse`.
+  Verworfen:
+  - eine Deklaration über ein Struct mit Attributen (Swift ArgumentParser, clap derive): Script hat noch keine
+    Attribute (P43) und keine Reflexion (S10).
+  - Typen je Option: ein zweites Typsystem neben `parse`.
+  - wiederholte Optionen als Liste: ein Wert je Name, der letzte gilt.
+
+**Ergebnis S7i1 (2026-11-08).** `std.test` mit den Asserts von Lyric 5 (§12 Regel 33), ganz in Script: `assertEq`,
+`assertNotEq`, `assertTrue`, `assertFalse`, `assertNull`, `assertNotNull`, `assertClose`, `assertLess`,
+`assertGreater`, `assertContains`, `assertEmpty`, `assertThrows` und `fail`. Die Meldung ist `got 2, expected 3`,
+beide Werte, wie `Debug` sie schreibt. Lange Werte bekommen den ersten Unterschied darunter, wie in Lyric 5: die erste
+Zeile, die abweicht, sonst ab 40 Zeichen zusammen das erste Zeichen mit Ausschnitt und Marke. Zwei Abweichungen von
+Lyric 5, beide mit Uhr: Ohne Attribute schreibt Script `got 2` statt `xs.length() = 2` (`@callerExpr`, P43, S11), und
+`assertContains` nimmt keinen `string` mit `char` (P44, S11). `assertPanics`, Subtests und der Runner kommen mit
+`lyric-script test` (S11): Eine Panik beendet in Script den Lauf auch in einem Task (10 Regel 2), sie kann also nur ein
+Runner fangen, der jeden Test in einem eigenen Lauf hält.
+Fälle: drei. Einer zeigt, dass gehaltene Asserts weitergehen, einer jede Meldung, einer die Unterschiede. Die
+Unterschiede wurden vorher mit einem Orakel in Python gerechnet.
+Mutanten: 20 über `std.test`, alle getötet, jeder mit genau den vorhergesagten Fällen.
+Rot-Lauf gegen S7h6b: 3 von 3 rot.
+Kaltstart: `import std.test` (206 Zeilen) +110 ms gegen `hello`, vorhergesagt waren +100 bis +250. Das sind etwa
+0,5 ms je Zeile, wie bei `std.time` (P21).
+Fälle 844 → 847, Tests 374.
+
+**Ergebnis S7i2 (2026-11-08).** `std.csv` (§12 Regel 34), ganz in Script, wie entschieden. Zwei Entscheidungen kamen
+beim Bauen dazu: Ein Datensatz aus einem leeren Feld wird `""` geschrieben, weil eine leere Zeile kein Datensatz ist
+(wie Pythons `csv`; Go schreibt die leere Zeile und liest sie nicht zurück). Ein Feld mit einem BOM steht in
+Anführungszeichen, sonst verlöre das erste Feld ihn beim Lesen. Damit gilt das Zurücklesen für Datensätze gleicher
+Breite mit mindestens einem Feld, und die Regel sagt das so. Ein CR allein ist ein Zeichen des Feldes, wie in Go.
+Spalten zählen in Zeichen, nicht in Bytes wie bei `JsonError` in Lyric 5, weil Script über Zeichen liest. Ein
+Anführungszeichen, CR oder LF als Trenner panikt (`LYS-RT0008`).
+Fälle: vier. Der Fall für die Fehlerorte bekam vor dem Mutantenlauf eine CRLF-Zeile, einen Umbruch am Ende und
+einen BOM, sonst hätten drei Mutanten sicher überlebt.
+Mutanten: 23 über `std.csv`, alle getötet, jeder mit genau den vorhergesagten Fällen.
+Rot-Lauf gegen S7i1: 4 von 4 rot.
+Kaltstart: `import std.csv` (198 Zeilen) +39 ms gegen `hello`, vorhergesagt waren +60 bis +150. Die Maschine lief
+in dieser Stunde schneller (`hello` 0,34 s statt 0,46 s), so sind es etwa 0,2 ms je Zeile.
+Fälle 847 → 851, Tests 374.
+
+**Ergebnis S7i3 (2026-11-08).** Zwei Teile.
+S7i3a: Sichtbarkeit für Bindungen. `std.log` braucht Zustand, den nur es selbst schreibt: die Schwelle und die Senke.
+Script lehnte `private let` und `private var` auf Modulebene ab (`LYS-PAR0053`, 02 D2 aus S2). Damals waren die
+äußersten `let` und `var` nur Anweisungen des Skripts. Seit S5 sind sie die Bindungen eines Moduls (04 Regel 3), und
+Lyric 5 gibt ihnen ein Sichtbarkeitswort (`pub let`). Entschieden nach Empfehlung: Eine Bindung nimmt die Wörter wie
+eine Deklaration (04 Regel 5, 02 D2 mitgeändert). Eine private Bindung schreibt und liest nur ihr eigenes Modul, bei
+einem Muster jeder Name. Dabei fiel auf, dass `m.x` die Sichtbarkeit einer Bindung bisher gar nicht prüfte; der
+Import tat es.
+Verworfen: der Zustand in der Instanz einer privaten Klasse hinter einer öffentlichen Bindung. Das wäre ein Umweg um
+eine Lücke, die Lyric 5 nicht hat, und die Bindung bliebe sichtbar.
+S7i3b: `std.log` (§12 Regel 35), wie entschieden. `Debug` eines Enum schreibt `Level.Info`, `Display` `INFO`.
+Nebenfund P45: Eine Zuweisung durch einen Modulnamen (`kept.count = 5`) meldet `LYS-SEM0002` „nothing in scope is
+named 'kept'“.
+Fälle: zwei in 04 (eine private Bindung bleibt in ihrer Datei, mit `stderr-has:` für Import und Zugriff; eine Bindung
+nimmt ein Wort), zwei für `std.log`; der Fall `visibility_before_a_statement` nimmt jetzt `pub println(…)`. Ein
+Unit-Test.
+Mutanten: 15 über Parser, Prüfer und `std.log`, alle getötet, jeder mit den vorhergesagten Fällen. PC traf
+zusätzlich den Test, der jedes std-Modul kompiliert, weil `std.log` selbst `private var` nutzt.
+Rot-Lauf gegen S7i2: 4 von 4 neuen rot, die zwei alten Kontrollfälle grün.
+Kaltstart: `import std.log` (75 Zeilen) +9 ms gegen `hello`, vorhergesagt waren +15 bis +60. Beide Messungen nach
+S7i1 lagen unter der Vorhersage; die Schätzung je Zeile aus `std.time` (0,5 ms) ist für kleine Module zu hoch.
+Fälle 851 → 855, Tests 375.
+
+**Ergebnis S7i4 (2026-11-08).** `std.cli` (§12 Regel 36), ganz in Script, wie entschieden. Beim Bauen kamen dazu:
+`tryParse` wirft für `--help` und `--version` einen `CliError` der Art `Help` bzw. `Version` mit dem Text, wie clap
+(`ErrorKind::DisplayHelp`); so liest ein Test oder ein Host die Hilfe, ohne dass der Lauf endet. Optionen dürfen
+nach Argumenten stehen (GNU `getopt_long`), `-` allein ist ein Argument. Ein `Cli` mit Befehlen hat keine Argumente
+und umgekehrt; was ein Befehl nach sich liest, liest sein eigener `Cli`, benannt `git add`. Eine Deklaration, die
+zweideutig liest (Name oder Kurzform doppelt, `help`, `version`, `-h`, ein Pflichtargument nach einem optionalen,
+Argumente neben Befehlen), und eine Frage an `Args` nach einem nicht deklarierten Namen paniken (`LYS-RT0008`): Das
+ist ein Fehler des Skripts, nicht der Kommandozeile.
+Fälle: acht. Die Spalten der Hilfe wurden vorher mit einem Orakel in Python gerechnet.
+Mutanten: 28 über `std.cli`, alle getötet. Eine Vorhersage war als unsicher markiert (K17: der Fall mit Exit 0
+sieht einen Zeilenumbruch mehr am Ende nicht, weil der Läufer ihn hinnimmt); getötet hat K17 der Fall der Hilfe.
+Rot-Lauf gegen S7i3: 8 von 8 rot.
+Kaltstart: `import std.cli` (477 Zeilen) +130 ms gegen `hello`, vorhergesagt waren +40 bis +200, etwa 0,27 ms je
+Zeile.
+Fälle 855 → 863, Tests 375. **S7i ist damit fertig**: `std.test`, `std.csv`, `std.log`, `std.cli`.
+
+**Schnitt und Erwartung S7j (2026-11-08, vor der ersten Änderung geschrieben).** Gemessen wird mit dem Bench von
+Messpunkt 1 (`fib`, `loop`, `objects` als `.lyrsasm`), dazu zwei Programme im Quelltext: `fibsrc` (fib(30) in Script)
+und `sortby` (100 000 Zahlen über `sortBy` mit einer Lambda, P26). **Hauptmaß ist die Zahl der Maschinenbefehle**
+(cachegrind, `I refs`): Sie hängt nicht von der Last der Maschine ab. Eine parallele Sitzung lastet die Kerne
+gerade aus, und WSL2 hat keine Hardware-Zähler. Die Wandzeit kommt abwechselnd gemessen dazu, als Nebenmaß. Jeder Lauf
+muss sein Orakel liefern (lyric#667 ist offen).
+Befund vor der Änderung, Release-Build von S7i4: `fib` 2,84·10⁹ Befehle, etwa 400 je Aufruf; `loop` 3,09·10⁹, etwa
+60 je VM-Befehl. Je Aufruf entfallen etwa 56 auf `List<CallFrame>` (`push` ist ein Aufruf in die Instanz-Einheit von
+`std.collections`, ohne LTO nie eingebettet; `pop` gibt ein Optional), 24 auf `Op.equals`: `ins.op == .RetS`
+wird zu einem Aufruf, weil `Op :: [Equatable]` seinen Vergleich aus der Vorgabe von `std.core` holt. Dazu kommen
+etwa 13 auf `spend` (ein Schreibzugriff auf `shared.budget` je Aufruf, auch ohne Grenze), 9 auf die zwei
+Wachstumsprüfungen und je VM-Befehl etwa 15 auf das Holen über die `inject`-Auswahl.
+Die Änderungen:
+- (a) ein eigener Stapel `FrameStack` (vier `int` je Frame in einem Array) statt `List<CallFrame>`;
+- (b) `match` statt `==` auf `Op` im heißen Pfad (Rücksprung, Division, bedingter Sprung, Schiebung, Listenzugriff);
+- (c) Fuel nur, wo eine Grenze gesetzt ist: ein Lesezugriff statt Lesen und Schreiben;
+- (d) eine Wachstumsprüfung je Aufruf;
+- (e) `code[pc]` zuerst, `inject` danach, ohne den Schreibzugriff je Befehl.
+Die aufgelöste Funktionstabelle entfällt: `Function` ist eine Klasse, `module.functions[a]` kopiert nichts. Fuel
+bleibt bei Aufrufen und Rücksprüngen wie in 01 S5 und spec 17; es wird nur billiger, nicht verlegt.
+**Erwartung:** `fib` −20 bis −30 % Befehle (300–330 je Aufruf), `fibsrc` ebenso, `sortby` −10 bis −25 %, `loop` −5
+bis −15 %, `objects` 0 bis −10 %. Die Wandzeit folgt ungefähr, wenn die Last es zeigt. Die Ausgaben bleiben gleich,
+und Konformanz und Tests bleiben grün.
+
+**Ergebnis S7j (2026-11-08).** Gebaut wurden (a), (b) und (c). (e) wurde anders gebaut als geplant, (d) gar nicht.
+Gemessen wurde auf Release-Builds, und jeder Lauf hat sein Orakel geliefert. Vor jedem Wurf stand eine eigene
+Erwartung im Protokoll.
+
+| Befehle (`I refs`) | `fib` | `loop` | `objects` | `fibsrc` | `sortby` |
+|---|---|---|---|---|---|
+| vorher (S7i4) | 2,836·10⁹ | 3,092·10⁹ | 1,854·10⁹ | 1,605·10⁹ | 4,465·10⁹ |
+| erster Wurf | +21 % | +6 % | +6 % | +16 % | +4 % |
+| zweiter Wurf | −9,4 % | −4,9 % | −5,0 % | −9,5 % | −12,7 % |
+| **gebaut** | **2,455·10⁹ (−13,4 %)** | **2,822·10⁹ (−8,7 %)** | **1,689·10⁹ (−8,9 %)** | **1,377·10⁹ (−14,2 %)** | **3,711·10⁹ (−16,9 %)** |
+| Wandzeit in s (Median aus 9, abwechselnd) | 0,143 → 0,106 | 0,109 → 0,100 | 0,122 → 0,118 | 0,077 → 0,065 | 0,209 → 0,178 |
+
+**Für `fib` und `fibsrc` ist die Erwartung verfehlt**: Sie sanken um 13 und 14 % statt um 20 bis 30 %. `loop`,
+`objects` und `sortby` liegen in ihren Spannen. Die Gründe zeigt die Annotation je Zeile:
+- **Erster Wurf, teurer als vorher.** Der Stapel hielt vier `int` je Frame. `push` und `get` wurden nicht
+  eingebettet: `push` hatte die Wachstumsschleife inline, `get` vier Indexprüfungen. Dazu wuchs Code ohne
+  Zeilenzuordnung von 603 auf 1005 Mio. Befehle. Erst ein Stapel über `CallFrame[]`, der kalt in eigener
+  Methode wächst, wurde ganz eingebettet. Das war der zweite Wurf.
+- **(e) brachte im zweiten Wurf nichts.** `code[pc]` zuerst zu holen, machte die Zeile der Verzweigung teurer:
+  271 statt 155 Mio. Befehle. Gebaut ist deshalb die alte Auswahl beim Holen. Der Schreibzugriff `inject = false`
+  steht jetzt nur noch im Arm von `Throw`/`Rethrow`, nicht mehr je Befehl.
+- **(d) brachte im Versuch nichts Messbares**: Die zwei Prüfungen vergleichen heiße Werte. Weggelassen.
+- **Die Erwartung hat das Verteilen unterschätzt.** Etwa 60 Befehle je VM-Befehl fallen beim Holen, Zerlegen und
+  Verzweigen an, auch ohne Aufruf, und das lag außerhalb des Schnitts. Der Aufrufpfad war also nur gut die Hälfte
+  der 400 Befehle je Aufruf, nicht drei Viertel.
+- **`ins.op == X` ist ein Aufruf.** Auf einem `Op :: [Equatable]` ruft Lyric 5 dafür die Vorgabe von `std.core`
+  auf, statt die Zahl zu vergleichen. Im heißen Pfad umgeht `match` das; die kalten Stellen bleiben, wie sie waren.
+  Ob Lyric 5 den Vergleich eines einfachen Enums selbst eingebettet senken sollte, entscheidet S7k.
+
+**Tests und Mutanten.**
+- Neuer Test: `aDeepRecursionReturnsThroughEveryFrame`. Er rekursiert 1000 Frames tief, mehr als die 256, mit
+  denen der Stapel anfängt.
+- 11 Mutanten über die geänderten Stellen, alle wie vorhergesagt. J4 überlebt, weil er gleichwertig ist: −2
+  erreicht keinen Aufruf, solange der Lauf läuft. Die anderen zehn sind getötet.
+- Bei J7 (`<<` als `>>`) stimmte nur das Ergebnis. Getötet haben ihn nicht die Fälle von 08, sondern die von
+  `BigInt` und `std.process`; der einzige Fall von 08 mit `<<` prüft die Panik vor der Schiebung.
+- J1 (Wachstum ohne Kopie) hing nicht, wie befürchtet, sondern lieferte ein falsches Ergebnis.
+
+**Messung über einen Umweg.** Der Release-Build des Pakets ist eine C-Einheit von 32 MB. `zig cc -O2` braucht
+dafür 207 bis 414 s, Lyric 5 bricht jeden Aufruf aber nach festen 5 min ab (lyric#699). Gebaut wurde deshalb mit
+einem Wrapper um `zig`, der diese eine Einheit ohne Grenze übersetzt; siehe P46.
+
+Fälle: 863, Tests: 376.
+
+**Schnitt S7k (2026-11-08).** Drei Teile, je ein Commit:
+- **S7k1 Messpunkt 3:** die Bench-Suite nach 14 S7, Bericht in `bench/README.md`.
+- **S7k2 Kaltstart nach Phase (P21):** `hello` und die Imports der Zielprogramme, warm und kalt, auf dem
+  Release-Build; Lesen, Übersetzen der std-Module, Schreiben des Caches und Laufen getrennt. Danach wird
+  entschieden, was vor 1.0 billiger werden muss.
+- **S7k3 Schreiben über einen Modulnamen (P45):** Lyric 5 §4 lesen, dann den Schreibzugriff erlauben oder mit
+  eigenen Worten ablehnen.
+
+**Erwartung S7k1 (vor dem ersten Messlauf geschrieben; nur 4.6 wurde vorher einmal gelaufen, um die Größen zu
+kalibrieren).** Die Suite hat acht Programme, jedes einmal als Script-Quelltext (`bench/src`) und einmal als
+4.x-Programm (`bench/v46`). Derselbe Algorithmus, dieselbe Ausgabe, und Python rechnet das Orakel unabhängig von
+beiden VMs nach.
+
+| Programm | Inhalt |
+|---|---|
+| B1 `fib` | fib(32), wie Messpunkt 1 |
+| B2 `loop` | wie Messpunkt 1 |
+| B3 `objects` | wie Messpunkt 1 |
+| B4 `words` | 100 000 Wörter in einem `StringBuilder` gebaut, gespalten und in einer `Map<string, int>` gezählt |
+| B5 `sort` | 50 000 Zahlen in der natürlichen Ordnung sortiert, wie jede Sprache es schreibt |
+| B6 `sortby` | dasselbe mit einem Vergleich als Lambda |
+| B7 `map` | 100 000 Schreib- und 400 000 Lesezugriffe auf eine `Map<int, int>` |
+| B8 `strings` | 700 000 Zahlen in einen `StringBuilder` geschrieben |
+
+Zum Aufbau:
+- Script läuft warm aus dem Cache, so wie 4.6 Bytecode läuft, den `lyrc` vorher gebaut hat. Gemessen wird der
+  Release-Build von S7j.
+- Wo es von Messpunkt 1 handgeschriebenen Bytecode gibt, läuft er zum Vergleich mit. Der Abstand zeigt, was der
+  Compiler gegen ihn verliert.
+- Kalibriert ist auf 0,5–0,85 s für 4.6, auf derselben belasteten Maschine.
+
+Die Hauptzahl ist das geometrische Mittel über B1–B8, brutto, gegen den Ratchet von 5×. Daneben steht das Mittel
+über B1, B2, B3 und B6: Dort bleibt die Arbeit in beiden Sprachen in der VM. B5, B7 und B8 rufen in Script
+native Typen auf, die 4.6 in Bytecode schreibt. Das ist ein echter Vorteil der neuen Laufzeit, aber kein Maß für
+die VM.
+
+| Programm | Script erwartet | Verhältnis erwartet |
+|---|---|---:|
+| B1 `fib` | 0,13–0,19 s: Der Quelltext kostet ~1,5× die Befehle von Hand (`fibsrc`: ~510 statt ~350 je Aufruf) | **3–4,5×** |
+| B2 `loop` | 0,10–0,20 s, schwächerer Code als der verschmolzene Sprung von Hand | **4–7×** |
+| B3 `objects` | 0,12–0,18 s | **3–5×** |
+| B4 `words` | 0,08–0,20 s; `split` als Iterator, je Wort ein `next` | **3–7×** |
+| B5 `sort` | 0,015–0,04 s: Die Liste sortiert nativ, der Rest ist Erzeugen und Prüfsumme | **15–40×** |
+| B6 `sortby` | 0,05–0,09 s: ~780 000 Vergleiche, je einer ein VM-Aufruf | **7–13×** |
+| B7 `map` | 0,05–0,15 s: `Map` ist nativ | **6–15×** |
+| B8 `strings` | 0,15–0,35 s: `append(i)` geht über `Display` | **2–5×** |
+| `empty` warm | 3–20 ms (unsicher: die Prelude lädt seit S7c Script-Module aus dem Cache) | — |
+
+- **Mittel B1–B8: 5–9×**, der Ratchet hält also knapp. **Mittel über die VM-Programme: 4–6×**, auf der Kippe.
+- Die Rangfolge nach Verhältnis: B5 > B7 ≈ B6 > B2 ≈ B4 > B3 > B1 ≈ B8.
+- Die Kontrolle bricht nicht, weil das Orakel geschlossen nachrechenbar ist. Ein Lauf, der wegen lyric#667
+  scheitert, zählt als INVALID. Erwartet werden 0 solcher Läufe, weil die Programme aus einer Kopie im
+  Linux-Dateisystem laufen. Vom Pfad `/mnt/c` aus scheiterten `words` und `map` kalt 20 von 20 Mal, mit
+  `'' names no type` und `'Self' names no type`.
+
+**Lauf 1 (2026-11-08, Release f20cd9d, 9 Runden plus Aufwärmrunde, Last 0,77–0,94).** Alle 210 Läufe gültig.
+
+| Programm | Script | 4.6 | Verhältnis (brutto) | erwartet |
+|---|---:|---:|---:|---:|
+| `empty` | 4,4 ms | 62 ms | — | 3–20 ms |
+| B1 `fib` | 0,143 s | 0,440 s | 3,07× | 3–4,5× |
+| B2 `loop` | 0,202 s | 0,636 s | **3,15×** | 4–7× |
+| B3 `objects` | 0,153 s | 0,457 s | 2,99× | 3–5× |
+| B4 `words` | 0,186 s | 0,546 s | **2,93×** | 3–7× |
+| B5 `sort` | 0,012 s | 0,581 s | 48,4× | 15–40× |
+| B6 `sortby` | 0,081 s | 0,538 s | **6,64×** | 7–13× |
+| B7 `map` | 0,226 s | 0,822 s | **3,64×** | 6–15× |
+| B8 `strings` | 0,269 s | 0,727 s | 2,70× | 2–5× |
+| **Mittel B1–B8** | | | **4,77×** | 5–9× |
+| Mittel B1, B2, B3, B6 | | | 3,72× | 4–6× |
+
+**Der Ratchet ist verfehlt**: 4,77× statt ≥ 5×. Das ist weniger als 2× daneben, der Plan wird also nicht neu
+geschnitten. Das Austrittskriterium von S7 („Messpunkt 3 ≥ 5×") hält damit aber nicht. Der handgeschriebene
+Bytecode von Messpunkt 1 läuft im selben Lauf 4,23× (`fib`), 6,33× (`loop`) und 4,09× (`objects`). Die Lücke
+liegt beim Compiler, nicht bei der VM. Drei Annahmen der Erwartung waren falsch:
+- **Der Compiler senkt `while` schlecht.** `loop` braucht aus dem Quelltext 11 VM-Befehle je Durchlauf, von Hand
+  5:
+  - Jede Zuweisung als Anweisung kopiert ihren Wert noch in ein Register, das niemand liest.
+  - `i += 1` lädt die 1, statt `add.imm` zu nehmen.
+  - Vergleich und Sprung sind zwei Befehle, keiner der verschmolzenen.
+  
+  `add.imm` und `jump.lt.i` gab es schon, aber nur für `for (i in a..b)`. Die Programme spiegeln die 4.x-Fassungen
+  und schreiben `while`. Sie werden nicht nachträglich auf `for` umgeschrieben; das hieße, den Ratchet
+  schönzurechnen.
+- **`Map` ist nicht nativ**, wie die Erwartung annahm, sondern in Script geschrieben (`std/collections.lyrs`,
+  std source-first). Ein Lesezugriff `m[k]` sind vier VM-Aufrufe: `index` → `get` → `__hashOf`, `place`.
+- **4.6 lief schneller als bei der Kalibrierung** (0,44–0,82 s statt 0,49–0,84), weil die Maschine ruhiger war.
+
+Ein Werkzeugbefund kam dazu. Der Release-Build scheitert beim **Übersetzen** abhängig von den Pfadlängen
+(lyric#667), unter valgrind auch aus der Linux-Kopie. Die VM-Läufe aus dem Cache waren in Lauf 1 alle gültig.
+Ab jetzt füllt deshalb der Debug-Build desselben Stands den Cache (`--prefill`). Der Schlüssel enthält Quelle,
+Version und Format, nicht das Profil, und das Release-Binary führt nur noch den Bytecode aus.
+
+**S7k1b, Senkungen im Codegen.** Vier Änderungen:
+- Eine Zuweisung als Anweisung schreibt ihren Wert nirgendwohin.
+- `x + k`, `k + x`, `x - k`, `x += k` und `x -= k` mit einem Literal `k`, das in 16 Bit passt, werden zu `add.imm`.
+  Der Überlauf wird gleich geprüft.
+- Ein Vergleich `<`, `<=`, `>`, `>=` auf `int` oder `char` in der Bedingung von `if`, `while` oder `do-while`
+  springt selbst. Dafür kam zuerst `jump.le.i` neben `jump.lt.i`, Format 48; das Ergebnis unten nimmt die Op
+  wieder heraus (Entscheidung G), und das Format bleibt 47. Die Operanden werden weiter von links nach rechts
+  gelesen.
+- Eine literale Bedingung springt immer oder nie; das betrifft das `while (true)` hinter `while let`.
+
+Fuel bleibt gleich: ein Rücksprung je Durchlauf.
+
+**Erwartung S7k1b (vor dem ersten Lauf geschrieben).** Die Zahl der Befehle (cachegrind) mit warmem Cache,
+gegen f20cd9d:
+
+| Programm | vorher | Erwartung | Grund |
+|---|---:|---|---|
+| `loop` | 4,873·10⁹ | **2,9–3,4·10⁹ (−30 bis −40 %)** | 6 statt 11 VM-Befehle je Durchlauf, nahe am Bytecode von Hand (2,82·10⁹) |
+| `fib` | 3,333·10⁹ | −12 bis −20 % | innerer Aufruf 10 statt 13 VM-Befehle, Blatt 3 statt 4 |
+| `objects` | 3,300·10⁹ | −15 bis −20 % | Aufbau 6 statt 9 Befehle je Knoten, Lauf 8 statt 11 |
+| `words` | 3,372·10⁹ | −3 bis −10 % | Die Arbeit liegt in `append`, `split` und `Map`, die std-Module senken mit |
+| `sort` | 0,123·10⁹ | 0 bis −5 % | Start und natives Sortieren |
+| `sortby` | 1,760·10⁹ | −3 bis −10 % | `totalCompare` und der Aufruf der Lambda |
+| `map` | 3,650·10⁹ | −5 bis −15 % | die Sondierschleife von `Map.place` |
+| `strings` | 5,208·10⁹ | −3 bis −10 % | `append` über `Display` |
+
+- **Wandzeit, Lauf 2:** Mittel B1–B8 **5,0–5,6×**; der Ratchet hält also knapp. Mittel B1, B2, B3, B6 **4,3–4,6×**.
+- **Prüfung:** Konformanz 863/863. Unit-Tests, die eine genaue Disassemblierung vergleichen, können brechen;
+  erwartet werden 0–5 solcher Fälle, dazu ein neuer Test je Senkung.
+
+**Ergebnis S7k1b (2026-11-09).** Gebaut wie beschrieben. Prüfung: Konformanz 863/863, ein Unit-Test brach
+(`registersAreGivenBack` las `x + 3` als drei Befehle, jetzt `x * 3`), vier neue Tests für die Senkungen und
+einer für Fuel. Die neuen Tests sind auf f20cd9d 5/5 rot. Von elf Mutanten wurden neun getötet, wie
+vorhergesagt. K9 (`jump.le.i` verbraucht rückwärts kein Fuel) überlebte zunächst, wie als unsicher
+vorhergesagt; der neue Test `aFusedComparisonPaysItsBackwardJump` tötet ihn jetzt. K11 (`k + x` ohne
+Immediate) überlebt wie vorhergesagt, er ändert nur die Form.
+
+Befehle (cachegrind, warmer Cache, Prefill aus dem Debug-Build):
+
+| Programm | f20cd9d | S7k1b | Änderung | erwartet |
+|---|---:|---:|---:|---|
+| `loop` | 4,873·10⁹ | 3,553·10⁹ | **−27,1 %** | −30 bis −40 % |
+| `fib` | 3,333·10⁹ | 2,962·10⁹ | −11,1 % | −12 bis −20 % |
+| `objects` | 3,300·10⁹ | 2,801·10⁹ | −15,1 % | −15 bis −20 % |
+| `words` | 3,372·10⁹ | 3,559·10⁹ | **+5,6 %** | −3 bis −10 % |
+| `sort` | 0,123·10⁹ | 0,111·10⁹ | −9,5 % | 0 bis −5 % |
+| `sortby` | 1,760·10⁹ | 1,661·10⁹ | −5,6 % | −3 bis −10 % |
+| `map` | 3,650·10⁹ | 3,750·10⁹ | **+2,7 %** | −5 bis −15 % |
+| `strings` | 5,208·10⁹ | 5,488·10⁹ | **+5,4 %** | −3 bis −10 % |
+
+`words`, `map` und `strings` wurden langsamer, obwohl ihr Bytecode kürzer wurde. `strings` hat drei VM-Befehle
+je Durchlauf weniger, und keine einzige std-Funktion wuchs. Der Weg zur Ursache, je mit Erwartung vorab:
+- **Prefill?** Nein. f20cd9d mit dem eigenen Debug-Build als Prefill trifft die alten Zahlen auf 0,01 %.
+- **Wo?** Der Zuwachs liegt ganz in `runTask`, in C-Code ohne Lyric-Zeile (627 → 934·10⁶ in `strings`).
+  callgrind je Maschinenbefehl zeigt mehr Stack-Spills (+185·10⁶) und Register-`mov`s (+156·10⁶). Der
+  Dispatch-Kopf hat 24 statt 20 Befehle, und der `MoveR`-Arm mit der Kartenmarkierung lädt zwei Werte mehr vom
+  Stack. Sein Lyric-Code ist unverändert.
+- **Der neue Arm?** Nein. Variante M faltet `jump.le.i` in den Arm von `jump.lt.i`: `words`, `map` und
+  `strings` bleiben gleich, `fib` und `loop` werden schlechter.
+- **Die verschobenen Ordnungszahlen?** Nein. Variante E hängt die Op ans Ende des Enums und lässt alle alten
+  Nummern stehen: gleich wie S7k1b.
+- **Der Compiler-Code in derselben C-Einheit von 32 MB?** Nein. Variante C nimmt S7k1b mit dem `codegen.lyr`
+  von f20cd9d: auf 0,01 % gleich wie S7k1b.
+- **Jede Änderung an der VM?** Variante R nimmt f20cd9d mit einer unbenutzten Op und einem Arm `pc += 1` und
+  trifft f20cd9d auf 0,01 %. Das schloss aber nichts aus, ein Fehler im Aufbau: R lief den alten Bytecode, alle
+  anderen Varianten den neuen. R sagt nichts über ein Binary, das neuen Bytecode ausführt.
+- **Das Binary oder der Bytecode?** Die Kontrolle mit gleichem Text: dieselben `.lyrsasm` von Messpunkt 1
+  (`fib`, `loop`, `objects`) auf jedem Release-Build. R trifft f20cd9d genau. S7k1b, E und C liegen gleich
+  darüber: `fib` +7,2 %, `loop` +9,2 %, `objects` +13,7 %. M liegt noch höher (`fib` +11,7 %). Es ist das Binary.
+- **Der Fuel-Pfad des Arms?** Nein. Variante F, ein Arm ohne Fuel (nur als Experiment, rückwärts unsicher),
+  liegt bei S7k1b.
+
+Das Bild: Jeder Code für `jump.le.i` in `runTask` lässt den C-Compiler die ganze Dispatch-Schleife schlechter
+zuteilen, ob als eigener Arm, gefaltet oder ohne Fuel-Pfad. Das trifft Arme, die er nicht berührt. Ein trivialer
+Arm tut es nicht. Das ist die Empfindlichkeit, die schon S7j zeigte (Dispatch ≈ 60 Befehle je VM-Op, damals
+außerhalb des Schnitts). Die Zuteilung der Dispatch-Schleife wird zu P47.
+
+**Lauf 2 (2026-11-09, Release S7k1b, Prefill aus dem Debug-Build, 9 Runden plus Aufwärmrunde).** Alle Läufe
+gültig, Prefill 9/9.
+
+| Programm | Script | 4.6 | Verhältnis (brutto) | Lauf 1 |
+|---|---:|---:|---:|---:|
+| B1 `fib` | 0,137 s | 0,422 s | 3,08× | 3,07× |
+| B2 `loop` | 0,116 s | 0,616 s | 5,33× | 3,15× |
+| B3 `objects` | 0,147 s | 0,448 s | 3,05× | 2,99× |
+| B4 `words` | 0,189 s | 0,532 s | 2,81× | 2,93× |
+| B5 `sort` | 0,011 s | 0,576 s | 50,4× | 48,4× |
+| B6 `sortby` | 0,085 s | 0,535 s | 6,33× | 6,64× |
+| B7 `map` | 0,246 s | 0,795 s | 3,24× | 3,64× |
+| B8 `strings` | 0,285 s | 0,729 s | 2,55× | 2,70× |
+| **Mittel B1–B8** | | | **4,97×** | 4,77× |
+| Mittel B1, B2, B3, B6 | | | 4,22× | 3,72× |
+
+Erwartet waren 5,0–5,2× und 4,3–4,5×. Der Bytecode von Hand, also unveränderter Text, fiel von Lauf 1 auf Lauf 2:
+`fib` 4,23 → 3,72×, `objects` 4,09 → 3,66×. Die schlechtere Zuteilung kostet an der Uhr mehr, als ihre Befehle
+zeigen. Der Ratchet ist um Haaresbreite verfehlt.
+
+**Entscheidung G (nach Empfehlung).** `jump.le.i` fällt wieder heraus. Die VM ist byte-gleich mit f20cd9d, das
+Format bleibt 47. Ein verschmolzener Vergleich braucht nur `jump.lt.i`:
+- `x < y` springt mit `jump.lt.i x, y`; `x > y` mit vertauschten Operanden.
+- `x >= y` und `x <= y` sind die Verneinungen davon. Soll der Sprung fallen, wo `x < y` *nicht* hält, springt
+  `jump.lt.i` über einen einfachen `jump`.
+- `while (i < n)` hat damit weiter einen Befehl an der Rückkante. Der Weg über den `jump` kostet einen Dispatch
+  mehr, nur auf einem der beiden Pfade.
+
+Verworfen:
+- **Eigener Arm** (S7k1b), **gefaltet in `jump.lt.i`** (M), **Op am Ende des Enums** (E): alle drei verschieben
+  die Zuteilung gleich oder schlechter.
+- **Arm ohne Fuel-Pfad** (F): verschiebt sie genauso und ist rückwärts unsicher.
+- **`jump.le.i` nur vorwärts mit einer Regel im Verifier**: Sie war der nächste Schritt, falls der Fuel-Pfad
+  stört. Nach F ist sie hinfällig, denn schon der Vergleich stört.
+- **Die Dispatch-Schleife umbauen**, damit ihre Zuteilung nicht mehr an einzelnen Armen hängt: Das ist P47, ein
+  eigener Schnitt und nicht Teil einer Senkung im Compiler.
+
+**Ergebnis G (2026-11-09).** Prüfung: 381 Tests, Konformanz 865/865 (mit den zwei Fällen von S7k3), `fmt` sauber.
+Zwei Tests passen sich an: `everyComparisonJumpsBothWays` zählt jetzt beide Formen, den direkten Sprung und den
+Sprung über einen `jump`. `aFusedComparisonPaysItsBackwardJump` prüft eine `<=`-Schleife über den `jump`. Vier
+Mutanten, alle getötet, je von Tests und Konformanz: Richtung verkehrt (19 Tests / 610 Fälle rot), Ziel des
+Übersprungs eins zu weit (7 / 134), `<=` ohne Tausch (2 / 26), `>=` vertauscht (6 / 177). Die `.lyrsasm` von
+Messpunkt 1 laufen auf dem Build von G genau wie auf f20cd9d.
+
+| Programm | f20cd9d | S7k1b | G | G gegen f20cd9d |
+|---|---:|---:|---:|---:|
+| `loop` | 4,873·10⁹ | 3,553·10⁹ | 3,232·10⁹ | **−33,7 %** |
+| `fib` | 3,333·10⁹ | 2,962·10⁹ | 2,864·10⁹ | −14,1 % |
+| `objects` | 3,300·10⁹ | 2,801·10⁹ | 2,470·10⁹ | −25,1 % |
+| `words` | 3,372·10⁹ | 3,559·10⁹ | 3,303·10⁹ | −2,0 % |
+| `sort` | 0,123·10⁹ | 0,111·10⁹ | 0,105·10⁹ | −14,8 % |
+| `sortby` | 1,760·10⁹ | 1,661·10⁹ | 1,524·10⁹ | −13,4 % |
+| `map` | 3,650·10⁹ | 3,750·10⁹ | 3,486·10⁹ | −4,5 % |
+| `strings` | 5,208·10⁹ | 5,488·10⁹ | 5,122·10⁹ | −1,6 % |
+
+Vorhergesagt waren für G: `loop` 3,0–3,3·10⁹, `fib` −8 bis −14 %, `objects` −15 bis −22 %, `words` −3 bis −8 %,
+`sort` und `sortby` −5 bis −10 %, `map` −3 bis −10 %, `strings` −4 bis −8 %. `objects`, `sort` und `sortby` liegen
+darüber, `words` und `strings` knapp darunter. Kein Programm liegt über f20cd9d, jedes unter S7k1b.
+
+**Läufe 3 und 4 (2026-11-09, Release G, Prefill aus dem Debug-Build von G, je 9 Runden plus Aufwärmrunde).**
+Lauf 4 wiederholt Lauf 3 mit demselben Binary, um Drift der Maschine vom Binary zu trennen. Alle Läufe gültig,
+Prefill je 9/9. Verhältnis brutto, 4.6 gegen Script:
+
+| Programm | Lauf 1 (f20cd9d) | Lauf 2 (S7k1b) | Lauf 3 (G) | Lauf 4 (G) |
+|---|---:|---:|---:|---:|
+| B1 `fib` | 3,07× | 3,08× | 3,54× | 3,40× |
+| B2 `loop` | 3,15× | 5,33× | 4,56× | 4,87× |
+| B3 `objects` | 2,99× | 3,05× | 2,88× | 2,93× |
+| B4 `words` | 2,93× | 2,81× | 3,16× | 3,13× |
+| B5 `sort` | 48,4× | 50,4× | 49,6× | 43,4× |
+| B6 `sortby` | 6,64× | 6,33× | 7,41× | 7,30× |
+| B7 `map` | 3,64× | 3,24× | 3,50× | 3,51× |
+| B8 `strings` | 2,70× | 2,55× | 2,76× | 2,82× |
+| **Mittel B1–B8** | 4,77× | 4,97× | **5,18×** | **5,13×** |
+| Mittel B1, B2, B3, B6 | 3,72× | 4,22× | 4,31× | 4,34× |
+| von Hand: `fib`, `loop`, `objects` | 4,23 / 6,33 / 4,09× | 3,72 / 6,41 / 3,66× | 4,45 / 6,31 / 3,38× | 4,20 / 6,20 / 3,45× |
+
+Vorhergesagt für Lauf 3 waren 5,2–5,6× und 4,4–4,8×. **Der Ratchet hält**, in beiden Läufen, aber am unteren
+Rand. Lauf 4 trifft Lauf 3 je Zelle auf 3–6 %, mit Ausnahme von `sort`, das bei 12 ms im Rauschen des Starts liegt.
+Zwei Zellen folgen ihren Befehlen nicht:
+- `loop` aus dem Quelltext: 0,131–0,139 s auf G gegen 0,116 s auf S7k1b, bei 9 % weniger Befehlen und gleich
+  vielen Dispatches (60,05·10⁶ indirekte Sprünge in beiden).
+- `objects` von Hand läuft auf G 17 % langsamer als in Lauf 1 auf f20cd9d, bei gleichem Text, gleicher VM-Quelle
+  und gleichen Befehlen auf 10⁻⁶.
+
+Das ist das Layout des Binarys, nicht die Zahl der Befehle: Der Compiler liegt in derselben C-Einheit, und jede
+Änderung an ihm verschiebt die Adressen der Dispatch-Schleife. Die Sprungsimulation von valgrind kann das nicht
+zeigen. Ihr Modell für indirekte Sprünge verfehlt in beiden Builds 99,9 %. Zähler der Hardware gibt es unter WSL
+nicht, deshalb endet die Suche hier und geht in P47 ein. S7k1 schließt mit G und dem Mittel von Lauf 3.
+
+Methodisch folgt daraus: Ein Befehlsvergleich zwischen zwei VM-Ständen misst die Zuteilung mit. Eine Senkung im
+Compiler wird gegen dieselbe VM gemessen (Variante C). Eine Änderung an der VM wird mit unverändertem Text
+gemessen, also mit den `.lyrsasm`, nicht mit dem Bytecode des neuen Compilers.
+
+**Erwartung S7k2 (vor dem ersten Lauf geschrieben).** Gemessen wird der Release-Build von G, aus einer Kopie im
+Linux-Dateisystem, je 11 Läufe abwechselnd. Kalt heißt mit leerem Cache, warm mit dem Cache, den die erste
+Runde füllt. Dazu kommen die Befehle eines kalten Laufs unter callgrind. Gemessen werden `hello` und die beiden
+Zielprogramme aus 02, die dafür als `examples/targets/topwords.lyrs` (`std.fs`) und `rename.lyrs` (`std.fs`,
+`std.path`, `std.process`) geschrieben wurden.
+
+| Programm | kalt erwartet | warm erwartet |
+|---|---|---|
+| `hello` | 55–90 ms: Der Debug-Build braucht ~430 ms, Release sollte 5–8× schneller sein. **Ratchet ≤ 50 ms verfehlt** | 4–6 ms |
+| `topwords` | 110–220 ms | 6–15 ms |
+| `rename` | 140–280 ms | 6–15 ms |
+
+Erwartet waren außerdem diese Anteile am kalten `hello`: Prüfen 50–65 %, Parsen 15–25 %, Codegen und
+Verifier 10–20 %, Cache und Lauf unter 5 %.
+
+**Ergebnis S7k2 (2026-11-09).** Die Erwartung war zu pessimistisch.
+
+| Programm | kalt | warm | Befehle kalt |
+|---|---:|---:|---:|
+| `hello` | **35,5 ms** | 4,6 ms | 237,5·10⁶ |
+| `rename` | 87,0 ms | 22,1 ms (mit dem Start von `git`) | 657,6·10⁶ |
+| `topwords` | — | — | stürzt ab |
+
+- **Beide Ratchets halten**: kalt ≤ 50 ms und warm ≤ 10 ms (11 Perf).
+- **`topwords` übersetzt der Release-Build nicht.** In jedem Verzeichnis und in jedem von 23 Läufen gibt es
+  einen SIGSEGV in `Checker.resolveNamed`: `lyr_str_eq` liest einen String, den der Sammler schon freigegeben
+  hat. Das ist dieselbe Familie wie lyric#667, diesmal unabhängig vom Pfad; der Fall steht dort als Kommentar.
+  Der Debug-Build übersetzt und läuft das Programm. Damit ist #667 für 1.0 ein Blocker (P48).
+- **Wohin die Befehle gehen** (callgrind, inklusive). Die Anteile überlappen, weil der Checker die Module der
+  Prelude selbst parst und speichert:
+  - Prüfen 71 %, davon die Inferenz der Fehlermengen allein 17 % (`checkThrows`, ein Fixpunkt über alle
+    geladenen Funktionen).
+  - Parsen 25 %.
+  - **Cache schreiben 24 %, davon 21 % in `opNumber`.** Für jede Instruktion baute `Op.all()` das Array aller
+    Operationen neu, dann wurde darin linear gesucht.
+  - Codegen 4 %.
+
+  Nach Herkunft des Codes: Laufzeit (Sammler) 37 %, libc (Speicher füllen und kopieren) 21 %, `Map` und
+  `SipHash` der std 23 %.
+
+**S7k2b.** `opNumber` liest die Nummer zur Übersetzungszeit aus den Varianten
+(`comptime for (v in variants<Op>())`, `op is v`, `v.index`; Lyric 5 09 D5). Ein neuer Test prüft jede Nummer
+gegen ihren Platz.
+
+| Programm | Befehle kalt vorher | nachher | erwartet | kalt vorher | nachher |
+|---|---:|---:|---|---:|---:|
+| `hello` | 237,5·10⁶ | 187,5·10⁶ | **−21 %** (erwartet −18 bis −24 %) | 36,2 ms | **30,1 ms** |
+| `rename` | 657,8·10⁶ | 497,8·10⁶ | −24 % (erwartet 520–580·10⁶) | 94,0 ms | 75,6 ms |
+
+Die Messung lief am selben Ort und zur selben Zeit, jeweils mit Last unter 1,0 zu Beginn. Die
+Cache-Dateien beider Binaries sind byte-gleich. Die zwei Mutanten (Nummer + 1, Nummer modulo 64) tötet je
+derselbe Satz von 4 Tests. Die Konformanz tötet keinen davon, anders als für den ersten vorhergesagt: Jeder
+Fall läuft mit leerem Cache aus dem Modul im Speicher, die Suite liest ihren Cache also nie zurück. Den Weg
+über den Cache prüfen nur die Unit-Tests von `bytecode.lyr`.
+
+Entscheidung (nach Empfehlung): **Vor 1.0 muss für den Start nichts weiter billiger werden**, die Ratchets
+halten mit Abstand. Die nächsten Hebel bleiben verzeichnet, mit Uhr bei der Messung zu 1.0 (S15):
+- die Inferenz der Fehlermengen (17 %)
+- der Sammler (37 %)
+- `Thrown.none()`, das bei jedem Aufruf drei Listen anlegt
+- `nativeNamed`, eine lineare Suche, die je Native einen `NativeInfo` baut
+
+**S7, Abschluss (2026-11-09).** Abgleich der Bereichszeilen 12 Um, Src und der Einzelheiten der
+Standardbibliothek gegen den Code. Gebaut sind:
+- **Module:** `iter`, `collections` (`Map`, `Set`, `Deque`, `Heap`), `fmt`, `math` mit `BigInt`, `numbers`,
+  `bytes`, `io`, `fs` mit `glob`, `path`, `process`, `os` mit `signals`, `time`, `random`, `test`, `cli`,
+  `log` und `csv`. `core` und `string` liegen in der Prelude, die Task-Typen seit S6 ebenfalls.
+- **Namen und Formen** nach Lyric 5s std, je Slice in Spec 12 Regeln 2–36.
+- **Zahlen:** Typkonstanten am Typ (`int.max`), Weltkonstanten in `math`.
+- **Container:** `+`, `xs * n`.
+- **I/O:** Go-Form über `Bytes`, ein `IoError { kind }`, das `Command`-Struct.
+- **Strings:** Länge in Bytes, `s[i]`, `Pattern`.
+- **Rechte:** die feste Rechtetabelle.
+- **Kostenregeln mit Test** für die Natives von `BigInt`, `Bytes`, Konsole, Dateien, Verzeichnissen, Pfaden
+  und Prozessen.
+- **Aus früheren Meilensteinen:** Array-Muster, `Hashable`, `is int[]` als Prüfstein der Listen-Deskriptoren
+  (`typeOf` selbst mit `reflect`), `e.suppressed()`, `eprintln`, `args`, `exit`, `Coroutine :: Iterator`,
+  `for` über jedes Iterable, Tasks, Koroutinen und Kanäle als Interfacewerte, `IoError` für `readLine`,
+  `os.signals`.
+
+Abweichend entschieden: `Map` und `Set` liegen in Script über einem nativen Index, nicht ganz in der VM
+(P27).
+
+Mit Uhr woanders:
+- die Kostenregeln der älteren Natives `sort`, `repeat`, `replace`, `split`, `+` und `*` (P33, S8)
+- die Kennzeichnung „Callback darf nicht warten“ (S8, mit den Callbacks)
+- `@Test`, Subtests, `@Bench` und die Attribute (P43, S11)
+- `string :: Contains<char>` (P44, S11)
+- `encoding`, `codec`, `json`, `toml`, `regex`, `compress`, `hash`, `crypto`, `net`, `uri`, `http`, `term` und
+  `reflect` (S10)
+- die Werkzeugzeilen von 12 (S11–S13)
+
+**Austrittskriterium erfüllt:** Messpunkt 3 hält mit 5,18× und 5,13×. Die Zielprogramme Terminal-Werkzeug und
+Automatisierung laufen als `examples/targets` in der CI auf allen vier Plattformen, jedes mit nur den Rechten,
+die es importiert, und ohne Rechte mit `LYS-CAP0001`.
+
+Gefunden über die letzten Slices:
+- Ein Schreibzugriff über einen Modulnamen sprach von einem unbekannten Namen (P45, lyric#705).
+- `jump.le.i` verschob die Registerzuteilung der VM (P47).
+- Das Schreiben des Caches baute für jede Instruktion die Liste aller Operationen.
+- Der Release-Build übersetzt `topwords` nicht (P48, lyric#667): Für 1.0 ist das ein Blocker.
+
+Lehren:
+- Ein Befehlsvergleich zwischen VM-Ständen braucht unveränderten Text als Kontrolle.
+- Eine Wiederholung mit demselben Binary trennt Drift vom Binary.
+- Die Konformanz liest ihren Cache nie zurück; diesen Weg prüfen nur die Unit-Tests.
+
+382 Tests, 865 Fälle; Bytecode-Format 47.

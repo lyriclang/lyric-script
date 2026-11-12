@@ -1,0 +1,2 @@
+// The empty program: start-up and teardown only. Prints 0, like ../v46/empty.lyr.
+println(0)

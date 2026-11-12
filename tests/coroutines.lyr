@@ -472,9 +472,9 @@ fn aCoroutineIsAnIdentity(): void {
 fn closingAndCalledYieldsAreChecked(): void {
     // every yield throws `Cancelled` at a close: a written `throws` covers it (rule 13)
     assertEq(errs("fn emit(x: int) throws Exception {\n    yield x\n}"), ["LYS-SEM0034"]);
-    // no interface value of a coroutine or a task until they have descriptors (S7)
-    assertEq(errs(count + "let x: Closeable = count(1)"), ["LYS-SEM0001"]);
-    assertEq(errs("let t: Any = spawn { 1 }"), ["LYS-SEM0001"]);
+    // a coroutine and a task are interface values, in a box (S7c4b)
+    assertEq(errs(count + "let x: Closeable = count(1)"), []);
+    assertEq(errs("let t: Any = spawn { 1 }"), []);
     assertEq(errs(count + "fn f() {\n    using let c = count(1)\n}"), []);
     // a coroutine may be dropped unclosed, without a warning (rule 10)
     let dropped = checkModule(parse(count + "fn f() {\n    count(1)\n}").module);

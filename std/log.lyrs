@@ -1,0 +1,72 @@
+//! Log lines (12 rule 35): `debug`, `info`, `warn` and `error` write a line `LEVEL message` — `INFO server
+//! started` — to stderr, where the line's level is at least the threshold, `Info` unless `setLevel` says
+//! otherwise; `setSink` sends the lines elsewhere, to a file or a list. A line has no time stamp: journald, a
+//! service manager and a CI write their own, and a script that wants one writes it into the message. A module of
+//! no right.
+
+/// How much a line matters, the least first.
+enum Level :: [Equatable, Display] {
+    Debug,
+    Info,
+    Warn,
+    Error,
+
+    /// The level as a line starts with it: `DEBUG`, `INFO`, `WARN`, `ERROR`.
+    fn show(): string = match (this) {
+        .Debug => "DEBUG",
+        .Info => "INFO",
+        .Warn => "WARN",
+        .Error => "ERROR",
+    }
+}
+
+private var threshold: Level = Level.Info
+
+private var sink: fn(string) -> void = (line: string) => eprintln(line)
+
+/// Writes the lines of `level` and the levels above it from now on, and none below; `Info` at the start.
+fn setLevel(level: Level) {
+    threshold = level
+}
+
+/// Whether a line of `level` is written now — for a message costly to build, built only where it is.
+fn enabled(level: Level): bool = rank(level) >= rank(threshold)
+
+/// Sends every line from now on to `to`, each without its line break, instead of stderr;
+/// `setSink((line) => eprintln(line))` sends them back.
+fn setSink(to: fn(string) -> void) {
+    sink = to
+}
+
+/// Writes `DEBUG message` where `Debug` lines are written.
+fn debug(message: string) {
+    write(Level.Debug, message)
+}
+
+/// Writes `INFO message` where `Info` lines are written, as they are at the start.
+fn info(message: string) {
+    write(Level.Info, message)
+}
+
+/// Writes `WARN message` where `Warn` lines are written.
+fn warn(message: string) {
+    write(Level.Warn, message)
+}
+
+/// Writes `ERROR message`, always: no threshold is above `Error`.
+fn error(message: string) {
+    write(Level.Error, message)
+}
+
+private fn write(level: Level, message: string) {
+    if (enabled(level)) {
+        sink(f"{level} {message}")
+    }
+}
+
+private fn rank(level: Level): int = match (level) {
+    .Debug => 0,
+    .Info => 1,
+    .Warn => 2,
+    .Error => 3,
+}

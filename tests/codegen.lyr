@@ -1,6 +1,7 @@
 // The code generator: checked programs run in the VM and give what the language says — the
 // arithmetic, the widening, the loops, short-circuits, structs and classes, the globals, the
 // natives, and the script's panics — with the registers given back as the S1 convention needs.
+import std.collections { List };
 import std.test { assertEq, assertTrue };
 import lyric_script.compiler.checker { checkModule };
 import lyric_script.compiler.codegen { generate };
@@ -34,6 +35,26 @@ fn floatResult(source: string, entry: string): float {
         .Scalar(bits) => float.fromBits(bits),
         _ => -999.0,
     };
+}
+
+/// The disassembly of the functions of `source` named in `names`, without the prelude's.
+fn codeOf(source: string, names: string[]): string {
+    let out = List<string>.new();
+    var inside = false;
+    for (line in disassemble(compiled(source)).split("\n")) {
+        if (line.startsWith("fn ")) {
+            inside = false;
+            for (n in names) {
+                if (line.startsWith(f"fn {n}(")) {
+                    inside = true;
+                }
+            }
+        }
+        if (inside) {
+            out.push(line.toString());
+        }
+    }
+    return out.toArray().join("\n");
 }
 
 fn panicCode(source: string, entry: string): string {
@@ -196,11 +217,130 @@ fn theScriptsPanics(): void {
 
 @Test
 fn registersAreGivenBack(): void {
-    let text = disassemble(compiled("fn add1(x: int) = x + 1"));
+    // `*` has no immediate form, so the constant takes a register, and it is given back
+    let text = disassemble(compiled("fn mul3(x: int) = x * 3"));
     assertTrue(
         text.contains(
-            "fn add1(s) -> s regs 3 0\n    load.i s2, 1\n    add.i s1, s0, s2\n    ret.s s1\n"
+            "fn mul3(s) -> s regs 3 0\n    load.i s2, 3\n    mul.i s1, s0, s2\n    ret.s s1\n"
         ),
         text
     );
+}
+
+@Test
+fn aLoopOfWhileLowersAsARangesDoes(): void {
+    // S7k1b: the assignments as statements copy their value nowhere, `i += 1` is `add.imm`, the
+    // test is one fused jump
+    let text = codeOf(
+        "fn up(n: int): int {\n    var s = 0\n    var i = 0\n    while (i < n) {\n        s = s + i\n        i += 1\n    }\n    return s\n}",
+        ["up"]
+    );
+    assertTrue(text.contains("fn up("), text);
+    assertTrue(text.contains("    add.imm s"), text);
+    assertTrue(text.contains("    jump.lt.i s"), text);
+    assertTrue(!text.contains("    move.s "), text);
+    assertTrue(!text.contains("    lt.i "), text);
+    assertTrue(!text.contains("    jump.if "), text);
+    assertEq(
+        value(
+            "fn up(n: int): int {\n    var s = 0\n    var i = 0\n    while (i < n) {\n        s = s + i\n        i += 1\n    }\n    return s\n}\nfn f(): int = up(101)",
+            "f"
+        ),
+        5050
+    );
+}
+
+@Test
+fn everyComparisonJumpsBothWays(): void {
+    // each test as an `if` (jumps where false) and as a `while` (jumps where true), at the
+    // boundaries, on ints and on chars
+    let src = "fn bits(a: int, b: int): int {\n    var r = 0\n    if (a < b) {\n        r += 1\n    }\n    if (a <= b) {\n        r += 2\n    }\n    if (a > b) {\n        r += 4\n    }\n    if (a >= b) {\n        r += 8\n    }\n    var n = 0\n    while (a < b && n == 0) {\n        n = 16\n    }\n    r += n\n    n = 0\n    while (a <= b && n == 0) {\n        n = 32\n    }\n    r += n\n    n = 0\n    while (a > b) {\n        n = 64\n        break\n    }\n    r += n\n    n = 0\n    while (a >= b) {\n        n = 128\n        break\n    }\n    return r + n\n}\nfn cbits(a: char, b: char): int {\n    var r = 0\n    if (a < b) {\n        r += 1\n    }\n    if (a >= b) {\n        r += 8\n    }\n    return r\n}\n";
+    let calls = "fn lt(): int = bits(1, 2)\nfn eq(): int = bits(2, 2)\nfn gt(): int = bits(3, 2)\nfn neg(): int = bits(-9223372036854775807 - 1, 9223372036854775807)\nfn cl(): int = cbits('a', 'b')\nfn cg(): int = cbits('b', 'a')";
+    // < 1, <= 2, > 4, >= 8, while < 16, while <= 32, while > 64, while >= 128
+    assertEq(value(src + calls, "lt"), 1 + 2 + 16 + 32);
+    assertEq(value(src + calls, "eq"), 2 + 8 + 32 + 128);
+    assertEq(value(src + calls, "gt"), 4 + 8 + 64 + 128);
+    assertEq(value(src + calls, "neg"), 1 + 2 + 16 + 32);
+    assertEq(value(src + calls, "cl"), 1);
+    assertEq(value(src + calls, "cg"), 8);
+    // both forms: `jump.lt.i` alone where the jump is taken as `x < y` holds, and over a plain
+    // `jump` where it is taken as it does not
+    let text = codeOf(src, ["bits", "cbits"]);
+    let all = List<string>.new();
+    for (line in text.split("\n")) {
+        all.push(line.toString());
+    }
+    let lines = all.toArray();
+    var alone = 0;
+    var over = 0;
+    var k = 0;
+    while (k + 1 < lines.length()) {
+        if (lines[k].startsWith("    jump.lt.i s")) {
+            if (lines[k + 1].startsWith("    jump @")) {
+                over += 1;
+            } else {
+                alone += 1;
+            }
+        }
+        k += 1;
+    }
+    assertTrue(alone > 0, text);
+    assertTrue(over > 0, text);
+}
+
+@Test
+fn aConstantStepIsAnImmediate(): void {
+    // at the edges of the 16-bit immediate, and just past them (then a register)
+    let src = "fn a(x: int): int = x + 32767\nfn b(x: int): int = x + 32768\nfn c(x: int): int = x - 32768\nfn d(x: int): int = x - 32769\nfn e(x: int): int = 5 + x\nfn g(x: int): int = x - -32768\nfn h(x: int): int {\n    var y = x\n    y -= 32768\n    y += 7\n    return y\n}\n";
+    let calls = "fn ta(): int = a(1)\nfn tb(): int = b(1)\nfn tc(): int = c(1)\nfn td(): int = d(1)\nfn te(): int = e(1)\nfn tg(): int = g(1)\nfn th(): int = h(1)";
+    assertEq(value(src + calls, "ta"), 32768);
+    assertEq(value(src + calls, "tb"), 32769);
+    assertEq(value(src + calls, "tc"), -32767);
+    assertEq(value(src + calls, "td"), -32768);
+    assertEq(value(src + calls, "te"), 6);
+    assertEq(value(src + calls, "tg"), 32769);
+    assertEq(value(src + calls, "th"), -32760);
+    let text = codeOf(src, ["a", "b", "c", "d", "e", "g", "h"]);
+    assertTrue(text.contains("add.imm s1, s0, 32767"), text);
+    assertTrue(text.contains("add.imm s1, s0, -32768"), text);
+    assertTrue(!text.contains("add.imm s1, s0, 32768"), text);
+    // the step overflows as the addition does
+    assertEq(
+        panicCode(
+            "fn o(): int {\n    var m = -9223372036854775807 - 1\n    m -= 1\n    return m\n}",
+            "o"
+        ),
+        "LYS-RT0002"
+    );
+    assertEq(
+        panicCode("fn p(): int {\n    let m = 9223372036854775807\n    return 1 + m\n}", "p"),
+        "LYS-RT0002"
+    );
+}
+
+@Test
+fn aConstantConditionJumpsAlwaysOrNever(): void {
+    let src = "fn w(): int {\n    var n = 0\n    while (true) {\n        n += 1\n        if (n >= 5) {\n            break\n        }\n    }\n    if (false) {\n        n = 100\n    }\n    if (true) {\n        n += 10\n    } else {\n        n = 200\n    }\n    var k = 0\n    do {\n        k += 1\n    } while (k < 3)\n    while (false) {\n        n = 300\n    }\n    return n + k\n}";
+    assertEq(value(src, "w"), 18);
+    let text = codeOf(src, ["w"]);
+    assertTrue(text.contains("fn w("), text);
+    assertTrue(!text.contains("    jump.if "), text);
+    assertTrue(!text.contains("    jump.ifnot "), text);
+}
+
+@Test
+fn aMatchOfManyArmsRuns(): void {
+    // its arms lower to a chain of conditions the code generator walks in one frame (S7e1: four
+    // hundred overflowed a thread's stack, a frame for each), in a copy of a generic too
+    let parts = List<string>.new();
+    parts.push("fn arm<T>(x: T, n: int): int = match (n) {");
+    var k = 0;
+    while (k < 400) {
+        parts.push("    " + f"{k}" + " => " + f"{k}" + ",");
+        k += 1;
+    }
+    parts.push("    _ => -1,");
+    parts.push("}");
+    parts.push("fn f(): int = arm(1, 399) + arm(\"s\", 398)");
+    assertEq(value(parts.toArray().join("\n"), "f"), 797);
 }

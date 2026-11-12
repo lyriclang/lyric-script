@@ -1,0 +1,9 @@
+// B1 fib: fib(32) recursive, two calls per step — call heavy. The same algorithm as ../v46/fib.lyr.
+fn fib(n: int): int {
+    if (n < 2) {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+println(fib(32))

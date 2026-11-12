@@ -1,0 +1,24 @@
+// B6 sortby: B5 with a comparison written in the language — a lambda called for every
+// comparison. The same algorithm as ../src/sortby.lyrs.
+import std.io.console { println };
+import std.collections { List, sortListBy };
+
+fn main(): int {
+    var x = 12345;
+    let xs = List<int>.empty();
+    var i = 0;
+    while (i < 50000) {
+        x = (x * 1103515245 + 12345) % 2147483648;
+        xs.push(x % 1000000);
+        i += 1;
+    }
+    sortListBy<int>(xs, (a: int, b: int) => a < b);
+    var check = 0;
+    i = 0;
+    while (i < xs.length()) {
+        check = (check * 31 + xs.get(i)) % 1000000007;
+        i += 1;
+    }
+    println(check);
+    return 0;
+}

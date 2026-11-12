@@ -1,0 +1,63 @@
+prefill with /home/Olivier/dev/projects/s7k-dbg-g/lyric-script: 9/9
+round 0 (warm-up): loadavg 0.93 (waited 30 s), invalid so far 0
+round 1: loadavg 0.93 (waited 0 s), invalid so far 0
+round 2: loadavg 0.94 (waited 0 s), invalid so far 0
+round 3: loadavg 0.80 (waited 15 s), invalid so far 0
+round 4: loadavg 0.83 (waited 0 s), invalid so far 0
+round 5: loadavg 0.84 (waited 0 s), invalid so far 0
+round 6: loadavg 0.85 (waited 0 s), invalid so far 0
+round 7: loadavg 0.88 (waited 0 s), invalid so far 0
+round 8: loadavg 0.89 (waited 0 s), invalid so far 0
+round 9: loadavg 0.90 (waited 0 s), invalid so far 0
+
+| program | VM | median wall s | min | max | median CPU s | valid |
+|---|---|---:|---:|---:|---:|---|
+| empty | script | 0.0044 | 0.0039 | 0.0088 | 0.0034 | 9/9 |
+| empty | script-asm | 0.0015 | 0.0012 | 0.0021 | 0.0014 | 9/9 |
+| empty | v46 | 0.0596 | 0.0545 | 0.0722 | 0.0571 | 9/9 |
+| fib | script | 0.1283 | 0.1209 | 0.1442 | 0.1277 | 9/9 |
+| fib | script-asm | 0.1039 | 0.0982 | 0.1219 | 0.1030 | 9/9 |
+| fib | v46 | 0.4359 | 0.4211 | 0.4510 | 0.4411 | 9/9 |
+| loop | script | 0.1306 | 0.1282 | 0.1405 | 0.1286 | 9/9 |
+| loop | script-asm | 0.1027 | 0.0960 | 0.1101 | 0.1022 | 9/9 |
+| loop | v46 | 0.6363 | 0.6136 | 0.8492 | 0.6407 | 9/9 |
+| objects | script | 0.1540 | 0.1494 | 0.1582 | 0.1518 | 9/9 |
+| objects | script-asm | 0.1308 | 0.1270 | 0.1706 | 0.1314 | 9/9 |
+| objects | v46 | 0.4512 | 0.4328 | 0.4819 | 0.4594 | 9/9 |
+| words | script | 0.1755 | 0.1676 | 0.1935 | 0.1720 | 9/9 |
+| words | v46 | 0.5503 | 0.5389 | 0.5606 | 0.5660 | 9/9 |
+| sort | script | 0.0132 | 0.0115 | 0.0168 | 0.0140 | 9/9 |
+| sort | v46 | 0.5732 | 0.5489 | 0.5981 | 0.5793 | 9/9 |
+| sortby | script | 0.0741 | 0.0680 | 0.0866 | 0.0731 | 9/9 |
+| sortby | v46 | 0.5408 | 0.5366 | 0.5814 | 0.5466 | 9/9 |
+| map | script | 0.2288 | 0.2214 | 0.2701 | 0.2350 | 9/9 |
+| map | v46 | 0.8037 | 0.7960 | 0.8678 | 0.8102 | 9/9 |
+| strings | script | 0.2706 | 0.2598 | 0.2902 | 0.2691 | 9/9 |
+| strings | v46 | 0.7632 | 0.7334 | 0.7870 | 0.7886 | 9/9 |
+
+v46 / script:
+  fib      gross   3.40  net 3.04  cpu   3.46
+  loop     gross   4.87  net 4.57  cpu   4.98
+  objects  gross   2.93  net 2.62  cpu   3.03
+  words    gross   3.13  net 2.87  cpu   3.29
+  sort     gross  43.39  net 58.54  cpu  41.45
+  sortby   gross   7.30  net 6.91  cpu   7.48
+  map      gross   3.51  net 3.32  cpu   3.45
+  strings  gross   2.82  net 2.64  cpu   2.93
+  geomean_suite_gross 5.13
+  geomean_suite_net 4.97
+  geomean_suite_cpu 5.20
+  geomean_vm_only_gross 4.34
+  geomean_vm_only_net 3.98
+  geomean_vm_only_cpu 4.44
+v46 / script-asm:
+  fib      gross   4.20  net 3.68  cpu   4.28
+  loop     gross   6.20  net 5.7  cpu   6.27
+  objects  gross   3.45  net 3.03  cpu   3.50
+  geomean_suite_gross 4.48
+  geomean_suite_net 3.99
+  geomean_suite_cpu 4.54
+  geomean_vm_only_gross 4.48
+  geomean_vm_only_net 3.99
+  geomean_vm_only_cpu 4.54
+invalid runs: 0

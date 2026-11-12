@@ -1,0 +1,526 @@
+//! The arithmetic of a `BigInt` (S7f4; design/v1, 02 T1): Lyric 5 has none, so the VM brings its
+//! own. A number is a sign and a magnitude, base 2^32, least significant word first, with no
+//! leading zero word; zero has no word and no sign. Multiplication is schoolbook, division Knuth's
+//! Algorithm D, both proportional to the product of the operands' lengths, which is what
+//! `bigNative` charges.
+
+import std.core { StringBuilder };
+
+/// A number. Never changed once made.
+pub struct Big {
+    pub neg: bool,
+    pub mag: uint32[],
+}
+
+let wordMask: uint64 = 0xFFFFFFFF;
+
+/// `xs` without its leading zero words.
+fn trimmed(xs: uint32[]): uint32[] {
+    var n = xs.length();
+    while (n > 0 && xs[n - 1] == 0) {
+        n -= 1;
+    }
+    if (n == xs.length()) {
+        return xs;
+    }
+    var out = zeros(n);
+    var i = 0;
+    while (i < n) {
+        out[i] = xs[i];
+        i += 1;
+    }
+    return out;
+}
+
+fn made(neg: bool, mag: uint32[]): Big {
+    let m = trimmed(mag);
+    return Big { neg = neg && m.length() > 0, mag = m };
+}
+
+fn word(x: uint64): uint32 {
+    return (x & wordMask) as uint32;
+}
+
+/// `xs` of `n` zero words.
+fn zeros(n: int): uint32[] {
+    return [0 as uint32] * n;
+}
+
+/// The number `v`.
+pub fn fromInt(v: int): Big {
+    if (v == 0) {
+        return Big { neg = false, mag = [] };
+    }
+    // the least int's magnitude is no int
+    let m: uint64 = if (v < 0) (-(v + 1)) as uint64 + 1 else v as uint64;
+    return made(v < 0, [word(m), word(m >> 32)]);
+}
+
+pub fn isZero(a: Big): bool {
+    return a.mag.length() == 0;
+}
+
+fn cmpMag(a: uint32[], b: uint32[]): int {
+    if (a.length() != b.length()) {
+        return if (a.length() < b.length()) -1 else 1;
+    }
+    var i = a.length() - 1;
+    while (i >= 0) {
+        if (a[i] != b[i]) {
+            return if (a[i] < b[i]) -1 else 1;
+        }
+        i -= 1;
+    }
+    return 0;
+}
+
+/// -1, 0 or 1 as `a` is below, equal to or above `b`.
+pub fn cmp(a: Big, b: Big): int {
+    if (a.neg != b.neg) {
+        return if (a.neg) -1 else 1;
+    }
+    let c = cmpMag(a.mag, b.mag);
+    return if (a.neg) -c else c;
+}
+
+fn addMag(a: uint32[], b: uint32[]): uint32[] {
+    let (long, short) = if (a.length() >= b.length()) (a, b) else (b, a);
+    var out = zeros(long.length() + 1);
+    var carry: uint64 = 0;
+    var i = 0;
+    while (i < long.length()) {
+        let t = (long[i] as uint64)
+            + (if (i < short.length()) short[i] as uint64 else 0 as uint64)
+            + carry;
+        out[i] = word(t);
+        carry = t >> 32;
+        i += 1;
+    }
+    out[i] = word(carry);
+    return out;
+}
+
+/// `a - b`, where `a` is not below `b`.
+fn subMag(a: uint32[], b: uint32[]): uint32[] {
+    var out = zeros(a.length());
+    var borrow: uint64 = 0;
+    var i = 0;
+    while (i < a.length()) {
+        let x = a[i] as uint64;
+        let y = (if (i < b.length()) b[i] as uint64 else 0 as uint64) + borrow;
+        if (x >= y) {
+            out[i] = word(x - y);
+            borrow = 0;
+        } else {
+            out[i] = word(x + 0x100000000 - y);
+            borrow = 1;
+        }
+        i += 1;
+    }
+    return out;
+}
+
+pub fn neg(a: Big): Big {
+    return made(!a.neg, a.mag);
+}
+
+pub fn add(a: Big, b: Big): Big {
+    if (a.neg == b.neg) {
+        return made(a.neg, addMag(a.mag, b.mag));
+    }
+    return if (cmpMag(a.mag, b.mag) >= 0) made(a.neg, subMag(a.mag, b.mag))
+        else made(b.neg, subMag(b.mag, a.mag));
+}
+
+pub fn sub(a: Big, b: Big): Big {
+    return add(a, neg(b));
+}
+
+pub fn mul(a: Big, b: Big): Big {
+    if (isZero(a) || isZero(b)) {
+        return Big { neg = false, mag = [] };
+    }
+    var out = zeros(a.mag.length() + b.mag.length());
+    var i = 0;
+    while (i < a.mag.length()) {
+        let x = a.mag[i] as uint64;
+        var carry: uint64 = 0;
+        var j = 0;
+        while (j < b.mag.length()) {
+            let t = x * (b.mag[j] as uint64) + (out[i + j] as uint64) + carry;
+            out[i + j] = word(t);
+            carry = t >> 32;
+            j += 1;
+        }
+        out[i + j] = word(carry);
+        i += 1;
+    }
+    return made(a.neg != b.neg, out);
+}
+
+/// `xs` divided by one word: the quotient and the remainder.
+fn divWord(xs: uint32[], d: uint64): (uint32[], uint64) {
+    var out = zeros(xs.length());
+    var rem: uint64 = 0;
+    var i = xs.length() - 1;
+    while (i >= 0) {
+        let cur = (rem << 32) | (xs[i] as uint64);
+        out[i] = word(cur / d);
+        rem = cur % d;
+        i -= 1;
+    }
+    return (out, rem);
+}
+
+/// `xs` shifted up by `bits`, less than a word, in `n` words.
+fn shiftedUp(xs: uint32[], bits: int, n: int): uint32[] {
+    var out = zeros(n);
+    var carry: uint64 = 0;
+    var i = 0;
+    while (i < xs.length()) {
+        let t = ((xs[i] as uint64) << bits) | carry;
+        out[i] = word(t);
+        carry = t >> 32;
+        i += 1;
+    }
+    if (i < n) {
+        out[i] = word(carry);
+    }
+    return out;
+}
+
+/// Knuth's Algorithm D: the quotient and remainder of magnitudes, `v` not zero.
+fn divMag(u0: uint32[], v0: uint32[]): (uint32[], uint32[]) {
+    if (cmpMag(u0, v0) < 0) {
+        return ([], u0);
+    }
+    if (v0.length() == 1) {
+        let (q, r) = divWord(u0, v0[0] as uint64);
+        return (q, [word(r)]);
+    }
+    let b: uint64 = 0x100000000;
+    // normalized: the divisor's top bit set, so a trial quotient is off by two at most
+    let bits = (v0[v0.length() - 1] as uint32).leadingZeros();
+    let n = v0.length();
+    let m = u0.length() - n;
+    let v = shiftedUp(v0, bits, n);
+    var u = shiftedUp(u0, bits, u0.length() + 1);
+    var q = zeros(m + 1);
+    var j = m;
+    while (j >= 0) {
+        let top = ((u[j + n] as uint64) << 32) | (u[j + n - 1] as uint64);
+        var qhat = top / (v[n - 1] as uint64);
+        var rhat = top % (v[n - 1] as uint64);
+        while (qhat >= b
+            || qhat * (v[n - 2] as uint64) > ((rhat << 32) | (u[j + n - 2] as uint64))) {
+            qhat -= 1;
+            rhat += v[n - 1] as uint64;
+            if (rhat >= b) {
+                break;
+            }
+        }
+        // multiply and subtract
+        var carry: uint64 = 0;
+        var borrow: uint64 = 0;
+        var i = 0;
+        while (i < n) {
+            let t = qhat * (v[i] as uint64) + carry;
+            carry = t >> 32;
+            let lo = (t & wordMask) + borrow;
+            let cur = u[i + j] as uint64;
+            if (cur >= lo) {
+                u[i + j] = word(cur - lo);
+                borrow = 0;
+            } else {
+                u[i + j] = word(cur + b - lo);
+                borrow = 1;
+            }
+            i += 1;
+        }
+        let lo = carry + borrow;
+        let cur = u[j + n] as uint64;
+        if (cur >= lo) {
+            u[j + n] = word(cur - lo);
+            borrow = 0;
+        } else {
+            u[j + n] = word(cur + b - lo);
+            borrow = 1;
+        }
+        // one too many, rarely: add the divisor back
+        if (borrow != 0) {
+            qhat -= 1;
+            var c: uint64 = 0;
+            var k = 0;
+            while (k < n) {
+                let t = (u[k + j] as uint64) + (v[k] as uint64) + c;
+                u[k + j] = word(t);
+                c = t >> 32;
+                k += 1;
+            }
+            u[j + n] = word((u[j + n] as uint64) + c);
+        }
+        q[j] = word(qhat);
+        j -= 1;
+    }
+    // the remainder, shifted back
+    var r = zeros(n);
+    var i = 0;
+    while (i < n) {
+        let high: uint64 = if (i + 1 < u.length() && bits > 0) (u[i + 1] as uint64) << (32 - bits)
+            else 0;
+        r[i] = word(((u[i] as uint64) >> bits) | high);
+        i += 1;
+    }
+    return (q, r);
+}
+
+/// The quotient, toward zero, and the remainder, which has the dividend's sign, as `int`'s. `b`
+/// is not zero.
+pub fn divRem(a: Big, b: Big): (Big, Big) {
+    let (q, r) = divMag(a.mag, b.mag);
+    return (made(a.neg != b.neg, q), made(a.neg, r));
+}
+
+/// The number of bits of the magnitude; zero has none.
+pub fn bitLength(a: Big): int {
+    let n = a.mag.length();
+    if (n == 0) {
+        return 0;
+    }
+    return n * 32 - a.mag[n - 1].leadingZeros();
+}
+
+fn shlMag(xs: uint32[], n: int): uint32[] {
+    let words = n / 32;
+    let bits = n % 32;
+    var out = zeros(xs.length() + words + 1);
+    var carry: uint64 = 0;
+    var i = 0;
+    while (i < xs.length()) {
+        let t = ((xs[i] as uint64) << bits) | carry;
+        out[i + words] = word(t);
+        carry = t >> 32;
+        i += 1;
+    }
+    out[i + words] = word(carry);
+    return out;
+}
+
+fn shrMag(xs: uint32[], n: int): uint32[] {
+    let words = n / 32;
+    if (words >= xs.length()) {
+        return [];
+    }
+    let bits = n % 32;
+    var out = zeros(xs.length() - words);
+    var i = 0;
+    while (i < out.length()) {
+        let low = (xs[i + words] as uint64) >> bits;
+        let high: uint64 = if (bits > 0 && i + words + 1 < xs.length()) (xs[i
+            + words
+            + 1] as uint64)
+            << (32 - bits)
+            else 0;
+        out[i] = word(low | high);
+        i += 1;
+    }
+    return out;
+}
+
+/// `a` times 2^n, `n` not negative.
+pub fn shl(a: Big, n: int): Big {
+    if (isZero(a)) {
+        return a;
+    }
+    return made(a.neg, shlMag(a.mag, n));
+}
+
+/// `a` divided by 2^n, toward negative infinity, as `int`'s `>>`; `n` not negative.
+pub fn shr(a: Big, n: int): Big {
+    if (!a.neg) {
+        return made(false, shrMag(a.mag, n));
+    }
+    // -((|a| - 1) >> n) - 1
+    let one: uint32[] = [1 as uint32];
+    return made(true, addMag(shrMag(trimmed(subMag(a.mag, one)), n), one));
+}
+
+/// Whether `a` is an `int`.
+pub fn fitsInt(a: Big): bool {
+    if (a.mag.length() > 2) {
+        return false;
+    }
+    let m = magnitude64(a);
+    return m <= 0x7FFFFFFFFFFFFFFF || (a.neg && m == 0x8000000000000000);
+}
+
+fn magnitude64(a: Big): uint64 {
+    var m: uint64 = 0;
+    if (a.mag.length() > 0) {
+        m = a.mag[0] as uint64;
+    }
+    if (a.mag.length() > 1) {
+        m = m | ((a.mag[1] as uint64) << 32);
+    }
+    return m;
+}
+
+/// The `int` that `a` is, where it fits (`fitsInt`).
+pub fn toInt(a: Big): int {
+    let m = magnitude64(a);
+    if (m == 0x8000000000000000) {
+        return int.min;
+    }
+    return if (a.neg) -(m as int) else m as int;
+}
+
+/// The nearest `float`, ties to even; beyond the range an infinity.
+pub fn toFloat(a: Big): float {
+    let len = bitLength(a);
+    if (len > 1024) {
+        return if (a.neg) -float.infinity else float.infinity;
+    }
+    var value = 0.0;
+    if (len <= 64) {
+        value = magnitude64(a) as float;
+    } else {
+        // the top 64 bits, the lowest of them set where a bit below them is: enough to round
+        let shift = len - 64;
+        let top = shrMag(a.mag, shift);
+        var m = magnitude64(Big { neg = false, mag = top });
+        let words = shift / 32;
+        var sticky = false;
+        var i = 0;
+        while (i < words && !sticky) {
+            sticky = a.mag[i] != 0;
+            i += 1;
+        }
+        if (!sticky && shift % 32 > 0) {
+            sticky = (a.mag[words] as uint64) << (64 - shift % 32) != 0;
+        }
+        if (sticky) {
+            m = m | 1;
+        }
+        value = (m as float) * float.fromBits(((1023 + shift) as uint64) << 52);
+    }
+    return if (a.neg) -value else value;
+}
+
+/// Its text in base `radix`, 2 to 36: a `-`, then digits, lowercase.
+pub fn text(a: Big, radix: int): string {
+    if (isZero(a)) {
+        return "0";
+    }
+    // as many digits as fit a word at a time
+    var chunk: uint64 = radix as uint64;
+    var digits = 1;
+    while (chunk * (radix as uint64) <= 0xFFFFFFFF) {
+        chunk *= radix as uint64;
+        digits += 1;
+    }
+    let parts = List<char>.new();
+    var rest = a.mag;
+    while (rest.length() > 0) {
+        let (q, r0) = divWord(rest, chunk);
+        rest = trimmed(q);
+        var r = r0;
+        var k = 0;
+        while (k < digits && (rest.length() > 0 || r != 0)) {
+            let d = (r % (radix as uint64)) as int;
+            parts.push(((if (d < 10) 48 + d else 87 + d) as uint32) as char);
+            r /= radix as uint64;
+            k += 1;
+        }
+    }
+    let out = StringBuilder.new();
+    if (a.neg) {
+        out.append('-');
+    }
+    var i = parts.length() - 1;
+    while (i >= 0) {
+        out.append(parts[i]);
+        i -= 1;
+    }
+    return out.toString();
+}
+
+/// The number a text names in base `radix`: an optional sign, then digits, `_` between two of
+/// them; null where it is no such text.
+pub fn parse(s: string, radix: int): ?Big {
+    let bytes = s.toBytes();
+    var i = 0;
+    var negative = false;
+    if (bytes.length() > 0 && (bytes[0] == 45 || bytes[0] == 43)) {
+        negative = bytes[0] == 45;
+        i = 1;
+    }
+    if (i == bytes.length()) {
+        return null;
+    }
+    var chunk: uint64 = radix as uint64;
+    var digits = 1;
+    while (chunk * (radix as uint64) <= 0xFFFFFFFF) {
+        chunk *= radix as uint64;
+        digits += 1;
+    }
+    // most significant first; a word's worth of digits at a time
+    let words = List<uint32>.new();
+    var pending: uint64 = 0;
+    var scale: uint64 = 1;
+    var taken = 0;
+    var lastDigit = false;
+    while (i < bytes.length()) {
+        let c = bytes[i] as int;
+        i += 1;
+        if (c == 95) {
+            if (!lastDigit || i == bytes.length()) {
+                return null;
+            }
+            lastDigit = false;
+            continue;
+        }
+        let d = if (c >= 48 && c <= 57) c - 48
+            else if (c >= 97 && c <= 122) c - 87 else if (c >= 65 && c <= 90) c - 55 else 99;
+        if (d >= radix) {
+            return null;
+        }
+        lastDigit = true;
+        pending = pending * (radix as uint64) + d as uint64;
+        scale *= radix as uint64;
+        taken += 1;
+        if (taken == digits) {
+            mulAdd(words, scale, pending);
+            pending = 0;
+            scale = 1;
+            taken = 0;
+        }
+    }
+    if (taken > 0) {
+        mulAdd(words, scale, pending);
+    }
+    return made(negative, words.toArray());
+}
+
+/// `xs` made `xs * by + plus`, in place; both below 2^32 or `by` exactly that.
+fn mulAdd(xs: List<uint32>, by: uint64, plus: uint64): void {
+    var carry = plus;
+    var i = 0;
+    while (i < xs.length()) {
+        let t = (xs[i] as uint64) * by + carry;
+        xs[i] = word(t);
+        carry = t >> 32;
+        i += 1;
+    }
+    if (carry != 0) {
+        xs.push(word(carry));
+    }
+}
+
+/// A hash of its value, the sign and each word.
+pub fn hashOf(a: Big): uint64 {
+    var h: uint64 = if (a.neg) 0xCBF29CE484222325 else 0x84222325CBF29CE4;
+    for (w in a.mag) {
+        h = (h ^ (w as uint64)) *% 0x100000001B3;
+    }
+    return h;
+}

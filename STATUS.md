@@ -49,7 +49,14 @@ Lyric 4.x status up to the 4.6 cut is archived at
   19; `examples/concurrent/pipeline.lyrs` runs in CI. Found on the way: `join` took the first task
   spawned, not the first to fail; coroutines never equal to themselves; the lambda lookahead blind
   to `<…>` (since S3); the conformance runner without a timeout.
-- **Open milestone: S7** — std core.
+- **S7 done (2026-11-09, lyric-script#9, lyric-spec#393, tag `s7-complete`)**: the std core — lists,
+  iterators, maps and sets, strings and formats, numbers with `BigInt` and `Bytes`, I/O and files,
+  processes, environment and time, the batteries `test`, `csv`, `log`, `cli`; the VM's call path.
+  Measurement point 3: **5.18×** 4.6 over the bench suite (ratchet ≥ 5× holds); cold `hello` 30 ms on
+  the release build (≤ 50 ms). The target programs terminal tool and automation (02) run in CI on
+  every Tier 1 target (`examples/targets`). 382 tests, 865 conformance cases, bytecode format 47.
+  Blocking 1.0: the release build cannot compile `topwords` (P48, lyric#667).
+- **Open milestone: S8** — security and embedding.
 
 ## Milestones
 
@@ -62,7 +69,7 @@ Lyric 4.x status up to the 4.6 cut is archived at
 | S4 | Errors and control | M | **done** 2026-10-29 |
 | S5 | Modules and packages | M | **done** 2026-10-29 |
 | S6 | Coroutines and tasks | L | **done** 2026-10-29 |
-| S7 | std core | XL | — |
+| S7 | std core | XL | **done** 2026-11-09 |
 | S8 | Security and embedding | L | — |
 | S9 | Hot reload | L | — |
 | S10 | std rest | L | — |
@@ -207,7 +214,237 @@ std core (plan 14): the native core types (`T[]`, `Map`/`Set` in insertion order
 `BigInt`, `Bytes`); `core`, `iter`, `collections`, `string`, `fmt`, `math`, `io`, `fs` + `glob`,
 `path`, `process`, `os`, `time`, `random`, `test`, `cli`, `log`, `csv`; the rights table; the cost
 rules (12). Exit criterion: the target programs, a terminal tool and an automation, run;
-measurement point 3, the bench suite at ≥ 5× 4.6. Slices to be cut first, in plan 14.
+measurement point 3, the bench suite at ≥ 5× 4.6. Slices (plan 14, "S7 — Slices"): S7a std as
+Script modules, S7b lists, S7c iterators, S7d maps and sets, S7e strings and formats, S7f numbers,
+`BigInt`, `Bytes`, S7g I/O and files, S7h processes, environment, time, S7i batteries, S7j the
+VM's call path, S7k measurement point 3.
+
+- **S7a done** — `import std.<m>` from Script sources in the binary (`std/`, `comptime embed`), a
+  package of their own; the prelude a file too; natives of the std as `__module_name(…)` in a
+  function whose signature is theirs; `std.os` (`env`), `std.fs` (`exists`); the rights table
+  fixed, `LYRIC_SCRIPT_RIGHTS` retired; bytecode format 20. The conformance runner reads
+  `stderr-has:` of a rejected case.
+- **S7b1 done** (S7b split in three) — lists: `T[]` native in the VM, its elements' slots apart;
+  literals, indexing with the bound (`LYS-RT0003`), `length`/`push`/`pop`, a `for` over a list,
+  the Debug form; bytecode format 21.
+- **S7b2a done** (S7b2 split in two) — `extend<T> T[]`; the list's methods (in the prelude, or
+  written by the checker per element type where they compare), `+`, `*`, `in`, `==`, slices; a
+  walk over a list panics after a change of its length (`LYS-RT0016`, Lyric 5's), which S7b1 got
+  wrong; bytecode format 22.
+- **S7b2b done** — `^n` and open ranges in a list's brackets; `var xs = []` typed by its first
+  use; `e.suppressed()`; bytecode format 23. Found: the first pass of 03 Leer left stale
+  synthesized functions (an empty line for a struct's Debug form, since S3b/S3h). Moved to S7c
+  with generic interfaces (P18): `FromArrayLiteral`, a list as an interface value.
+- **S7b3 done** — list patterns `[a, b]`, `[first, ..rest]`, `[a, .., z]` with their coverage by
+  lengths; `Index<K>` moved to S7c with the generic interfaces (P18). **S7b complete.**
+- **S7c1a done** (S7c1 split in two) — generic interfaces: `interface I<T>`, `:: [I<int>]`,
+  `T :: [I<int>]`, `I<int>` as a value's type, parents at the arguments, generic conformers at
+  their parameters (P18, the first half). S7c cut in plan 14: c1 generic interfaces, c2
+  `Index<K>` and `FromArrayLiteral<T>`, c3 values without descriptors as interface values, c4
+  iterators, c5 `std.iter`.
+- **S7c1b done** — `Self` and default members in a generic interface; each conformer's table holds
+  the default's copy at its instance's arguments. **S7c1 complete** (P18 built).
+- **S7c2 done** — `Index<K>`/`IndexSet<K>` for one's own types (`x[k]`, `x[k] = v`, `x[k] op= v`),
+  `FromArrayLiteral<T>`; associated types in a generic interface read at its template.
+- **S7c3 done** — a list as an interface value (a box whose type is an entry for its element:
+  `Any`, `is int[]`, Debug through the table), `extend<T> T[] :: [I]`; tasks, coroutines,
+  channels moved to S7c4.
+- **S7c4a done** (S7c4 split in three) — `Iterator`, `Iterable`, `for` over any of them (a
+  Closeable one closed), `T[] :: Iterable`. Found: a script's own `Iterator` broke the prelude
+  (interfaces classified in the wrong module, since S3i).
+- **S7c4b done** — `Coroutine :: Iterator`; tasks, coroutines, scopes, channels, semaphores as
+  interface values in a box; the S6 pins retired with their rule.
+- **S7c4c1 done** (S7c4c split in two) — generic methods of generic owners (a gap since S3: `fn
+  map<U>` in `Box<T>` never worked); generic members of interfaces with `Self`.
+- **S7c4c2 done** (cut again) — `FromIterator<T>`, `collect()` in a blanket block as Lyric 5
+  has it, blanket blocks with members, Lyric 5 §9.2 rules 2 and 4 (the position binds; type
+  arguments at a method). Found: instance keys were the shown names (`Pair<B, A>` and
+  `Pair<A, A>` one instance — since S3).
+- **S7c4c3a done** (S7c4c3 split in two) — blanket conformances (05 §13 rule 8: every iterator
+  an `Iterable`), static members of blanket blocks. Found: an answer's bound was asked before the
+  rest of its list stood (since S3i); codegen passed an unresolved expression silently.
+- **S7c4c3b done**, and with it **S7c4** — blocks on one instance, a list of a type parameter as
+  an interface value, every type a blanket block reaches with its table. Found: a forward
+  `Box<int>` was SEM0026 (since S3g); `fn f<T>(xs: T[]): Any` crashed at run time, silently
+  compiled; a conditional conformance held at run time for every instance (since S3i).
+- **S7c5a done** (S7c5 cut in three) — `Equatable` as an interface: `==` over a type parameter,
+  a type's own `equals`, classes through `:: Equatable` or `:: Identity`, the comparing list
+  methods in the prelude. Found: an initializer of a generic type at a `Box<T>` parameter was
+  checked against the open `T` (since S3g).
+- **S7c5b done** — `Ordered`, `TotalOrder`, `Ordering`: `<` … through `compare`, over a type
+  parameter too, the synthesized order of a type that lists it, `float` totally ordered (Fl).
+- **S7c5c1 done** — default type arguments (P20): `interface Add<Rhs = Self>`, `Coroutine<Y>`
+  through the prelude's `R = void`.
+- **S7c5c2 done** — the operator interfaces: `a + b` on a type of the program through `Add<B>`,
+  `-a` through `Neg`, `a += b` derived, over `T :: [Add<Out = T>]`.
+- **S7c5c3 done** — `++`/`--` as expressions, `Contains<T>` for `in` (the needle first). Found:
+  a conditional conformance to an instance of a generic interface held for every instance (since
+  S7c1). Stale NYI clocks sharpened.
+- **S7c5d done** — several members of one name: by count, per conformance block
+  (`LYS-SEM0122`), per instance of a generic interface (chosen by the arguments' types); each
+  instance its own slots and its own answers; `int :: Add<float>` and the like. Found: a default
+  did not widen a count (since S2d).
+- **S7c6a done** — `a..b` and `a..=b` as values (`Range<T>`, `RangeInclusive<T>`), walked by a
+  new iterator each time; `DoubleEnded`, `sizeHint`, a list's iterator from both ends.
+- **S7c6b1 done** — `std.iter` with the adapters, loaded where a program names one. Found: a
+  generic type's initializer at a named position took no field default (since S3g).
+- **S7c6b2 done** — the terminators of every iterator. Found: a copy's text of an optional or a
+  tuple broke the code generator (since S3i).
+- **S7c6c1 done** — `Clone` and `Default`, synthesized; `cycle()` (P23). Found: a synthesized
+  member through a constraint over an object was LYS-ICE0001 (since S7c5a).
+- **S7c6c2 done** — the sorts (the VM's for scalars and strings), `binarySearch`,
+  `partitionPoint`, `join`, `List<T>` statics, `sorted`/`sortedBy`.
+- **S7c6d done — S7c6 done** — the placeholder `_` among type arguments; an initializer's
+  written type arguments, which did not parse.
+- **S7d1 done** — `Hashable` and `Hasher` (SipHash in the VM), synthesized; an `Identity` object
+  by its number.
+- **S7d2 done** — `Map` in `std.collections` (the VM keeps where each hash lies), the map
+  literal, `for` and `let` taking values apart. Found: an expression body of no value never ran
+  (since S2d); `==` over a generic type's own `equals` answered wrongly and held where a
+  conditional conformance did not (since S7c5a); a static's written type arguments were dropped
+  (since S6d1); `let P { x, y } = p` was refused (since S3d).
+- **S7d3 done** — `Set` over a map's keys, the set operations; `groupBy`, `toMap`, `toSet`.
+  Found: an argument in a generic body took no type where the receiver's argument names the
+  body's parameters (since S7c5a); `Box<T[]>`'s Debug form in a generic body broke the code
+  generator (since S7c4a) — fixed for object arguments, open for `int` (clock S7d4).
+- **S7d4 done — S7d done** — `Deque` and `Heap`; `import std.collections` (P28); the
+  `Box<T[]>` form at `T = int` (the instance's own form was built for objects).
+- **S7e cut in four** — e1 the members of `string` and `char`, e2 `split`/`lines` and `Parse`,
+  e3 `Display`/`Debug` and `StringBuilder`, e4 format specs and `std.fmt` with variadic
+  parameters (Lyric 5 08 §1: no plan line until now, so no clock).
+- **S7e1 done** — the members of `string` and `char`, `Pattern` over a string and a char. Found:
+  `xs * n` of a negative `n` was RT0008 for Lyric 5's RT0007 (since S7b2a); a program's own `Map`
+  was RES0011 (since S7d2); a parse error in the prelude dropped its declarations silently; an
+  `extend` on a function type was taken without effect (now NYI, clock S7e2); a copy walked an
+  `else if` chain one frame per link (a 30-arm match broke the unit tests' stack); a 400-arm
+  match crashed the code generator, a 400-link `else if` chain the checker (now PAR0045).
+- **S7e2 done** — `split`, `lines`, `Parse`; blocks on function types, optionals and tuples at
+  fixed types (Lyric 5 05 §13 rule 6), `fn(char) -> bool` as a pattern.
+- **S7e2c done — S7e2 done** — blocks over a shape of their parameters (`extend<T> ?T`,
+  `extend<A, B> (A, B)`, `extend<A, R> fn(A) -> R`), conditional conformances, defaults.
+- **S7e3 cut in two** — a `StringBuilder`, `Display`/`Debug`, escaped Debug forms, every value
+  a `Debug`; b tuples' `Display`, `{x}` of a type parameter through a text slot.
+- **S7e3a done** — `StringBuilder`, `Display`, `Debug` (synthesized for every value, a type's own
+  where it lists it), escaped Debug forms. Found: a void task's status did not print once
+  anything printed through a table (since S6a; the void value is now `()`); a character literal
+  in an f-string's hole, `'"'`, broke the lexer (since S2c); printing a builder was an ICE
+  (now `<StringBuilder>`, as a task prints).
+- **S7e3b done — S7e3 done** — a text slot: `{x}` of an interface value and of a type
+  parameter in a shared copy prints a `Display`'s `show()`, a string itself; tuples of
+  `Display`s, lists, maps, sets and deques are `Display`s; `StringBuilder.append`. Found: a string
+  in an interface value printed quoted alone, against spec 05 rule 9 (since S3i); S7e3a's `{x}` of
+  a generic class's own `Display` printed empty (a copy made before its body was checked).
+- **S7e4 cut in three** — a variadic parameters and `xs...`; b format specs in f-strings, checked
+  (`LYS-SEM0164`), the scalars through Lyric 5's own formatting, `Format`; c `std.fmt.format`.
+- **S7e4a done** — variadic parameters `xs: T...` and the spread `xs...` (`LYS-SEM0024`,
+  `LYS-SEM0166`); a function value of a variadic function takes the array, as Lyric 5's.
+- **S7e4b done** — the format language in f-strings through Lyric 5's own formatting, checked
+  where it is written (`LYS-SEM0164`); `Format`, the scalars conform; a spec read at run time
+  panics in Script (`LYS-RT0008`), not in Lyric 5.
+- **S7e4c done — S7e4 done — S7e done** — `std.fmt.format(template, args: Display...)` in Script,
+  Lyric 5's panics. Found: the module named a `std.iter` adapter, which the CLI loader pulled in
+  and a module compiled alone did not have.
+- **S7e4d done** — the clocks S7e left: an unknown member of a `bool`, a `char`, a tuple, an
+  optional or a function value is `LYS-SEM0012`, no longer NYI; `[null]` prints.
+- **S7f cut in six** — f1 the number tower, constants at a scalar's name, `+% -% *%`, `clamp`;
+  f2 `std.math`; f3 `From`/`Into`; f4 `BigInt`; f5 `Bytes`; f6 `std.random`.
+- **S7f1 cut in three, S7f1a done** — an interface's parent list is a constraint on `Self`
+  (Lyric 5 05 §8 rule 7): `Add<Out = Self>` through `T :: [Ring]` makes `a + b` a `T`; a
+  conformer takes such a parent along and answers as it is fixed. Found: the parent was read with
+  no `Self`, `Add<?>` (since S7c5c1). Then b the tower, c `clamp` and `sum`/`product` over `Num`.
+- **S7f1b done** — the number tower: `Num`, `Signed`, `Integer`, `Float`, `int` and `float`
+  conforming; `int.max`. Found: a script's own interface named as a prelude one was made a
+  constraint only by the prelude's parents (since S7c4a).
+- **S7f1c done — S7f1 done** — `clamp`; `sum` and `product` over `Num`, in the tower's file. Found:
+  a default generic over `Self` got a scalar's receiver boxed, faulty bytecode or wrong registers
+  (since S7c1b).
+- **S7f2 done** — `std.math`, its text byte for byte what Lyric 5 prints, generic over the tower at
+  the cost of a call over `float`. Found: the release binary did not run (P31).
+- **S7f3 done** — `From` and `Into`, `Into` a block whose target only its conformance names (05
+  §13 rule 9), asked where an instance is wanted. A block on one instance holds several members of
+  a name (P22). Found: three Lyric 5 bugs (lyric#670, #671, #672) and a silently wrong conversion
+  through a shared generic, fixed and pinned.
+- **S7f4 done** — `BigInt`, a Lyric 5 module behind 17 natives, the first natives to charge the
+  budget before they work. Found: an own `equals` did not answer for a struct's fields, and a type's
+  constant read the importer's names (silently wrong), both fixed and pinned. P32–P34.
+- **S7f5 done** — `Bytes`, `b"…"`, `toBytes()`, `string.fromUtf8`, 17 natives that charge by their
+  bytes; a loop over them costs about 1.45 times a list's. `fs.readBytes`/`writeBytes` come with S7g.
+  Found: the VM's objects behind a readable field reached an ICE from a script, now `LYS-RT0007`.
+- **S7f6 done, S7f done** — `std.random` gives Lyric 5's stream for a seed and asks for no right;
+  `std.random.system` draws from the system with `os` (P35). Found: `import std.random` cost 204 ms cold,
+  since `nextFloat` holds `Float` and so loaded the number tower; names are whole now, about 80 ms.
+- **S7g1 done** — `std.io` over memory, in Script; `IoError` in the prelude; `bytes.copy`, `bytes.find`. Found:
+  the field `this.taken` holds `.take`, which loaded `std.iter` and cost 200 ms; every such check is by whole names now.
+- **S7g2 done** — the console over `call.w`, the general way a native waits, charged before it starts; `readLine`
+  throws `[IoError, Cancelled]`. Found: a report stood before the output still buffered; `finish` flushes first.
+- **S7g3 done** — `std.path` in Script, no right, differential against Lyric 5 clean on both systems' forms. Found:
+  `path.join` in a script loaded `std.iter`, +340 ms cold; a module's name is a receiver now where the word is nothing else.
+- **S7g4 done** — `std.fs`: `File`, `OpenOptions` and the conveniences over `call.w`; a cancel does not end a file's
+  call. Found: a value block that does not come out was refused where Lyric 5 takes it; it is `never` now.
+  `import std.fs` costs +197 ms cold (Debug), it loads `std.io`.
+- **S7g5 done** — `std.fs`: directories, metadata, `walk`, `copy`, temporary places (format 41). A call on a generic's
+  type parameter now throws what its argument's member throws, resolved per call: `s.startsWith("a")` under a written
+  `throws` was refused (§6 rule 5). The Windows failure of S7g4 was a test's: a path unescaped in assembler text.
+  `import std.fs` cold 521 → 694 ms. 774 cases, 368 tests; see 14.
+- **S7g6 done** — `fs.glob`, whose API is mine since Lyric 5 has none (§12 rule 24; P39 asks for a look). 783 cases,
+  368 tests. With it **S7g is done**, see 14.
+- **S7h1 done** — `args` and `exit` in the prelude, what follows the file is the script's, `--` for a package's
+  program (format 42). S7h is cut in six: `args`/`exit`, the rest of `std.os`, `os.signals`, `std.process`, `std.time`
+  without zones, zones and patterns. 794 cases, 370 tests; see 14.
+- **S7h2 done** — the rest of `std.os` (format 43). `os.envs()` answers pairs, not Lyric 5's `Map`: the word `Map`
+  loaded the collections for every `import std.os`, +170 ms cold (P40). A `std` module hiding a prelude name no
+  longer warns: `os.exit` made every program with `import std.os` uncacheable. 807 cases, 371 tests; see 14.
+- **S7h3 done** — `std.process` (format 44) and `os.Signal`. A `std` module's import of a module with a right asks
+  for none; the user's import does. The conformance runner hands the cases the binary under test, so a case's child
+  is a script. A read a cancel ended may take the next bytes (P41). `import std.process` costs +187 ms cold,
+  +110 of it a compiler cost that already held (P42). 821 cases, 373 tests; see 14.
+- **S7h4 done** — `os.signals()` (format 45): Lyric 5's subscription behind a script channel of sixteen. Closing
+  it ends the subscription at once; the run's end ends those left open, and while one is open a run whose tasks
+  all wait waits for a signal. 824 cases, 374 tests; see 14.
+- **S7h5a done** — the base of `std.time` (format 46): `Duration`'s arithmetic, order, Go text and `parse` by
+  `extend` in `std.time`, `Instant` in its own small module (`std.fs`'s `Metadata.modified` loads no calendar),
+  `Monotonic` on the run's clock. `import std.time` +58 ms cold. 832 cases, 374 tests; see 14.
+- **S7h5b done** — the calendar of `std.time` in Script (format 46): `Date`, `Time`, `Weekday`, `TimeError`,
+  fixed zones, `DateTime` at its offset, strict RFC 3339, `Instant`'s text and `parse`. `import std.time` +103 ms
+  cold over S7h5a, linear in its source (P21). 838 cases, 374 tests; see 14.
+- **S7h6a done** — the zones of rules (format 47): `Zone.load`, `fromTzif`, `fromPosix`, `local` over Lyric 5's
+  rules, the resolution of a local time in Script, `ZoneInfo`, `DateTime.zone`, `plusDays`, `withZone`,
+  `zoneInfo`. `import std.time` +114 to +141 ms cold over S7h5b, more than its length (P21). 842 cases, 374 tests;
+  see 14.
+- **S7h6b done** — the patterns of `std.time` (UTS #35) in Script: `format`, `parseWith`; Script reads back
+  `ZZZZ`, `ZZZZZ` at UTC and a year's sign, which Lyric 5 refuses (lyric#690). `import std.time` +416 ms cold
+  over S7h6a, linear in its lines (about 1 ms a line in the debug build, P21). 844 cases, 374 tests; see 14.
+- **S7i1 done** — `std.test`'s assertions in Script (12 rule 33): `assertEq` and its eleven siblings, `fail`;
+  `got 2, expected 3`, the first difference of long values below. `@callerExpr` waits for attributes (P43), a
+  string's `Contains<char>` for S11 (P44); `assertPanics`, subtests and the runner come with `lyric-script test`.
+  20 mutants, all killed as predicted; 847 cases.
+- **S7i2 done** — `std.csv` in Script (12 rule 34): `parse` and `format` after RFC 4180, `CsvError` with line
+  and column, `CsvOptions` for the separator and LF. 23 mutants, all killed as predicted; 851 cases.
+- **S7i3 done** — a module's `let` and `var` take a visibility word as a declaration does (04 rule 5, 02 D2;
+  S7i3a), and `m.x` asks it; `std.log` in Script (12 rule 35). 15 mutants, all killed as predicted; 855 cases.
+- **S7i4 done** — `std.cli` in Script (12 rule 36): `Cli` declares flags, options, arguments and commands,
+  `parse(args)` reads them, writes the help and the errors itself (exit 0 and 2), `tryParse` throws `CliError`.
+  28 mutants, all killed; 863 cases. **S7i done.**
+- **S7j done** — the VM's call path: its own frame stack instead of `List<CallFrame>`, `match` instead of `==`
+  on `Op` in the hot path, no fuel write without a limit, no `inject` write per instruction. Release build,
+  instructions (cachegrind): `fib` −13 %, `loop` −9 %, `objects` −9 %, `fibsrc` −14 %, `sortby` −17 %; the
+  prediction for `fib` (−20 to −30 %) missed: dispatch, outside the cut, is ~60 instructions per VM op. 11
+  mutants as predicted (one equivalent survives); 863 cases, 376 tests.
+- **S7k1 done** — measurement point 3 (`bench/README.md`): eight programs in Script source and as 4.x
+  programs, release build, warm cache filled by the debug build (P46). Run 1 missed the ratchet (4.77×): the
+  compiler lowered `while` badly. S7k1b: a statement assignment writes nowhere, `add.imm` for small literals,
+  a comparison in a condition jumps itself (through `jump.lt.i` alone — a `jump.le.i` moved the dispatch
+  loop's allocation, P47), a literal condition jumps always or never. **Runs 3 and 4: 5.18× and 5.13×, the
+  ratchet holds**; VM programs alone 4.31×/4.34×. 4 mutants, all killed; 381 tests.
+- **S7k3 done** — P45: a write through a module's name refused with its own words, as Lyric 5 refuses it
+  (lyriclang/lyric#705); 865 cases.
+- **S7k2 done** — P21, cold start on the release build: `hello` 35.5 ms cold, 4.6 warm — **both ratchets hold**
+  (≤ 50 / ≤ 10 ms). A fifth of a cold start was writing the cache: `opNumber` built `Op.all()` per instruction;
+  read from the variants at compile time now (S7k2b), `hello` 36.2 → 30.1 ms, `rename` 94 → 76 ms. The release
+  build does not compile `topwords` (P48, lyric#667). The two target programs of 02 are examples in CI
+  (`examples/targets`). 382 tests. **S7k done.**
+- **S7 closed** — design 12's lines against the code (14, "S7, Abschluss"); the target programs in CI.
+- Next: **S8** — security and embedding; plan its slices in 14 first.
 
 ## Working mode
 
@@ -259,4 +496,35 @@ Collected while working autonomously; each one waits for a decision, none blocks
 | P15 | A `return`, or a `break`/`continue` to a loop outside it, in a defer's body is refused (`LYS-SEM0904`, S4e): the defer runs on the error path too, where the jump would drop the error. Lyric 5's spec does not say what such a jump does (its 06 §5 is silent, its compiler treats a defer's jumps as not the loop's). Keep the refusal, or take Lyric 5's answer once it gives one? | S4e |
 | P16 | A frame of an imported module's function names its file below the root, `at f (util/deep.lyrs:2)`; the entry's frames keep `(line n)` (S5a2), so a single script's report reads as before. Lyric 5 names the file in every frame. Keep the mixed form, or name the entry's file too? | S5a2 |
 | P17 | `spawn`, `yieldNow`, `sequence`, `Task`, `TaskStatus`, `Coroutine` and `Cancelled` stand in the prelude (S6a–S6b3), and so do `TaskScope`, `PanicInfo`, `Channel`, `ChannelClosed`, `Semaphore`, `Select`, `Selection`, `Duration`, `sleep`, `Timer`, `TimedOut` and `withTimeout` (S6c–S6d); Lyric 5 has them in `std.task`, `std.sync` and `std.time` (10 §2), `sequence` in `std.core`, and 07 V3 I8 lists the prelude without them. Keep them in the prelude — a script starts tasks without an import — or move them to `std.task` with the std core (S7), as Lyric 5 does? | S6a |
+| P18 | Generic interfaces (`interface I<T>`, Lyric 5 §5) were never built and had no clock: 03 adopts Lyric 5's generics, the parser refuses `interface Maker<T>`, and no plan line names them (found in S7b2b, needed by `FromArrayLiteral<T>`, `FromIterator<T>`, `Contains<T>`). Clocked now to S7c, where `FromIterator` needs them, with `FromArrayLiteral` and a list as an interface value. Say if they should be an earlier slice of their own, or if Script keeps associated types (`type Element`) instead — a deviation that would need deciding. | S7b2b |
+| P19 | The operator interfaces of 05 D6 (`Add<Rhs = Self> { type Out = Self }` …, `Neg`), `++`/`--` as expressions, `+=` derived, `Equatable`/`Ordered`/`TotalOrder`/`Contains` as interfaces and conversion through `From`/`Into` had no clock: the S3f note sent the operators "with S3h", S3h did not take them, no plan line names them (found while cutting S7c4c3: `i++` is PAR0001, `:: Add` SEM0078). Clocked now: comparisons and operators to S7c5, before `std.iter` (now S7c6), whose `sort` needs `TotalOrder`; `From`/`Into` with 05 §13 rule 9 to S7f. Say if they should come elsewhere. **Built (S7c5, S7f3).** | S7c4c2 |
+| P20 | Default type arguments (Lyric 5 03 §9.1 rule 5, T18: `interface Add<Rhs = Self>`) had no clock: the Script design adopts them (03 "Generics … Default-Typargumente"), the spec took §9.1 rules 1–3 alone, no plan line names them (found while cutting S7c5c — `Add<Rhs = Self>` is PAR0004). Clocked now to S7c5c1, before the operator interfaces that need them. Several instances of one generic interface at a type (Lyric 5 05 §3 rules 4–5, answers per instance §8 rule 3), which 05 rule 13 gave only "S7", are clocked to S7c5d. | S7c5b |
+| P21 | The prelude grows with S7, and every program checks it: a cold `hello` (a fresh cache, the debug build) went from about 91 ms (median of ten, S7c4c1) to about 121 ms (S7c5c1) as FromIterator, the blanket blocks, Equatable's list block and the scalars' Ordered blocks came; S7c5c2's operator blocks add more — about 190 ms at S7c5d, 212 at S7c6a. `std.iter` (S7c6b1) is loaded only where a program names an adapter: always loaded it took a cold `hello` to about 330 ms. The ratchet (cold ≤ 50 ms, design 11) is the release build's and was not measured here. Clocked to S7k (measurement point 3): measure the release build; past the ratchet, check a prelude body only where it is used, or keep the checked prelude in the cache. S7e1's string and character members in the prelude: about 141–157 ms before, about 179 ms after (median of ten each, the same machine and hour). S7e3a's `StringBuilder`, `Display`, `Debug`: about 263 ms before, about 280 ms after (the machine slower that hour; the scalars' five `Display` blocks about 5 ms of it). S7e3b: about 283 → 300 ms (twenty alternating rounds), the tuples' seven `Display` blocks about 13 ms of it — measured alternating, since ten runs in a row hid them under the machine's drift. S7e4b's `Format`: about 313 → 328 ms, the scalars' five conformances about 8 ms of it. S7f1b's number tower: about 367 → 441 ms always loaded (thirty alternating rounds), so it is added only where a module names it (`std/numbers.lyrs`): `hello` level with S7f1a again. Timed by phases, parsing the prelude alone takes about 140 of about 430 ms of a cold `hello` — the place to start at S7k. `import std.time` by phases (S7h6b; a copy with timers, five cold runs each): at 669, 791 and 1160 lines it loads in 45/55/140 ms, checks in 280/345/525, generates in 34/41/74, verifies in 24/29/67 — linear, about 0.5 ms a line to check and about 1 ms a line in all in the debug build (S7h5b's estimate of 0.23 was too low). A cold run with `import std.time` takes about 1.2 s in the debug build. **Measured at S7k2 on the release build: `hello` 35.5 ms cold, 4.6 ms warm — both ratchets hold.** By phase (callgrind, cold): check 71 % (the inference of error sets alone 17 %), parse 25 %, writing the cache 24 % — 21 % of it `opNumber` building `Op.all()` per instruction, fixed in S7k2b (30.1 ms). Decided by recommendation: nothing more must get cheaper for the start before 1.0; the next levers (error-set inference, the collector at 37 %, `Thrown.none()`, `nativeNamed`) are listed in 14 with a clock at S15. | S7c5c1 |
+| P22 | A block on one instance (`extend Box<int> { … }`, 05 §13 rule 1) holds one member of a name: a second is `LYS-SEM0121`, where Lyric 5 08 §1.2 lets a scope's members share a name by count, and S7c5d gave every other block that. The instance's own members are kept apart from the template's (`ownMethods`), and a set over both would have to say which one a copy of the template reaches. Clocked to S7f, with `From`/`Into` — the first place a block on one instance is likely to hold two conversions. **Built (S7f3).** | S7c5d |
+| P23 | The synthesis of `Clone` and `Default` (design 09 Syn: the compiler's fixed list — `Equatable`, `Hashable`, `Ordered`, `TotalOrder`, `Debug`, `Default`, `Clone`, `Identity`, `Codable`) had no clock: S3h took `Equatable`, `Hashable` and `Debug`, S7c5 the orderings, S10 `Codable`, and no plan line names `Clone` or `Default` (found while cutting S7c6 — `cycle()` asks for a `Clone` iterator). Clocked now to S7c6c, with `cycle()`. Done in S7c6c1. | S7c5d |
+| P24 | A range is a value in Script (S7c6a). Lyric 5's `Range<T>` is a struct with `var` bounds that is its own `Iterator`: walked, it changes, and a `let` range is walked through a copy. Script's structs never change (02 T7), so the range is an `Iterable` whose `iter()` gives a new `RangeIter<T>` — `for` over one range twice walks it twice, as Lyric 5's copy does —, but `r.next()` and `(0..n).map(f)` are refused (`LYS-SEM0012`) where Lyric 5 takes them; `(0..n).iter().map(f)` is the form. The other way, a class walked in place, would leave a range a `for` walked empty the next time, silently. Decided by recommendation; say if a range should be its own iterator (a class that `for` copies first). | S7c6a |
+| P25 | Lyric 5's numeric interfaces — `Num`, `Signed`, `Integer`, `Float` (12 §Numbers: `Num` with `zero`, `one`, `isZero`; the scalars conform) — have no line in the Script design and no clock: a generic `fn total<T :: [Num]>` does not port, and `sum()`/`product()` (S7c6b2) stand on `int` and `float` items alone, Script's two numbers (02 T1). Clocked now to S7f, the numbers: the interfaces for `int` and `float` (and `BigInt`), `sum`/`product` moved onto `Num` there. Say if Script should not have them. **Built (S7f1b, S7f1c).** | S7c6b1 |
+| P26 | A sort whose comparisons run in Script is slow: 100 000 ints through `sortBy` and a lambda take about 18 s in the debug build (warm cache), about 10 µs a comparison — three VM calls each —, where the VM's own sort of the same list takes about 40 ms (S7c6c2). The VM sorts lists of `int`, `char`, `float` and `string` itself; a struct's `sort()` and every `sortBy` pay the call path. Clocked to S7j (the VM's call path) and measured again at S7k; the release build was not measured. | S7c6c2 |
+| P27 | How a native `Map` reaches the program's `hash` and `equals` (S7d cut). Script's design puts `Map` and `Set` in the VM (12 Src), but the VM runs in one loop: a call from inside a native operation back into Script would need a nested run, which a `yield` in a `hash` breaks. Decided by recommendation: the VM keeps the entries in insertion order and a hash table over them and answers the places of the entries with a given hash; Script computes the hash and compares the candidates — keys of `int`, `char`, `bool` and `string` the VM hashes and compares itself, without a call. The other ways: a nested run (re-entrant VM, `yield` refused in a key's members), or the map in Script as Lyric 5's `std.collections` is (no native table — against 12 Src). Say if another fits better. **Built (S7d2) without the last part:** the entries lie in Script lists in their order, the VM keeps only the places under each hash; every key, an `int` or a `string` too, is hashed and compared in Script (a `Hasher`, two natives, the comparison). Whether the VM's own way for those keys pays is measured with P21 (S7k), not built ahead of it. | S7c6d |
+| P28 | **Built (S7d4).** `import std.collections { Map }` was refused (`LYS-RES0003`): `Map` is the prelude's in Script, and the prelude is no module to import from. Lyric 5's prelude passes `List`, `Map` and `Set` on from `std.collections` (`pub import`), and Lyric 5's own modules import them by name — code ported from them stops here. Decided by recommendation, clocked to S7d4 (when `Set`, `Deque` and `Heap` complete the module's names): the import is accepted and binds the prelude's declarations; a name the module does not have stays `LYS-RES0004`. Say if Script should keep refusing it. | S7d2 |
+| P29 | A string is no `Contains<char>` to a constraint (S7e1). Lyric 5 makes it one through an empty block, `extend string :: [Contains<char>] { }`, whose member is the string's generic `contains<P :: [Pattern]>` bound at `char`; Script's checker takes no generic member as a conformance's witness, and a second `contains` beside the generic one is two members of one name (`LYS-SEM0121`). Decided by recommendation: `c in s` asks the string's `contains` directly; a generic `fn f<T :: [Contains<char>]>(t: T)` does not take a string. Say if a generic member should answer a conformance (a witness bound at the interface's types). | S7e1 |
+| P30 | `x.debugTo(out)` through a type parameter or a `Debug` value appends the Debug form; a `debugTo` the type writes itself is reached on the type alone (S7e3a). Every value is a `Debug` (03 Eq), so a table would need a `debugTo` slot for every type — filled in every program that calls it, as S7c6c2 measured for `join`. Decided by recommendation: the compiler writes `debugTo` from `debug()` where the type is not known; a type's own `debugTo` and its `debug()` give the same text by Lyric 5's contract. Say if a type's own `debugTo` must be reached through a parameter. | S7e3a |
+| P31 | **The release binary cannot be relied on, and no CI job builds one.** `lyric5 build --profile release` fails 39 of 582 conformance cases where debug fails none: under `-O2` a reference on the stack is split at a byte of another enum variant, the scan does not see it, and a live object is overwritten (lyric#667). Until S7f2 it did not even start: Lyric 5's entry check reckoned `runTask` past a task's 256 KiB (lyric#668; the natives moved out, it still asks for 217 KB, so a new instruction can do it again). Both are Lyric 5's to fix. **For you:** does 1.0 wait for lyric#667, or should it ship on the debug profile? Once fixed: bump `lyric5.pin`, run the suite on release, add a release job to the CI. | S7f2 |
+| P32 | **`x + 1` on a `BigInt` is refused** (`LYS-SEM0003`): an operand is no place with a target type (03 Lit), so a literal there stays an `int`, and `BigInt` takes only `BigInt`. It is what the design says and it is written in spec 12 rule 16, pinned by `an_int_is_no_operand_of_a_big_int`; the cost is `x + BigInt.one`, or `x + BigInt.from(1)` for any other number. A literal past `int64` stays `LYS-PAR0007`; `BigInt.parse` is the way. Widening later is additive. **For you:** is that the 1.0 you want? I would keep it. | S7f4 |
+| P33 | **No older heavy native charges the budget.** 01 S5c and the plan say a native knows its cost and charges it first; only `BigInt` does. `sort`, `repeat`, `replace`, `split` and their kin run to the end on any budget, so a sandboxed script can spend far more than it was given in one call. Proposal: audit them with S8, which builds `resume`, using `charge`. | S7f4 |
+| P34 | **An operation dearer than one `resume` gives never gets through.** A native stops before it works, so a loop of `resume` with a small grant repeats the stop forever. S8 has to say what happens: the grant accumulates, or the host gets told how much the call asks. | S7f4 |
+| P35 | **`std.random.system` is a module Lyric 5 does not have.** Rights hang on a module, and 01 S8 wants the seeded generator free and the system's behind `os`, so the free `nextInRange`, `nextFloat`, `shuffle` and `Random.fresh()` left `std.random` for it: code moved from Lyric 5 changes an import, and `fresh` is a free function there. The alternative is rights per member, which 01 S1 does not have. I'd keep it. |
+| P36 | **Nothing makes a `match` over `IoErrorKind` write its `_`.** Lyric 5 marks the enum `@NonExhaustive`, Script has no such mark, so a `match` that names every kind today breaks when a release adds one, and §12 rule 19 only says so. A general mark is a language feature 01 does not have, for one enum so far; I'd leave it, and add the mark if a second enum needs it. |
+| P37 | **An iterator's default member stays "throws anything" under a written `throws`.** `s.split("/").count()` goes through `this.next()` over all implementations of `Iterator`, one of which is a function value's, so a function that writes `throws IoError` must catch it. Per-call sets (S7g5) settle a type parameter's member, not `this` in a default member. Fix when a real program trips on it, or carry `this`'s type through the default's set the same way; the cost is more `Through` entries in every checker run. |
+| P38 | **A method of a `std` module named like an iterator adapter loads `std.iter` for everyone who imports the module.** `this.take(` in `std.fs` cost every `import std.fs` 283 ms cold (S7g6), found only because a prediction missed. The loader reads names (`namesIter`), so too many is a cost that nothing reports. Before 1.0: have the check fail when a `std` module loads `std.iter` without calling an adapter, or load by what the checker resolves. |
+| P39 | **`fs.glob`'s API has no model in Lyric 5**: decided in S7g6 after Python's `glob` and the shell (§12 rule 24). Worth the maintainer's look: no escape other than a class, dot names left to a part that says them, `**` following no link, `..` by the text. |
+| P40 | **`os.envs()` answers `(string, string)[]` in the byte order of the names, not Lyric 5's `Map`** (S7h2): a `Map` in `std.os` loaded `std.collections` for every program that imports `std.os`, +170 ms cold. Worth the maintainer's look: the deviation, or a loader that pays for the collections only where a program reaches them. |
+| P41 | **A pipe read or console read a cancel ended goes on as a Lyric 5 job and may take the next bytes, which are then lost** (S7h3, §12 rule 27): the wait natives run on a detached job with no handle to stop it. A reader that goes on reading after a timeout reads at that risk. Fix needs a job that hands back what it took, or a read that Lyric 5 can stop. |
+| P42 | **A program that compiles a class meeting both `Reader` and `Writer` pays ~+100 ms cold** (S7h3): `import std.io { ByteBuffer }` with one use 425 → 522 ms; a user module with one class of each 425 → 533; either alone costs nothing measurable. `std.process`'s two pipes pay it for every importer (+110 of its +187). Cause not found: the debug binary carries no symbols for perf. Next step: a build with symbols, profile the two variants. |
+| P43 | **Script has no attributes, and no slice of the plan has a clock for them** (found in S7i1): design 09 At decides kinds 1 and 2 like Lyric 5 — data attributes readable through reflection, the closed list `@Deprecated`, `@Test`, `@Bench`, `@MustUse`, `@NonExhaustive`, `@callerExpr`/`@callerLine`/`@callerFile`, `@Allow`/`@Warn`/`@Deny`, `@Shared` — but the parser knows no `@`. `std.test`'s assertions therefore write `got 2` where Lyric 5 writes `xs.length() = 2`. Clocked by recommendation to **S11**, with `@Test` and `lyric-script test`, which need them first; kind 1 and its reflection (`f.attribute<T>()`) with `reflect` in S10. Say if another place fits better. | S7i1 |
+| P44 | **`string` is no `Contains<char>` in Script** (S7i1): Lyric 5 writes `extend string :: [Contains<char>] { }`, its generic `contains<P :: [Pattern]>` meeting the member at `P = char`; Script's checker refuses that (`LYS-SEM0042`) and reaches `c in s` through a case of its own. So `assertContains("abc", 'b')` of Lyric 5's documentation is `LYS-SEM0028` in Script. Clocked to S11 with the rest of `std.test`: a generic member meeting an interface member at an instantiation, or a member of its own. | S7i1 |
+| P45 | **A write through a module's name is refused with the wrong words** (found in S7i3a): `kept.count = 5`, `kept` an imported module, says `LYS-SEM0002` "nothing in scope is named 'kept'". Whether Lyric 5 lets a module write another's `var` through its name, and so whether the refusal is right, is not read yet; either way the message names the wrong thing. Clocked to S7k: read Lyric 5 §4, then allow the write or refuse it with its own words. **Built (S7k3).** Lyric 5 refuses `kept.count = 5` (`LYR-SEM0019`, though its words say `count` is no `var`) and writes a `var` through `import kept { count }`; its design does not decide it (07 V5/V6), filed as lyriclang/lyric#705. Script does the same and says how: `LYS-SEM0019` "'kept.count' is not written through its module's name: import 'count' to write it", a `let` and a `private` binding named as such (04 rule 5; two cases). If #705 decides to allow the write, Script follows. | S7i3a |
+| P46 | **The release build needs a detour** (S7j): the whole package is one C unit of 32 MB; `zig cc -O2` takes 207–414 s on it, and Lyric 5 stops each call at a fixed 5 min (lyriclang/lyric#699). S7j built with a wrapper around `zig` that compiles that unit without a limit. Release runs also need their oracle while lyriclang/lyric#667 and #668 are open. Clocked to S7k (its bench runs on the release build) and to the 1.0 release. **S7k:** the cache is filled by the debug build of the same commit (`bench/suite.py --prefill`), so the release binary only runs bytecode; base and prefill agree to 0.01 %. | S7j |
+| P47 | **The dispatch loop's register allocation moves with single arms** (S7k1b): `jump.le.i`'s arm with its fuel path — own arm or folded into `jump.lt.i` — makes the C compiler spill more across the whole of `runTask` (dispatch head 20 → 24 machine instructions, `MoveR`'s card mark two reloads more): `words`, `map`, `strings` +3–6 % instructions though their bytecode got shorter, while an unused arm `pc += 1` moves nothing (variants M, E, C, R in 14). S7j saw the same (~60 instructions per VM op). Clocked to S7k: decide whether a cut restructures the loop so that its hot values do not depend on every arm (fewer live values across the `match`, the rare paths out of line), or whether S7 closes on the ratchet as it stands. **Decided in S7k (by recommendation): S7 closes on the ratchet as it stands.** `jump.le.i` went out again (decision G in 14): the VM is byte-equal to f20cd9d, the fused comparisons use `jump.lt.i` alone, and the ratchet holds (5.18×, 5.13×). What stays: the wall time moves with the binary's layout too — the hand-written `objects`, same VM source and same instructions, runs 17 % slower on G than on f20cd9d — and WSL has no hardware counters to show it. From now on every change to `runTask` is measured with the `.lyrsasm` control (14, method). Clocked to S15: the 1.0 measurement decides on the restructuring, on hardware with counters. | S7k1b |
+| P48 | **The release build cannot compile a target program** (S7k2): `topwords` (`examples/targets`, `import std.fs`) crashes cold in every run and every directory — SIGSEGV in `Checker.resolveNamed`, a string the collector freed; the debug build runs it. The lyric#667 family (a reference split on the stack under `-O2`), here independent of the path; the case is on #667. CI builds debug only, so it sees nothing. Clocked to S15: no 1.0 release while the release binary cannot compile its users' programs — either #667 is fixed and pinned, or 1.0 ships a build that does not split references (the profile to decide then). | S7k2 |
 | P9 | Script's own codes moved from 0100 to **0900** (spec 16 rule 1): from 0100 they took numbers Lyric 5 uses (its `SEM` reach 0232; `SEM0101`/`0102` are the label codes Script needs in S4), and the catalogue already mirrored Lyric 5's 0106–0226. Done in S3b; say if another range suits better. | S3b |

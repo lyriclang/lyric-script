@@ -1,0 +1,477 @@
+//! A command line read by what it declares (12 rule 36): a `Cli` names its flags, its options, its arguments and
+//! its commands, `parse(args)` reads `args` against them and gives the `Args`, and writes the help, the version
+//! and what does not fit itself — `--help` to stdout and exit 0, an error to stderr and exit 2. Values are text;
+//! `int.parse` reads a number. A module of no right.
+//!
+//!     let cli = Cli.new("tool", "Copies a file.")
+//!         .flag("verbose", 'v', "say what is copied")
+//!         .option("mode", 'm', "the mode of the copy", "0644")
+//!         .positional("from", "the file to copy")
+//!         .positional("to", "where to copy it", optional = true)
+//!     let a = cli.parse(args)
+//!     if (a.flag("verbose")) { … }
+
+/// Why `tryParse` stopped: the help or the version was asked for, or the command line does not fit.
+enum CliErrorKind :: [Equatable] {
+    Help,
+    Version,
+    Invalid,
+}
+
+/// What `tryParse` throws where `parse` writes and ends the run: the help or the version as `detail`, or what
+/// does not fit — `unknown option '--x'` — with the usage line to show below it.
+struct CliError :: Error {
+    kind: CliErrorKind
+    detail: string
+    usage: string = ""
+
+    fn message(): string = this.detail
+}
+
+/// A flag or an option, as declared.
+private struct Named {
+    name: string
+    short: ?char
+    help: string
+    takesValue: bool
+    default: ?string
+}
+
+/// An argument, as declared.
+private struct Positional {
+    name: string
+    help: string
+    optional: bool
+}
+
+/// A command line as a script declares it, built a part at a time: each of `flag`, `option`, `positional`,
+/// `rest` and `version` gives the `Cli` back, `command` the command's own.
+class Cli {
+    name: string
+    about: string
+    private named: List<Named> = List<Named>.new()
+    private positionals: List<Positional> = List<Positional>.new()
+    private commands: List<Cli> = List<Cli>.new()
+    private var restName: ?string = null
+    private var restHelp: string = ""
+    private var versionText: ?string = null
+
+    /// A command line named `name` — the name the usage and the help show —, `about` the help's first line.
+    static fn new(name: string, about: string = ""): Cli = Cli { name = name, about = about }
+
+    /// A flag, `--name` or `-short`: present or not.
+    fn flag(name: string, short: ?char = null, help: string = ""): Cli {
+        this.declare(name, short)
+        this.named.push(Named { name = name, short = short, help = help, takesValue = false, default = null })
+        return this
+    }
+
+    /// An option, `--name value`, `--name=value`, `-short value` or `-shortvalue`; `default` where it is not
+    /// given, the last one given where it is given more than once.
+    fn option(name: string, short: ?char = null, help: string = "", default: ?string = null): Cli {
+        this.declare(name, short)
+        this.named.push(Named { name = name, short = short, help = help, takesValue = true, default = default })
+        return this
+    }
+
+    /// An argument, taken in the order they are declared: a required one before any optional one.
+    fn positional(name: string, help: string = "", optional: bool = false): Cli {
+        if (this.commands.length() > 0) {
+            panic(f"'{this.name}' has commands and so no arguments")
+        }
+        if (this.restName != null) {
+            panic(f"'{name}' comes after the rest of '{this.name}'")
+        }
+        if (!optional && this.positionals.length() > 0 && this.positionals[this.positionals.length() - 1].optional) {
+            panic(f"the required '{name}' comes after an optional argument")
+        }
+        this.declare(name, null)
+        this.positionals.push(Positional { name = name, help = help, optional = optional })
+        return this
+    }
+
+    /// The arguments after the declared ones, any number; without it, one more is an error.
+    fn rest(name: string, help: string = ""): Cli {
+        if (this.commands.length() > 0) {
+            panic(f"'{this.name}' has commands and so no arguments")
+        }
+        this.declare(name, null)
+        this.restName = name
+        this.restHelp = help
+        return this
+    }
+
+    /// A command, `name` its first argument; the `Cli` given back declares what the command reads after it.
+    fn command(name: string, about: string = ""): Cli {
+        if (this.positionals.length() > 0 || this.restName != null) {
+            panic(f"'{this.name}' has arguments and so no commands")
+        }
+        for (c in this.commands) {
+            if (c.commandName() == name) {
+                panic(f"'{name}' is declared twice")
+            }
+        }
+        let sub = Cli.new(f"{this.name} {name}", about)
+        this.commands.push(sub)
+        return sub
+    }
+
+    /// `--version` writes `text`.
+    fn version(text: string): Cli {
+        this.versionText = text
+        return this
+    }
+
+    /// The arguments read against what is declared. `--help` or `-h` writes the help to stdout and ends the run
+    /// with 0, `--version` so the version; what does not fit is written to stderr, `error: ` and what it is,
+    /// then the usage, and ends the run with 2.
+    fn parse(args: string[]): Args {
+        try {
+            return this.tryParse(args)
+        } catch (e: CliError) {
+            if (e.kind == CliErrorKind.Invalid) {
+                eprintln(f"error: {e.detail}")
+                eprintln(e.usage)
+                exit(2)
+            }
+            println(e.detail)
+            exit(0)
+        }
+    }
+
+    /// The arguments read against what is declared, or a `CliError` — for a test, or a host that writes its
+    /// own: of kind `Help` with the help, `Version` with the version, `Invalid` with what does not fit.
+    fn tryParse(args: string[]): Args {
+        let out = Args { cli = this }
+        let given = List<string>.new()
+        var plain = false
+        var i = 0
+        while (i < args.length()) {
+            let a = args[i]
+            i += 1
+            if (!plain && a == "--") {
+                plain = true
+            } else if (!plain && a.startsWith("--")) {
+                let body = a[2..a.length()]
+                var name = body
+                var value: ?string = null
+                if (let (n, v) = body.splitOnce("=")) {
+                    name = n
+                    value = v
+                }
+                if (name == "help") {
+                    throw CliError { kind = CliErrorKind.Help, detail = this.help() }
+                }
+                if (name == "version") {
+                    if (let text = this.versionText) {
+                        throw CliError { kind = CliErrorKind.Version, detail = text }
+                    }
+                }
+                let n = this.longNamed(name) ?? this.invalid(f"unknown option '--{name}'")
+                if (n.takesValue) {
+                    if (value == null) {
+                        if (i >= args.length()) {
+                            this.invalid(f"option '--{name}' needs a value")
+                        }
+                        value = args[i]
+                        i += 1
+                    }
+                    out.set(name, value ?? "")
+                } else if (value != null) {
+                    this.invalid(f"flag '--{name}' takes no value")
+                } else {
+                    out.flags.push(name)
+                }
+            } else if (!plain && a.startsWith("-") && a != "-") {
+                let cs = List<char>.new()
+                for (c in a.chars()) {
+                    cs.push(c)
+                }
+                var j = 1
+                while (j < cs.length()) {
+                    let c = cs[j]
+                    j += 1
+                    if (c == 'h') {
+                        throw CliError { kind = CliErrorKind.Help, detail = this.help() }
+                    }
+                    let n = this.shortNamed(c) ?? this.invalid(f"unknown option '-{c}'")
+                    if (!n.takesValue) {
+                        out.flags.push(n.name)
+                        continue
+                    }
+                    if (j < cs.length()) {
+                        let value = StringBuilder.new()
+                        while (j < cs.length()) {
+                            value.appendChar(cs[j])
+                            j += 1
+                        }
+                        out.set(n.name, value.toString())
+                    } else if (i < args.length()) {
+                        out.set(n.name, args[i])
+                        i += 1
+                    } else {
+                        this.invalid(f"option '-{c}' needs a value")
+                    }
+                }
+            } else if (this.commands.length() > 0) {
+                let sub = this.commandNamed(a) ?? this.invalid(f"unknown command '{a}'")
+                let after: string[] = []
+                while (i < args.length()) {
+                    after.push(args[i])
+                    i += 1
+                }
+                out.sub = (a, sub.tryParse(after))
+            } else {
+                given.push(a)
+            }
+        }
+        if (this.commands.length() > 0 && out.sub == null) {
+            this.invalid(f"expected a command: {this.commandNames()}")
+        }
+        for (k in 0..this.positionals.length()) {
+            let p = this.positionals[k]
+            if (k < given.length()) {
+                out.values.push((p.name, given[k]))
+            } else if (!p.optional) {
+                this.invalid(f"missing <{p.name}>")
+            }
+        }
+        for (k in this.positionals.length()..given.length()) {
+            if (this.restName == null) {
+                this.invalid(f"unexpected argument '{given[k]}'")
+            }
+            out.restValues.push(given[k])
+        }
+        return out
+    }
+
+    /// The help `--help` writes: `about`, the usage, then the arguments, the options and the commands, each
+    /// with its help.
+    fn help(): string {
+        let out = StringBuilder.new()
+        if (this.about != "") {
+            out.appendStr(this.about)
+            out.appendStr("\n\n")
+        }
+        out.appendStr(this.usage())
+        out.appendStr("\n")
+        let sections = List<(string, List<(string, string)>)>.new()
+        if (this.positionals.length() > 0 || this.restName != null) {
+            let args = List<(string, string)>.new()
+            for (p in this.positionals) {
+                args.push((if (p.optional) f"[{p.name}]" else f"<{p.name}>", p.help))
+            }
+            if (let r = this.restName) {
+                args.push((f"[{r}...]", this.restHelp))
+            }
+            sections.push(("arguments:", args))
+        }
+        let opts = List<(string, string)>.new()
+        for (n in this.named) {
+            var short = "    "
+            if (let c = n.short) {
+                short = f"-{c}, "
+            }
+            let value = if (n.takesValue) f" <{n.name}>" else ""
+            var help = n.help
+            if (let d = n.default) {
+                help = f"{n.help} (default: {d})"
+            }
+            opts.push((f"{short}--{n.name}{value}", help))
+        }
+        opts.push(("-h, --help", "show this help"))
+        if (this.versionText != null) {
+            opts.push(("    --version", "show the version"))
+        }
+        sections.push(("options:", opts))
+        if (this.commands.length() > 0) {
+            let cmds = List<(string, string)>.new()
+            for (c in this.commands) {
+                cmds.push((c.commandName(), c.about))
+            }
+            sections.push(("commands:", cmds))
+        }
+        var width = 0
+        for ((_, entries) in sections) {
+            for ((left, _) in entries) {
+                if (left.length() > width) {
+                    width = left.length()
+                }
+            }
+        }
+        for ((title, entries) in sections) {
+            out.appendStr("\n")
+            out.appendStr(title)
+            out.appendStr("\n")
+            for ((left, text) in entries) {
+                out.appendStr("  ")
+                out.appendStr(left)
+                if (text != "") {
+                    var pad = width - left.length() + 2
+                    while (pad > 0) {
+                        out.appendChar(' ')
+                        pad -= 1
+                    }
+                    out.appendStr(text)
+                }
+                out.appendStr("\n")
+            }
+        }
+        let text = out.toString()
+        return text[0..text.length() - 1]
+    }
+
+    /// The usage line: `usage: tool [options] <from> [to]`.
+    fn usage(): string {
+        let out = StringBuilder.new()
+        out.appendStr(f"usage: {this.name} [options]")
+        for (p in this.positionals) {
+            out.appendStr(if (p.optional) f" [{p.name}]" else f" <{p.name}>")
+        }
+        if (let r = this.restName) {
+            out.appendStr(f" [{r}...]")
+        }
+        if (this.commands.length() > 0) {
+            out.appendStr(" <command> ...")
+        }
+        return out.toString()
+    }
+
+    private fn invalid(detail: string): never {
+        throw CliError { kind = CliErrorKind.Invalid, detail = detail, usage = this.usage() }
+    }
+
+    /// A name declared once, and neither `help` nor `version`, a short neither twice nor `h`.
+    private fn declare(name: string, short: ?char) {
+        if (name == "help" || name == "version") {
+            panic(f"'{name}' is the command line's own")
+        }
+        for (n in this.named) {
+            if (n.name == name) {
+                panic(f"'{name}' is declared twice")
+            }
+            if (let c = short) {
+                if (n.short == c) {
+                    panic(f"'-{c}' is declared twice")
+                }
+            }
+        }
+        for (p in this.positionals) {
+            if (p.name == name) {
+                panic(f"'{name}' is declared twice")
+            }
+        }
+        if (short == 'h') {
+            panic("'-h' is the command line's own")
+        }
+    }
+
+    private fn longNamed(name: string): ?Named {
+        for (n in this.named) {
+            if (n.name == name) {
+                return n
+            }
+        }
+        return null
+    }
+
+    private fn shortNamed(c: char): ?Named {
+        for (n in this.named) {
+            if (n.short == c) {
+                return n
+            }
+        }
+        return null
+    }
+
+    private fn commandNamed(name: string): ?Cli {
+        for (c in this.commands) {
+            if (c.commandName() == name) {
+                return c
+            }
+        }
+        return null
+    }
+
+    private fn commandNames(): string {
+        let out = StringBuilder.new()
+        for (c in this.commands) {
+            if (out.length() > 0) {
+                out.appendStr(", ")
+            }
+            out.appendStr(c.commandName())
+        }
+        return out.toString()
+    }
+
+    /// The last word of the name: a command's own.
+    private fn commandName(): string {
+        var last = this.name
+        for (w in this.name.split(" ")) {
+            last = w
+        }
+        return last
+    }
+}
+
+/// A command line read against its `Cli`. Asking for a name the `Cli` does not declare panics: it is a mistake
+/// of the script, not of the command line.
+class Args {
+    private cli: Cli
+    private flags: List<string> = List<string>.new()
+    private values: List<(string, string)> = List<(string, string)>.new()
+    private restValues: string[] = []
+    private var sub: ?(string, Args) = null
+
+    /// Whether the flag `name` was given.
+    fn flag(name: string): bool {
+        let n = this.cli.longNamed(name) ?? panic(f"'{this.cli.name}' declares no flag '{name}'")
+        if (n.takesValue) {
+            panic(f"'{name}' is an option, not a flag")
+        }
+        return this.flags.contains(name)
+    }
+
+    /// The value of the option `name`, the last one given, else its default; `null` where it has neither.
+    fn option(name: string): ?string {
+        let n = this.cli.longNamed(name) ?? panic(f"'{this.cli.name}' declares no option '{name}'")
+        if (!n.takesValue) {
+            panic(f"'{name}' is a flag, not an option")
+        }
+        return this.value(name) ?? n.default
+    }
+
+    /// The argument `name`, `null` where an optional one was not given.
+    fn positional(name: string): ?string {
+        var declared = false
+        for (p in this.cli.positionals) {
+            if (p.name == name) {
+                declared = true
+            }
+        }
+        if (!declared) {
+            panic(f"'{this.cli.name}' declares no argument '{name}'")
+        }
+        return this.value(name)
+    }
+
+    /// The arguments after the declared ones.
+    fn rest(): string[] = this.restValues
+
+    /// The command given and what it read, `null` where the `Cli` has no commands.
+    fn command(): ?(string, Args) = this.sub
+
+    private fn set(name: string, value: string) {
+        this.values.push((name, value))
+    }
+
+    private fn value(name: string): ?string {
+        var found: ?string = null
+        for ((n, v) in this.values) {
+            if (n == name) {
+                found = v
+            }
+        }
+        return found
+    }
+}

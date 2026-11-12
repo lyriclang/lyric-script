@@ -6,8 +6,9 @@ import lyric_script.compiler.checker { checkModule };
 import lyric_script.compiler.codegen { generate };
 import lyric_script.compiler.parser { parse };
 import lyric_script.vm.asm { disassemble };
-import lyric_script.vm.bytecode { decode, encode };
+import lyric_script.vm.bytecode { decode, encode, opNumber };
 import lyric_script.vm.module { Module };
+import lyric_script.vm.op { Op };
 
 let source: string = "struct P {\n    x: int\n    name: string\n}\nvar total = 0.5\nfn f(n: int): int {\n    var s = 0\n    for (i in 0..n) {\n        s += i\n    }\n    return s\n}\nlet p = P { x = f(10), name = \"p\" }\nprintln(f\"{p.name} {p.x} {total}\")\n";
 
@@ -105,4 +106,15 @@ fn handlersAndTheErrorSlotsReadBack(): void {
     assertEq(disassemble(back), disassemble(m));
     assertEq(back.errorMessage, m.errorMessage);
     assertEq(back.errorCause, m.errorCause);
+}
+
+// Each operation is written as its place among the operations: the reader takes `Op.all()[n]`.
+@Test
+fn everyOperationIsWrittenAsItsPlace(): void {
+    let ops = Op.all();
+    var k = 0;
+    while (k < ops.length()) {
+        assertEq(opNumber(ops[k]), k);
+        k += 1;
+    }
 }

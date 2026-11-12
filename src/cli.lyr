@@ -3,7 +3,7 @@
 //! its text form.
 import std.collections { List };
 import std.fs { exists, readText };
-import std.io { eprintln, println, stdin };
+import std.io { eprintln, flush, println, stdin };
 import std.os { args };
 import std.term { StdStream, isTerminal };
 import lyric_script { version };
@@ -25,7 +25,9 @@ fn usage(): void {
     println("usage: lyric-script <command> | lyric-script SCRIPT.lyrs");
     println("");
     println("commands:");
-    println("  run FILE   run a script (also: lyric-script FILE.lyrs)");
+    println(
+        "  run FILE [ARG…]  run a script, with arguments (also: lyric-script FILE.lyrs [ARG…])"
+    );
     println("  check FILE check a script without running it");
     println("  clean      empty the bytecode cache");
     println("");
@@ -76,7 +78,7 @@ fn main(): int {
         return 0;
     }
     if (command == "run" || command == "check" || command == "asm") {
-        let o = options(given, 2, null);
+        let o = options(given, 2, null, command == "run");
         if (o.fault != 0) {
             return o.fault;
         }
@@ -99,22 +101,32 @@ fn main(): int {
             return 2;
         }
         return match (command) {
-            "run" => runScript(file, o.json, how(o), Grant { allow = o.allow, all = o.all }),
+            "run" => runScript(file, o.json, how(o), grantOf(o, file)),
             "check" => checkScript(file, o.json, how(o)),
             _ => runAsm(file),
         };
     }
     // `lyric-script script.lyrs` runs it (12 CLI)
     if (command.endsWith(".lyrs")) {
-        let o = options(given, 2, command);
+        let o = options(given, 2, command, true);
         if (o.fault != 0) {
             return o.fault;
         }
-        return runScript(command, o.json, how(o), Grant { allow = o.allow, all = o.all });
+        return runScript(command, o.json, how(o), grantOf(o, command));
     }
     eprintln(f"error[LYS-CLI0001]: unknown command '{command}'");
     eprintln("  = help: lyric-script help lists the commands");
     return 2;
+}
+
+/// What a run of `file` is given.
+fn grantOf(o: Options, file: string): Grant {
+    let argv = List<string>.new();
+    argv.push(file);
+    for (a in o.rest) {
+        argv.push(a);
+    }
+    return Grant { allow = o.allow, all = o.all, argv = argv.toArray() };
 }
 
 /// How the options read a program.
@@ -189,12 +201,15 @@ struct Options {
     // the rights given: `--allow`, and `-A` for all (S5e)
     allow: string[] = [],
     all: bool = false,
+    // what follows the file, the script's
+    rest: string[] = [],
     // the exit code of a fault in them, reported already; 0 for none
     fault: int,
 }
 
-fn options(given: string[], from: int, file: ?string): Options {
+fn options(given: string[], from: int, file: ?string, takesArguments: bool): Options {
     var found = file;
+    let rest = List<string>.new();
     var json = false;
     var offline = false;
     var locked = false;
@@ -203,6 +218,16 @@ fn options(given: string[], from: int, file: ?string): Options {
     var k = from;
     while (k < given.length()) {
         let a = given[k];
+        // what follows the file is the script's, options too (14 rule 4); `--` says the file's
+        // place is over, for a package's program, which names none
+        if (takesArguments && (found != null || a == "--")) {
+            k = if (found == null) k + 1 else k;
+            while (k < given.length()) {
+                rest.push(given[k]);
+                k += 1;
+            }
+            break;
+        }
         if (a == "--json") {
             json = true;
         } else if (a == "--offline") {
@@ -249,6 +274,7 @@ fn options(given: string[], from: int, file: ?string): Options {
         locked = locked,
         allow = allow.toArray(),
         all = all,
+        rest = rest.toArray(),
         fault = 0,
     };
 }
@@ -314,6 +340,8 @@ fn runScript(path: string, json: bool, how: LoadOptions, grant: Grant): int {
 struct Grant {
     allow: string[],
     all: bool,
+    /// The script's name and what follows it on the command line (14 rule 4).
+    argv: string[],
 }
 
 /// Runs a module once the rights its imports ask for are given (01 S1, S4): what the run was not
@@ -350,7 +378,7 @@ fn runModule(module: Module, grant: Grant): int {
             return 2;
         }
     }
-    return finishScript(execute(module, scriptEntry, [], -1));
+    return finishScript(execute(module, scriptEntry, [], -1, grant.argv));
 }
 
 /// The exit code of a script: what its `fn main(): int` returns (07 Top, V1 M7), else as `finish`
@@ -425,7 +453,13 @@ fn compile(l: Loaded, json: bool): Compiled {
             );
         }
     }
-    let checked = checkModule(l.parses[0].module, imported.toArray());
+    let checked = checkModule(
+        l.parses[0].module,
+        imported.toArray(),
+        l.collections,
+        l.numbers,
+        l.bytes
+    );
     r.all(checked.errors, checked.warnings);
     r.summary();
     if (checked.errors.length() > 0) {
@@ -498,11 +532,12 @@ class Reporter {
 }
 
 /// The exit code of a run: 0 at its end, 1 for an error that left it and 101 for a panic, each
-/// reported with its frames.
+/// reported with its frames, after what the script printed (12 rule 20).
 fn finish(outcome: Outcome): int {
     return match (outcome) {
         .Void | .Scalar(_) | .Ref(_) | .Slots(_, _) => 0,
         .Error(e) => {
+            flush();
             eprintln(f"error: {e.message}");
             for (cause in e.causes) {
                 eprintln(f"  caused by: {cause}");
@@ -516,6 +551,7 @@ fn finish(outcome: Outcome): int {
             1
         }
         .Panic(p) => {
+            flush();
             eprintln(f"panic [{p.code}]: {p.message}");
             for (frame in p.trace) {
                 eprintln(f"    {frame}");
@@ -526,6 +562,8 @@ fn finish(outcome: Outcome): int {
             eprintln("error: the run was suspended");
             1
         }
+        // the host's end writes what the console holds and waits for no native a task still waits for
+        .Exit(code) => code,
         .Switch => {
             eprintln("error[LYS-ICE0001]: the VM gave way with no task to run");
             101

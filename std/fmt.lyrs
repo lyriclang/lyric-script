@@ -1,0 +1,91 @@
+//! Formats text from a template read at run time (12; Lyric 5's `std.fmt`): `format` speaks the
+//! f-strings' format language, the values given apart from the template. What the compiler checks
+//! in an f-string is checked here when it runs, and a mistake panics (`LYS-RT0008`).
+
+// the template's text with each hole replaced by its value: `{}` the next value, `{i}` the i-th
+// from 0 — the two mix, `{}` counting only itself —, either with `:spec`; `{{` and `}}` a brace; a
+// value no hole names is left out
+fn format(template: string, args: Display...): string {
+    let out = StringBuilder.new()
+    // its characters by position, without std.iter's adapters
+    let cs: char[] = []
+    for (c in template.chars()) {
+        cs.push(c)
+    }
+    let n = cs.length()
+    var next = 0
+    var i = 0
+    while (i < n) {
+        let c = cs[i]
+        if (c == '}') {
+            if (i + 1 < n && cs[i + 1] == '}') {
+                out.appendChar('}')
+                i += 2
+                continue
+            }
+            panic(f"'{template}' closes a brace it did not open, at character {i}")
+        }
+        if (c != '{') {
+            out.appendChar(c)
+            i += 1
+            continue
+        }
+        if (i + 1 < n && cs[i + 1] == '{') {
+            out.appendChar('{')
+            i += 2
+            continue
+        }
+        var j = i + 1
+        var index = -1
+        while (j < n && cs[j].isAsciiDigit()) {
+            index = (if (index < 0) 0 else index) * 10 + (cs[j].toDigit(10) ?? 0)
+            j += 1
+        }
+        let spec = StringBuilder.new()
+        if (j < n && cs[j] == ':') {
+            j += 1
+            while (j < n && cs[j] != '}') {
+                spec.appendChar(cs[j])
+                j += 1
+            }
+        }
+        if (j >= n || cs[j] != '}') {
+            panic(f"'{template}' leaves the hole at character {i} open")
+        }
+        var at = index
+        if (at < 0) {
+            at = next
+            next += 1
+        }
+        if (at >= args.length()) {
+            panic(f"'{template}' names value {at}, and {args.length()} are given")
+        }
+        write(args[at], spec.toString(), out)
+        i = j + 1
+    }
+    return out.toString()
+}
+
+// one value as its hole's spec says: its text without one; under `?` its Debug text — every
+// value has one in Script —; a `Format` reads the spec itself, the scalars too; any other value's
+// text padded
+private fn write(value: Display, spec: string, out: StringBuilder) {
+    if (spec.isEmpty()) {
+        value.showTo(out)
+        return
+    }
+    if (spec.endsWith("?")) {
+        __fmtChecked(spec, 6)
+        out.appendStr(__fmtText(value.debug(), spec[0..spec.length() - 1]))
+        return
+    }
+    match (value) {
+        f: Format => {
+            f.format(spec, out)
+            return
+        }
+        _ => { }
+    }
+    __fmtChecked(spec, 5)
+    out.appendStr(__fmtText(value.show(), spec))
+}

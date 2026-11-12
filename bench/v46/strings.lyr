@@ -1,0 +1,16 @@
+// B8 strings: the numbers 0..699 999 written into a StringBuilder, each followed by a comma, then
+// the text's length. The same algorithm as ../src/strings.lyrs.
+import std.io.console { println };
+import std.string { StringBuilder, fromInt };
+
+fn main(): int {
+    let b = StringBuilder.new();
+    var i = 0;
+    while (i < 700000) {
+        b.append(fromInt(i));
+        b.append(",");
+        i += 1;
+    }
+    println(b.build().length());
+    return 0;
+}

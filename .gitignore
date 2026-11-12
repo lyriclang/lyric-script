@@ -14,3 +14,4 @@ design/v1/probes/*/results/emit/
 # .NET build output of the C# probes and the archived 4.x host example
 bin/
 obj/
+__pycache__/

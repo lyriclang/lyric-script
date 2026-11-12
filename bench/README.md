@@ -1,5 +1,8 @@
 # Messpunkt 1: Durchsatz der Lyric-Script-VM gegen die Lyric-4.6-VM
 
+> **Messpunkt 3** (S7k, 2026-11-09), die Bench-Suite aus Script-Quelltext: [unten](#messpunkt-3-die-bench-suite-aus-script-quelltext).
+> Der Ratchet ≥ 5× **hält** (5,18× und 5,13×).
+
 Status: **gemessen und entschieden** (2026-10-28). Die Zahlen hier; die Entscheidung in
 design/v1/spec/11 (Offen) und 14 (S1): V3 bleibt A', kein Neuzuschnitt (verfehlt um weniger als
 2×), der Aufrufpfad ist der erste Hebel vor Messpunkt 3.
@@ -237,3 +240,114 @@ Dateien: `*.lyrsasm` (Script), `v46/*.lyr` (4.x), `prepare.sh`, `run.py`, `deriv
 `run1.log`/`run2.log` (Vorbereitung und Warten auf Leerlauf), `derived.txt`, `machine.txt`,
 `power.txt`, `v46-*.disasm.txt` (4.6-Bytecode beider Profile). Lauf 1 lief mit `run.py` ohne
 `objects1`; sonst identisch.
+
+---
+
+# Messpunkt 3: die Bench-Suite aus Script-Quelltext
+
+Status: **gemessen, Ratchet hält** (2026-11-09). Plan, Erwartungen und Befundweg stehen in
+design/v1/spec/14 (S7k1, S7k1b, Entscheidung G). Die Erwartungen wurden dort vor jedem Lauf
+geschrieben.
+
+**Kurz:** Acht Programme laufen aus Script-Quelltext, mit warmem Cache, gegen dieselben Programme
+als 4.x-Bytecode auf `lyrvm` 4.6. Das geometrische Mittel liegt bei **5,18×** (Lauf 3) und
+**5,13×** (Lauf 4, Wiederholung). Der Ratchet ≥ 5× hält, am unteren Rand. Nur über die
+VM-Programme B1, B2, B3 und B6 sind es 4,31× bzw. 4,34×. Lauf 1, vor den Senkungen im Codegen,
+verfehlte mit 4,77×. Kontrolle: alle Läufe liefern das Orakel, 0 ungültig.
+
+## Aufbau
+
+| Programm | Inhalt |
+|---|---|
+| B1 `fib` | fib(32), wie Messpunkt 1 |
+| B2 `loop` | wie Messpunkt 1 |
+| B3 `objects` | wie Messpunkt 1 |
+| B4 `words` | 100 000 Wörter in einem `StringBuilder`, gespalten, in einer `Map<string, int>` gezählt |
+| B5 `sort` | 50 000 Zahlen, natürliche Ordnung |
+| B6 `sortby` | dasselbe mit einer Lambda als Vergleich |
+| B7 `map` | 100 000 Schreib- und 400 000 Lesezugriffe auf eine `Map<int, int>` |
+| B8 `strings` | 700 000 Zahlen in einen `StringBuilder` |
+
+- Quellen: `src/*.lyrs` (Script) und `v46/*.lyr` (4.x), derselbe Algorithmus, dieselbe Ausgabe.
+  `oracle.py` rechnet die Ausgabe unabhängig von beiden VMs nach.
+- Die Programme spiegeln die 4.x-Fassungen und schreiben `while`. Sie wurden nach Lauf 1 nicht
+  auf `for` umgeschrieben, sonst wäre der Ratchet schöngerechnet.
+- `script` läuft die Quelle aus dem warmen Cache, so wie 4.6 Bytecode läuft, den `lyrc` vorher
+  gebaut hat. `script-asm` läuft den handgeschriebenen Bytecode von Messpunkt 1 mit.
+- Release-Build des Pakets. Den Cache füllt der Debug-Build desselben Commits (`--prefill`),
+  solange lyric#667 einen Release-Compiler seine eigene Übersetzung verderben lässt. Der Schlüssel
+  enthält Quelle, Version und Format, nicht das Profil. Prefill und Selbstübersetzung treffen sich
+  auf 0,01 % der Befehle.
+- Je Lauf 9 Runden plus eine Aufwärmrunde, reihum. Vor jeder Runde wird auf Leerlauf gewartet
+  (Last unter 1,0). Gemessen wird die Wandzeit des ganzen Prozesses, daneben die CPU-Zeit.
+- Hauptzahl: geometrisches Mittel B1–B8, brutto.
+
+## Ergebnisse
+
+Verhältnis brutto (4.6 / Script), Median aus 9 Runden:
+
+| Programm | Lauf 1 f20cd9d | Lauf 2 S7k1b | Lauf 3 G | Lauf 4 G | Script, Lauf 3 | 4.6, Lauf 3 |
+|---|---:|---:|---:|---:|---:|---:|
+| B1 `fib` | 3,07× | 3,08× | 3,54× | 3,40× | 0,127 s | 0,451 s |
+| B2 `loop` | 3,15× | 5,33× | 4,56× | 4,87× | 0,139 s | 0,631 s |
+| B3 `objects` | 2,99× | 3,05× | 2,88× | 2,93× | 0,160 s | 0,460 s |
+| B4 `words` | 2,93× | 2,81× | 3,16× | 3,13× | 0,178 s | 0,562 s |
+| B5 `sort` | 48,4× | 50,4× | 49,6× | 43,4× | 0,012 s | 0,582 s |
+| B6 `sortby` | 6,64× | 6,33× | 7,41× | 7,30× | 0,073 s | 0,541 s |
+| B7 `map` | 3,64× | 3,24× | 3,50× | 3,51× | 0,239 s | 0,835 s |
+| B8 `strings` | 2,70× | 2,55× | 2,76× | 2,82× | 0,276 s | 0,763 s |
+| **Mittel B1–B8** | 4,77× | 4,97× | **5,18×** | **5,13×** | | |
+| Mittel B1, B2, B3, B6 | 3,72× | 4,22× | 4,31× | 4,34× | | |
+| von Hand `fib` / `loop` / `objects` | 4,23 / 6,33 / 4,09× | 3,72 / 6,41 / 3,66× | 4,45 / 6,31 / 3,38× | 4,20 / 6,20 / 3,45× | | |
+
+Was sich zwischen den Läufen änderte:
+- **Lauf 1 → S7k1b.** Der Compiler senkte `while` schlecht: 11 VM-Befehle je Durchlauf in
+  `loop`, von Hand 5. S7k1b führte vier Senkungen ein:
+  - Eine Zuweisung als Anweisung schreibt nirgendwohin.
+  - Kleine Literale werden zu `add.imm`.
+  - Ein Vergleich in einer Bedingung springt selbst.
+  - Eine literale Bedingung springt immer oder nie.
+- **S7k1b → G.** Die neue Op `jump.le.i` ließ den C-Compiler die ganze Dispatch-Schleife
+  schlechter zuteilen. Derselbe handgeschriebene Text lief 7–14 % mehr Befehle. G nimmt die Op
+  heraus und springt nur mit `jump.lt.i`, die VM ist wieder byte-gleich mit f20cd9d (Format 47).
+  Befehle gegen f20cd9d: `loop` −34 %, `objects` −25 %, `fib` −14 %, `sort` −15 %, `sortby` −13 %,
+  `map` −4,5 %, `words` −2 %, `strings` −1,6 %.
+
+## Kontrolle
+
+- Alle Läufe aller vier Messungen liefern das Orakel; 0 ungültig; Prefill je 9/9.
+- **Befehle mit gleichem Text.** Die `.lyrsasm` von Messpunkt 1 laufen auf jedem Release-Build.
+  Auf G liegen sie genau bei f20cd9d (fib 2,4552·10⁹, loop 2,8221·10⁹, objects 1,6890·10⁹). Damit
+  ist eine Änderung der VM vom Bytecode des Compilers getrennt; siehe 14, Methode.
+- **Lauf 4 wiederholt Lauf 3** mit demselben Binary und trifft ihn je Zelle auf 3–6 %. Nur `sort`
+  liegt bei 12 ms im Rauschen des Starts.
+
+## Grenzen
+
+- **Wandzeit folgt nicht immer den Befehlen.** `objects` von Hand läuft auf G 17 % langsamer als
+  in Lauf 1, bei gleicher VM-Quelle und gleichen Befehlen. `loop` aus dem Quelltext läuft auf G
+  langsamer als auf S7k1b, bei 9 % weniger Befehlen und gleich vielen Dispatches. Das ist das
+  Layout des Binarys: Der Compiler liegt in derselben C-Einheit von 32 MB. Die Sprungsimulation
+  von valgrind zeigt es nicht, ihr Modell für indirekte Sprünge verfehlt in beiden Builds 99,9 %.
+  Hardware-Zähler gibt es unter WSL nicht (P47, Uhr S15).
+- Eine Maschine, WSL2, kein Pinnen, die Last zwischen 0,65 und 0,98. Die 4.6-Zeiten schwanken über
+  die Läufe um bis zu 7 %.
+- B5, B7 und B8 rufen in Script native Typen auf, die 4.6 in Bytecode schreibt. Das ist ein echter
+  Vorteil der Laufzeit, aber kein Maß für die VM. Deshalb steht das VM-Mittel daneben.
+- Der Release-Build braucht einen Umweg um lyric#699 (P46), und der Cache wird vom Debug-Build
+  gefüllt (lyric#667).
+- Der Kaltstart ist nicht Teil dieser Messung (S7k2, P21).
+
+## Reproduzieren
+
+```
+# WSL. 4.6 wie in Messpunkt 1 (~/dev/projects/lyric46). Script: Release- und Debug-Build desselben Commits.
+OUT=~/dev/projects/s7k-bench SCRIPT=<release lyric-script> bash bench/prepare_suite.sh
+python3 bench/suite.py --script <release lyric-script> \
+    --lyrvm ~/dev/projects/lyric46/src/Lyrvm/bin/Release/net10.0/lyrvm \
+    --dir ~/dev/projects/s7k-bench --runs 9 --prefill <debug lyric-script> --out bench/results/suite3.json
+```
+
+Dateien: `src/*.lyrs`, `v46/*.lyr`, `oracle.py`, `prepare_suite.sh`, `suite.py`. In `results/`:
+`suite1`–`suite4` (`.json` mit allen Einzelzeiten, `.txt` mit den Tabellen) und
+`suite-machine.txt` (Maschine und Binaries von Lauf 4).

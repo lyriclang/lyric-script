@@ -97,8 +97,9 @@ let printing = "interface Shape {\n    fn area(): int\n}\nstruct Circle :: Shape
 
 @Test
 fn interfaceValuesPrintTheirValue(): void {
-    // through the slot every table fills; a scalar's, a string's and an enum's out of the box
-    let d = "fn d(): int {\n    let s = hide(\"hi\")\n    let all = f\"{shapeOf(2)}|{hide(7)}|{s}|{hide(E.B)}\"\n    return if (all == \"Circle { r = 2 }|7|\\\"hi\\\"|E.B\") 1 else 0\n}";
+    // through the slot every table fills; a scalar's, a string's and an enum's out of the box —
+    // alone a string is itself (S7e3b: quoted since S3i, against spec 05 rule 9)
+    let d = "fn d(): int {\n    let s = hide(\"hi\")\n    let all = f\"{shapeOf(2)}|{hide(7)}|{s}|{hide(E.B)}\"\n    return if (all == \"Circle { r = 2 }|7|hi|E.B\") 1 else 0\n}";
     assertEq(value(types + printing + d, "d"), 1);
 }
 

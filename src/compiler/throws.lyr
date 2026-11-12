@@ -3,10 +3,12 @@
 //! clauses of its `try`s take — as a fixpoint over the call graph, which closes a recursion. A
 //! call through a function value may throw anything: an `Error` (02 K2). A call through an
 //! interface member throws what the member writes, or else what its implementations in the
-//! program throw — a script knows every conformer. A clause's `throw e` of its binding throws
-//! what reached the clause (05 K7). The sets are the checker's to hold the written `throws`
-//! against.
+//! program throw — a script knows every conformer. A member of a type parameter's constraint throws
+//! what the argument's implementation throws, named where the generic is called (S7g5). A clause's
+//! `throw e` of its binding throws what reached the clause (05 K7). The sets are the checker's to hold
+//! the written `throws` against.
 import std.collections { List, Map };
+import lyric_script.vm.native { nativeCancels, nativeOf };
 import lyric_script.compiler.typed {
     FnInfo,
     TExpr,
@@ -21,16 +23,44 @@ import lyric_script.compiler.typed {
     typeOf,
 };
 
+/// A member of a constraint of a type parameter called on a value of it: what it throws waits for
+/// the generic's call, which names the type (S7g5).
+struct Through {
+    param: int,
+    slot: int,
+    line: int,
+}
+
 /// What a function may throw: anything — where `any`, with the line that makes it so —, or the
-/// types listed, each with the line of the first site that throws it.
+/// types listed, each with the line of the first site that throws it; and, in a generic, what its
+/// calls will say.
 class Thrown {
     var any: bool = false,
     var anyLine: int = 0,
     types: List<Ty>,
     lines: List<int>,
+    through: List<Through>,
 
     static fn none(): Thrown {
-        return Thrown { types = List<Ty>.new(), lines = List<int>.new() };
+        return Thrown {
+            types = List<Ty>.new(),
+            lines = List<int>.new(),
+            through = List<Through>.new(),
+        };
+    }
+
+    /// Adds a member the generic's call will name; whether the set grew.
+    mut fn addThrough(param: int, slot: int, line: int): bool {
+        if (this.any) {
+            return false;
+        }
+        for (x in this.through) {
+            if (x.param == param && x.slot == slot) {
+                return false;
+            }
+        }
+        this.through.push(Through { param = param, slot = slot, line = line });
+        return true;
     }
 
     /// Adds `t`, thrown at `line`; whether the set grew.
@@ -68,6 +98,9 @@ class Thrown {
             grew = this.add(o.types[k], o.lines[k]) || grew;
             k += 1;
         }
+        for (x in o.through) {
+            grew = this.addThrough(x.param, x.slot, x.line) || grew;
+        }
         return grew;
     }
 }
@@ -90,6 +123,10 @@ class ThrowSets {
     cancelled: int,
     // the prelude's `ChannelClosed`, what a send on a closed channel throws (S6d1)
     channelClosed: int,
+    // the entry whose witnesses a type has, -1 where it has none (S7g5)
+    entryOf: fn(Ty) -> int,
+    // the members being asked: an implementation that calls its own member adds nothing new
+    asking: List<int>,
     var line: int = 0,
     var current: int = -1,
 
@@ -98,7 +135,8 @@ class ThrowSets {
         functions: FnInfo[],
         errorIndex: int,
         cancelled: int,
-        channelClosed: int
+        channelClosed: int,
+        entryOf: fn(Ty) -> int
     ): ThrowSets {
         let sets = List<Thrown>.new();
         for (_ in functions) {
@@ -132,6 +170,8 @@ class ThrowSets {
             errorIndex = errorIndex,
             cancelled = cancelled,
             channelClosed = channelClosed,
+            entryOf = entryOf,
+            asking = List<int>.new(),
             sets = sets,
             members = members,
             impls = impls,
@@ -187,7 +227,7 @@ class ThrowSets {
     mut fn left(set: Thrown, by: Ty[], fnIndex: int): Thrown {
         let saved = this.current;
         this.current = fnIndex;
-        let out = this.passes(set, by);
+        let out = this.passes(this.settled(set), by);
         this.current = saved;
         return out;
     }
@@ -208,7 +248,8 @@ class ThrowSets {
             // the clauses are asked in order: each takes what it covers of what is left, and its
             // binding's `throw` throws that; what none takes goes on (06 §4 rules 1–3)
             .Try(body, caught, _, clauses, _) => {
-                var rest = this.stmtsSet(body);
+                // what a clause takes is known here: a generic's calls do not name it for the clause
+                var rest = this.settled(this.stmtsSet(body));
                 let out = Thrown.none();
                 var k = 0;
                 for (c in clauses) {
@@ -257,14 +298,19 @@ class ThrowSets {
                     out.addAny(this.line);
                 }
             }
-            .Call(fi, _, _) => out.addAll(this.sets[fi]),
+            .Call(fi, _, _) => out.addAll(this.settled(this.sets[fi])),
             .CallGeneric(fi, binds, _, _) => out.addAll(this.substituted(this.sets[fi], binds)),
-            .CallIface(slot, _, _) | .CallConstraint(_, _, _, slot, _, _) => out.addAll(
+            .CallIface(slot, _, _) | .CallBound(_, _, _, slot, _, _) => out.addAll(
                 this.memberSet(slot)
             ),
-            .CallBound(_, _, _, slot, _, _) | .CallStatic(_, _, _, slot, _, _) => out.addAll(
-                this.memberSet(slot)
-            ),
+            // a member a type parameter has: what it writes, or else what the call's type says
+            .CallConstraint(k, _, _, slot, _, _) | .CallStatic(k, _, _, slot, _, _) => {
+                if (this.writes(slot)) {
+                    out.addAll(this.memberSet(slot));
+                } else {
+                    out.addThrough(k, slot, this.line);
+                }
+            }
             // a function value says nothing of what it throws (02 K2)
             .CallValue(_, _, _) | .CallStaticD(_, _, _, _) => out.addAny(this.line),
             // a task's error comes back where it is awaited (S6a), any error, as a function value's
@@ -283,8 +329,14 @@ class ThrowSets {
                     out.add(Ty.Named(this.cancelled), this.line);
                 }
             }
-            .ChanRecv(_, _) | .SemAcquire(_) | .ParkWatched | .Sleep(_) | .ReadLine => {
+            .ChanRecv(_, _) | .SemAcquire(_) | .ParkWatched | .Sleep(_) => {
                 if (this.cancelled >= 0) {
+                    out.add(Ty.Named(this.cancelled), this.line);
+                }
+            }
+            // a native a cancel ends is a wait (10 rule 18)
+            .Native(.Std(k), _, _) => {
+                if (this.cancelled >= 0 && nativeCancels(nativeOf(k))) {
                     out.add(Ty.Named(this.cancelled), this.line);
                 }
             }
@@ -307,6 +359,12 @@ class ThrowSets {
     /// implementations throw.
     mut fn memberSet(slot: int): Thrown {
         let out = Thrown.none();
+        for (s in this.asking) {
+            if (s == slot) {
+                return out;
+            }
+        }
+        this.asking.push(slot);
         let m = this.members.get(slot);
         let written = if (m != null) this.functions[m].throws else null;
         if (written != null) {
@@ -315,10 +373,51 @@ class ThrowSets {
             }
         } else if (let fs = this.impls.get(slot)) {
             for (f in fs) {
-                out.addAll(this.sets[f]);
+                out.addAll(this.settled(this.sets[f]));
             }
         }
+        this.asking.pop();
         return out;
+    }
+
+    /// Whether the member of `slot` writes its `throws`.
+    fn writes(slot: int): bool {
+        if (let m = this.members.get(slot)) {
+            return this.functions[m].throws != null;
+        }
+        return false;
+    }
+
+    /// `set` where no call names its members: each throws what its implementations throw.
+    mut fn settled(set: Thrown): Thrown {
+        if (set.through.isEmpty()) {
+            return set;
+        }
+        let out = Thrown.none();
+        if (set.any) {
+            out.addAny(set.anyLine);
+        }
+        var k = 0;
+        while (k < set.types.length()) {
+            out.add(set.types[k], set.lines[k]);
+            k += 1;
+        }
+        for (x in set.through) {
+            out.addAll(this.memberSet(x.slot));
+        }
+        return out;
+    }
+
+    /// What the member of `slot` throws on a value of `t`: its implementation's set, or where `t` has
+    /// none of its own, an interface or an open type, what any of them throws.
+    mut fn memberOn(t: Ty, slot: int): Thrown {
+        let entry = this.entryOf(t);
+        if (entry >= 0 && entry < this.types.length()) {
+            if (let f = this.types[entry].witness.get(slot)) {
+                return this.settled(this.sets[f]);
+            }
+        }
+        return this.memberSet(slot);
     }
 
     mut fn addType(out: Thrown, t: Ty): void {
@@ -351,6 +450,17 @@ class ThrowSets {
                 out.add(bound, set.lines[k]);
             }
             k += 1;
+        }
+        for (x in set.through) {
+            let bound = if (x.param < binds.length()) binds[x.param] else Ty.Unknown;
+            match (bound) {
+                .Param(p) => {
+                    out.addThrough(p, x.slot, x.line);
+                }
+                _ => {
+                    out.addAll(this.memberOn(bound, x.slot));
+                }
+            }
         }
         return out;
     }
@@ -476,7 +586,7 @@ class ThrowSets {
 /// The type a `throw` throws: its value's before it became an `Error`.
 fn thrownType(x: TExpr): Ty {
     return match (x) {
-        .Upcast(v, _) | .BoxOf(v, _, _) => typeOf(v.value),
+        .Upcast(v, _) | .BoxOf(v, _, _) | .BoxOfD(v, _, _) => typeOf(v.value),
         _ => typeOf(x),
     };
 }

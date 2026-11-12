@@ -1,0 +1,19 @@
+#!/usr/bin/env lyric-script
+// The automation of design 02: give the files of a folder lower-case names without spaces, then
+// call a program.
+import std.fs { readDir, rename }
+import std.path { join }
+import std.process { Command }
+
+fn slug(name: string) = name.toLower().replace(" ", "-")
+
+let folder = if (args.length() > 0) args[0] else "photos"
+for (file in readDir(folder)) {
+    let name = slug(file.name)
+    if (name != file.name) {
+        rename(file.path, join(folder, name))
+        println(f"{file.name} -> {name}")
+    }
+}
+let status = try? Command { program = "git", args = ["--version"] }.output()
+println(if (status?.status?.success() ?? false) "git is there" else "no git")

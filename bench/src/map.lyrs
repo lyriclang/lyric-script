@@ -1,0 +1,21 @@
+// B7 map: 100 000 writes of LCG keys into a Map<int, int> (some overwrite), then 400 000 reads, most
+// of them misses — hashing ints and probing. The same algorithm as ../v46/map.lyr.
+fn run(): string {
+    let m: Map<int, int> = Map.new()
+    var x = 12345
+    var i = 0
+    while (i < 100000) {
+        x = (x * 1103515245 + 12345) % 2147483648
+        m[x % 1000003] = i
+        i += 1
+    }
+    var sum = 0
+    i = 0
+    while (i < 400000) {
+        sum += m[i * 2] ?? 1
+        i += 1
+    }
+    return f"{m.length()} {sum}"
+}
+
+println(run())

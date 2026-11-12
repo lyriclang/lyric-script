@@ -8,6 +8,7 @@
 import std.collections { List, Map };
 import lyric_script.compiler.ast { BinaryOp };
 import lyric_script.compiler.typed {
+    ListOp,
     Native,
     Place,
     Program,
@@ -21,6 +22,7 @@ import lyric_script.compiler.typed {
     isScalar,
     slotsOf,
     tupleOf,
+    tyKey,
     typeOf,
 };
 import lyric_script.vm.module {
@@ -33,7 +35,7 @@ import lyric_script.vm.module {
     optionalKind,
     tupleKind,
 };
-import lyric_script.vm.native { NativeFn, nativeInfo, nativeNumber };
+import lyric_script.vm.native { NativeFn, nativeInfo, nativeNumber, nativeOf, nativeWaits };
 import lyric_script.vm.op { Instr, Op };
 
 /// The name of the function that runs a script's top-level code (07 Top).
@@ -172,14 +174,38 @@ struct Placement {
         var bi = 0;
         for (t in p.types) {
             // a built-in's or an enum's without payloads: its box, which the type's table rides on
-            let isBoxed = t.kind == .Builtin || (t.kind == .Enum && !t.payload);
+            let isBoxed = t.kind == .Builtin || (t.kind == .Enum && !t.payload) || t.vmHeld;
             if (isBoxed) {
-                let isRef = t.kind == .Builtin && t.name == "string";
-                let d = TypeDesc {
+                // a string's, a list's (S7c3) and a value the VM holds (S7c4b) is a reference
+                let isRef = t.vmHeld
+                    || (t.kind == .Builtin
+                        && (t.name == "string" || t.name == "List" || t.name.startsWith("List<")));
+                var d = TypeDesc {
                     name = f"<box {t.name}>",
                     scalarFields = if (isRef) [] else ["v"],
                     refFields = if (isRef) ["v"] else [],
                 };
+                // a function value's, an optional's, a tuple's box (S7e2): the shape's slots
+                if (let shape = t.shape) {
+                    let (ns, nr) = slotsOf(shape, p.types);
+                    let sf = List<string>.new();
+                    let rf = List<string>.new();
+                    var j = 0;
+                    while (j < ns) {
+                        sf.push(f"s{j}");
+                        j += 1;
+                    }
+                    j = 0;
+                    while (j < nr) {
+                        rf.push(f"r{j}");
+                        j += 1;
+                    }
+                    d = TypeDesc {
+                        name = f"<box {t.name}>",
+                        scalarFields = sf.toArray(),
+                        refFields = rf.toArray(),
+                    };
+                }
                 d.methods = rows[bi];
                 d.family = bi;
                 d.ifaces = t.ifaces;
@@ -285,11 +311,11 @@ struct Placement {
                     refFields = refs.toArray(),
                 };
                 // a function value prints `<fn>` through its table (S3i)
-                if (p.debugSlot >= 0) {
+                if (p.debugSlot >= 0 || p.textSlot >= 0) {
                     let row = List<int>.new();
                     var k = 0;
                     while (k < p.slots) {
-                        row.push(if (k == p.debugSlot) p.fnDebug else -1);
+                        row.push(if (k == p.debugSlot || k == p.textSlot) p.fnDebug else -1);
                         k += 1;
                     }
                     cd.methods = row.toArray();
@@ -333,9 +359,9 @@ struct Placement {
         var anyDesc = -1;
         var di = 0;
         for (t in p.types) {
-            if (t.kind == .Struct || t.kind == .Class) {
+            if ((t.kind == .Struct || t.kind == .Class) && !t.vmHeld) {
                 typeDescOf.push(moduleType[di]);
-            } else if (t.kind == .Builtin || (t.kind == .Enum && !t.payload)) {
+            } else if (t.kind == .Builtin || (t.kind == .Enum && !t.payload) || t.vmHeld) {
                 typeDescOf.push(boxType[di]);
                 if (t.kind == .Builtin) {
                     builtinDesc.insert(t.name, boxType[di]);
@@ -371,6 +397,13 @@ struct Placement {
             byName = Map<string, int>.new(),
             base = descs.length(),
         };
+        di = 0;
+        for (t in p.types) {
+            if (t.kind == .Builtin && t.name.startsWith("List<") && t.args.length() == 1) {
+                structural.lists.insert(tyKey(t.args[0]), typeDescOf[di]);
+            }
+            di += 1;
+        }
         let all = descs.toArray();
         // an instance of a generic type knows its template and its arguments' descriptors; a
         // template, whose arguments are its own parameters, none
@@ -430,6 +463,8 @@ class Structural {
     descs: List<TypeDesc>,
     byName: Map<string, int>,
     base: int,
+    // the box descriptor of each list type's entry, by its element's key (S7c4c3b)
+    var lists: Map<string, int> = Map<string, int>.new(),
 
     /// The descriptor at module place `k`: the placement's or one made here.
     fn at(k: int, placed: TypeDesc[]): TypeDesc {
@@ -458,6 +493,7 @@ class Structural {
                 .Bool => builtinDesc.get("bool") ?? anyDesc,
                 .Char => builtinDesc.get("char") ?? anyDesc,
                 .Str => builtinDesc.get("string") ?? anyDesc,
+                .List(e) => this.lists.get(tyKey(e.value)) ?? anyDesc,
                 _ => anyDesc,
             };
         }
@@ -710,6 +746,49 @@ class FnGen {
         return this.code.length();
     }
 
+    /// A jump, to be patched, taken where condition `c` is `when`; `-1` where it never is. An
+    /// `int` or `char` comparison jumps by `jump.lt.i` (both operands still read left to right), a
+    /// literal condition jumps always or never; anything else is computed and tested (S7k1b).
+    /// There is no `jump.le.i`: every VM that had one ran the same bytecode 7–14 % slower (14,
+    /// Ergebnis S7k1b), so `<=` and `>=` are `<` the other way round, and where the jump is taken
+    /// as `x < y` does not hold, `jump.lt.i` steps over a plain `jump`.
+    mut fn jumpWhen(c: TExpr, when: bool): int {
+        match (c) {
+            .Bool(b) => {
+                return if (b == when) this.emit(Op.Jump, 0, 0, 0) else -1;
+            }
+            .Binary(l, op, r, _) => {
+                let lt = typeOf(l.value);
+                let fused = (lt == .Int || lt == .Char)
+                    && typeOf(r.value) == lt
+                    && (op == .Lt || op == .Le || op == .Gt || op == .Ge);
+                if (fused) {
+                    let a = this.any(l.value).s;
+                    let b = this.any(r.value).s;
+                    // the condition is `x < y` holding (or not): `a > b` is `b < a`, `a <= b` is
+                    // not `b < a`, `a >= b` is not `a < b`
+                    let (x, y, holds) = match (op) {
+                        .Lt => (a, b, true),
+                        .Gt => (b, a, true),
+                        .Le => (b, a, false),
+                        _ => (a, b, false),
+                    };
+                    if (holds == when) {
+                        return this.emit(Op.JumpLtI, x, y, 0);
+                    }
+                    // taken where `x < y` does not hold: over the jump where it does
+                    let over = this.emit(Op.JumpLtI, x, y, 0);
+                    let jump = this.emit(Op.Jump, 0, 0, 0);
+                    this.patch(over, this.here());
+                    return jump;
+                }
+            }
+            _ => { }
+        }
+        let cond = this.any(c).s;
+        return this.emit(if (when) Op.JumpIf else Op.JumpIfNot, cond, 0, 0);
+    }
+
     /// Points the jump at `at` to `target`: operand a of `jump`, b of `jump.if`/`jump.ifnot`, c of
     /// `jump.lt.i`.
     mut fn patch(at: int, target: int): void {
@@ -950,16 +1029,17 @@ class FnGen {
             }
             .If(c, then, otherwise, line) => {
                 this.line = line;
-                let cond = this.any(c).s;
-                let toElse = this.emit(Op.JumpIfNot, cond, 0, 0);
+                let toElse = this.jumpWhen(c, false);
                 this.release(m);
                 this.stmts(then);
                 if (otherwise.length() > 0) {
                     let toEnd = this.emit(Op.Jump, 0, 0, 0);
-                    this.patch(toElse, this.here());
+                    if (toElse >= 0) {
+                        this.patch(toElse, this.here());
+                    }
                     this.stmts(otherwise);
                     this.patch(toEnd, this.here());
-                } else {
+                } else if (toElse >= 0) {
                     this.patch(toElse, this.here());
                 }
             }
@@ -971,8 +1051,10 @@ class FnGen {
                 this.stmts(body);
                 let test = this.here();
                 this.line = line;
-                let cond = this.any(c).s;
-                this.emit(Op.JumpIf, cond, top, 0);
+                let back = this.jumpWhen(c, true);
+                if (back >= 0) {
+                    this.patch(back, top);
+                }
                 this.closeLoop(loop, test);
             }
             .While(c, body, line) => {
@@ -983,8 +1065,10 @@ class FnGen {
                 this.stmts(body);
                 let test = this.here();
                 this.line = line;
-                let cond = this.any(c).s;
-                this.emit(Op.JumpIf, cond, top, 0);
+                let back = this.jumpWhen(c, true);
+                if (back >= 0) {
+                    this.patch(back, top);
+                }
                 this.patch(toTest, test);
                 this.closeLoop(loop, test);
             }
@@ -1237,7 +1321,13 @@ class FnGen {
         let m = this.mark();
         let t = typeOf(e);
         let (ns, nr) = this.slots(t);
-        if (ns == 0 && nr == 0) {
+        // an assignment's value is its target's: as a statement nothing reads it, so it is not
+        // copied anywhere (S7k1b)
+        let assigns = match (e) {
+            .Assign(_, _, _, _) => true,
+            _ => false,
+        };
+        if ((ns == 0 && nr == 0) || assigns) {
             this.to(e, nowhere);
         } else {
             this.any(e);
@@ -1285,6 +1375,7 @@ class FnGen {
             .If(_, _, _, _) | .Block(_, _, _) | .Loop(_, _) | .New(_, _) | .Coalesce(_, _, _) => true,
             // `t = (t.1, t.0)` reads the local after its first write
             .Tuple(_, _) | .MakeVariant(_, _, _) | .Closure(_, _, _) | .BoxOf(_, _, _) => true,
+            .BoxOfD(_, _, _) => true,
             .Wrap(_, _) => true,
             _ => false,
         };
@@ -1301,6 +1392,36 @@ class FnGen {
     }
 
     /// Evaluates `e` into `dst`; `nowhere` where no value is wanted.
+    /// An `if` and the `if`s standing as its `else`, as one chain (S7e1): each condition, its
+    /// branch and a jump to the end, then the last `else` — a match of many arms lowers to such a
+    /// chain, and a frame for each link overflowed the stack at four hundred.
+    mut fn ifChain(e: TExpr, dst: Loc): void {
+        let ends = List<int>.new();
+        var cur = e;
+        var going = true;
+        while (going) {
+            match (cur) {
+                .If(c, a, b, _) => {
+                    let m = this.mark();
+                    let cond = this.any(c.value).s;
+                    let toElse = this.emit(Op.JumpIfNot, cond, 0, 0);
+                    this.release(m);
+                    this.to(a.value, dst);
+                    ends.push(this.emit(Op.Jump, 0, 0, 0));
+                    this.patch(toElse, this.here());
+                    cur = b.value;
+                }
+                _ => {
+                    going = false;
+                }
+            }
+        }
+        this.to(cur, dst);
+        for (j in ends) {
+            this.patch(j, this.here());
+        }
+    }
+
     mut fn to(e: TExpr, dst: Loc): void {
         let m = this.mark();
         match (e) {
@@ -1355,6 +1476,7 @@ class FnGen {
             }
             .Call(fi, args, t) => this.call(fi, args, t, dst),
             .Native(n, args, _) => this.native(n, args, dst),
+            .ListOp(op, args, t) => this.listOp(op, args, t, dst),
             .New(ti, values) => {
                 let fields = this.p.types[ti].fields;
                 this.emit(Op.New, dst.r, this.layout.moduleType[ti], 0);
@@ -1376,16 +1498,7 @@ class FnGen {
                 this.getField(dst, ro, this.layout.fieldLoc[owner][k], t);
             }
             .Assign(place, op, value, t) => this.assign(place, op, value.value, t, dst),
-            .If(c, a, b, _) => {
-                let cond = this.any(c.value).s;
-                let toElse = this.emit(Op.JumpIfNot, cond, 0, 0);
-                this.release(m);
-                this.to(a.value, dst);
-                let toEnd = this.emit(Op.Jump, 0, 0, 0);
-                this.patch(toElse, this.here());
-                this.to(b.value, dst);
-                this.patch(toEnd, this.here());
-            }
+            .If(_, _, _, _) => this.ifChain(e, dst),
             .Block(list, value, _) => {
                 this.stmts(list);
                 this.to(value.value, dst);
@@ -1546,6 +1659,16 @@ class FnGen {
                 this.emit(Op.New, dst.r, this.layout.boxType[ti], 0);
                 this.setField(dst.r, Loc { s = 0, r = 0 }, v, t);
             }
+            .BoxOfD(x, d, _) => {
+                let t = typeOf(x.value);
+                let v = this.temp(t);
+                this.to(x.value, v);
+                let dm = this.mark();
+                let rd = this.any(d.value).r;
+                this.emit(Op.NewD, dst.r, rd, 0);
+                this.release(dm);
+                this.setField(dst.r, Loc { s = 0, r = 0 }, v, t);
+            }
             .SameRef(x, y) => {
                 let ra = this.any(x.value).r;
                 let rb = this.any(y.value).r;
@@ -1581,6 +1704,7 @@ class FnGen {
             // resolved to instances before code is made
             .CallGeneric(_, _, _, _) | .CallConstraint(_, _, _, _, _, _) | .IsParam(_, _, _) => { }
             .DebugParam(_, _, _) | .TextParam(_, _, _) | .CallStatic(_, _, _, _, _, _) => { }
+            .TextOf(_, _, _) => { }
             .CallBound(_, _, _, _, _, _) | .GenericValue(_, _, _) => { }
             // the error leaves for the handler that takes it (S4a); nothing lands in `dst`
             .Throw(x) => {
@@ -1750,10 +1874,6 @@ class FnGen {
                 let d = this.any(x.value);
                 this.emit(Op.TimerAfter, dst.r, d.s, 0);
             }
-            // S6e: a line of standard input
-            .ReadLine => {
-                this.emit(Op.ReadLine, dst.r, 0, 0);
-            }
             .TaskStatus(x, _) => {
                 let task = this.any(x.value);
                 this.emit(Op.TaskSt, dst.s, task.r, 0);
@@ -1915,7 +2035,30 @@ class FnGen {
                 );
                 this.emit(Op.Panic, message, 0, 0);
             }
-            .Unit | .Unknown => { }
+            .Unit => { }
+            // a comparison every copy resolves: one left is the compiler's fault, as below
+            .GenericCompare(_, _, _) => {
+                let message = this.temp(Ty.Str).r;
+                this.emit(
+                    Op.LoadStr,
+                    message,
+                    this.stringConst("LYS-ICE0001: a comparison left to a copy that never came"),
+                    0
+                );
+                this.emit(Op.Panic, message, 0, 0);
+            }
+            // what the checker left unresolved in a program it passed: the compiler's fault, said
+            // where it runs, not a register's stale value (S7c4c3a: an unanswered `C.Iter` looped)
+            .Unknown => {
+                let message = this.temp(Ty.Str).r;
+                this.emit(
+                    Op.LoadStr,
+                    message,
+                    this.stringConst("LYS-ICE0001: the compiler left an expression unresolved"),
+                    0
+                );
+                this.emit(Op.Panic, message, 0, 0);
+            }
         }
         this.release(m);
     }
@@ -2008,6 +2151,16 @@ class FnGen {
             this.patch(skip, this.here());
             return;
         }
+        // `x + 1`, `1 + x`, `x - 1`: the constant as the instruction's immediate (S7k1b)
+        let imm = immediateOf(l, op, r);
+        if (imm != null) {
+            let (x, k) = imm;
+            let a = this.any(x).s;
+            if (dst.s >= 0) {
+                this.emit(Op.AddImm, dst.s, a, k & 0xFFFF);
+            }
+            return;
+        }
         let a = this.any(l).s;
         let b = this.any(r).s;
         let f = typeOf(l) == .Float;
@@ -2069,6 +2222,136 @@ class FnGen {
         }
     }
 
+    /// A list operation (S7b1): the VM's list ops, an element of one scalar or one reference read
+    /// and written in place, one of several slots over the list and the index at the bases.
+    mut fn listOp(op: ListOp, args: TExpr[], t: Ty, dst: Loc): void {
+        let m = this.mark();
+        match (op) {
+            .Lit => {
+                let elem = match (t) {
+                    .List(e) => e.value,
+                    _ => Ty.Unknown,
+                };
+                let (ns, nr) = this.slots(elem);
+                // the list in a temporary: an element may read the place it goes to
+                let l = this.temp(t).r;
+                this.emit(Op.ListNew, l, ns * 256 + nr, 0);
+                for (x in args) {
+                    let mm = this.mark();
+                    let v = this.temp(elem);
+                    this.to(x, v);
+                    this.emit(Op.ListPush, v.s, l, v.r);
+                    this.release(mm);
+                }
+                this.move(dst, Loc { s = -1, r = l }, t);
+            }
+            .Push => {
+                let elem = typeOf(args[1]);
+                let l = this.any(args[0]).r;
+                let v = this.temp(elem);
+                this.to(args[1], v);
+                this.emit(Op.ListPush, v.s, l, v.r);
+            }
+            .Get => {
+                let l = this.any(args[0]).r;
+                let i = this.any(args[1]).s;
+                // a read outside the list panics: it is made where no value is wanted too
+                let out = if (dst.s < 0 && dst.r < 0) this.temp(t) else dst;
+                this.getItem(out, l, i, t);
+            }
+            .Len => {
+                let l = this.any(args[0]).r;
+                if (dst.s >= 0) {
+                    this.emit(Op.ListLen, dst.s, l, 0);
+                }
+            }
+            .Pop => {
+                let elem = match (t) {
+                    .Optional(e) => e.value,
+                    _ => Ty.Unknown,
+                };
+                let l = this.any(args[0]).r;
+                let (ns, nr) = this.slots(t);
+                let base = this.bases(ns, nr);
+                this.emit(Op.MoveR, base.r, l, 0);
+                this.emit(Op.ListPop, base.s, base.r, if (isPlainRef(elem, this.p.types)) 1 else 0);
+                this.move(dst, base, t);
+            }
+            .Trunc => {
+                let l = this.any(args[0]).r;
+                let n = this.any(args[1]).s;
+                this.emit(Op.ListTrunc, l, n, 0);
+            }
+            .Changes => {
+                let l = this.any(args[0]).r;
+                if (dst.s >= 0) {
+                    this.emit(Op.ListChanges, dst.s, l, 0);
+                }
+            }
+            .Check => {
+                let l = this.any(args[0]).r;
+                let c = this.any(args[1]).s;
+                this.emit(Op.ListCheck, l, c, 0);
+            }
+            .Suppressed => {
+                let rec = this.any(args[0]).r;
+                let out = if (dst.r < 0) this.temp(t) else dst;
+                this.emit(Op.ListSupp, out.r, rec, 0);
+            }
+        }
+        this.release(m);
+    }
+
+    /// Room above the live registers for `ns` scalars and `nr` references, one of each at least:
+    /// the bases of an op that reads its operands there and writes its result over them.
+    mut fn bases(ns: int, nr: int): Loc {
+        let at = Loc { s = this.nextS, r = this.nextR };
+        this.nextS += if (ns > 0) ns else 1;
+        this.nextR += if (nr > 0) nr else 1;
+        this.need(this.nextS, this.nextR);
+        return at;
+    }
+
+    /// `dst` = element `ix` of the list in `lr`.
+    mut fn getItem(dst: Loc, lr: int, ix: int, t: Ty): void {
+        let (ns, nr) = this.slots(t);
+        if (ns == 1 && nr == 0) {
+            this.emit(Op.ListGetS, dst.s, lr, ix);
+            return;
+        }
+        if (ns == 0 && nr == 1) {
+            this.emit(Op.ListGetR, dst.r, lr, ix);
+            return;
+        }
+        let m = this.mark();
+        let base = this.bases(ns, nr);
+        this.emit(Op.MoveS, base.s, ix, 0);
+        this.emit(Op.MoveR, base.r, lr, 0);
+        this.emit(Op.ListGetN, base.s, base.r, 0);
+        this.move(dst, base, t);
+        this.release(m);
+    }
+
+    /// Element `ix` of the list in `lr` = `v`.
+    mut fn setItem(lr: int, ix: int, v: Loc, t: Ty): void {
+        let (ns, nr) = this.slots(t);
+        if (ns == 1 && nr == 0) {
+            this.emit(Op.ListSetS, lr, ix, v.s);
+            return;
+        }
+        if (ns == 0 && nr == 1) {
+            this.emit(Op.ListSetR, lr, ix, v.r);
+            return;
+        }
+        let m = this.mark();
+        let base = this.bases(ns + 1, nr + 1);
+        this.emit(Op.MoveS, base.s, ix, 0);
+        this.emit(Op.MoveR, base.r, lr, 0);
+        this.move(Loc { s = base.s + 1, r = base.r + 1 }, v, t);
+        this.emit(Op.ListSetN, base.s, base.r, 0);
+        this.release(m);
+    }
+
     mut fn native(n: Native, args: TExpr[], dst: Loc): void {
         // `Concat` of more than two: joined two at a time
         if (n == .Concat && args.length() > 2) {
@@ -2087,11 +2370,28 @@ class FnGen {
         this.arguments(args, bs, br);
         let nf = nativeFn(n);
         let info = nativeInfo(nf);
+        let fromStd = match (n) {
+            .Std(_) => true,
+            _ => false,
+        };
+        if (fromStd) {
+            // a native of the standard library takes what its source declares: the same slots
+            var ns = 0;
+            var nr = 0;
+            for (arg in args) {
+                let (cs, cr) = this.slots(typeOf(arg));
+                ns += cs;
+                nr += cr;
+            }
+            if (ns != info.scalars || nr != info.refs) {
+                panic(f"the native '{info.name}' takes other values than its source declares");
+            }
+        }
         this.need(
             bs + info.scalars + (if (info.returnsScalar) 1 else 0),
             br + info.refs + (if (info.returnsRef) 1 else 0)
         );
-        this.emit(Op.CallN, nativeNumber(nf), bs, br);
+        this.emit(if (nativeWaits(nf)) Op.CallW else Op.CallN, nativeNumber(nf), bs, br);
         if (info.returnsScalar && dst.s >= 0 && dst.s != bs) {
             this.emit(Op.MoveS, dst.s, bs, 0);
         } else if (info.returnsRef && dst.r >= 0 && dst.r != br) {
@@ -2147,6 +2447,22 @@ class FnGen {
                 this.move(dst, v, t);
                 this.release(m);
             }
+            .Item(l, i) => {
+                // an element of a list (S7b1): the list and the index once
+                let m = this.mark();
+                let lr = this.any(l.value).r;
+                let ix = this.any(i.value).s;
+                let v = this.temp(t);
+                if (op != null) {
+                    this.getItem(v, lr, ix, t);
+                    this.combine(op, t, v, value, v);
+                } else {
+                    this.to(value, v);
+                }
+                this.setItem(lr, ix, v, t);
+                this.move(dst, v, t);
+                this.release(m);
+            }
             .CapturedCell(k) => {
                 let m = this.mark();
                 let cell = this.capturedBox(k);
@@ -2194,6 +2510,15 @@ class FnGen {
             this.release(m);
             return;
         }
+        // `x += 1`, `x -= 1`: the constant as the immediate (S7k1b)
+        if (t == .Int) {
+            let k = stepOf(op, value);
+            if (k != null) {
+                this.emit(Op.AddImm, out.s, cur.s, k & 0xFFFF);
+                this.release(m);
+                return;
+            }
+        }
         let rv = this.any(value);
         if (t == .Str) {
             let base = this.nextR;
@@ -2227,6 +2552,50 @@ class FnGen {
     }
 }
 
+/// The immediate that `x op k` adds, where `op` is `+` or `-` on `int` and `k` a literal whose
+/// immediate fits the 16 bits of `add.imm`; `null` otherwise. The overflow check is the same:
+/// `x - k` and `x + (-k)` overflow alike.
+fn stepOf(op: BinaryOp, value: TExpr): ?int {
+    var k = 0;
+    match (value) {
+        .Int(n) => {
+            k = n;
+        }
+        _ => {
+            return null;
+        }
+    }
+    // the immediate is a signed 16-bit value: `x + k` takes k in -32768..32767, `x - k` takes
+    // -k there, so k in -32767..32768 (checked before the negation, which int's least value
+    // would overflow)
+    if (op == .Add) {
+        return if (k >= -32768 && k <= 32767) k else null;
+    }
+    if (op == .Sub) {
+        return if (k >= -32767 && k <= 32768) -k else null;
+    }
+    return null;
+}
+
+/// `x + k`, `k + x` or `x - k` on `int` with a literal `k` that fits an immediate: `x` and the
+/// immediate.
+fn immediateOf(l: TExpr, op: BinaryOp, r: TExpr): ?(TExpr, int) {
+    if (typeOf(l) != .Int || typeOf(r) != .Int) {
+        return null;
+    }
+    let right = stepOf(op, r);
+    if (right != null) {
+        return (l, right);
+    }
+    if (op == .Add) {
+        let left = stepOf(op, l);
+        if (left != null) {
+            return (r, left);
+        }
+    }
+    return null;
+}
+
 fn nativeFn(n: Native): NativeFn {
     return match (n) {
         .Print => NativeFn.Print,
@@ -2239,5 +2608,6 @@ fn nativeFn(n: Native): NativeFn {
         .StrEq => NativeFn.StrEq,
         .StrCmp => NativeFn.StrCmp,
         .TraceText => NativeFn.TraceText,
+        .Std(k) => nativeOf(k),
     };
 }

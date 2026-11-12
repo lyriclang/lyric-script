@@ -230,6 +230,7 @@ fn aNameHidesThePreludesAndTakesNoBuiltinTypes(): void {
     // the module's own wins, warned; a builtin type's name is no declaration's
     assertEq(said("struct Exception {\n    m: string,\n}", []), ["LYS-SEM0153@0:1"]);
     assertEq(said("fn println(s: string) {\n}\nprintln(\"x\")", []), ["LYS-SEM0153@0:1"]);
+    assertEq(said("fn eprintln(s: string) {\n}\neprintln(\"x\")", []), ["LYS-SEM0153@0:1"]);
     let lib = ("lib", "fn assert(b: bool): bool = b\n");
     // the imports are bound before the functions are declared
     assertEq(

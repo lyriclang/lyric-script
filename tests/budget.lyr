@@ -2,6 +2,7 @@
 // with `resume`, the same way every time; what was left when it halted stays, so a native dearer
 // than one grant gets through after some (P34); a deadline halts a call that runs or waits too
 // long, and leaves its fuel as it was.
+import std.collections { List };
 import std.test { assertEq, assertTrue };
 import std.time { Duration, Monotonic };
 import lyric_script.embed { vmOf };
@@ -88,7 +89,8 @@ fn aNativeDearerThanOneGrantGetsThrough(): void {
     );
     let (r, n) = finish(inst, try! inst.call("conv", [], Budget { fuel = 30 }), 30);
     assertEq(ok(r), Value.Int(3200));
-    assertTrue(n < 10, f"{n} resumes");
+    // the repeat and the bytes each pay 101 units (12 rules 17, 37)
+    assertTrue(n < 20, f"{n} resumes");
 }
 
 @Test
@@ -144,4 +146,47 @@ fn aWaitDoesNotOutlastTheDeadline(): void {
     let r = try! inst.call("nap", [], Budget { deadline = Duration.ofMillis(50) });
     assertEq(ok(r), Value.Str("suspended"));
     assertTrue(clock.elapsed().nanos() < 2000000000, "a sleep of 10 s held the call");
+}
+
+// whether the call halted
+fn halts(r: CallResult): bool {
+    return match (r) {
+        .Suspended => true,
+        _ => false,
+    };
+}
+
+@Test
+fn aHeavyNativePaysForItsWork(): void {
+    // 8000 bytes made at once cost 251 units (12 rule 37); 10 bytes cost 1
+    let inst = ready(
+        "fn rep(n: int): int = (\"abcdefgh\" * n).length()\nfn cat(a: string, b: string): int = (a + b).length()\n"
+    );
+    assertEq(ok(try! inst.call("rep", [Value.Int(10)], Budget { fuel = 50 })), Value.Int(80));
+    assertTrue(
+        halts(try! inst.call("rep", [Value.Int(1000)], Budget { fuel = 50 })),
+        "a repeat of 8000 bytes"
+    );
+    assertEq(ok(try! inst.resume(Budget { fuel = 300 })), Value.Int(8000));
+    let long = Value.Str("0123456789abcdef0123456789abcdef" * 100);
+    assertTrue(
+        halts(try! inst.call("cat", [long, long], Budget { fuel = 100 })),
+        "a join of 6400 bytes"
+    );
+    assertEq(ok(try! inst.resume(Budget { fuel = 200 })), Value.Int(6400));
+}
+
+@Test
+fn aSortPaysForItsComparisons(): void {
+    // 4096 elements: 4096 · 12 comparisons, 1537 units
+    let inst = ready("fn least(xs: int[]): int {\n    xs.sort()\n    return xs[0]\n}\n");
+    let xs = List<Value>.new();
+    var k = 4096;
+    while (k > 0) {
+        xs.push(Value.Int(k));
+        k -= 1;
+    }
+    let arg = Value.List(xs.toArray());
+    assertTrue(halts(try! inst.call("least", [arg], Budget { fuel = 1000 })), "a sort of 4096");
+    assertEq(ok(try! inst.resume(Budget { fuel = 1000 })), Value.Int(1));
 }

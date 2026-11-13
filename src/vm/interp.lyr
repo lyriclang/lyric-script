@@ -1353,6 +1353,14 @@ fn callNative(
     y: int,
     shared: RunShared
 ): ?NativeFault {
+    // a heavy native knows its work from its operands and pays for it before it starts (01 S5c;
+    // P33, S8b4); one it cannot pay did nothing, and `call.n` halts
+    if (shared.budget != -1) {
+        let cost = costOf(which, s, r, x, y);
+        if (cost > 0 && !charge(shared, cost)) {
+            return null;
+        }
+    }
     match (which) {
         .Print => print(textOf(r[y])),
         .Println => println(textOf(r[y])),
@@ -4377,6 +4385,54 @@ fn charge(shared: RunShared, n: int): bool {
     }
     shared.budget -= n;
     return true;
+}
+
+/// What a native over text or a list costs (01 S5c; 12 rule 37; S8b4): a unit for every 32 bytes
+/// it reads or writes and one for the call — a sort a unit for every 32 comparisons it may make;
+/// 0 for a native that charges itself, or whose work does not grow with its operands.
+fn costOf(which: NativeFn, s: uint64[], r: HeapRef[], x: int, y: int): int {
+    return match (which) {
+        .Print | .Println | .StrUpper | .StrLower | .StrTrim | .StrDebug | .StrSlice => bytesCost(
+            lengthOf(r[y])
+        ),
+        .Concat | .StrEq | .StrCmp | .StrFind | .StrMatchesAt | .FmtStr | .FmtPad => bytesCost(
+            lengthOf(r[y]) + lengthOf(r[y + 1])
+        ),
+        .BuilderAppendStr => bytesCost(lengthOf(r[y + 1])),
+        .BuilderText => {
+            let o = r[y];
+            bytesCost(if (o is ScriptBuilder) o.sb.length() else 0)
+        }
+        .StrRepeat => {
+            let n = s[x] as int;
+            let len = lengthOf(r[y]);
+            // a count that would overflow the text is refused by the native itself
+            if (n <= 0 || len == 0) 1 else if (n > int.max / len) int.max else bytesCost(len * n)
+        }
+        .StrFromChars => bytesCost(4 * countOf(r[y])),
+        .ListSortInts | .ListSortFloats | .ListSortStrings => sortCost(countOf(r[y])),
+        _ => 0,
+    };
+}
+
+/// A text's length in bytes; 0 for what is no text.
+fn lengthOf(o: HeapRef): int {
+    return if (o is ScriptString) o.text.length() else 0;
+}
+
+/// A list's length; 0 for what is no list.
+fn countOf(o: HeapRef): int {
+    return if (o is ScriptArray) o.n else 0;
+}
+
+/// What a sort of `n` elements may cost: n·⌈log₂ n⌉ comparisons, a unit for every 32, and one for
+/// the call.
+fn sortCost(n: int): int {
+    var log = 0;
+    while ((1 << log) < n) {
+        log += 1;
+    }
+    return 1 + n * log / 32;
 }
 
 /// What a native that waits brought (S7g2): a number, a failure as `-(kind << 32 | code)`; a text; bytes.

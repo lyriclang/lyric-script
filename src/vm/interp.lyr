@@ -464,6 +464,12 @@ class RunShared {
     var fuelLeft: int = -1,
     var granted: int = 0,
     var need: int = 1,
+    // S8c: the bytes the call may still allocate, -1 without a limit; the thread's count where the
+    // slice began; what halted the call
+    var allocCapped: bool = false,
+    var allocLeft: int = 0,
+    var allocBase: int = 0,
+    var halt: Halt = Halt.Fuel,
     // what the run was started with, its own name first; a sandbox's are its host's to give
     argv: string[],
     // the code of an `exit`, which ends the run where a budget ends it
@@ -613,6 +619,11 @@ pub class Instance {
         return this.at;
     }
 
+    /// What halted the call in flight, where one is halted (S8c).
+    pub fn haltedBy(): ?Halt {
+        return if (this.at == InstancePhase.Suspended) this.shared.halt else null;
+    }
+
     /// Runs the script's top level (07 Top) within `budget`.
     pub mut fn init(budget: Budget): CallResult throws InstanceMisuse {
         this.pending = Boundary.Void;
@@ -626,12 +637,16 @@ pub class Instance {
             throw InstanceMisuse { reason = f"resume on an instance that is {phaseName(this.at)}" };
         }
         let shared = this.shared;
-        startBudget(
-            shared,
-            if (budget.fuel < 0) -1 else shared.carry + budget.fuel,
-            nanosOf(budget)
+        let fuel = if (budget.fuel < 0) -1 else shared.carry + budget.fuel;
+        let deadline = nanosOf(budget);
+        let alloc = budget.alloc;
+        // the thread the VM runs on counts the allocations: the budget starts there (S8c)
+        let out = onOwnTask(
+            () => {
+                startBudget(shared, fuel, deadline, alloc);
+                return schedule(shared);
+            }
         );
-        let out = onOwnTask(() => schedule(shared));
         this.settle(out);
         return resultOf(out, this.pending);
     }
@@ -739,7 +754,8 @@ pub class Instance {
         let shared = this.shared;
         let fuel = budget.fuel;
         let deadline = nanosOf(budget);
-        let out = onOwnTask(() => callIn(shared, fi, s, r, fuel, deadline));
+        let alloc = budget.alloc;
+        let out = onOwnTask(() => callIn(shared, fi, s, r, fuel, deadline, alloc));
         this.settle(out);
         return out;
     }
@@ -767,6 +783,8 @@ pub class Instance {
 pub struct Budget :: [Debug] {
     pub fuel: int = -1,
     pub deadline: ?Duration = null,
+    /// The bytes the call may allocate, -1 without a limit (01 S6; S8c).
+    pub alloc: int = -1,
 }
 
 /// A budget's deadline in nanoseconds, -1 for none.
@@ -851,7 +869,7 @@ fn runOn(
             ScriptPanic { code = "LYS-ICE0001", message = f"no function '{entry}'", trace = [] }
         );
     }
-    return callIn(newShared(module, fuel, argv, feeds), fi, args, [], fuel, -1);
+    return callIn(newShared(module, fuel, argv, feeds), fi, args, [], fuel, -1, -1);
 }
 
 /// The place of the function named `name` in `module`, the last of that name; -1 where none is.
@@ -893,7 +911,8 @@ fn callIn(
     args: uint64[],
     refs: HeapRef[],
     fuel: int,
-    deadline: int
+    deadline: int,
+    alloc: int
 ): Outcome {
     let first = shared.module.functions[fi];
     let main = TaskState {
@@ -912,7 +931,7 @@ fn callIn(
         main.r[k] = refs[k];
         k += 1;
     }
-    startBudget(shared, fuel, deadline);
+    startBudget(shared, fuel, deadline, alloc);
     shared.failed = null;
     forgetEnded(shared);
     shared.queue.push(main);
@@ -1023,6 +1042,7 @@ fn schedule(shared: RunShared): Outcome {
             }
             // a wait does not outlast the call's deadline (S8b2): the call halts, its tasks waiting
             if (pastDeadline(shared)) {
+                shared.halt = Halt.Deadline;
                 return Outcome.Suspended;
             }
             // a native's end, a signal, or the earliest timer, ends the run's wait
@@ -1055,7 +1075,7 @@ fn schedule(shared: RunShared): Outcome {
             // deadline a slice's end only looks at the clock (S8b2)
             .Suspended => {
                 shared.head -= 1;
-                if (shared.deadlineNs >= 0 && refill(shared)) {
+                if (sliced(shared) && refill(shared)) {
                     continue;
                 }
                 return out;
@@ -4376,7 +4396,7 @@ fn charge(shared: RunShared, n: int): bool {
         return shared.budget == -1;
     }
     // a native starts neither beyond the budget nor past the deadline (01 S5c; S8b2)
-    if (shared.budget < n || (shared.deadlineNs >= 0 && nowNs(shared) >= shared.deadlineNs)) {
+    if (shared.budget < n || (sliced(shared) && overLimit(shared))) {
         // what was left stays the run's: a `resume` adds to it (P34; S8b1)
         shared.carry = shared.budget;
         shared.need = n;
@@ -5664,16 +5684,19 @@ let deadlineSlice: int = 10000;
 
 /// Starts a call's budget (01 S5a; S8b1, S8b2): `fuel` units, -1 without a limit; `deadline`
 /// nanoseconds from now, -1 for none — then the fuel comes in slices.
-fn startBudget(shared: RunShared, fuel: int, deadline: int): void {
+fn startBudget(shared: RunShared, fuel: int, deadline: int, alloc: int): void {
     shared.carry = 0;
     shared.need = 1;
     shared.fuelLeft = fuel;
-    if (deadline < 0) {
-        shared.deadlineNs = -1;
+    shared.halt = Halt.Fuel;
+    shared.allocCapped = alloc >= 0;
+    shared.allocLeft = alloc;
+    shared.allocBase = threadAllocatedBytes();
+    shared.deadlineNs = if (deadline < 0) -1 else nowNs(shared) + deadline;
+    if (!sliced(shared)) {
         shared.budget = fuel;
         return;
     }
-    shared.deadlineNs = nowNs(shared) + deadline;
     let grant = if (fuel >= 0 && fuel < deadlineSlice) fuel else deadlineSlice;
     shared.budget = grant;
     shared.granted = grant;
@@ -5682,6 +5705,41 @@ fn startBudget(shared: RunShared, fuel: int, deadline: int): void {
 /// Whether the call's deadline has come (S8b2).
 fn pastDeadline(shared: RunShared): bool {
     return shared.deadlineNs >= 0 && nowNs(shared) >= shared.deadlineNs;
+}
+
+/// Whether the budget comes in slices: under a deadline or an allocation budget (S8b2, S8c).
+fn sliced(shared: RunShared): bool {
+    return shared.deadlineNs >= 0 || shared.allocCapped;
+}
+
+/// Whether the deadline has come or the call allocated more than its budget, the reason noted
+/// (S8b2, S8c): the thread's count since the slice began comes off what the call may allocate.
+fn overLimit(shared: RunShared): bool {
+    if (shared.allocCapped) {
+        let now = threadAllocatedBytes();
+        shared.allocLeft -= now - shared.allocBase;
+        shared.allocBase = now;
+        // once beyond, it stays beyond until a `resume` gives a new budget
+        if (shared.allocLeft < 0) {
+            shared.halt = Halt.Memory;
+            return true;
+        }
+    }
+    if (pastDeadline(shared)) {
+        shared.halt = Halt.Deadline;
+        return true;
+    }
+    return false;
+}
+
+/// The bytes the calling thread has allocated since it started (Lyric 5's runtime).
+extern "C" fn threadAllocatedBytes(): int = "lyr_gc_thread_allocated_bytes";
+
+/// What halted a call (S8c): its fuel, its deadline, or its allocation budget.
+pub enum Halt :: [Equatable, Debug] {
+    Fuel,
+    Deadline,
+    Memory,
 }
 
 /// A wait of `wait` nanoseconds, cut where the call's deadline comes first (S8b2).
@@ -5701,8 +5759,12 @@ fn refill(shared: RunShared): bool {
     if (shared.fuelLeft >= 0) {
         shared.fuelLeft -= used;
     }
-    if (pastDeadline(shared) || (shared.fuelLeft >= 0 && shared.fuelLeft < shared.need)) {
+    let over = overLimit(shared);
+    if (over || (shared.fuelLeft >= 0 && shared.fuelLeft < shared.need)) {
         shared.carry = if (shared.fuelLeft > 0) shared.fuelLeft else 0;
+        if (!over) {
+            shared.halt = Halt.Fuel;
+        }
         return false;
     }
     var grant = if (shared.need > deadlineSlice) shared.need else deadlineSlice;

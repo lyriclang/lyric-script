@@ -5,8 +5,8 @@
 import std.collections { List };
 import std.test { assertEq, assertTrue };
 import std.time { Duration, Monotonic };
-import lyric_script.embed { vmOf };
-import lyric_script.vm.interp { Budget, CallResult, Instance, InstanceMisuse, InstancePhase };
+import lyric_script.embed { setHeapLimit, vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Halt, Instance, InstanceMisuse, InstancePhase };
 import lyric_script.vm.value { Value };
 
 let spin: string = "var calls = 0\nfn spin(n: int): int {\n    calls += 1\n    var i = 0\n    while (i < n) {\n        i += 1\n    }\n    return i\n}\nfn count(): int = calls\n";
@@ -189,4 +189,44 @@ fn aSortPaysForItsComparisons(): void {
     let arg = Value.List(xs.toArray());
     assertTrue(halts(try! inst.call("least", [arg], Budget { fuel = 1000 })), "a sort of 4096");
     assertEq(ok(try! inst.resume(Budget { fuel = 1000 })), Value.Int(1));
+}
+
+let grow: string = "fn grow(n: int): int {\n    var xs: string[] = []\n    var i = 0\n    while (i < n) {\n        xs.push(\"x\" * 100)\n        i += 1\n    }\n    return xs.length()\n}\nfn forever() {\n    while (true) {\n    }\n}\n";
+
+@Test
+fn anAllocationBudgetHaltsACall(): void {
+    let inst = ready(grow);
+    // 100 000 texts of 100 bytes: far more than a megabyte
+    assertTrue(halts(try! inst.call("grow", [Value.Int(100000)], Budget { alloc = 1000000 })));
+    assertTrue(inst.haltedBy() == Halt.Memory, f"{inst.haltedBy():?}");
+    assertEq(ok(try! inst.resume(Budget { alloc = 1000000000 })), Value.Int(100000));
+    assertTrue(inst.haltedBy() == null, "a call that ended");
+}
+
+@Test
+fn withinItsAllocationBudgetACallEnds(): void {
+    let inst = ready(grow);
+    assertEq(
+        ok(try! inst.call("grow", [Value.Int(100)], Budget { alloc = 10000000 })),
+        Value.Int(100)
+    );
+}
+
+@Test
+fn theHostIsToldWhatHalted(): void {
+    let inst = ready(grow);
+    assertTrue(halts(try! inst.call("grow", [Value.Int(1000)], Budget { fuel = 10 })));
+    assertTrue(inst.haltedBy() == Halt.Fuel, f"{inst.haltedBy():?}");
+    try! inst.abort();
+    let other = ready(grow);
+    assertTrue(halts(try! other.call("forever", [], Budget { deadline = Duration.ofMillis(20) })));
+    assertTrue(other.haltedBy() == Halt.Deadline, f"{other.haltedBy():?}");
+}
+
+@Test
+fn theProcessHeapLimitIsSetAndLifted(): void {
+    setHeapLimit(1000000000000);
+    let inst = ready(grow);
+    assertEq(ok(try! inst.call("grow", [Value.Int(10)], Budget { })), Value.Int(10));
+    setHeapLimit(0);
 }

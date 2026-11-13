@@ -3107,3 +3107,24 @@ angenommen und geht als Datenpunkt in P47 ein.
   Die Abrechnung außerhalb von `runTask` bewegt die Zuteilung nicht.
 
 Spec: 12 Regel 37, 17 Regeln 2–3. 416 Tests, 865 Fälle. **S8b fertig**; P33 und P34 gebaut.
+
+**S8c, Schnitt (2026-11-13).** Gelesen gegen Lyric 5: Die Laufzeit zählt die Allokationen und Bytes je
+Thread (`lyr_gc_thread_allocated_bytes`) und setzt eine Prozessgrenze (`lyr_gc_set_heap_limit`, der Weg
+von `LyrConfig.heap_limit`).
+
+Entschieden nach Empfehlung:
+- **Das Allokationsbudget liest den Zähler der Laufzeit.** `Budget { alloc }` in Bytes. Wie bei der
+  Deadline gibt der Scheduler Scheiben, liest den Zähler am Ende jeder Scheibe und vor jedem Native, das
+  abrechnet, und hält bei Überschreitung an. `runTask` bleibt unverändert. Ein Aufruf überschreitet
+  höchstens um das, was eine Scheibe oder ein einzelnes Native alloziert.
+  - **Abweichung von 01 S6** („deterministisch, Zähler im Allokationspfad der VM und der Natives"):
+    Gleich ist das Ergebnis, solange der Aufruf nicht auf I/O wartet. Während eines Wartens kann ein
+    Task der Laufzeit auf demselben Thread allozieren.
+  - Verworfen: ein Zähler an jeder Allokationsstelle der VM. Das wäre Code in den heißen Armen (P47), und
+    was ein Native in Lyric 5 alloziert, sähe er trotzdem nicht.
+- **Erschöpfung hält an** wie Fuel und Deadline (`.Suspended`). Der Host fragt `inst.haltedBy()` →
+  `Halt.Fuel`, `.Deadline` oder `.Memory` und entscheidet dann, ob er mit mehr Budget fortsetzt oder
+  abbricht. Verworfen: ein Fehler im Skript (`OutOfMemory`). Das Budget ist eine Grenze des Hosts, nicht
+  des Skripts, und dieselbe Form für alle drei Grenzen hält die API klein.
+- **Die Prozessgrenze:** `setHeapLimit(bytes)` in `lyric_script.embed`, 0 für keine. Sie gilt für den
+  ganzen Prozess, wie in Lyric 5.

@@ -256,3 +256,12 @@ fn faultsOf(name: string, faults: CheckError[]): string {
     let f = faults[0];
     return f"{name}: the compiler made faulty bytecode: {f.function} at {f.pc}: {f.message}";
 }
+
+/// Sets the process's heap limit (01 S6; S8c): the bytes the collector may hold for every VM and
+/// every instance of the process together, as Lyric 5's `heap_limit`; 0 for none. Beyond it an
+/// allocation fails the process — a call's own limit is its budget's `alloc`.
+pub fn setHeapLimit(bytes: int): void {
+    gcSetHeapLimit(if (bytes < 0) 0 else bytes);
+}
+
+extern "C" fn gcSetHeapLimit(bytes: int): void = "lyr_gc_set_heap_limit";

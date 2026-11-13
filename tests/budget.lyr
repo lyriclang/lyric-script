@@ -1,0 +1,192 @@
+// The budget of a host's call (S8b; Script 01 S5): a call the fuel halts goes on where it stopped
+// with `resume`, the same way every time; what was left when it halted stays, so a native dearer
+// than one grant gets through after some (P34); a deadline halts a call that runs or waits too
+// long, and leaves its fuel as it was.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import std.time { Duration, Monotonic };
+import lyric_script.embed { vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance, InstanceMisuse, InstancePhase };
+import lyric_script.vm.value { Value };
+
+let spin: string = "var calls = 0\nfn spin(n: int): int {\n    calls += 1\n    var i = 0\n    while (i < n) {\n        i += 1\n    }\n    return i\n}\nfn count(): int = calls\n";
+
+fn ready(source: string): Instance {
+    let inst = try! vmOf().load("t.lyrs", source);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn ok(r: CallResult): Value {
+    return match (r) {
+        .Ok(v) => v,
+        .Suspended => Value.Str("suspended"),
+        _ => Value.Str("not ok"),
+    };
+}
+
+// the call's end after resumes of `grant` units each, and how many it took
+fn finish(inst: Instance, first: CallResult, grant: int): (CallResult, int) {
+    return finishWithin(inst, first, Budget { fuel = grant });
+}
+
+// the call's end after resumes within `budget` each, and how many it took
+fn finishWithin(inst: Instance, first: CallResult, budget: Budget): (CallResult, int) {
+    var r = first;
+    var n = 0;
+    while (n < 1000) {
+        match (r) {
+            .Suspended => {
+                r = try! inst.resume(budget);
+                n += 1;
+            }
+            _ => {
+                return (r, n);
+            }
+        }
+    }
+    return (r, n);
+}
+
+@Test
+fn aHaltedCallGoesOnWhereItStopped(): void {
+    let inst = ready(spin);
+    let first = try! inst.call("spin", [Value.Int(1000)], Budget { fuel = 10 });
+    assertEq(ok(first), Value.Str("suspended"));
+    assertTrue(inst.phase() == InstancePhase.Suspended);
+    let (r, n) = finish(inst, first, 10);
+    assertEq(ok(r), Value.Int(1000));
+    assertTrue(n > 50, f"{n} resumes");
+    assertTrue(inst.phase() == InstancePhase.Ready);
+    // the call ran once, not again from its start at each resume
+    assertEq(ok(try! inst.call("count", [], Budget { })), Value.Int(1));
+    // the same halts, every time
+    let again = ready(spin);
+    let (r2, n2) = finish(
+        again,
+        try! again.call("spin", [Value.Int(1000)], Budget { fuel = 10 }),
+        10
+    );
+    assertEq(ok(r2), Value.Int(1000));
+    assertEq(n2, n);
+}
+
+@Test
+fn aResumeWithoutALimitEndsTheCall(): void {
+    let inst = ready(spin);
+    assertEq(
+        ok(try! inst.call("spin", [Value.Int(1000)], Budget { fuel = 10 })),
+        Value.Str("suspended")
+    );
+    assertEq(ok(try! inst.resume(Budget { })), Value.Int(1000));
+}
+
+@Test
+fn aNativeDearerThanOneGrantGetsThrough(): void {
+    // 3200 bytes cost 101 units at once (12 rule 17); each grant is 30
+    let inst = ready(
+        "fn conv(): int = (\"0123456789abcdef0123456789abcdef\" * 100).toBytes().length()\n"
+    );
+    let (r, n) = finish(inst, try! inst.call("conv", [], Budget { fuel = 30 }), 30);
+    assertEq(ok(r), Value.Int(3200));
+    // the repeat and the bytes each pay 101 units (12 rules 17, 37)
+    assertTrue(n < 20, f"{n} resumes");
+}
+
+@Test
+fn onlyAHaltedCallIsResumed(): void {
+    let inst = ready(spin);
+    var refused = false;
+    try {
+        inst.resume(Budget { });
+    } catch (e: InstanceMisuse) {
+        refused = true;
+    }
+    assertTrue(refused, "a resume with nothing halted");
+}
+
+@Test
+fn aDeadlineHaltsAnEndlessLoop(): void {
+    let inst = ready("fn forever() {\n    while (true) {\n    }\n}\n");
+    let clock = Monotonic.now();
+    let within = Budget { deadline = Duration.ofMillis(20) };
+    assertEq(ok(try! inst.call("forever", [], within)), Value.Str("suspended"));
+    assertEq(ok(try! inst.resume(within)), Value.Str("suspended"));
+    assertTrue(clock.elapsed().nanos() < 2000000000, "two slices of 20 ms took seconds");
+}
+
+@Test
+fn aDeadlineLeavesTheFuelAsItWas(): void {
+    let plain = ready(spin);
+    let (r1, n1) = finish(
+        plain,
+        try! plain.call("spin", [Value.Int(1000)], Budget { fuel = 10 }),
+        10
+    );
+    let timed = ready(spin);
+    let both = Budget { fuel = 10, deadline = Duration.ofSecs(60) };
+    let (r2, n2) = finishWithin(timed, try! timed.call("spin", [Value.Int(1000)], both), both);
+    assertEq(ok(r1), Value.Int(1000));
+    assertEq(ok(r2), Value.Int(1000));
+    assertEq(n2, n1);
+}
+
+@Test
+fn aCallWithinItsDeadlineEnds(): void {
+    // more backward jumps than one slice holds: the slices follow each other
+    let inst = ready(spin);
+    let r = try! inst.call("spin", [Value.Int(100000)], Budget { deadline = Duration.ofSecs(60) });
+    assertEq(ok(r), Value.Int(100000));
+}
+
+@Test
+fn aWaitDoesNotOutlastTheDeadline(): void {
+    let inst = ready("fn nap() {\n    sleep(Duration.ofSecs(10))\n}\n");
+    let clock = Monotonic.now();
+    let r = try! inst.call("nap", [], Budget { deadline = Duration.ofMillis(50) });
+    assertEq(ok(r), Value.Str("suspended"));
+    assertTrue(clock.elapsed().nanos() < 2000000000, "a sleep of 10 s held the call");
+}
+
+// whether the call halted
+fn halts(r: CallResult): bool {
+    return match (r) {
+        .Suspended => true,
+        _ => false,
+    };
+}
+
+@Test
+fn aHeavyNativePaysForItsWork(): void {
+    // 8000 bytes made at once cost 251 units (12 rule 37); 10 bytes cost 1
+    let inst = ready(
+        "fn rep(n: int): int = (\"abcdefgh\" * n).length()\nfn cat(a: string, b: string): int = (a + b).length()\n"
+    );
+    assertEq(ok(try! inst.call("rep", [Value.Int(10)], Budget { fuel = 50 })), Value.Int(80));
+    assertTrue(
+        halts(try! inst.call("rep", [Value.Int(1000)], Budget { fuel = 50 })),
+        "a repeat of 8000 bytes"
+    );
+    assertEq(ok(try! inst.resume(Budget { fuel = 300 })), Value.Int(8000));
+    let long = Value.Str("0123456789abcdef0123456789abcdef" * 100);
+    assertTrue(
+        halts(try! inst.call("cat", [long, long], Budget { fuel = 100 })),
+        "a join of 6400 bytes"
+    );
+    assertEq(ok(try! inst.resume(Budget { fuel = 200 })), Value.Int(6400));
+}
+
+@Test
+fn aSortPaysForItsComparisons(): void {
+    // 4096 elements: 4096 · 12 comparisons, 1537 units
+    let inst = ready("fn least(xs: int[]): int {\n    xs.sort()\n    return xs[0]\n}\n");
+    let xs = List<Value>.new();
+    var k = 4096;
+    while (k > 0) {
+        xs.push(Value.Int(k));
+        k -= 1;
+    }
+    let arg = Value.List(xs.toArray());
+    assertTrue(halts(try! inst.call("least", [arg], Budget { fuel = 1000 })), "a sort of 4096");
+    assertEq(ok(try! inst.resume(Budget { fuel = 1000 })), Value.Int(1));
+}

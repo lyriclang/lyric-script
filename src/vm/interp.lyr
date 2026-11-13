@@ -78,7 +78,8 @@ import lyric_script.vm.bigint {
 import lyric_script.vm.elementary { mathOne, mathTwo };
 import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
 import lyric_script.vm.op { Instr };
-import lyric_script.vm.module { Function, Handler, Module, TypeDesc };
+import lyric_script.vm.module { Boundary, Callable, Function, Handler, Module, TypeDesc };
+import lyric_script.vm.value { Value, bitsOf, fits, isScalarAt, refOf, valueOfBits, valueOfRef };
 import lyric_script.vm.heap {
     ScriptArray,
     ScriptIndex,
@@ -233,7 +234,13 @@ pub fn execute(
     fuel: int,
     argv: string[] = []
 ): Outcome {
-    let task = spawn(() => run(module, entry, args, fuel, argv));
+    return onOwnTask(() => run(module, entry, args, fuel, argv));
+}
+
+/// What `job` gives, run on a Lyric 5 task of its own: a panic of the VM itself becomes
+/// `Outcome.Panic` with the code `LYS-ICE0001`.
+fn onOwnTask(job: fn() -> Outcome): Outcome {
+    let task = spawn(job);
     while (!task.isDone()) {
         try? yieldNow();
         // a VM that sleeps until a timer leaves this task nothing to wait for: no spinning (S6d3)
@@ -449,21 +456,31 @@ class RunShared {
     gr: HeapRef[],
     interning: Interning,
     var budget: int,
+    // what a native that the budget did not cover left of it: `resume` adds to it (P34; S8b1)
+    var carry: int = 0,
+    // S8b2: a deadline on the run's clock, -1 for none; the fuel the host gave that slices have not
+    // spent, -1 without a limit; the slice handed to the tasks; what the native that halted needs
+    var deadlineNs: int = -1,
+    var fuelLeft: int = -1,
+    var granted: int = 0,
+    var need: int = 1,
     // what the run was started with, its own name first; a sandbox's are its host's to give
     argv: string[],
     // the code of an `exit`, which ends the run where a budget ends it
     var exitCode: ?int = null,
     // the tasks ready to run, from `head` on; every task spawned, in order (S6a)
-    queue: List<TaskState>,
+    var queue: List<TaskState>,
     var head: int = 0,
     // the objects numbered so far, for a hash by identity (01 S8; S7d1)
     var objects: int = 0,
-    tasks: List<ScriptTask>,
+    var tasks: List<ScriptTask>,
     // the first task to end with an error or a panic: what the top level's end gives (07 End;
     // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
     var failed: ?ScriptTask = null,
     // S6d3: the run's timers, on its own monotonic clock
-    timers: List<TimerEntry> = List<TimerEntry>.new(),
+    var timers: List<TimerEntry> = List<TimerEntry>.new(),
+    // S8b3: the files, directories and children the instance's script made, for an abort to close
+    var resources: List<HeapRef> = List<HeapRef>.new(),
     var timerSeq: int = 0,
     clock: Monotonic = Monotonic.now(),
     // S6e: the script's tasks waiting for a native, and the Lyric 5 channel a native's task
@@ -531,8 +548,12 @@ fn fireDueTimers(shared: RunShared): void {
     }
 }
 
-/// The earliest deadline of the run's timers (S6d3).
+/// The earliest deadline of the run's timers (S6d3); with none, an hour on: a wait that only the
+/// call's deadline cuts (S8b2).
 fn earliestDeadline(shared: RunShared): int {
+    if (shared.timers.length() == 0) {
+        return nowNs(shared) + 3600000000000;
+    }
     var best = shared.timers[0].deadline;
     for (e in shared.timers) {
         if (e.deadline < best) {
@@ -553,6 +574,268 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int, argv: strin
     return out;
 }
 
+/// What an instance takes next (S8a1): `Fresh` its `init`, `Ready` calls; `Suspended` waits for
+/// the host's decision (01 S5b, resumed with S8b); `Ended` after the script's `exit` or `close`,
+/// `Broken` after a failure of the VM itself — neither takes a call.
+pub enum InstancePhase :: [Equatable] {
+    Fresh,
+    Ready,
+    Suspended,
+    Ended,
+    Broken,
+}
+
+/// A call the instance does not take in its phase, or a function it does not have: the host's
+/// mistake, not the script's (S8a1).
+pub struct InstanceMisuse :: [Error] {
+    reason: string,
+
+    /// What the host asked that the instance does not take.
+    pub fn message(): string {
+        return this.reason;
+    }
+}
+
+/// A script loaded to be called (01 S9, S11; 07 Top; S8a1): its globals, tasks and timers live
+/// from `init` to `close`. `init` runs the top level once, then `call` runs a function of the
+/// module as the first task of that call. A task the call leaves waiting — detached, or on a
+/// timer — stays and goes on in the next call; after a panic of the script the instance takes
+/// calls as before (01 S11), the call's frames gone, its globals as they were.
+pub class Instance {
+    shared: RunShared,
+    feeds: List<Channel<Signal>>,
+    var at: InstancePhase = InstancePhase.Fresh,
+    // the type of the result of the call in flight, which a `resume` ends (S8b1)
+    var pending: Boundary = Boundary.Void,
+
+    /// What the instance takes next.
+    pub fn phase(): InstancePhase {
+        return this.at;
+    }
+
+    /// Runs the script's top level (07 Top) within `budget`.
+    pub mut fn init(budget: Budget): CallResult throws InstanceMisuse {
+        this.pending = Boundary.Void;
+        return resultOf(try this.initOutcome(budget), Boundary.Void);
+    }
+
+    /// Goes on with the call the budget halted (01 S5b; S8b1), within `budget` and what was left
+    /// when it halted (P34): a native dearer than one grant gets through after some.
+    pub mut fn resume(budget: Budget): CallResult throws InstanceMisuse {
+        if (this.at != InstancePhase.Suspended) {
+            throw InstanceMisuse { reason = f"resume on an instance that is {phaseName(this.at)}" };
+        }
+        let shared = this.shared;
+        startBudget(
+            shared,
+            if (budget.fuel < 0) -1 else shared.carry + budget.fuel,
+            nanosOf(budget)
+        );
+        let out = onOwnTask(() => schedule(shared));
+        this.settle(out);
+        return resultOf(out, this.pending);
+    }
+
+    /// Calls the function `name` a host may call (S8a3) with `args`, of the types its parameters
+    /// have, within `budget`; only after `init`. A function the
+    /// host may not call, an argument of another type, or a parameter or result of a type the
+    /// host does not pass is the host's mistake.
+    pub mut fn call(name: string, args: Value[], budget: Budget): CallResult throws InstanceMisuse {
+        if (this.at != InstancePhase.Ready) {
+            throw InstanceMisuse { reason = f"a call on an instance that is {phaseName(this.at)}" };
+        }
+        var found: ?Callable = null;
+        for (x in this.shared.module.exports) {
+            if (x.name == name) {
+                found = x;
+            }
+        }
+        if (found == null) {
+            throw InstanceMisuse {
+                reason = f"the script has no function '{name}' a host may call",
+            };
+        }
+        let x = found;
+        if (x.result == Boundary.Other) {
+            throw InstanceMisuse {
+                reason = f"'{name}' gives a value of a type the host does not take",
+            };
+        }
+        if (args.length() != x.params.length()) {
+            throw InstanceMisuse {
+                reason = f"'{name}' takes {x.params.length()} arguments, given {args.length()}",
+            };
+        }
+        let s = List<uint64>.new();
+        let r = List<HeapRef>.new();
+        var k = 0;
+        while (k < args.length()) {
+            let b = x.params[k];
+            if (b == Boundary.Other) {
+                throw InstanceMisuse {
+                    reason = f"'{name}' takes a parameter {k + 1} of a type the host does not pass",
+                };
+            }
+            if (!fits(args[k], b)) {
+                throw InstanceMisuse { reason = f"argument {k + 1} of '{name}' is not a {b:?}" };
+            }
+            if (isScalarAt(b)) {
+                s.push(bitsOf(args[k]));
+            } else {
+                r.push(refOf(args[k], b));
+            }
+            k += 1;
+        }
+        this.pending = x.result;
+        return resultOf(this.enter(x.function, s.toArray(), r.toArray(), budget), x.result);
+    }
+
+    /// `init` as the VM ends it, for the command line, which reports it itself.
+    mut fn initOutcome(budget: Budget): Outcome throws InstanceMisuse {
+        if (this.at != InstancePhase.Fresh) {
+            throw InstanceMisuse { reason = f"init on an instance that is {phaseName(this.at)}" };
+        }
+        let fi = functionIndex(this.shared.module, topLevelName(this.shared.module));
+        if (fi < 0) {
+            throw InstanceMisuse { reason = "the module has no top level" };
+        }
+        return this.enter(fi, [], [], budget);
+    }
+
+    /// Ends the instance at once (01 S5b; S8b3): every task — halted, parked or ready — goes
+    /// without a `defer`; the files and directories its script left open are closed, the child
+    /// processes it started killed, its subscriptions to signals ended. It takes no call after.
+    /// An instance that ended already does not take it.
+    pub mut fn abort(): CallResult throws InstanceMisuse {
+        if (this.at == InstancePhase.Ended || this.at == InstancePhase.Broken) {
+            throw InstanceMisuse { reason = f"abort on an instance that is {phaseName(this.at)}" };
+        }
+        let shared = this.shared;
+        shared.queue = List<TaskState>.new();
+        shared.head = 0;
+        shared.tasks = List<ScriptTask>.new();
+        shared.timers = List<TimerEntry>.new();
+        shared.pendingNatives = 0;
+        closeResources(shared);
+        for (f in this.feeds) {
+            f.close();
+        }
+        this.at = InstancePhase.Ended;
+        return CallResult.Aborted;
+    }
+
+    /// Ends the instance: the subscriptions to signals its script left open end (S7h4); it takes
+    /// no call after.
+    pub mut fn close(): void {
+        for (f in this.feeds) {
+            f.close();
+        }
+        if (this.at != InstancePhase.Broken) {
+            this.at = InstancePhase.Ended;
+        }
+    }
+
+    mut fn enter(fi: int, s: uint64[], r: HeapRef[], budget: Budget): Outcome {
+        let shared = this.shared;
+        let fuel = budget.fuel;
+        let deadline = nanosOf(budget);
+        let out = onOwnTask(() => callIn(shared, fi, s, r, fuel, deadline));
+        this.settle(out);
+        return out;
+    }
+
+    // the phase a call's end leaves the instance in
+    mut fn settle(out: Outcome): void {
+        this.at = match (out) {
+            .Suspended => InstancePhase.Suspended,
+            .Exit(_) => InstancePhase.Ended,
+            .Panic(p) => if (p.code == "LYS-ICE0001") InstancePhase.Broken else InstancePhase.Ready,
+            _ => InstancePhase.Ready,
+        };
+        if (this.at == InstancePhase.Ended) {
+            for (f in this.feeds) {
+                f.close();
+            }
+        }
+    }
+}
+
+/// What a call may spend (01 S5a; S8b1, S8b2): `fuel` units — a backward jump or a call costs one,
+/// a heavy native its work (01 S5c) —, `-1` without a limit; and a `deadline`, how long it may take,
+/// `null` for none. Either that comes first halts the call; fuel is the same every time, a deadline
+/// is not.
+pub struct Budget :: [Debug] {
+    pub fuel: int = -1,
+    pub deadline: ?Duration = null,
+}
+
+/// A budget's deadline in nanoseconds, -1 for none.
+fn nanosOf(b: Budget): int {
+    if (let d = b.deadline) {
+        let n = d.nanos();
+        return if (n < 0) 0 else n;
+    }
+    return -1;
+}
+
+/// How a host's call ended (01 S11; S8a3): its value, an error that left every frame, a panic of
+/// the script, the budget's end (01 S5b), `abort` (S8b), a function value of a script reloaded
+/// since (S9), or the script's `exit`, which ends the instance.
+pub enum CallResult {
+    Ok(Value),
+    Error(ScriptError),
+    Panic(ScriptPanic),
+    Suspended,
+    Aborted,
+    Stale,
+    Exit(int),
+}
+
+/// How the VM ended a call, as the host reads it, the result of type `result`.
+fn resultOf(out: Outcome, result: Boundary): CallResult {
+    return match (out) {
+        .Void => CallResult.Ok(Value.Void),
+        .Scalar(bits) => CallResult.Ok(valueOfBits(result, bits)),
+        .Ref(o) => CallResult.Ok(valueOfRef(result, o)),
+        .Slots(_, _) => CallResult.Ok(Value.Void),
+        .Panic(p) => CallResult.Panic(p),
+        .Error(e) => CallResult.Error(e),
+        .Suspended => CallResult.Suspended,
+        .Exit(code) => CallResult.Exit(code),
+        .Switch => CallResult.Panic(
+            ScriptPanic {
+                code = "LYS-ICE0001",
+                message = "the VM gave way with no task to run",
+                trace = [],
+            }
+        ),
+    };
+}
+
+/// A new instance of `module`, its top level not run yet; `argv` is what `args` gives the script,
+/// its own name first (S8a1).
+pub fn instanceOf(module: Module, argv: string[] = []): Instance {
+    let feeds = List<Channel<Signal>>.new();
+    return Instance { shared = newShared(module, -1, argv, feeds), feeds = feeds };
+}
+
+/// The name of `module`'s top level: a script's (07 Top; the code generator's `scriptEntry`), or the
+/// `main` of hand-written bytecode.
+fn topLevelName(module: Module): string {
+    return if (functionIndex(module, "<script>") >= 0) "<script>" else "main";
+}
+
+/// The phase as a word of a message.
+fn phaseName(p: InstancePhase): string {
+    return match (p) {
+        .Fresh => "not initialised",
+        .Ready => "ready",
+        .Suspended => "suspended",
+        .Ended => "ended",
+        .Broken => "broken by a failure of the VM",
+    };
+}
+
 /// Runs `entry` of `module`, its subscriptions to signals in `feeds`; see `run`.
 fn runOn(
     module: Module,
@@ -562,20 +845,57 @@ fn runOn(
     argv: string[],
     feeds: List<Channel<Signal>>
 ): Outcome {
-    var fi = -1;
-    var i = 0;
-    while (i < module.functions.length()) {
-        if (module.functions[i].name == entry) {
-            fi = i;
-        }
-        i += 1;
-    }
+    let fi = functionIndex(module, entry);
     if (fi < 0) {
         return Outcome.Panic(
             ScriptPanic { code = "LYS-ICE0001", message = f"no function '{entry}'", trace = [] }
         );
     }
-    let first = module.functions[fi];
+    return callIn(newShared(module, fuel, argv, feeds), fi, args, [], fuel, -1);
+}
+
+/// The place of the function named `name` in `module`, the last of that name; -1 where none is.
+fn functionIndex(module: Module, name: string): int {
+    var fi = -1;
+    var i = 0;
+    while (i < module.functions.length()) {
+        if (module.functions[i].name == name) {
+            fi = i;
+        }
+        i += 1;
+    }
+    return fi;
+}
+
+/// What the tasks of `module` share, new: the script's top-level bindings (07 Top), alive as long
+/// as the run or the instance; the descriptors — the compiler's, and those shared copies make
+/// (S3i).
+fn newShared(module: Module, fuel: int, argv: string[], feeds: List<Channel<Signal>>): RunShared {
+    return RunShared {
+        module = module,
+        gs = [0 as uint64] * module.globalsS,
+        gr = refArray(module.globalsR),
+        interning = Interning.of(module),
+        budget = fuel,
+        argv = argv,
+        queue = List<TaskState>.new(),
+        tasks = List<ScriptTask>.new(),
+        feeds = feeds,
+    };
+}
+
+/// Calls function `fi` of `shared`'s module with `args` in its first scalar registers, as the
+/// first task of this call, with `fuel` units of budget, and schedules until that task ends (S8a1).
+/// What an earlier call left waiting stays in the queue; the tasks that ended are forgotten.
+fn callIn(
+    shared: RunShared,
+    fi: int,
+    args: uint64[],
+    refs: HeapRef[],
+    fuel: int,
+    deadline: int
+): Outcome {
+    let first = shared.module.functions[fi];
     let main = TaskState {
         s = [0 as uint64] * grown(0, first.scalars),
         r = refArray(grown(0, first.refs)),
@@ -587,21 +907,106 @@ fn runOn(
         main.s[k] = args[k];
         k += 1;
     }
-    // the script's top-level bindings (07 Top), alive for this run; the descriptors of this run:
-    // the compiler's, and those shared copies make (S3i)
-    let shared = RunShared {
-        module = module,
-        gs = [0 as uint64] * module.globalsS,
-        gr = refArray(module.globalsR),
-        interning = Interning.of(module),
-        budget = fuel,
-        argv = argv,
-        queue = List<TaskState>.new(),
-        tasks = List<ScriptTask>.new(),
-        feeds = feeds,
-    };
-    // the scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits
+    k = 0;
+    while (k < refs.length() && k < first.paramsR) {
+        main.r[k] = refs[k];
+        k += 1;
+    }
+    startBudget(shared, fuel, deadline);
+    shared.failed = null;
+    forgetEnded(shared);
     shared.queue.push(main);
+    return schedule(shared);
+}
+
+/// Drops from `shared` what an earlier call left behind and nobody needs: the queue's entries
+/// before its head, and the tasks that ended — an instance called many times does not grow with
+/// its calls (S8a1).
+fn forgetEnded(shared: RunShared): void {
+    if (shared.head > 0) {
+        let rest = List<TaskState>.new();
+        var k = shared.head;
+        while (k < shared.queue.length()) {
+            rest.push(shared.queue[k]);
+            k += 1;
+        }
+        shared.queue = rest;
+        shared.head = 0;
+    }
+    let live = List<ScriptTask>.new();
+    for (t in shared.tasks) {
+        if (t.result == null) {
+            live.push(t);
+        }
+    }
+    shared.tasks = live;
+    // what the script closed itself an abort need not close (S8b3)
+    let open = List<HeapRef>.new();
+    for (h in shared.resources) {
+        if (!isClosed(h)) {
+            open.push(h);
+        }
+    }
+    shared.resources = open;
+}
+
+/// A file, a directory or a child the script made, held for an abort to close (S8b3).
+fn held(shared: RunShared, h: HeapRef): HeapRef {
+    shared.resources.push(h);
+    return h;
+}
+
+/// Marks a file or a directory the script closes (S8b3).
+fn markClosed(h: HeapRef): void {
+    if (h is ScriptFile) {
+        h.closed = true;
+    } else if (h is ScriptDir) {
+        h.closed = true;
+    }
+}
+
+/// Whether the script closed `h` itself; a child stays held until the instance ends.
+fn isClosed(h: HeapRef): bool {
+    if (h is ScriptFile) {
+        return h.closed;
+    }
+    if (h is ScriptDir) {
+        return h.closed;
+    }
+    return false;
+}
+
+/// Closes what the instance's script left open (01 S5b; S8b3): its files and directories, and the
+/// child processes it started, killed — an aborted instance leaves no work running for it.
+fn closeResources(shared: RunShared): void {
+    for (h in shared.resources) {
+        if (h is ScriptFile) {
+            if (let f = h.file) {
+                if (!h.closed) {
+                    try? f.close();
+                }
+            }
+            h.closed = true;
+        } else if (h is ScriptDir) {
+            if (let d = h.dir) {
+                if (!h.closed) {
+                    try? d.close();
+                }
+            }
+            h.closed = true;
+        } else if (h is ScriptChild) {
+            if (let c = h.child) {
+                try? c.signal(Signal.Other(9));
+            }
+        }
+    }
+    shared.resources = List<HeapRef>.new();
+}
+
+/// The scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits, until the first
+/// task of the call ends, the budget ends, or the script calls `exit`.
+fn schedule(shared: RunShared): Outcome {
+    let module = shared.module;
     while (true) {
         // S6d3: the timers whose time came wake behind the ready tasks; with none ready, the run
         // waits for the earliest — without timers that is a deadlock
@@ -612,10 +1017,18 @@ fn runOn(
             try? yieldNow();
         }
         if (shared.head >= shared.queue.length()) {
+            let waits = shared.pendingNatives + shared.openFeeds > 0;
+            if (!waits && shared.timers.length() == 0) {
+                break;
+            }
+            // a wait does not outlast the call's deadline (S8b2): the call halts, its tasks waiting
+            if (pastDeadline(shared)) {
+                return Outcome.Suspended;
+            }
             // a native's end, a signal, or the earliest timer, ends the run's wait
-            if (shared.pendingNatives + shared.openFeeds > 0) {
-                if (shared.timers.length() > 0) {
-                    let wait = earliestDeadline(shared) - nowNs(shared);
+            if (waits) {
+                if (shared.timers.length() > 0 || shared.deadlineNs >= 0) {
+                    let wait = waitWithin(shared, earliestDeadline(shared) - nowNs(shared));
                     if (wait > 0) {
                         try? Select.on(shared.wakeups) { _ => { } }.timeout(
                             Duration.ofNanos(wait)
@@ -626,10 +1039,7 @@ fn runOn(
                 }
                 continue;
             }
-            if (shared.timers.length() == 0) {
-                break;
-            }
-            let wait = earliestDeadline(shared) - nowNs(shared);
+            let wait = waitWithin(shared, earliestDeadline(shared) - nowNs(shared));
             if (wait > 0) {
                 try? sleep(Duration.ofNanos(wait));
             }
@@ -641,7 +1051,16 @@ fn runOn(
         match (out) {
             .Switch => { }
             // the budget holds the whole instance (N8, 01 S5b), and `exit` ends it, from any task
-            .Suspended | .Exit(_) => {
+            // a task the budget halted stands first again: `resume` goes on with it (S8b1); under a
+            // deadline a slice's end only looks at the clock (S8b2)
+            .Suspended => {
+                shared.head -= 1;
+                if (shared.deadlineNs >= 0 && refill(shared)) {
+                    continue;
+                }
+                return out;
+            }
+            .Exit(_) => {
                 return out;
             }
             _ => {
@@ -934,6 +1353,14 @@ fn callNative(
     y: int,
     shared: RunShared
 ): ?NativeFault {
+    // a heavy native knows its work from its operands and pays for it before it starts (01 S5c;
+    // P33, S8b4); one it cannot pay did nothing, and `call.n` halts
+    if (shared.budget != -1) {
+        let cost = costOf(which, s, r, x, y);
+        if (cost > 0 && !charge(shared, cost)) {
+            return null;
+        }
+    }
     match (which) {
         .Print => print(textOf(r[y])),
         .Println => println(textOf(r[y])),
@@ -954,8 +1381,8 @@ fn callNative(
         .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose | .OsCwd | .OsSetCwd | .OsHostname | .ProcessSpawn | .ProcessRead | .ProcessWrite | .ProcessClose | .ProcessWait | .ProcessSignal | .TimeZoneOpen => {
             return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
         }
-        .FsFile => r[y] = ScriptFile { },
-        .ProcessChild => r[y] = ScriptChild { },
+        .FsFile => r[y] = held(shared, ScriptFile { }),
+        .ProcessChild => r[y] = held(shared, ScriptChild { }),
         .TimeZone => r[y] = ScriptZone { },
         .OsSignals => {
             if (let ch = signalChannel(r[y], r[y + 1], shared)) {
@@ -964,7 +1391,7 @@ fn callNative(
                 return bytesFault("LYS-RT0007", "signals takes the signals and a form of each");
             }
         }
-        .FsDir => r[y] = ScriptDir { },
+        .FsDir => r[y] = held(shared, ScriptDir { }),
         .PathSeparator => r[y] = ScriptString { text = pathSeparator },
         .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
         .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
@@ -1649,7 +2076,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     if (shared.budget != -1) {
                         shared.budget = spend(shared.budget);
                         if (shared.budget == -2) {
-                            return Outcome.Suspended;
+                            return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                         }
                     }
                 }
@@ -1667,7 +2094,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         if (shared.budget != -1) {
                             shared.budget = spend(shared.budget);
                             if (shared.budget == -2) {
-                                return Outcome.Suspended;
+                                return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                             }
                         }
                     }
@@ -1683,7 +2110,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         if (shared.budget != -1) {
                             shared.budget = spend(shared.budget);
                             if (shared.budget == -2) {
-                                return Outcome.Suspended;
+                                return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                             }
                         }
                     }
@@ -1697,7 +2124,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (shared.budget != -1) {
                     shared.budget = spend(shared.budget);
                     if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                        return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                     }
                 }
                 if (frames.length() >= maxDepth) {
@@ -2027,7 +2454,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (shared.budget != -1) {
                     shared.budget = spend(shared.budget);
                     if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                        return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                     }
                 }
                 if (frames.length() >= maxDepth) {
@@ -2070,7 +2497,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (shared.budget != -1) {
                     shared.budget = spend(shared.budget);
                     if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                        return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                     }
                 }
                 if (frames.length() >= maxDepth) {
@@ -2134,7 +2561,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (shared.budget != -1) {
                     shared.budget = spend(shared.budget);
                     if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                        return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                     }
                 }
                 if (frames.length() >= maxDepth) {
@@ -3073,7 +3500,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 // a wait the budget does not cover does not start: this call again on `resume`
                 let job = waitJob(waiting, s, r, bs + b, br + c, shared);
                 if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                    return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                 }
                 t.nativePending = true;
                 t.nativeToItsEnd = !nativeCancels(waiting);
@@ -3740,7 +4167,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     if (let code = shared.exitCode) {
                         return Outcome.Exit(code);
                     }
-                    return Outcome.Suspended;
+                    return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                 }
                 pc += 1;
             }
@@ -3948,12 +4375,64 @@ fn charge(shared: RunShared, n: int): bool {
     if (shared.budget < 0) {
         return shared.budget == -1;
     }
-    if (shared.budget < n) {
+    // a native starts neither beyond the budget nor past the deadline (01 S5c; S8b2)
+    if (shared.budget < n || (shared.deadlineNs >= 0 && nowNs(shared) >= shared.deadlineNs)) {
+        // what was left stays the run's: a `resume` adds to it (P34; S8b1)
+        shared.carry = shared.budget;
+        shared.need = n;
         shared.budget = -2;
         return false;
     }
     shared.budget -= n;
     return true;
+}
+
+/// What a native over text or a list costs (01 S5c; 12 rule 37; S8b4): a unit for every 32 bytes
+/// it reads or writes and one for the call — a sort a unit for every 32 comparisons it may make;
+/// 0 for a native that charges itself, or whose work does not grow with its operands.
+fn costOf(which: NativeFn, s: uint64[], r: HeapRef[], x: int, y: int): int {
+    return match (which) {
+        .Print | .Println | .StrUpper | .StrLower | .StrTrim | .StrDebug | .StrSlice => bytesCost(
+            lengthOf(r[y])
+        ),
+        .Concat | .StrEq | .StrCmp | .StrFind | .StrMatchesAt | .FmtStr | .FmtPad => bytesCost(
+            lengthOf(r[y]) + lengthOf(r[y + 1])
+        ),
+        .BuilderAppendStr => bytesCost(lengthOf(r[y + 1])),
+        .BuilderText => {
+            let o = r[y];
+            bytesCost(if (o is ScriptBuilder) o.sb.length() else 0)
+        }
+        .StrRepeat => {
+            let n = s[x] as int;
+            let len = lengthOf(r[y]);
+            // a count that would overflow the text is refused by the native itself
+            if (n <= 0 || len == 0) 1 else if (n > int.max / len) int.max else bytesCost(len * n)
+        }
+        .StrFromChars => bytesCost(4 * countOf(r[y])),
+        .ListSortInts | .ListSortFloats | .ListSortStrings => sortCost(countOf(r[y])),
+        _ => 0,
+    };
+}
+
+/// A text's length in bytes; 0 for what is no text.
+fn lengthOf(o: HeapRef): int {
+    return if (o is ScriptString) o.text.length() else 0;
+}
+
+/// A list's length; 0 for what is no list.
+fn countOf(o: HeapRef): int {
+    return if (o is ScriptArray) o.n else 0;
+}
+
+/// What a sort of `n` elements may cost: n·⌈log₂ n⌉ comparisons, a unit for every 32, and one for
+/// the call.
+fn sortCost(n: int): int {
+    var log = 0;
+    while ((1 << log) < n) {
+        log += 1;
+    }
+    return 1 + n * log / 32;
 }
 
 /// What a native that waits brought (S7g2): a number, a failure as `-(kind << 32 | code)`; a text; bytes.
@@ -4009,6 +4488,7 @@ fn waitJob(
         }
         .FsClose => {
             let file = fileAt(r[y]);
+            markClosed(r[y]);
             charge(shared, 1);
             return () => fileClose(file);
         }
@@ -4130,6 +4610,7 @@ fn waitJob(
         }
         .FsDirClose => {
             let dir = dirAt(r[y]);
+            markClosed(r[y]);
             charge(shared, 1);
             return () => dirClose(dir);
         }
@@ -5175,6 +5656,90 @@ fn bigTwo(
         }
     }
     return null;
+}
+
+/// Fuel units a slice gives under a deadline (S8b2): the clock is read between slices, not at every
+/// backward jump.
+let deadlineSlice: int = 10000;
+
+/// Starts a call's budget (01 S5a; S8b1, S8b2): `fuel` units, -1 without a limit; `deadline`
+/// nanoseconds from now, -1 for none — then the fuel comes in slices.
+fn startBudget(shared: RunShared, fuel: int, deadline: int): void {
+    shared.carry = 0;
+    shared.need = 1;
+    shared.fuelLeft = fuel;
+    if (deadline < 0) {
+        shared.deadlineNs = -1;
+        shared.budget = fuel;
+        return;
+    }
+    shared.deadlineNs = nowNs(shared) + deadline;
+    let grant = if (fuel >= 0 && fuel < deadlineSlice) fuel else deadlineSlice;
+    shared.budget = grant;
+    shared.granted = grant;
+}
+
+/// Whether the call's deadline has come (S8b2).
+fn pastDeadline(shared: RunShared): bool {
+    return shared.deadlineNs >= 0 && nowNs(shared) >= shared.deadlineNs;
+}
+
+/// A wait of `wait` nanoseconds, cut where the call's deadline comes first (S8b2).
+fn waitWithin(shared: RunShared, wait: int): int {
+    if (shared.deadlineNs < 0) {
+        return wait;
+    }
+    let left = shared.deadlineNs - nowNs(shared);
+    return if (left < wait) left else wait;
+}
+
+/// The end of a slice under a deadline (S8b2): what the slice spent comes off the fuel; where the
+/// deadline has come, or the fuel left does not cover what the halted task needs next, the call
+/// halts with that fuel kept for `resume`; else the next slice — at least what a native needs.
+fn refill(shared: RunShared): bool {
+    let used = shared.granted - shared.carry;
+    if (shared.fuelLeft >= 0) {
+        shared.fuelLeft -= used;
+    }
+    if (pastDeadline(shared) || (shared.fuelLeft >= 0 && shared.fuelLeft < shared.need)) {
+        shared.carry = if (shared.fuelLeft > 0) shared.fuelLeft else 0;
+        return false;
+    }
+    var grant = if (shared.need > deadlineSlice) shared.need else deadlineSlice;
+    if (shared.fuelLeft >= 0 && grant > shared.fuelLeft) {
+        grant = shared.fuelLeft;
+    }
+    shared.budget = grant;
+    shared.granted = grant;
+    shared.carry = 0;
+    shared.need = 1;
+    return true;
+}
+
+/// Halts task `t` where the budget ran out (01 S5b; S8b1): its state kept as a wait keeps it, so
+/// that `resume` runs the instruction it stands at again — a backward jump, a call, a native that
+/// did nothing yet. One function for every place, not its code in each arm: the dispatch loop's
+/// registers move with any code in its arms (P47).
+fn suspendAt(
+    t: TaskState,
+    s: uint64[],
+    r: HeapRef[],
+    fi: int,
+    pc: int,
+    bs: int,
+    br: int,
+    report: ?Report,
+    frames: FrameStack
+): Outcome {
+    t.s = s;
+    t.r = r;
+    t.fi = fi;
+    t.pc = pc;
+    t.bs = bs;
+    t.br = br;
+    t.report = report;
+    t.frames = frames;
+    return Outcome.Suspended;
 }
 
 /// One unit of budget spent: the budget left, `-1` for none, `-2` once it ran out.

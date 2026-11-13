@@ -1,0 +1,108 @@
+// An abort (S8b3; Script 01 S5b): it ends an instance at once — a halted call, parked tasks —
+// without a `defer`, and closes what its script left open; what the script closed itself the
+// instance does not keep.
+import std.fs { exists, readDir, removeAll, tempDir };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance, InstanceMisuse, InstancePhase };
+import lyric_script.vm.value { Value };
+
+fn ready(source: string): Instance {
+    let inst = try! vmOf().load("t.lyrs", source, ["file"]);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn halted(r: CallResult): bool {
+    return match (r) {
+        .Suspended => true,
+        _ => false,
+    };
+}
+
+fn aborted(r: CallResult): bool {
+    return match (r) {
+        .Aborted => true,
+        _ => false,
+    };
+}
+
+// whether the instance refuses `job` as the host's mistake
+fn refusesAbort(inst: Instance): bool {
+    try {
+        inst.abort();
+    } catch (e: InstanceMisuse) {
+        return true;
+    }
+    return false;
+}
+
+// the descriptors this process holds open, -1 where the system does not list them
+fn openFiles(): int {
+    if (!exists("/proc/self/fd")) {
+        return -1;
+    }
+    var n = 0;
+    try {
+        for (_ in try readDir("/proc/self/fd")) {
+            n += 1;
+        }
+    } catch (_) {
+        return -1;
+    }
+    return n;
+}
+
+let work: string = "import std.fs { File, writeText }\nvar kept: ?File = null\nfn work(path: string) {\n    defer {\n        writeText(path, \"ran\")\n    }\n    var i = 0\n    while (true) {\n        i += 1\n    }\n}\nfn quick(path: string) {\n    defer {\n        writeText(path, \"ran\")\n    }\n}\nfn keep(path: string) {\n    kept = File.create(path)\n}\nfn touch(path: string) {\n    let f = File.create(path)\n    f.close()\n}\n";
+
+@Test
+fn anAbortEndsAHaltedCall(): void {
+    let inst = ready(work);
+    let dir = try! tempDir();
+    assertTrue(halted(try! inst.call("work", [Value.Str(f"{dir}/w")], Budget { fuel = 100 })));
+    assertTrue(aborted(try! inst.abort()));
+    assertTrue(inst.phase() == InstancePhase.Ended);
+    assertTrue(refusesAbort(inst), "a second abort");
+    try? removeAll(dir);
+}
+
+@Test
+fn anAbortRunsNoDefer(): void {
+    let inst = ready(work);
+    let dir = try! tempDir();
+    // the control: a call that ends runs its defer
+    try! inst.call("quick", [Value.Str(f"{dir}/q")], Budget { });
+    assertTrue(exists(f"{dir}/q"), "the defer of a call that ends");
+    assertTrue(halted(try! inst.call("work", [Value.Str(f"{dir}/w")], Budget { fuel = 100 })));
+    try! inst.abort();
+    assertTrue(!exists(f"{dir}/w"), "a defer ran at the abort");
+    try? removeAll(dir);
+}
+
+@Test
+fn anAbortClosesWhatTheScriptLeftOpen(): void {
+    let before = openFiles();
+    if (before < 0) {
+        return;
+    }
+    let inst = ready(work);
+    let dir = try! tempDir();
+    try! inst.call("keep", [Value.Str(f"{dir}/k")], Budget { });
+    let open = openFiles();
+    assertTrue(open > before, f"{open} after, {before} before");
+    try! inst.abort();
+    assertTrue(openFiles() < open, "the kept file is still open");
+    try? removeAll(dir);
+}
+
+@Test
+fn aFileTheScriptClosedIsNotKept(): void {
+    let inst = ready(work);
+    let dir = try! tempDir();
+    try! inst.call("touch", [Value.Str(f"{dir}/a")], Budget { });
+    try! inst.call("touch", [Value.Str(f"{dir}/b")], Budget { });
+    try! inst.call("touch", [Value.Str(f"{dir}/c")], Budget { });
+    // the last call's file is forgotten at the next call's start
+    assertTrue(inst.shared.resources.length() <= 1, f"{inst.shared.resources.length()} kept");
+    try? removeAll(dir);
+}

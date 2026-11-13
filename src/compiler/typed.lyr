@@ -264,6 +264,9 @@ class FnInfo {
     var blockParams: TypeParamInfo[] = [],
     // the `throws` written, `null` for none; the bare form is `[Error]` (S4c)
     var throws: ?Ty[] = null,
+    // written without `private` or `internal`: a top-level one of the entry is a host's to call
+    // (S8a3)
+    var isPub: bool = false,
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).

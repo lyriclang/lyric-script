@@ -4,7 +4,16 @@
 //! no file of this toolchain, and the reader says so rather than guessing (01 S10).
 import std.collections { List };
 import std.core { variants };
-import lyric_script.vm.module { Function, Handler, Module, RightUse, ReturnKind, TypeDesc };
+import lyric_script.vm.module {
+    Boundary,
+    Callable,
+    Function,
+    Handler,
+    Module,
+    RightUse,
+    ReturnKind,
+    TypeDesc,
+};
 import lyric_script.vm.op { Instr, Op };
 
 /// The first bytes of every file: `LYSB`.
@@ -120,11 +129,60 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
         }
         w.text(f.file);
     }
+    // the functions a host may call, with the types at their boundary (S8a3)
+    w.word(module.exports.length());
+    for (x in module.exports) {
+        w.text(x.name);
+        w.word(x.function);
+        w.word(x.params.length());
+        for (b in x.params) {
+            writeBoundary(w, b);
+        }
+        writeBoundary(w, x.result);
+    }
     return w.out.toArray();
 }
 
-/// The module in `bytes`, when their head names this format, version and source.
-fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Module throws NotOurs {
+/// A type at the boundary as its tag, a list's element after it (S8a3).
+fn writeBoundary(w: Writer, b: Boundary): void {
+    match (b) {
+        .Void => w.byte(0),
+        .Int => w.byte(1),
+        .Float => w.byte(2),
+        .Bool => w.byte(3),
+        .Char => w.byte(4),
+        .Str => w.byte(5),
+        .List(e) => {
+            w.byte(6);
+            writeBoundary(w, e.value);
+        }
+        .Other => w.byte(7),
+    }
+}
+
+/// A type at the boundary as `writeBoundary` wrote it.
+fn readBoundary(r: Reader): Boundary throws NotOurs {
+    return match (try r.byte()) {
+        0 => Boundary.Void,
+        1 => Boundary.Int,
+        2 => Boundary.Float,
+        3 => Boundary.Bool,
+        4 => Boundary.Char,
+        5 => Boundary.Str,
+        6 => Boundary.List(Box<Boundary> { value = try readBoundary(r) }),
+        7 => Boundary.Other,
+        _ => throw NotOurs { reason = "a type at the boundary that is none" },
+    };
+}
+
+/// The module in `bytes`, when their head names this format, version and source; `sourceHash`
+/// `null` takes the bytecode of any source, as `loadTrusted` does (01 S10; S8a2).
+fn decode(
+    bytes: uint8[],
+    format: int,
+    version: string,
+    sourceHash: ?string
+): Module throws NotOurs {
     let r = Reader { bytes = bytes };
     for (b in magic) {
         if (try r.byte() != b) {
@@ -137,7 +195,8 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
     if (try r.text() != version) {
         throw NotOurs { reason = "another compiler's bytecode" };
     }
-    if (try r.text() != sourceHash) {
+    let hash = try r.text();
+    if (sourceHash != null && hash != sourceHash) {
         throw NotOurs { reason = "the bytecode of another source" };
     }
     let name = try r.text();
@@ -304,6 +363,28 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         );
         n -= 1;
     }
+    let exports = List<Callable>.new();
+    var nx = try r.word();
+    while (nx > 0) {
+        let xname = try r.text();
+        let function = try r.word();
+        let params = List<Boundary>.new();
+        var np = try r.word();
+        while (np > 0) {
+            params.push(try readBoundary(r));
+            np -= 1;
+        }
+        let result = try readBoundary(r);
+        exports.push(
+            Callable {
+                name = xname,
+                function = function,
+                params = params.toArray(),
+                result = result,
+            }
+        );
+        nx -= 1;
+    }
     if (!r.atEnd()) {
         throw NotOurs { reason = "bytes after the module" };
     }
@@ -318,6 +399,7 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         cancelledType = cancelledType,
         channelClosedType = channelClosedType,
         rights = rights.toArray(),
+        exports = exports.toArray(),
     };
 }
 

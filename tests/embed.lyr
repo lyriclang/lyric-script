@@ -1,0 +1,115 @@
+// The host's VM (S8a2; Script 01 S1, S10, 11 Emb): a source loads into an instance, its errors
+// come back as findings and its rights are checked against the host's; compiled scripts lie in
+// the host's cache directory; bytecode the host trusts loads without its source.
+import std.fs { readDir, removeAll, tempDir };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { LoadError, Vm, vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance };
+
+fn scalar(o: CallResult): int {
+    return match (o) {
+        .Ok(.Int(i)) => i,
+        .Panic(_) => -1000,
+        .Error(_) => -2000,
+        _ => -999999,
+    };
+}
+
+fn callF(inst: Instance): int {
+    try! inst.init(Budget { });
+    return scalar(try! inst.call("f", [], Budget { }));
+}
+
+// the error a load throws; none where it loaded
+fn loadError(vm: Vm, name: string, source: string): ?LoadError {
+    try {
+        vm.load(name, source);
+    } catch (e: LoadError) {
+        return e;
+    }
+    return null;
+}
+
+fn trustedError(vm: Vm, bytes: uint8[]): ?LoadError {
+    try {
+        vm.loadTrusted(bytes);
+    } catch (e: LoadError) {
+        return e;
+    }
+    return null;
+}
+
+@Test
+fn aSourceLoadsAndIsCalled(): void {
+    let vm = vmOf();
+    assertEq(callF(try! vm.load("t.lyrs", "fn f(): int = 7\n")), 7);
+}
+
+@Test
+fn anErrorComesBackAsAFinding(): void {
+    let vm = vmOf();
+    let e = loadError(vm, "game/mod.lyrs", "let a = 1\nfn f(): int = \"x\"\n");
+    assertTrue(e != null, "the load threw");
+    if (let e = e) {
+        assertTrue(e.findings.length() > 0);
+        let f = e.findings[0];
+        assertTrue(f.error);
+        assertTrue(f.code.startsWith("LYS-"), f.code);
+        assertEq(f.path, "game/mod.lyrs");
+        assertEq(f.line, 2);
+        assertTrue(e.message().startsWith("game/mod.lyrs:2:"), e.message());
+    }
+}
+
+@Test
+fn aRightTheHostDidNotGiveRefusesTheLoad(): void {
+    let vm = vmOf();
+    let source = "import std.fs { exists }\nfn f(): int = if (exists(\"/nowhere/at/all\")) 1 else 2\n";
+    let e = loadError(vm, "t.lyrs", source);
+    assertTrue(e != null, "the load threw");
+    if (let e = e) {
+        assertEq(e.missing.length(), 1);
+        assertEq(e.missing[0].right, "file");
+        assertEq(e.missing[0].line, 1);
+    }
+    assertEq(callF(try! vm.load("t.lyrs", source, ["file"])), 2);
+    assertEq(callF(try! vm.load("t.lyrs", source, [], true)), 2);
+}
+
+@Test
+fn compiledScriptsLieInTheHostsCacheDirectory(): void {
+    let dir = try! tempDir();
+    let vm = vmOf(dir);
+    assertEq(callF(try! vm.load("t.lyrs", "fn f(): int = 3\n")), 3);
+    var files = 0;
+    try {
+        for (_ in try readDir(f"{dir}/bytecode")) {
+            files += 1;
+        }
+    } catch (_) { }
+    assertEq(files, 1);
+    // the second load reads it back
+    assertEq(callF(try! vm.load("t.lyrs", "fn f(): int = 3\n")), 3);
+    try? removeAll(dir);
+}
+
+@Test
+fn bytecodeTheHostTrustsLoadsWithoutItsSource(): void {
+    let vm = vmOf();
+    let bytes = try! vm.compile("t.lyrs", "fn f(): int = 5\n");
+    assertEq(callF(try! vm.loadTrusted(bytes)), 5);
+    let e = trustedError(vm, [1 as uint8, 2 as uint8, 3 as uint8]);
+    assertTrue(e != null, "foreign bytes threw");
+    if (let e = e) {
+        assertTrue(e.message().startsWith("the bytecode does not load"), e.message());
+    }
+}
+
+@Test
+fn trustedBytecodeAsksForItsRights(): void {
+    let vm = vmOf();
+    let bytes = try! vm.compile("t.lyrs", "import std.fs { exists }\nfn f(): int = 4\n");
+    let e = trustedError(vm, bytes);
+    assertTrue(e != null, "the load threw");
+    assertEq(callF(try! vm.loadTrusted(bytes, ["file"])), 4);
+}

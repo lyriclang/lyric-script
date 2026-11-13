@@ -26,6 +26,8 @@ import lyric_script.compiler.typed {
     typeOf,
 };
 import lyric_script.vm.module {
+    Boundary,
+    Callable,
     Function,
     Handler,
     Module,
@@ -77,6 +79,54 @@ fn generate(p: Program, name: string): Module {
         errorCause = p.errorCause,
         cancelledType = cancelledType,
         channelClosedType = channelClosedType,
+        exports = exportsOf(p),
+    };
+}
+
+/// The functions of the entry a host may call (S8a3): the public ones of its top level, neither
+/// generic nor a lambda's, not the top level itself; each with the types at its boundary.
+fn exportsOf(p: Program): Callable[] {
+    let out = List<Callable>.new();
+    var k = 0;
+    while (k < p.functions.length()) {
+        let f = p.functions[k];
+        if (k != p.main
+            && f.owner < 0
+            && f.file == ""
+            && f.isPub
+            && !f.env
+            && !f.abstract
+            && f.typeParams.length() == 0
+            && f.templateOf < 0) {
+            let params = List<Boundary>.new();
+            for (x in f.params) {
+                params.push(boundaryOf(x.ty));
+            }
+            out.push(
+                Callable {
+                    name = f.name,
+                    function = k,
+                    params = params.toArray(),
+                    result = boundaryOf(f.returns),
+                }
+            );
+        }
+        k += 1;
+    }
+    return out.toArray();
+}
+
+/// The type `t` at a call's boundary (S8a3).
+fn boundaryOf(t: Ty): Boundary {
+    return match (t) {
+        .Int => Boundary.Int,
+        .Float => Boundary.Float,
+        .Bool => Boundary.Bool,
+        .Char => Boundary.Char,
+        .Str => Boundary.Str,
+        .Void => Boundary.Void,
+        .List(e) => Boundary.List(Box<Boundary> { value = boundaryOf(e.value) }),
+        _ => Boundary.Other,
     };
 }
 

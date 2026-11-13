@@ -478,7 +478,9 @@ class RunShared {
     // Lyric 5 10 §4 rule 2, §5 rule 3) — a later failure is none of the scope's
     var failed: ?ScriptTask = null,
     // S6d3: the run's timers, on its own monotonic clock
-    timers: List<TimerEntry> = List<TimerEntry>.new(),
+    var timers: List<TimerEntry> = List<TimerEntry>.new(),
+    // S8b3: the files, directories and children the instance's script made, for an abort to close
+    var resources: List<HeapRef> = List<HeapRef>.new(),
     var timerSeq: int = 0,
     clock: Monotonic = Monotonic.now(),
     // S6e: the script's tasks waiting for a native, and the Lyric 5 channel a native's task
@@ -700,6 +702,28 @@ pub class Instance {
         return this.enter(fi, [], [], budget);
     }
 
+    /// Ends the instance at once (01 S5b; S8b3): every task — halted, parked or ready — goes
+    /// without a `defer`; the files and directories its script left open are closed, the child
+    /// processes it started killed, its subscriptions to signals ended. It takes no call after.
+    /// An instance that ended already does not take it.
+    pub mut fn abort(): CallResult throws InstanceMisuse {
+        if (this.at == InstancePhase.Ended || this.at == InstancePhase.Broken) {
+            throw InstanceMisuse { reason = f"abort on an instance that is {phaseName(this.at)}" };
+        }
+        let shared = this.shared;
+        shared.queue = List<TaskState>.new();
+        shared.head = 0;
+        shared.tasks = List<ScriptTask>.new();
+        shared.timers = List<TimerEntry>.new();
+        shared.pendingNatives = 0;
+        closeResources(shared);
+        for (f in this.feeds) {
+            f.close();
+        }
+        this.at = InstancePhase.Ended;
+        return CallResult.Aborted;
+    }
+
     /// Ends the instance: the subscriptions to signals its script left open end (S7h4); it takes
     /// no call after.
     pub mut fn close(): void {
@@ -916,6 +940,67 @@ fn forgetEnded(shared: RunShared): void {
         }
     }
     shared.tasks = live;
+    // what the script closed itself an abort need not close (S8b3)
+    let open = List<HeapRef>.new();
+    for (h in shared.resources) {
+        if (!isClosed(h)) {
+            open.push(h);
+        }
+    }
+    shared.resources = open;
+}
+
+/// A file, a directory or a child the script made, held for an abort to close (S8b3).
+fn held(shared: RunShared, h: HeapRef): HeapRef {
+    shared.resources.push(h);
+    return h;
+}
+
+/// Marks a file or a directory the script closes (S8b3).
+fn markClosed(h: HeapRef): void {
+    if (h is ScriptFile) {
+        h.closed = true;
+    } else if (h is ScriptDir) {
+        h.closed = true;
+    }
+}
+
+/// Whether the script closed `h` itself; a child stays held until the instance ends.
+fn isClosed(h: HeapRef): bool {
+    if (h is ScriptFile) {
+        return h.closed;
+    }
+    if (h is ScriptDir) {
+        return h.closed;
+    }
+    return false;
+}
+
+/// Closes what the instance's script left open (01 S5b; S8b3): its files and directories, and the
+/// child processes it started, killed — an aborted instance leaves no work running for it.
+fn closeResources(shared: RunShared): void {
+    for (h in shared.resources) {
+        if (h is ScriptFile) {
+            if (let f = h.file) {
+                if (!h.closed) {
+                    try? f.close();
+                }
+            }
+            h.closed = true;
+        } else if (h is ScriptDir) {
+            if (let d = h.dir) {
+                if (!h.closed) {
+                    try? d.close();
+                }
+            }
+            h.closed = true;
+        } else if (h is ScriptChild) {
+            if (let c = h.child) {
+                try? c.signal(Signal.Other(9));
+            }
+        }
+    }
+    shared.resources = List<HeapRef>.new();
 }
 
 /// The scheduler (07 N8, 11 Co): one task at a time, each until it ends or waits, until the first
@@ -1288,8 +1373,8 @@ fn callNative(
         .ConsoleLine | .ConsoleRead | .FsOpen | .FsRead | .FsWrite | .FsSeek | .FsClose | .FsMetadata | .FsCreateDir | .FsRemove | .FsRemoveDir | .FsRename | .FsCanonicalize | .FsAbsolute | .FsTempDir | .FsTempFile | .FsDirOpen | .FsDirNext | .FsDirClose | .OsCwd | .OsSetCwd | .OsHostname | .ProcessSpawn | .ProcessRead | .ProcessWrite | .ProcessClose | .ProcessWait | .ProcessSignal | .TimeZoneOpen => {
             return bytesFault("LYS-RT0007", "a native that waits called as one that does not");
         }
-        .FsFile => r[y] = ScriptFile { },
-        .ProcessChild => r[y] = ScriptChild { },
+        .FsFile => r[y] = held(shared, ScriptFile { }),
+        .ProcessChild => r[y] = held(shared, ScriptChild { }),
         .TimeZone => r[y] = ScriptZone { },
         .OsSignals => {
             if (let ch = signalChannel(r[y], r[y + 1], shared)) {
@@ -1298,7 +1383,7 @@ fn callNative(
                 return bytesFault("LYS-RT0007", "signals takes the signals and a form of each");
             }
         }
-        .FsDir => r[y] = ScriptDir { },
+        .FsDir => r[y] = held(shared, ScriptDir { }),
         .PathSeparator => r[y] = ScriptString { text = pathSeparator },
         .Concat => r[y] = ScriptString { text = textOf(r[y]) + textOf(r[y + 1]) },
         .IntToStr => r[y] = ScriptString { text = f"{s[x] as int}" },
@@ -4347,6 +4432,7 @@ fn waitJob(
         }
         .FsClose => {
             let file = fileAt(r[y]);
+            markClosed(r[y]);
             charge(shared, 1);
             return () => fileClose(file);
         }
@@ -4468,6 +4554,7 @@ fn waitJob(
         }
         .FsDirClose => {
             let dir = dirAt(r[y]);
+            markClosed(r[y]);
             charge(shared, 1);
             return () => dirClose(dir);
         }

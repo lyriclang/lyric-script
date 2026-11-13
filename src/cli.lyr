@@ -17,7 +17,7 @@ import lyric_script.rights { allowed, classesOf, missing };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.asm { AsmError, assemble };
 import lyric_script.vm.heap { ScriptString };
-import lyric_script.vm.interp { Outcome, execute, instanceOf };
+import lyric_script.vm.interp { Budget, Outcome, execute, instanceOf };
 import lyric_script.vm.module { Module, check };
 
 fn usage(): void {
@@ -379,7 +379,7 @@ fn runModule(module: Module, grant: Grant): int {
     }
     // the run of a script is an instance's top level (S8a1): the host's API, used by its own CLI
     let inst = instanceOf(module, grant.argv);
-    let out = try! inst.initOutcome(-1);
+    let out = try! inst.initOutcome(Budget { });
     inst.close();
     return finishScript(out);
 }

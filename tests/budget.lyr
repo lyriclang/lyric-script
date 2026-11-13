@@ -1,7 +1,9 @@
 // The budget of a host's call (S8b; Script 01 S5): a call the fuel halts goes on where it stopped
 // with `resume`, the same way every time; what was left when it halted stays, so a native dearer
-// than one grant gets through after some (P34).
+// than one grant gets through after some (P34); a deadline halts a call that runs or waits too
+// long, and leaves its fuel as it was.
 import std.test { assertEq, assertTrue };
+import std.time { Duration, Monotonic };
 import lyric_script.embed { vmOf };
 import lyric_script.vm.interp { Budget, CallResult, Instance, InstanceMisuse, InstancePhase };
 import lyric_script.vm.value { Value };
@@ -24,12 +26,17 @@ fn ok(r: CallResult): Value {
 
 // the call's end after resumes of `grant` units each, and how many it took
 fn finish(inst: Instance, first: CallResult, grant: int): (CallResult, int) {
+    return finishWithin(inst, first, Budget { fuel = grant });
+}
+
+// the call's end after resumes within `budget` each, and how many it took
+fn finishWithin(inst: Instance, first: CallResult, budget: Budget): (CallResult, int) {
     var r = first;
     var n = 0;
     while (n < 1000) {
         match (r) {
             .Suspended => {
-                r = try! inst.resume(Budget { fuel = grant });
+                r = try! inst.resume(budget);
                 n += 1;
             }
             _ => {
@@ -94,4 +101,47 @@ fn onlyAHaltedCallIsResumed(): void {
         refused = true;
     }
     assertTrue(refused, "a resume with nothing halted");
+}
+
+@Test
+fn aDeadlineHaltsAnEndlessLoop(): void {
+    let inst = ready("fn forever() {\n    while (true) {\n    }\n}\n");
+    let clock = Monotonic.now();
+    let within = Budget { deadline = Duration.ofMillis(20) };
+    assertEq(ok(try! inst.call("forever", [], within)), Value.Str("suspended"));
+    assertEq(ok(try! inst.resume(within)), Value.Str("suspended"));
+    assertTrue(clock.elapsed().nanos() < 2000000000, "two slices of 20 ms took seconds");
+}
+
+@Test
+fn aDeadlineLeavesTheFuelAsItWas(): void {
+    let plain = ready(spin);
+    let (r1, n1) = finish(
+        plain,
+        try! plain.call("spin", [Value.Int(1000)], Budget { fuel = 10 }),
+        10
+    );
+    let timed = ready(spin);
+    let both = Budget { fuel = 10, deadline = Duration.ofSecs(60) };
+    let (r2, n2) = finishWithin(timed, try! timed.call("spin", [Value.Int(1000)], both), both);
+    assertEq(ok(r1), Value.Int(1000));
+    assertEq(ok(r2), Value.Int(1000));
+    assertEq(n2, n1);
+}
+
+@Test
+fn aCallWithinItsDeadlineEnds(): void {
+    // more backward jumps than one slice holds: the slices follow each other
+    let inst = ready(spin);
+    let r = try! inst.call("spin", [Value.Int(100000)], Budget { deadline = Duration.ofSecs(60) });
+    assertEq(ok(r), Value.Int(100000));
+}
+
+@Test
+fn aWaitDoesNotOutlastTheDeadline(): void {
+    let inst = ready("fn nap() {\n    sleep(Duration.ofSecs(10))\n}\n");
+    let clock = Monotonic.now();
+    let r = try! inst.call("nap", [], Budget { deadline = Duration.ofMillis(50) });
+    assertEq(ok(r), Value.Str("suspended"));
+    assertTrue(clock.elapsed().nanos() < 2000000000, "a sleep of 10 s held the call");
 }

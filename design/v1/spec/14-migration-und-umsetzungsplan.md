@@ -3089,3 +3089,21 @@ Die `.lyrsasm`-Kontrolle (P47), Release gegen S7k1g:
 Die Vorhersage ist verfehlt: Neun kalte Aufrufe in heißen Armen verschieben die Zuteilung erneut, in beide
 Richtungen; im geometrischen Mittel sind es etwa −0,4 %. Die Funktion ist nötig, das Ergebnis wird
 angenommen und geht als Datenpunkt in P47 ein.
+
+**S8b2–S8b4, Ergebnis (2026-11-13).**
+- **S8b2:** Unter einer Deadline gibt der Scheduler das Fuel in Scheiben zu 10 000 Einheiten
+  (`startBudget`, `refill`). Am Ende einer Scheibe liest er die Uhr. `charge` prüft die Deadline vor jedem
+  Native, das abrechnet, und merkt sich, was es braucht. Eine Scheibe gibt mindestens das. Ein Warten auf
+  Timer oder Natives endet an der Deadline, die Tasks warten weiter. `runTask` bleibt unverändert. Drei
+  Mutanten, alle wie vorhergesagt. Ein vierter, ohne jede Deadline, wurde nicht gefahren: Er lässt einen
+  Test hängen, statt ihn rot zu machen.
+- **S8b3:** `abort` mit einem Register der Dateien, Verzeichnisse und Kinder je Instanz. Was das Skript
+  selbst schließt, wird markiert und zwischen zwei Aufrufen vergessen, sonst wüchse das Register mit jedem
+  geöffneten File. Kinder bleiben bis zum Ende der Instanz im Register. Drei Mutanten: zwei getötet, einer
+  (die Warteschlange bleibt) überlebt wie vorhergesagt als äquivalent, denn die Instanz endet ohnehin.
+- **S8b4 (P33):** `costOf` am Anfang von `callNative` rechnet für Text und Sortieren nach Spec 12
+  Regel 37 ab. Ein Native, das nicht zahlen kann, tut nichts, und `call.n` hält wie bisher an. Drei
+  Mutanten wie vorhergesagt. Die `.lyrsasm`-Kontrolle ist auf 10⁻⁶ gleich mit S8b1:
+  Die Abrechnung außerhalb von `runTask` bewegt die Zuteilung nicht.
+
+Spec: 12 Regel 37, 17 Regeln 2–3. 416 Tests, 865 Fälle. **S8b fertig**; P33 und P34 gebaut.

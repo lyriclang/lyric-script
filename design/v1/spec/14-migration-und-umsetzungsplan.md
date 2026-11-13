@@ -3073,3 +3073,19 @@ und der Rest geht verloren (P34). Vier Teile:
 - **S8b4 Kostenregeln (P33):** `sort`, `repeat`, `+` und `*` auf Listen und alle anderen schweren Natives
   rechnen vor dem Start ab, je mit Test. `replace` und `split` sind Script-Code (std source-first) und
   zahlen ihr Fuel ohnehin.
+
+**S8b1, Ergebnis (2026-11-13).** Gebaut wie geschnitten: `suspendAt`, das Zurückstellen im Scheduler,
+`carry` und `Budget`. Vier neue Tests; die Tests von S8a nehmen `Budget` statt einer Zahl. Vier Mutanten,
+alle getötet wie vorhergesagt. 406 Tests, 865 Fälle.
+
+Die `.lyrsasm`-Kontrolle (P47), Release gegen S7k1g:
+
+| Programm | Änderung | erwartet |
+|---|---:|---|
+| `fib` | −2,3 % | innerhalb ±1 % |
+| `loop` | −1,4 % | innerhalb ±1 % |
+| `objects` | +2,4 % | innerhalb ±1 % |
+
+Die Vorhersage ist verfehlt: Neun kalte Aufrufe in heißen Armen verschieben die Zuteilung erneut, in beide
+Richtungen; im geometrischen Mittel sind es etwa −0,4 %. Die Funktion ist nötig, das Ergebnis wird
+angenommen und geht als Datenpunkt in P47 ein.

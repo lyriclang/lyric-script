@@ -7,7 +7,14 @@ import std.test { assertEq, assertTrue };
 import lyric_script.compiler.checker { ProgramUnit, checkModule };
 import lyric_script.compiler.codegen { generate };
 import lyric_script.loader { loadProgram };
-import lyric_script.vm.interp { CallResult, Instance, InstanceMisuse, InstancePhase, instanceOf };
+import lyric_script.vm.interp {
+    Budget,
+    CallResult,
+    Instance,
+    InstanceMisuse,
+    InstancePhase,
+    instanceOf,
+};
 import lyric_script.vm.value { Value };
 import lyric_script.vm.module { Module };
 
@@ -42,7 +49,7 @@ fn moduleOf(source: string): Module {
 
 fn ready(source: string): Instance {
     let inst = instanceOf(moduleOf(source));
-    match (try! inst.init(-1)) {
+    match (try! inst.init(Budget { })) {
         .Ok(_) => { }
         _ => assertTrue(false, "the top level did not end"),
     }
@@ -63,7 +70,7 @@ fn scalar(o: CallResult): int {
 // whether the instance refuses the call as the host's mistake
 fn refuses(inst: Instance, name: string): bool {
     try {
-        inst.call(name, [], -1);
+        inst.call(name, [], Budget { });
     } catch (e: InstanceMisuse) {
         return true;
     }
@@ -73,11 +80,11 @@ fn refuses(inst: Instance, name: string): bool {
 @Test
 fn theTopLevelRunsOnceAndItsGlobalsStay(): void {
     let inst = ready("var count = 10\nfn bump(): int {\n    count += 1\n    return count\n}\n");
-    assertEq(scalar(try! inst.call("bump", [], -1)), 11);
-    assertEq(scalar(try! inst.call("bump", [], -1)), 12);
+    assertEq(scalar(try! inst.call("bump", [], Budget { })), 11);
+    assertEq(scalar(try! inst.call("bump", [], Budget { })), 12);
     var again = false;
     try {
-        inst.init(-1);
+        inst.init(Budget { });
     } catch (e: InstanceMisuse) {
         again = true;
     }
@@ -87,16 +94,16 @@ fn theTopLevelRunsOnceAndItsGlobalsStay(): void {
 @Test
 fn aCallTakesItsArguments(): void {
     let inst = ready("fn add(a: int, b: int): int = a + b\n");
-    assertEq(scalar(try! inst.call("add", [Value.Int(40), Value.Int(2)], -1)), 42);
+    assertEq(scalar(try! inst.call("add", [Value.Int(40), Value.Int(2)], Budget { })), 42);
 }
 
 @Test
 fn aCallBeforeInitAndAnUnknownFunctionAreTheHostsMistakes(): void {
     let inst = instanceOf(moduleOf("fn f(): int = 1\n"));
     assertTrue(refuses(inst, "f"), "before init");
-    try! inst.init(-1);
+    try! inst.init(Budget { });
     assertTrue(refuses(inst, "g"), "no such function");
-    assertEq(scalar(try! inst.call("f", [], -1)), 1);
+    assertEq(scalar(try! inst.call("f", [], Budget { })), 1);
 }
 
 @Test
@@ -104,9 +111,9 @@ fn aPanicLeavesTheInstanceReady(): void {
     let inst = ready(
         "var n = 0\nfn boom() {\n    n += 1\n    panic(\"no\")\n}\nfn get(): int = n\n"
     );
-    assertEq(scalar(try! inst.call("boom", [], -1)), -1000);
+    assertEq(scalar(try! inst.call("boom", [], Budget { })), -1000);
     assertTrue(inst.phase() == InstancePhase.Ready);
-    assertEq(scalar(try! inst.call("get", [], -1)), 1);
+    assertEq(scalar(try! inst.call("get", [], Budget { })), 1);
 }
 
 @Test
@@ -114,7 +121,7 @@ fn theBudgetSuspendsTheInstance(): void {
     let inst = ready(
         "fn spin(): int {\n    var i = 0\n    while (i < 1000) {\n        i += 1\n    }\n    return i\n}\n"
     );
-    assertEq(scalar(try! inst.call("spin", [], 10)), -3000);
+    assertEq(scalar(try! inst.call("spin", [], Budget { fuel = 10 })), -3000);
     assertTrue(inst.phase() == InstancePhase.Suspended);
     assertTrue(refuses(inst, "spin"), "a suspended instance");
 }
@@ -122,7 +129,7 @@ fn theBudgetSuspendsTheInstance(): void {
 @Test
 fn anExitEndsTheInstance(): void {
     let inst = ready("fn quit() {\n    exit(3)\n}\nfn f(): int = 1\n");
-    assertEq(scalar(try! inst.call("quit", [], -1)), -4003);
+    assertEq(scalar(try! inst.call("quit", [], Budget { })), -4003);
     assertTrue(inst.phase() == InstancePhase.Ended);
     assertTrue(refuses(inst, "f"), "an ended instance");
 }
@@ -132,8 +139,8 @@ fn aDetachedTaskGoesOnInTheNextCall(): void {
     let inst = ready(
         "var seen = 0\nfn start() {\n    spawnDetached {\n        seen = 5\n    }\n}\nfn get(): int = seen\n"
     );
-    try! inst.call("start", [], -1);
-    assertEq(scalar(try! inst.call("get", [], -1)), 5);
+    try! inst.call("start", [], Budget { });
+    assertEq(scalar(try! inst.call("get", [], Budget { })), 5);
 }
 
 @Test

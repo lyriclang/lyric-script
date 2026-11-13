@@ -1,0 +1,97 @@
+// The budget of a host's call (S8b; Script 01 S5): a call the fuel halts goes on where it stopped
+// with `resume`, the same way every time; what was left when it halted stays, so a native dearer
+// than one grant gets through after some (P34).
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance, InstanceMisuse, InstancePhase };
+import lyric_script.vm.value { Value };
+
+let spin: string = "var calls = 0\nfn spin(n: int): int {\n    calls += 1\n    var i = 0\n    while (i < n) {\n        i += 1\n    }\n    return i\n}\nfn count(): int = calls\n";
+
+fn ready(source: string): Instance {
+    let inst = try! vmOf().load("t.lyrs", source);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn ok(r: CallResult): Value {
+    return match (r) {
+        .Ok(v) => v,
+        .Suspended => Value.Str("suspended"),
+        _ => Value.Str("not ok"),
+    };
+}
+
+// the call's end after resumes of `grant` units each, and how many it took
+fn finish(inst: Instance, first: CallResult, grant: int): (CallResult, int) {
+    var r = first;
+    var n = 0;
+    while (n < 1000) {
+        match (r) {
+            .Suspended => {
+                r = try! inst.resume(Budget { fuel = grant });
+                n += 1;
+            }
+            _ => {
+                return (r, n);
+            }
+        }
+    }
+    return (r, n);
+}
+
+@Test
+fn aHaltedCallGoesOnWhereItStopped(): void {
+    let inst = ready(spin);
+    let first = try! inst.call("spin", [Value.Int(1000)], Budget { fuel = 10 });
+    assertEq(ok(first), Value.Str("suspended"));
+    assertTrue(inst.phase() == InstancePhase.Suspended);
+    let (r, n) = finish(inst, first, 10);
+    assertEq(ok(r), Value.Int(1000));
+    assertTrue(n > 50, f"{n} resumes");
+    assertTrue(inst.phase() == InstancePhase.Ready);
+    // the call ran once, not again from its start at each resume
+    assertEq(ok(try! inst.call("count", [], Budget { })), Value.Int(1));
+    // the same halts, every time
+    let again = ready(spin);
+    let (r2, n2) = finish(
+        again,
+        try! again.call("spin", [Value.Int(1000)], Budget { fuel = 10 }),
+        10
+    );
+    assertEq(ok(r2), Value.Int(1000));
+    assertEq(n2, n);
+}
+
+@Test
+fn aResumeWithoutALimitEndsTheCall(): void {
+    let inst = ready(spin);
+    assertEq(
+        ok(try! inst.call("spin", [Value.Int(1000)], Budget { fuel = 10 })),
+        Value.Str("suspended")
+    );
+    assertEq(ok(try! inst.resume(Budget { })), Value.Int(1000));
+}
+
+@Test
+fn aNativeDearerThanOneGrantGetsThrough(): void {
+    // 3200 bytes cost 101 units at once (12 rule 17); each grant is 30
+    let inst = ready(
+        "fn conv(): int = (\"0123456789abcdef0123456789abcdef\" * 100).toBytes().length()\n"
+    );
+    let (r, n) = finish(inst, try! inst.call("conv", [], Budget { fuel = 30 }), 30);
+    assertEq(ok(r), Value.Int(3200));
+    assertTrue(n < 10, f"{n} resumes");
+}
+
+@Test
+fn onlyAHaltedCallIsResumed(): void {
+    let inst = ready(spin);
+    var refused = false;
+    try {
+        inst.resume(Budget { });
+    } catch (e: InstanceMisuse) {
+        refused = true;
+    }
+    assertTrue(refused, "a resume with nothing halted");
+}

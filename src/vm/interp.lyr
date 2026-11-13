@@ -456,6 +456,8 @@ class RunShared {
     gr: HeapRef[],
     interning: Interning,
     var budget: int,
+    // what a native that the budget did not cover left of it: `resume` adds to it (P34; S8b1)
+    var carry: int = 0,
     // what the run was started with, its own name first; a sandbox's are its host's to give
     argv: string[],
     // the code of an `exit`, which ends the run where a budget ends it
@@ -591,22 +593,39 @@ pub class Instance {
     shared: RunShared,
     feeds: List<Channel<Signal>>,
     var at: InstancePhase = InstancePhase.Fresh,
+    // the type of the result of the call in flight, which a `resume` ends (S8b1)
+    var pending: Boundary = Boundary.Void,
 
     /// What the instance takes next.
     pub fn phase(): InstancePhase {
         return this.at;
     }
 
-    /// Runs the script's top level (07 Top) with `fuel` units of budget, `-1` without a limit.
-    pub mut fn init(fuel: int): CallResult throws InstanceMisuse {
-        return resultOf(try this.initOutcome(fuel), Boundary.Void);
+    /// Runs the script's top level (07 Top) within `budget`.
+    pub mut fn init(budget: Budget): CallResult throws InstanceMisuse {
+        this.pending = Boundary.Void;
+        return resultOf(try this.initOutcome(budget.fuel), Boundary.Void);
+    }
+
+    /// Goes on with the call the budget halted (01 S5b; S8b1), within `budget` and what was left
+    /// when it halted (P34): a native dearer than one grant gets through after some.
+    pub mut fn resume(budget: Budget): CallResult throws InstanceMisuse {
+        if (this.at != InstancePhase.Suspended) {
+            throw InstanceMisuse { reason = f"resume on an instance that is {phaseName(this.at)}" };
+        }
+        let shared = this.shared;
+        shared.budget = if (budget.fuel < 0) -1 else shared.carry + budget.fuel;
+        shared.carry = 0;
+        let out = onOwnTask(() => schedule(shared));
+        this.settle(out);
+        return resultOf(out, this.pending);
     }
 
     /// Calls the function `name` a host may call (S8a3) with `args`, of the types its parameters
-    /// have, and `fuel` units of budget, `-1` without a limit; only after `init`. A function the
+    /// have, within `budget`; only after `init`. A function the
     /// host may not call, an argument of another type, or a parameter or result of a type the
     /// host does not pass is the host's mistake.
-    pub mut fn call(name: string, args: Value[], fuel: int): CallResult throws InstanceMisuse {
+    pub mut fn call(name: string, args: Value[], budget: Budget): CallResult throws InstanceMisuse {
         if (this.at != InstancePhase.Ready) {
             throw InstanceMisuse { reason = f"a call on an instance that is {phaseName(this.at)}" };
         }
@@ -652,7 +671,8 @@ pub class Instance {
             }
             k += 1;
         }
-        return resultOf(this.enter(x.function, s.toArray(), r.toArray(), fuel), x.result);
+        this.pending = x.result;
+        return resultOf(this.enter(x.function, s.toArray(), r.toArray(), budget.fuel), x.result);
     }
 
     /// `init` as the VM ends it, for the command line, which reports it itself.
@@ -681,6 +701,12 @@ pub class Instance {
     mut fn enter(fi: int, s: uint64[], r: HeapRef[], fuel: int): Outcome {
         let shared = this.shared;
         let out = onOwnTask(() => callIn(shared, fi, s, r, fuel));
+        this.settle(out);
+        return out;
+    }
+
+    // the phase a call's end leaves the instance in
+    mut fn settle(out: Outcome): void {
         this.at = match (out) {
             .Suspended => InstancePhase.Suspended,
             .Exit(_) => InstancePhase.Ended,
@@ -692,8 +718,13 @@ pub class Instance {
                 f.close();
             }
         }
-        return out;
     }
+}
+
+/// What a call may spend (01 S5a; S8b1): `fuel` units — a backward jump or a call costs one, a
+/// heavy native its work (01 S5c) —, `-1` without a limit.
+pub struct Budget :: [Debug] {
+    pub fuel: int = -1,
 }
 
 /// How a host's call ended (01 S11; S8a3): its value, an error that left every frame, a panic of
@@ -824,6 +855,7 @@ fn callIn(shared: RunShared, fi: int, args: uint64[], refs: HeapRef[], fuel: int
         k += 1;
     }
     shared.budget = fuel;
+    shared.carry = 0;
     shared.failed = null;
     forgetEnded(shared);
     shared.queue.push(main);
@@ -896,7 +928,12 @@ fn schedule(shared: RunShared): Outcome {
         match (out) {
             .Switch => { }
             // the budget holds the whole instance (N8, 01 S5b), and `exit` ends it, from any task
-            .Suspended | .Exit(_) => {
+            // a task the budget halted stands first again: `resume` goes on with it (S8b1)
+            .Suspended => {
+                shared.head -= 1;
+                return out;
+            }
+            .Exit(_) => {
                 return out;
             }
             _ => {
@@ -1904,7 +1941,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     if (shared.budget != -1) {
                         shared.budget = spend(shared.budget);
                         if (shared.budget == -2) {
-                            return Outcome.Suspended;
+                            return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                         }
                     }
                 }
@@ -1922,7 +1959,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         if (shared.budget != -1) {
                             shared.budget = spend(shared.budget);
                             if (shared.budget == -2) {
-                                return Outcome.Suspended;
+                                return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                             }
                         }
                     }
@@ -1938,7 +1975,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                         if (shared.budget != -1) {
                             shared.budget = spend(shared.budget);
                             if (shared.budget == -2) {
-                                return Outcome.Suspended;
+                                return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                             }
                         }
                     }
@@ -1952,7 +1989,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (shared.budget != -1) {
                     shared.budget = spend(shared.budget);
                     if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                        return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                     }
                 }
                 if (frames.length() >= maxDepth) {
@@ -2282,7 +2319,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (shared.budget != -1) {
                     shared.budget = spend(shared.budget);
                     if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                        return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                     }
                 }
                 if (frames.length() >= maxDepth) {
@@ -2325,7 +2362,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (shared.budget != -1) {
                     shared.budget = spend(shared.budget);
                     if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                        return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                     }
                 }
                 if (frames.length() >= maxDepth) {
@@ -2389,7 +2426,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 if (shared.budget != -1) {
                     shared.budget = spend(shared.budget);
                     if (shared.budget == -2) {
-                        return Outcome.Suspended;
+                        return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                     }
                 }
                 if (frames.length() >= maxDepth) {
@@ -3328,7 +3365,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 // a wait the budget does not cover does not start: this call again on `resume`
                 let job = waitJob(waiting, s, r, bs + b, br + c, shared);
                 if (shared.budget == -2) {
-                    return Outcome.Suspended;
+                    return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                 }
                 t.nativePending = true;
                 t.nativeToItsEnd = !nativeCancels(waiting);
@@ -3995,7 +4032,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                     if (let code = shared.exitCode) {
                         return Outcome.Exit(code);
                     }
-                    return Outcome.Suspended;
+                    return suspendAt(t, s, r, fi, pc, bs, br, report, frames);
                 }
                 pc += 1;
             }
@@ -4204,6 +4241,8 @@ fn charge(shared: RunShared, n: int): bool {
         return shared.budget == -1;
     }
     if (shared.budget < n) {
+        // what was left stays the run's: a `resume` adds to it (P34; S8b1)
+        shared.carry = shared.budget;
         shared.budget = -2;
         return false;
     }
@@ -5430,6 +5469,32 @@ fn bigTwo(
         }
     }
     return null;
+}
+
+/// Halts task `t` where the budget ran out (01 S5b; S8b1): its state kept as a wait keeps it, so
+/// that `resume` runs the instruction it stands at again — a backward jump, a call, a native that
+/// did nothing yet. One function for every place, not its code in each arm: the dispatch loop's
+/// registers move with any code in its arms (P47).
+fn suspendAt(
+    t: TaskState,
+    s: uint64[],
+    r: HeapRef[],
+    fi: int,
+    pc: int,
+    bs: int,
+    br: int,
+    report: ?Report,
+    frames: FrameStack
+): Outcome {
+    t.s = s;
+    t.r = r;
+    t.fi = fi;
+    t.pc = pc;
+    t.bs = bs;
+    t.br = br;
+    t.report = report;
+    t.frames = frames;
+    return Outcome.Suspended;
 }
 
 /// One unit of budget spent: the budget left, `-1` for none, `-2` once it ran out.

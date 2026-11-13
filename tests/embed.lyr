@@ -4,7 +4,7 @@
 import std.fs { readDir, removeAll, tempDir };
 import std.test { assertEq, assertTrue };
 import lyric_script.embed { LoadError, Vm, vmOf };
-import lyric_script.vm.interp { CallResult, Instance };
+import lyric_script.vm.interp { Budget, CallResult, Instance };
 
 fn scalar(o: CallResult): int {
     return match (o) {
@@ -16,8 +16,8 @@ fn scalar(o: CallResult): int {
 }
 
 fn callF(inst: Instance): int {
-    try! inst.init(-1);
-    return scalar(try! inst.call("f", [], -1));
+    try! inst.init(Budget { });
+    return scalar(try! inst.call("f", [], Budget { }));
 }
 
 // the error a load throws; none where it loaded

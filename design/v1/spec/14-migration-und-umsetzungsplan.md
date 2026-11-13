@@ -3047,3 +3047,29 @@ Prüfung:
   vorhergesagt als äquivalent. Einer (C3, eine Liste des Hosts mit falscher Slot-Form) überlebte gegen die
   Vorhersage: `for` und `length()` lesen eine Liste ohne `ns`/`nr`. Ein Test, der an eine Liste des Hosts
   anhängt, tötet ihn jetzt.
+
+**S8b, geteilt (2026-11-12).** Gelesen gegen den Code: `runTask` gibt `.Suspended` an sieben Stellen
+zurück (Rücksprünge, Aufrufe, ein Native, das sein Budget nicht bekommt), sichert dort aber den Zustand des
+Tasks nicht, wie es ein Taskwechsel tut. Ein Native, das sein Budget nicht bekommt, setzt den Rest auf -2,
+und der Rest geht verloren (P34). Vier Teile:
+- **S8b1 Fortsetzen:** An jeder Stelle, an der `runTask` anhält, sichert es den Zustand wie beim
+  Taskwechsel, über eine Funktion statt Code in jedem Arm. Der Scheduler stellt den Task an den Kopf der
+  Warteschlange zurück. `inst.resume(budget)` plant weiter. Das Budget wird ein `Budget` statt einer Zahl,
+  damit S8b2 die Deadline anfügen kann, ohne die API zu brechen. **P34: Zuteilungen addieren sich.** Was beim
+  Anhalten übrig war, bleibt und kommt zu dem dazu, was `resume` gibt. Ein Native, das teurer ist als eine
+  Zuteilung, kommt also nach einigen `resume` durch, deterministisch. Verworfen: dem Host sagen, was der
+  nächste Schritt braucht (eine zweite Größe an der Grenze, die er ausrechnen muss). Gemessen wird mit der
+  `.lyrsasm`-Kontrolle (P47).
+- **S8b2 Deadline:** `Budget { fuel, deadline }`. Mit einer Deadline gibt der Scheduler `runTask` das
+  Budget in Scheiben und prüft die Uhr zwischen ihnen und vor jedem Native, das abrechnet. `runTask` bleibt
+  dabei unverändert, und die Uhr wird nicht an jedem Rücksprung gelesen. Die Deadline ist nicht
+  deterministisch (01 S5a). Ein Native prüft sie vor seinem Start, und seine Kostenregel begrenzt, wie weit
+  es darüber hinaus läuft.
+- **S8b3 Abbruch:** `inst.abort()` nimmt einer Instanz, die ruht oder angehalten ist, alle Tasks. Auch
+  geparkte gehen, ohne `defer`. Danach schließt sie die Ressourcen der Instanz: offene Dateien,
+  Verzeichnisse, Kindprozesse, Abonnements. Dafür kommt ein Register je Instanz. Die Instanz endet mit
+  `.Aborted`. Verworfen: Sie bleibt danach benutzbar. Ihre Ressourcen sind dann geschlossen, und Globals,
+  die sie halten, zeigen auf geschlossene Griffe.
+- **S8b4 Kostenregeln (P33):** `sort`, `repeat`, `+` und `*` auf Listen und alle anderen schweren Natives
+  rechnen vor dem Start ab, je mit Test. `replace` und `split` sind Script-Code (std source-first) und
+  zahlen ihr Fuel ohnehin.

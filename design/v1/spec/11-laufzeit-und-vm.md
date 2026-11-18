@@ -119,6 +119,30 @@ Lyric-5-Hosts zu einem Nebenprodukt der Implementierung.
 
 ## Offen
 
+- **`@ScriptApi` (Hst; zu entscheiden in S8f/S8i), gesammelt 2026-11-18.** Anlass: der Maintainer
+  plant eine Engine in Lyric 5 mit ECS und skriptbaren Actors; sein Spiel (Lyric 5, raylib) wird der
+  erste Abnehmer, und der Beispiel-Host aus S8 soll ein Ausschnitt daraus sein statt eines Spielzeugs.
+  Entschieden ist nur der Satz in Hst: Das Makro sitzt im Paket `lyric_script`, wird im Lyric-5-Code
+  des Hosts angewendet und erzeugt den Text des `.lyrs`-Moduls und die Registrierung (Thunks
+  `Value` ⇄ Lyric-5-Typen). Script selbst kennt das Makro nicht. Offen:
+  - **Sammeln:** Ein Makro sieht nur seine eigene Deklaration. Wer fügt die annotierten Deklarationen
+    zu *einem* Modul `host.<m>` zusammen? Empfehlung: jede Deklaration einzeln annotiert, gesammelt
+    von einer Compile-Zeit-Abfrage „alle Deklarationen mit diesem Attribut“. Ob Lyric 5s Reflexion
+    das hergibt, ist **ungeprüft**; fehlt es, ist es eine Anforderung an Lyric 5 (wie A1–A4).
+  - **Die Datei für den Editor:** Makros schreiben keine Dateien. Empfehlung: Der Text ist ein
+    Compile-Zeit-Wert, den der Host der VM übergibt; ein Build-Schritt oder ein Befehl schreibt ihn
+    heraus, weil der Editor der Skriptautoren die Datei auf Platte braucht.
+  - **Structs und Klassen:** Kleine Werte ohne Identität (`Vec2`) gehen als tiefe Kopie (01 S9),
+    alles mit Identität als Handle-Klasse.
+  - **ECS-Daten:** Kopierte Komponenten brechen „schreib `hp` zurück“. Empfehlung: Entity-IDs als
+    Handle, Komponenten über Methoden am Handle; ob das ohne Kopie und ohne Thunk je Feld gut
+    ausdrückbar ist, zeigt der Abnehmer.
+  - **Callbacks** (`onTick { dt => … }`): Entschieden ist, dass sie der Instanz gehören, nach einem
+    Reload `.Stale` sind (01 S7c) und ein Callback aus einem Native nicht warten darf (S8d). Offen sind
+    die Form der Registrierung im Host und ihr Budget je Aufruf.
+  - **Instanzen je Actor:** Bei ≤ 100 KiB je leerer Instanz (Messpunkt 4) wären tausend Actors
+    100 MB. Empfehlung für Hosts: eine Instanz je Welt oder Mod, Actors als Objekte darin, Budget je
+    `step` oder `call`. Das gehört als Hinweis in den Guide der Einbettung.
 - Bereich 13 (in 12 aufgegangen): DAP, LSP, `pack`, Cache-Ort; Kostenregeln der schweren Natives
   (01 S5c).
 - ~~V3 bei Messpunkt 1 (S1): A4 behoben oder Umstellung auf `Obj`.~~ **Entschieden bei

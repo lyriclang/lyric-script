@@ -467,6 +467,9 @@ class RunShared {
     // S8c: the bytes the call may still allocate, -1 without a limit; the thread's count where the
     // slice began; what halted the call
     var allocCapped: bool = false,
+    // S8d: whether a call waits for what its tasks wait for — `call`, `resume` — or comes back,
+    // as `start` and `step` do
+    var pumping: bool = true,
     var allocLeft: int = 0,
     var allocBase: int = 0,
     var halt: Halt = Halt.Fuel,
@@ -586,6 +589,8 @@ pub fn run(module: Module, entry: string, args: uint64[], fuel: int, argv: strin
 pub enum InstancePhase :: [Equatable] {
     Fresh,
     Ready,
+    /// A started call waits; it takes `step` (S8d).
+    Started,
     Suspended,
     Ended,
     Broken,
@@ -637,6 +642,7 @@ pub class Instance {
             throw InstanceMisuse { reason = f"resume on an instance that is {phaseName(this.at)}" };
         }
         let shared = this.shared;
+        shared.pumping = true;
         let fuel = if (budget.fuel < 0) -1 else shared.carry + budget.fuel;
         let deadline = nanosOf(budget);
         let alloc = budget.alloc;
@@ -656,6 +662,65 @@ pub class Instance {
     /// host may not call, an argument of another type, or a parameter or result of a type the
     /// host does not pass is the host's mistake.
     pub mut fn call(name: string, args: Value[], budget: Budget): CallResult throws InstanceMisuse {
+        let p = try this.prepared(name, args);
+        this.pending = p.result;
+        this.shared.pumping = true;
+        return resultOf(this.enter(p.function, p.s, p.r, budget), p.result);
+    }
+
+    /// Starts a call as `call` does, but never waits (07 Wait; S8d): it runs until the call ends or
+    /// every task of the instance waits — for a timer, a native, a channel —, and the host goes on
+    /// with `step`. A host that must not stall, a game's frame, calls this.
+    pub mut fn start(name: string, args: Value[], budget: Budget): Step throws InstanceMisuse {
+        let p = try this.prepared(name, args);
+        this.pending = p.result;
+        this.shared.pumping = false;
+        return this.stepped(this.enter(p.function, p.s, p.r, budget));
+    }
+
+    /// Goes on with a started call without waiting (07 Wait; S8d): what is ready runs, then the
+    /// call's end or `Waiting`. A started call the budget halted goes on only with a new `budget`,
+    /// as `resume` gives one (01 S5b).
+    pub mut fn step(budget: ?Budget = null): Step throws InstanceMisuse {
+        let shared = this.shared;
+        if (this.at == InstancePhase.Started) {
+            shared.pumping = false;
+            return this.stepped(onOwnTask(() => schedule(shared)));
+        }
+        if (this.at == InstancePhase.Suspended && !shared.pumping) {
+            if (let b = budget) {
+                let fuel = if (b.fuel < 0) -1 else shared.carry + b.fuel;
+                let deadline = nanosOf(b);
+                let alloc = b.alloc;
+                return this.stepped(
+                    onOwnTask(
+                        () => {
+                            startBudget(shared, fuel, deadline, alloc);
+                            return schedule(shared);
+                        }
+                    )
+                );
+            }
+            throw InstanceMisuse { reason = "a halted call goes on with a new budget" };
+        }
+        throw InstanceMisuse { reason = f"a step on an instance that is {phaseName(this.at)}" };
+    }
+
+    // a started call's step as the host reads it
+    mut fn stepped(out: Outcome): Step {
+        match (out) {
+            .Switch => {
+                this.at = InstancePhase.Started;
+                return Step.Waiting;
+            }
+            _ => { }
+        }
+        this.settle(out);
+        return Step.Done(resultOf(out, this.pending));
+    }
+
+    // the function `name` a host may call, with `args` in its registers; the host's mistakes thrown
+    fn prepared(name: string, args: Value[]): Prepared throws InstanceMisuse {
         if (this.at != InstancePhase.Ready) {
             throw InstanceMisuse { reason = f"a call on an instance that is {phaseName(this.at)}" };
         }
@@ -701,8 +766,12 @@ pub class Instance {
             }
             k += 1;
         }
-        this.pending = x.result;
-        return resultOf(this.enter(x.function, s.toArray(), r.toArray(), budget), x.result);
+        return Prepared {
+            function = x.function,
+            s = s.toArray(),
+            r = r.toArray(),
+            result = x.result,
+        };
     }
 
     /// `init` as the VM ends it, for the command line, which reports it itself.
@@ -714,6 +783,7 @@ pub class Instance {
         if (fi < 0) {
             throw InstanceMisuse { reason = "the module has no top level" };
         }
+        this.shared.pumping = true;
         return this.enter(fi, [], [], budget);
     }
 
@@ -774,6 +844,21 @@ pub class Instance {
             }
         }
     }
+}
+
+/// A started call's state after a step (07 Wait; S8d): it waits — every task of it does — or it
+/// ended, as a call ends.
+pub enum Step {
+    Waiting,
+    Done(CallResult),
+}
+
+/// A call made ready: the function, its registers, the type of its result.
+struct Prepared {
+    function: int,
+    s: uint64[],
+    r: HeapRef[],
+    result: Boundary,
 }
 
 /// What a call may spend (01 S5a; S8b1, S8b2): `fuel` units — a backward jump or a call costs one,
@@ -848,6 +933,7 @@ fn phaseName(p: InstancePhase): string {
     return match (p) {
         .Fresh => "not initialised",
         .Ready => "ready",
+        .Started => "in a started call",
         .Suspended => "suspended",
         .Ended => "ended",
         .Broken => "broken by a failure of the VM",
@@ -1044,6 +1130,10 @@ fn schedule(shared: RunShared): Outcome {
             if (pastDeadline(shared)) {
                 shared.halt = Halt.Deadline;
                 return Outcome.Suspended;
+            }
+            // a started call does not wait: the host steps it again (07 Wait; S8d)
+            if (!shared.pumping) {
+                return Outcome.Switch;
             }
             // a native's end, a signal, or the earliest timer, ends the run's wait
             if (waits) {

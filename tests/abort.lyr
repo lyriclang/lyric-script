@@ -44,7 +44,7 @@ fn openFiles(): int {
     }
     var n = 0;
     try {
-        for (_ in try readDir("/proc/self/fd")) {
+        for (_ in readDir("/proc/self/fd")) {
             n += 1;
         }
     } catch (_) {

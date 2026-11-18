@@ -83,7 +83,7 @@ fn compiledScriptsLieInTheHostsCacheDirectory(): void {
     assertEq(callF(try! vm.load("t.lyrs", "fn f(): int = 3\n")), 3);
     var files = 0;
     try {
-        for (_ in try readDir(f"{dir}/bytecode")) {
+        for (_ in readDir(f"{dir}/bytecode")) {
             files += 1;
         }
     } catch (_) { }

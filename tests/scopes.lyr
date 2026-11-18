@@ -2,6 +2,7 @@
 // the script's file calls reach what lies at or below it, `..` and links resolved; what lies
 // outside is refused as the system refuses, `PermissionDenied`, in the scopes' words.
 import std.fs { createDir, exists, removeAll, tempDir };
+import std.process { Command };
 import std.test { assertEq, assertTrue };
 import lyric_script.embed { vmOf };
 import lyric_script.rights { allowed, scopesOf };
@@ -82,5 +83,27 @@ fn underScopesThereIsNoTemporaryDirectory(): void {
     let inst = scoped(dir);
     let said = text(try! inst.call("temp", [], Budget { }));
     assertTrue(said.contains("outside the scopes"), said);
+    try? removeAll(dir);
+}
+
+// a link inside the scope that points outside it does not open the outside: the path is resolved
+// before it is compared (needs `ln -s`; where there is none, the test has nothing to show)
+@Test
+fn aLinkDoesNotLeaveTheScope(): void {
+    let dir = try! tempDir();
+    try! createDir(f"{dir}/in");
+    try! createDir(f"{dir}/out");
+    let made = try? Command {
+        program = "ln",
+        args = ["-s", f"{dir}/out", f"{dir}/in/link"],
+    }.status();
+    if (made == null || !made.success()) {
+        try? removeAll(dir);
+        return;
+    }
+    let inst = scoped(f"{dir}/in");
+    let said = put(inst, f"{dir}/in/link/x.txt");
+    assertTrue(said.contains("outside the scopes"), said);
+    assertTrue(!exists(f"{dir}/out/x.txt"), "a link left the scope");
     try? removeAll(dir);
 }

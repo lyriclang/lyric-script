@@ -3171,3 +3171,26 @@ Teile:
   ein Funktionswert des Skripts, den der Host aufruft, läuft als eigener Aufruf der Instanz. Ein solcher
   Aufruf, den eine Implementierung des Hosts macht, darf nicht warten (11 Co): Er läuft mit `pumping`
   aus, und ein Warten darin ist ein Fehler mit eigenem Code.
+
+**S8e, Ergebnis (2026-11-18).**
+- **Gebaut:** Bereiche für `file` und `net` in einer Freigabe (`allowed`, `splitGrant`, `scopesOf`). Die
+  Wurzeln der Bereiche von `file` gehen aufgelöst in die Instanz (`fileScopes`). Jede Datei-Native prüft
+  ihre Pfade in ihrem Job, bevor sie handelt (`within`): Der Pfad wird aufgelöst (absolut, Links verfolgt,
+  ein Pfad, der noch nicht existiert, über seinen nächsten vorhandenen Elternpfad) und Teil für Teil
+  verglichen, unter Windows und macOS ohne Groß- und Kleinschreibung. Eine Ablehnung ist `PermissionDenied`
+  mit einem eigenen Code, den die Prelude als „outside the scopes this run was given" ausgibt.
+- **Entschieden nach Empfehlung:**
+  - Eine Ablehnung ist ein `IoError` und kein eigenes `PermissionError`. 01 nennt den Namen, aber 12
+    entscheidet einen einzigen Fehler für I/O, und eine Ablehnung des Bereichs ist dasselbe Scheitern wie die
+    des Systems. Verworfen: ein zweiter Fehlertyp für dieselbe Lage (Regel 2).
+  - Unter Bereichen gibt es keine temporären Dateien oder Verzeichnisse, weil sie außerhalb jedes Bereichs
+    liegen.
+  - Bereiche binden die Aufrufe des Skripts, nicht die Programme, die es startet (`process`).
+- **Die Bereiche von `net`** werden angenommen und gespeichert. Geprüft werden sie mit den Netz-Natives:
+  **Uhr S10**.
+- **Prüfung:**
+  - Sechs Unit-Tests und fünf Konformanzfälle; auf S7 sind vier der fünf Fälle rot, wie vorhergesagt.
+  - Vier Mutanten: drei getötet. J2 (ohne `canonicalize`) überlebte gegen die Vorhersage, weil `absolute`
+    `..` schon lexikalisch auflöst und nur das Verfolgen von Links ungeprüft war. Ein Test mit einem Link
+    nach außen (`ln -s`; wo es das nicht gibt, hat er nichts zu zeigen) tötet ihn jetzt.
+  - Spec 17 Regel 5. 431 Tests, 870 Fälle.

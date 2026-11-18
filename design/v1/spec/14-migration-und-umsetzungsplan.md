@@ -3138,3 +3138,15 @@ Entschieden nach Empfehlung:
   negativ, bis `resume` ein neues Budget gibt.
 - Vier Tests, vier Mutanten, alle getötet.
 - Spec 17 Regel 4. 420 Tests, 865 Fälle.
+
+**S8d, Ergebnis (2026-11-18).**
+- **API:** `inst.start(name, args, budget)` und `inst.step(budget?)` geben ein `Step`, `Waiting` oder
+  `Done(CallResult)`. Neue Phase `Started`: Sie nimmt nur `step` und `abort`.
+- **Umsetzung:** Der Scheduler bekommt eine Weiche `pumping`. Ohne sie kehrt er dort zurück, wo `call`
+  warten würde. `runTask` bleibt unberührt.
+- **Entschieden nach Empfehlung:** Ein gestarteter Aufruf, den das Budget anhält, läuft mit
+  `step(Budget)` weiter, sodass ein Host, der nie blockieren darf, auch kein `resume` braucht. Verworfen:
+  ein eigenes `resumeStep` (eine dritte Form für dasselbe).
+- **Callbacks aus Natives** (11 Co, „darf nicht warten") kommen mit der Host-API in S8f: Vorher ruft
+  kein Native ein Skript.
+- **Prüfung:** Fünf Tests, drei Mutanten, alle getötet. Spec 13 Regel 4. 425 Tests, 865 Fälle.

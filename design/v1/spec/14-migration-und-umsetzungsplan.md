@@ -3128,3 +3128,13 @@ Entschieden nach Empfehlung:
   des Skripts, und dieselbe Form für alle drei Grenzen hält die API klein.
 - **Die Prozessgrenze:** `setHeapLimit(bytes)` in `lyric_script.embed`, 0 für keine. Sie gilt für den
   ganzen Prozess, wie in Lyric 5.
+
+**S8c, Ergebnis (2026-11-18).** Gebaut wie geschnitten, mit dem Zähler der Laufzeit, `Halt` und
+`setHeapLimit`.
+- **Fehler, den der eigene Test fand:** Der erste Treffer setzte den Rest auf 0 zurück. Das nächste Lesen,
+  in `refill` gleich nach dem abgewiesenen Native, sah keinen Zuwachs, und der Aufruf lief bis zum Ende
+  weiter. Gefunden mit einer Probe am Aufruf; dieselbe Probe bestätigte, dass der Zähler im Haupt- und in
+  einem gespawnten Task zählt. Seither führt ein eigenes Flag, ob es eine Grenze gibt, und der Rest bleibt
+  negativ, bis `resume` ein neues Budget gibt.
+- Vier Tests, vier Mutanten, alle getötet.
+- Spec 17 Regel 4. 420 Tests, 865 Fälle.

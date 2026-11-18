@@ -3150,3 +3150,24 @@ Entschieden nach Empfehlung:
 - **Callbacks aus Natives** (11 Co, „darf nicht warten") kommen mit der Host-API in S8f: Vorher ruft
   kein Native ein Skript.
 - **Prüfung:** Fünf Tests, drei Mutanten, alle getötet. Spec 13 Regel 4. 425 Tests, 865 Fälle.
+
+**S8f, geteilt (2026-11-18).** Gelesen gegen den Code: Der Lexer kennt `@` schon als Token, der Parser
+keine Attribute. Es gibt kein Modul des Hosts, keine Funktion ohne Rumpf außerhalb von Interfaces und
+keinen Aufruf, der aus der VM in Lyric 5 zurückführt, außer über die feste Tabelle der Natives. Drei
+Teile:
+- **S8f1 Attribute (Art 2):** `@Name` und `@Name(args)` vor jeder Deklaration, die Argumente als
+  Konstantenausdrücke (09 At). Das AST trägt sie. Der Checker kennt die geschlossene Liste. In S8 ist
+  ihr erstes Glied `@Requires(...)`, die anderen der Liste (P43) kommen mit S11. Ein Name, der nicht
+  auf der Liste steht, ist ein Fehler. Die Daten-Attribute (Art 1) mit ihrer Reflexion kommen mit S10.
+- **S8f2 Module des Hosts:** `vm.host(name, declarations)` meldet ein Modul an, `import host.<name>`
+  löst darauf auf. Ein Modul des Hosts besteht aus Deklarationen ohne Rumpf: Funktionen, Structs und
+  Griffe (`class` ohne Felder, die der Host hält). `@Requires(.custom("saves"))` an einer Funktion oder
+  am Modul gibt ein Recht des Hosts, das wie `std` beim Laden geprüft wird (01 S2). Der Host gibt es mit
+  seinem Namen frei. Die Fehlermenge einer Funktion des Hosts ist ihre Deklaration (P14).
+- **S8f3 Implementierungen:** `vm.implement(module, name, fn(Value[]) -> Value)` registriert nach Namen.
+  Beim Laden muss jede Deklaration, die das Skript importiert, eine Implementierung haben. Der Aufruf
+  aus der VM geht über einen neuen Befehl `call.h` mit der Nummer der Implementierung. Er rechnet wie ein
+  Native ab, und `runTask` wird dabei mit der `.lyrsasm`-Kontrolle gemessen (P47). Ein Callback, also
+  ein Funktionswert des Skripts, den der Host aufruft, läuft als eigener Aufruf der Instanz. Ein solcher
+  Aufruf, den eine Implementierung des Hosts macht, darf nicht warten (11 Co): Er läuft mit `pumping`
+  aus, und ein Warten darin ist ein Fehler mit eigenem Code.

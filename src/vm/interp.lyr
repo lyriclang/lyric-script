@@ -49,7 +49,7 @@ import std.os {
     setEnv as osSetEnv,
     tempDir as osTempRoot,
 };
-import std.os { Signal, signals };
+import std.os { Signal, platform, signals };
 import std.process { Child, Command, Stdio };
 import std.path { separator as pathSeparator };
 import std.random { Random };
@@ -102,6 +102,7 @@ import lyric_script.vm.heap {
     sameRef,
 };
 import lyric_script.vm.descriptor { Interning, conforms };
+import lyric_script.rights { scopesOf };
 import lyric_script.vm.native { NativeFn, nativeCancels, nativeOf };
 
 /// How a run ended.
@@ -490,6 +491,8 @@ class RunShared {
     var timers: List<TimerEntry> = List<TimerEntry>.new(),
     // S8b3: the files, directories and children the instance's script made, for an abort to close
     var resources: List<HeapRef> = List<HeapRef>.new(),
+    // S8e: the roots of the file scopes the run was given, resolved; `null` for every file
+    var scopes: ?string[] = null,
     var timerSeq: int = 0,
     clock: Monotonic = Monotonic.now(),
     // S6e: the script's tasks waiting for a native, and the Lyric 5 channel a native's task
@@ -917,9 +920,117 @@ fn resultOf(out: Outcome, result: Boundary): CallResult {
 
 /// A new instance of `module`, its top level not run yet; `argv` is what `args` gives the script,
 /// its own name first (S8a1).
-pub fn instanceOf(module: Module, argv: string[] = []): Instance {
+pub fn instanceOf(module: Module, argv: string[] = [], scopes: ?string[] = null): Instance {
     let feeds = List<Channel<Signal>>.new();
-    return Instance { shared = newShared(module, -1, argv, feeds), feeds = feeds };
+    let shared = newShared(module, -1, argv, feeds);
+    shared.scopes = scopes;
+    return Instance { shared = shared, feeds = feeds };
+}
+
+/// The file scopes of grants (01 S1; S8e): `null` where `file` is given whole — without a scope,
+/// or every right with `all` —, else each scope resolved to the path it names now, as a file
+/// call's path is: a scope that does not exist yet is the place it would have.
+pub fn fileScopes(granted: string[], all: bool): ?string[] {
+    let scopes = scopesOf(granted, all, "file");
+    if (scopes == null) {
+        return null;
+    }
+    let out = List<string>.new();
+    for (s in scopes) {
+        out.push(resolvedPath(s));
+    }
+    return out.toArray();
+}
+
+/// The code that marks a refusal of the run's scopes among the system's `PermissionDenied` (S8e).
+let scopeRefusal: int = 4242;
+
+/// A file native's job, run where every path lies within the run's file scopes (01 S1, S3; S8e):
+/// else it answers as the system's refusal does, `PermissionDenied`, marked as the scopes'. The
+/// paths are resolved when the job runs, with links followed and `..` gone.
+fn within(shared: RunShared, paths: string[], job: fn() -> WaitAnswer): fn() -> WaitAnswer {
+    let scopes = shared.scopes;
+    if (scopes == null) {
+        return job;
+    }
+    return () => {
+        for (p in paths) {
+            if (!inScopes(scopes, resolvedPath(p))) {
+                return WaitAnswer { n = -((2 << 32) | scopeRefusal) };
+            }
+        }
+        return job();
+    };
+}
+
+/// Whether the resolved path `target` lies at or below one of `scopes`.
+fn inScopes(scopes: string[], target: string): bool {
+    let t = comparable(target);
+    for (s in scopes) {
+        let root = comparable(s);
+        if (t == root || t.startsWith(if (root.endsWith("/")) root else root + "/")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// A resolved path as scopes compare it: `/` between parts, and without case where the platform's
+/// file systems are without it (Windows, macOS).
+fn comparable(path: string): string {
+    let slashed = path.replace("\\", "/");
+    return match (platform()) {
+        .Windows | .MacOS => slashed.toLower(),
+        _ => slashed,
+    };
+}
+
+/// The path `name` names: absolute, links followed and `..` gone where it exists; where it does
+/// not, its nearest existing parent's so, and the rest as it is written — a file to be made is in
+/// a scope where its directory is.
+fn resolvedPath(name: string): string {
+    let abs = try fsAbsolute(name) catch (_) name;
+    if (let c = try? fsCanonicalize(abs)) {
+        return c;
+    }
+    // the nearest parent that exists, the rest after it
+    var head = abs;
+    var tail = "";
+    while (true) {
+        let cut = lastSeparator(head);
+        if (cut <= 0) {
+            return abs;
+        }
+        let name = head[cut + 1..head.length()].toString();
+        head = head[0..cut].toString();
+        if (name == "..") {
+            // a `..` beyond what exists: the parent's parent
+            let up = lastSeparator(head);
+            if (up > 0) {
+                head = head[0..up].toString();
+            }
+            continue;
+        }
+        if (name != "." && !name.isEmpty()) {
+            tail = if (tail.isEmpty()) name else name + "/" + tail;
+        }
+        if (let c = try? fsCanonicalize(head)) {
+            return if (tail.isEmpty()) c else c + "/" + tail;
+        }
+    }
+}
+
+fn lastSeparator(path: string): int {
+    let bytes = path.toBytes();
+    var k = bytes.length() - 1;
+    while (k >= 0) {
+        let b = bytes[k] as int;
+        if (b == 47 || b == 92) {
+            return k;
+        }
+        k -= 1;
+    }
+    return -1;
 }
 
 /// The name of `module`'s top level: a script's (07 Top; the code generator's `scriptEntry`), or the
@@ -4573,7 +4684,7 @@ fn waitJob(
             let name = textOf(r[y + 1]);
             let how = s[x] as int;
             charge(shared, bytesCost(name.length()));
-            return () => fileOpen(handle, name, how);
+            return within(shared, [name], () => fileOpen(handle, name, how));
         }
         .FsRead => {
             let file = fileAt(r[y]);
@@ -4604,7 +4715,7 @@ fn waitJob(
         }
         .FsMetadata => {
             let name = pathCharged(r[y + 1], shared);
-            return () => pathLook(name);
+            return within(shared, [name], () => pathLook(name));
         }
         .TimeZoneOpen => {
             let handle = r[y + 1];
@@ -4622,24 +4733,24 @@ fn waitJob(
         }
         .FsCreateDir => {
             let name = pathCharged(r[y], shared);
-            return () => pathDone(() => try fsCreateDir(name));
+            return within(shared, [name], () => pathDone(() => try fsCreateDir(name)));
         }
         .FsRemove => {
             let name = pathCharged(r[y], shared);
-            return () => pathDone(() => try fsRemove(name));
+            return within(shared, [name], () => pathDone(() => try fsRemove(name)));
         }
         .FsRemoveDir => {
             let name = pathCharged(r[y], shared);
-            return () => pathDone(() => try fsRemoveDir(name));
+            return within(shared, [name], () => pathDone(() => try fsRemoveDir(name)));
         }
         .FsRename => {
             let from = pathCharged(r[y], shared);
             let to = pathCharged(r[y + 1], shared);
-            return () => pathDone(() => try fsRename(from, to));
+            return within(shared, [from, to], () => pathDone(() => try fsRename(from, to)));
         }
         .FsCanonicalize => {
             let name = pathCharged(r[y + 1], shared);
-            return () => pathMade(() => try fsCanonicalize(name));
+            return within(shared, [name], () => pathMade(() => try fsCanonicalize(name)));
         }
         .FsAbsolute => {
             let name = pathCharged(r[y + 1], shared);
@@ -4702,16 +4813,25 @@ fn waitJob(
         }
         .FsTempDir => {
             charge(shared, 1);
-            return () => pathMade(() => try fsTempDir());
+            // a temporary directory lies outside every scope: under scopes there is none (S8e)
+            return within(
+                shared,
+                if (shared.scopes == null) [] else ["/"],
+                () => pathMade(() => try fsTempDir())
+            );
         }
         .FsTempFile => {
             charge(shared, 1);
-            return () => pathMade(() => try fsTempFile());
+            return within(
+                shared,
+                if (shared.scopes == null) [] else ["/"],
+                () => pathMade(() => try fsTempFile())
+            );
         }
         .FsDirOpen => {
             let handle = r[y];
             let name = pathCharged(r[y + 1], shared);
-            return () => dirOpen(handle, name);
+            return within(shared, [name], () => dirOpen(handle, name));
         }
         .FsDirNext => {
             let dir = dirAt(r[y + 1]);

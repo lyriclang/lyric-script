@@ -38,11 +38,13 @@ fn stdTable(): (string, string)[] {
     ];
 }
 
-/// The classes an `--allow` names, between commas — `null` where one is no class.
+/// The grants an `--allow` names, between commas — a class, or `file` and `net` with a scope after
+/// `=` (`file=./data`, `net=example.com:443`; 01 S1, S8e) — `null` where one is neither.
 fn allowed(text: string): ?string[] {
     let out = List<string>.new();
     for (part in text.split(',')) {
-        let name = part.trim().toString();
+        let grant = part.trim().toString();
+        let (name, scope) = splitGrant(grant);
         var known = false;
         for (c in classes) {
             if (c == name) {
@@ -52,7 +54,38 @@ fn allowed(text: string): ?string[] {
         if (!known) {
             return null;
         }
-        out.push(name);
+        if (scope != null && (scope.isEmpty() || (name != "file" && name != "net"))) {
+            return null;
+        }
+        out.push(grant);
+    }
+    return out.toArray();
+}
+
+/// A grant's class and its scope, `null` for none: `file=./data` is `("file", "./data")`.
+fn splitGrant(grant: string): (string, ?string) {
+    if (let k = grant.find("=")) {
+        return (grant[0..k].toString(), grant[k + 1..grant.length()].toString());
+    }
+    return (grant, null);
+}
+
+/// The scopes `granted` gives the class `right`: `null` where it gives the whole class — a grant
+/// without a scope, or `all` —, else the scopes, none where it gives none of it (S8e).
+fn scopesOf(granted: string[], all: bool, right: string): ?string[] {
+    if (all) {
+        return null;
+    }
+    let out = List<string>.new();
+    for (g in granted) {
+        let (name, scope) = splitGrant(g);
+        if (name == right) {
+            if (let s = scope) {
+                out.push(s);
+            } else {
+                return null;
+            }
+        }
     }
     return out.toArray();
 }
@@ -66,7 +99,7 @@ fn missing(uses: RightUse[], granted: string[], all: bool): RightUse[] {
     for (u in uses) {
         var given = false;
         for (g in granted) {
-            if (g == u.right) {
+            if (splitGrant(g).0 == u.right) {
                 given = true;
             }
         }

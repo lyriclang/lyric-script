@@ -12,7 +12,7 @@ import lyric_script.loader { Loaded, loadProgram };
 import lyric_script.rights { classesOf, missing };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.bytecode { NotOurs, decode, encode };
-import lyric_script.vm.interp { Instance, instanceOf };
+import lyric_script.vm.interp { Instance, fileScopes, instanceOf };
 import lyric_script.vm.module { CheckError, Module, RightUse, check };
 
 /// A diagnostic of a load, as the host reads it: an error or a warning, its code from the catalog
@@ -123,7 +123,7 @@ fn granted(module: Module, name: string, allow: string[], all: bool): Instance t
     if (lacking.length() > 0) {
         throw LoadError { missing = lacking };
     }
-    return instanceOf(module, [name]);
+    return instanceOf(module, [name], fileScopes(allow, all));
 }
 
 /// A diagnostic as it was said, an error or a warning.

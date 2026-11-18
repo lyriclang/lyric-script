@@ -635,7 +635,7 @@ summary = "A binding has neither a type nor a value, its value gives none or is 
 title = "a name in type position that is no type"
 severity = "error"
 area = "03-types"
-summary = "The name names no type. Lyric 5's LYR-SEM0011."
+summary = "The name names no type — or, after `@`, no attribute of the closed list (09 At; S8f1). Lyric 5's LYR-SEM0011."
 
 [LYS-SEM0007]
 title = "a value that cannot be indexed or iterated"
@@ -1322,3 +1322,27 @@ title = "an --allow of no rights"
 severity = "error"
 area = "14-cli"
 summary = "`--allow` names classes of rights between commas — file, net, process, os, native —; another word is refused. The exit code is 2."
+
+[LYS-PAR0042]
+title = "an attribute with no declaration to carry it"
+severity = "error"
+area = "11-metaprogramming"
+summary = "An attribute stands before something that is no declaration — a statement, an `import`, an `extend` —, or at the end of the file. It describes the function, type, enum or interface after it (09 At; S8f1). Lyric 5's LYR-PAR0042."
+
+[LYS-SEM0065]
+title = "an attribute that cannot stand here"
+severity = "error"
+area = "11-metaprogramming"
+summary = "An attribute stands where it means nothing: `@Requires` belongs to a module of the host, which names the rights its functions ask for (01 S2; S8f1). Lyric 5's LYR-SEM0065."
+
+[LYS-SEM0066]
+title = "an attribute argument that is not a compile-time value"
+severity = "error"
+area = "11-metaprogramming"
+summary = "An attribute's argument is no literal and no variant without a payload: an attribute describes its declaration before anything runs (09 At). Lyric 5's LYR-SEM0066."
+
+[LYS-SEM0068]
+title = "an attribute repeated on one declaration"
+severity = "error"
+area = "11-metaprogramming"
+summary = "The same attribute stands twice on one declaration. Lyric 5's LYR-SEM0068."

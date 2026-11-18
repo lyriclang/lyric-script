@@ -11,6 +11,7 @@ import lyric_script.compiler.ast {
     AliasDecl,
     Arg,
     AssocDecl,
+    Attribute,
     FixedAnswer,
     BinaryOp,
     Block,
@@ -369,6 +370,68 @@ class Parser {
     }
 
     mut fn parseItem(): Item throws SyntaxError {
+        let at = this.current();
+        let attrs = try this.parseAttributes();
+        let item = try this.parseBareItem();
+        if (attrs.length() == 0) {
+            return item;
+        }
+        // an attribute describes the declaration after it (09 At; S8f1)
+        match (item) {
+            .Decl(.Fn(f)) => {
+                return Item.Decl(Decl.Fn(f with { attributes = attrs }));
+            }
+            .Decl(.Type(t)) => {
+                return Item.Decl(Decl.Type(t with { attributes = attrs }));
+            }
+            .Decl(.Enum(e)) => {
+                return Item.Decl(Decl.Enum(e with { attributes = attrs }));
+            }
+            .Decl(.Interface(i)) => {
+                return Item.Decl(Decl.Interface(i with { attributes = attrs }));
+            }
+            _ => { }
+        }
+        this.report(
+            "LYS-PAR0042",
+            "an attribute with no declaration to carry it: it stands before a function, a type, an enum or an interface",
+            at
+        );
+        return item;
+    }
+
+    /// `@Name` and `@Name(args)` before a declaration (09 At; S8f1), on its own line or before the
+    /// declaration on the same; the arguments are expressions, which the checker holds to
+    /// compile-time values.
+    mut fn parseAttributes(): Attribute[] throws SyntaxError {
+        let out = List<Attribute>.new();
+        while (this.at(.At)) {
+            let at = this.advance();
+            let name = try this.expect(.Ident, "LYS-PAR0026", "an attribute's name");
+            let args = List<Expr>.new();
+            if (this.at(.LParen)) {
+                this.advance();
+                this.skipNewlines();
+                while (!this.at(.RParen)) {
+                    args.push(try this.parseExpr());
+                    this.skipNewlines();
+                    if (!this.at(.Comma)) {
+                        break;
+                    }
+                    this.advance();
+                    this.skipNewlines();
+                }
+                try this.expect(.RParen, "LYS-PAR0008", "')' after an attribute's arguments");
+            }
+            out.push(
+                Attribute { name = this.text(name), args = args.toArray(), span = this.spanOf(at) }
+            );
+            this.skipTerminators();
+        }
+        return out.toArray();
+    }
+
+    mut fn parseBareItem(): Item throws SyntaxError {
         let first = this.current();
         // visible beyond its file unless `private` (02 V); `pub` and `internal` are taken
         var isPub = true;

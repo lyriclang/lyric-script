@@ -14,6 +14,7 @@ import std.collections { List, Map, Set };
 import std.core { StringBuilder };
 import lyric_script.compiler.ast {
     AliasDecl,
+    Attribute,
     Arg,
     BinaryOp,
     Block,
@@ -166,6 +167,7 @@ fn checkModule(
         text = parsed.text,
     };
     c.source = parsed.text;
+    c.checkAttributes(module);
     c.declare(module);
     c.checkMain(module);
     c.checkImports();
@@ -5856,6 +5858,49 @@ class Checker {
                 info.hidden.insert(m.name);
             } else if (m.isInternal) {
                 info.internalNames.insert(m.name);
+            }
+        }
+    }
+
+    /// The attributes of the program's declarations (09 At; S8f1): a closed list the compiler knows
+    /// (kind 2), each at most once on a declaration; its arguments compile-time values.
+    /// `@Requires` belongs to a module of the host (S8f2) — none is loaded yet.
+    mut fn checkAttributes(module: Module): void {
+        for (item in module.items) {
+            match (item) {
+                .Decl(.Fn(f)) => this.attributesOf(f.attributes),
+                .Decl(.Type(t)) => this.attributesOf(t.attributes),
+                .Decl(.Enum(e)) => this.attributesOf(e.attributes),
+                .Decl(.Interface(i)) => this.attributesOf(i.attributes),
+                _ => { }
+            }
+        }
+    }
+
+    mut fn attributesOf(attrs: Attribute[]): void {
+        let seen = Set<string>.new();
+        for (a in attrs) {
+            if (seen.contains(a.name)) {
+                this.error("LYS-SEM0068", f"'@{a.name}' stands twice on one declaration", a.span);
+                continue;
+            }
+            seen.insert(a.name);
+            for (x in a.args) {
+                if (!isConstantArg(x)) {
+                    this.error(
+                        "LYS-SEM0066",
+                        f"an argument of '@{a.name}' is no compile-time value: a literal or a variant without a payload",
+                        a.span
+                    );
+                }
+            }
+            match (a.name) {
+                "Requires" => this.error(
+                    "LYS-SEM0065",
+                    "'@Requires' stands only in a module of the host, which names the rights its functions ask for",
+                    a.span
+                ),
+                _ => this.error("LYS-SEM0011", f"there is no attribute '@{a.name}'", a.span),
             }
         }
     }
@@ -19096,6 +19141,20 @@ fn boxE(e: TExpr): Box<TExpr> {
 
 fn boxTy(t: Ty): Box<Ty> {
     return Box<Ty> { value = t };
+}
+
+/// Whether an attribute's argument is a compile-time value (09 At): a literal — a string without
+/// holes —, or a variant without a payload (`.Saves`).
+fn isConstantArg(x: Expr): bool {
+    return match (x) {
+        .Int(_, _) | .Float(_, _) | .Bool(_, _) | .Char(_, _) | .Str(_, _) => true,
+        .Unary(.Neg, v, _) => match (v.value) {
+            .Int(_, _) | .Float(_, _) => true,
+            _ => false,
+        },
+        .Implicit(_, _) => true,
+        _ => false,
+    };
 }
 
 /// Whether every path through the statements ends: in a `return`, or a `loop` without a break.

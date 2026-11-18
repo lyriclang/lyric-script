@@ -324,6 +324,7 @@ struct InterfaceDecl :: [Debug] {
     span: Span,
     assoc: AssocDecl[] = [],
     statics: StaticLet[] = [],
+    attributes: Attribute[] = [],
 }
 
 /// `extend T { … }` or `extend T :: [I] { … }`: methods, and conformances, added to a type.
@@ -371,6 +372,14 @@ struct TypeParam :: [Debug] {
     defaultType: ?TypeExpr = null,
 }
 
+/// An attribute before a declaration (09 At; S8f1): `@Name` or `@Name(args)`, its arguments as
+/// written — the checker holds them to compile-time values.
+struct Attribute :: [Debug] {
+    name: string,
+    args: Expr[],
+    span: Span,
+}
+
 struct FnDecl :: [Debug] {
     name: string,
     typeParams: TypeParam[],
@@ -383,6 +392,7 @@ struct FnDecl :: [Debug] {
     isStatic: bool,
     span: Span,
     throws: ?ThrowsClause = null,
+    attributes: Attribute[] = [],
 }
 
 /// A function's `throws`: its types, none for the bare form, which is `throws Error` (06 §2);
@@ -418,6 +428,7 @@ struct TypeDecl :: [Debug] {
     span: Span,
     answers: TypeAnswer[] = [],
     statics: StaticLet[] = [],
+    attributes: Attribute[] = [],
 }
 
 /// A variant of an enum: its name and its payload — positional types (`Num(int)`), named fields
@@ -442,6 +453,7 @@ struct EnumDecl :: [Debug] {
     span: Span,
     answers: TypeAnswer[] = [],
     statics: StaticLet[] = [],
+    attributes: Attribute[] = [],
 }
 
 /// `type Name = T`.

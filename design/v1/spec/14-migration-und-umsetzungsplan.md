@@ -3207,3 +3207,37 @@ Teile:
   wie Python-Dekoratoren ohne Wirkung.
 - **Prüfung:** Fünf Konformanzfälle (Spec 11 Regel 1), auf S7 alle fünf rot. Drei Mutanten, alle getötet,
   aber nur durch die Konformanz, die Unit-Tests sehen keinen. 431 Tests, 875 Fälle.
+
+**S8f2, Zuschnitt (2026-11-19).** Gelesen gegen den Code. Ein Aufruf des Hosts braucht keinen eigenen
+Befehl, er geht über `call.n` mit einem neuen Native `host`. Jede Funktion des Hosts wird im Modul eine
+Funktion aus drei Befehlen: Nummer laden, `call.n host`, zurückgeben. Die Nummer steht im Slot hinter den
+Parametern. Damit bleibt `runTask` unberührt, und die Kontrolle nach P47 betrifft nur `callNative`, wie in
+S8b4. Neu geteilt:
+- **S8f2 Funktionen des Hosts:**
+  - `vm.host(name, source)` meldet ein Modul an. Es wird beim Anmelden geprüft, und ein Fehler darin ist
+    ein `LoadError` des Hosts. `import host.<name>` löst darauf auf, und ohne Anmeldung ist es
+    `LYS-RES0003`. Die Kommandozeile meldet keines an.
+  - Ein Modul des Hosts hält nur Funktionen ohne Rumpf, deren Parameter und Ergebnis Werte der Grenze
+    sind (S8a3), und `@Requires("recht")` an ihnen (`LYS-SEM0907`, `LYS-SEM0908`).
+  - Ein Import verlangt die Rechte dessen, was er nennt. Ein Import des ganzen Moduls verlangt alle.
+    Geprüft wird beim Laden wie bei `std` (01 S2). Der Name eines Rechts ist frei. Heißt er wie eine Klasse
+    von `std`, ist er diese Klasse (ein Mechanismus).
+  - `vm.implement(module, name, fn(Value[]) -> Value throws HostFailure)` registriert eine
+    Implementierung. Beim Laden muss jede Funktion des Hosts, die das Programm erreicht, eine haben, sonst
+    ist es ein `LoadError`.
+  - Ein `HostFailure` ist für das Skript eine Panik mit eigenem Code (`LYS-RT0900`). Was ein Host
+    deklariert werfen lässt, kommt mit S8f3.
+- **S8f3 Griffe, Fehler, Callbacks:**
+  - Griffe sind `class` ohne Felder, ihre Methoden ohne Rumpf, und an der Grenze `Value.Handle`.
+  - Die Fehlermenge einer Funktion des Hosts ist ihre Deklaration (P14). Ein `HostFailure` mit einem
+    deklarierten Typ wird geworfen.
+  - Callbacks dürfen nicht warten (11 Co).
+- **Structs an der Grenze** kommen mit der tiefen Kopie (S8g).
+- **Entschieden nach Empfehlung:**
+  - Das Recht steht als String: `@Requires("saves")` statt `.custom("saves")` aus 01 S2. Die
+    Argumentregel von 09 nimmt nur Literale und Varianten ohne Nutzlast, und eine eigene Variante mit
+    Nutzlast nur für `@Requires` wäre ein zweiter Begriff von Konstante.
+  - Ein Recht steht an der einzelnen Deklaration. „Ein ganzes Modul" heißt: jede Deklaration trägt es.
+    Verworfen: eine Form am Modul. Sie wäre eine zweite Schreibweise derselben Sache, und Script hat keine
+    Modul-Attribute.
+  - Rechte gelten je Import und nicht je Aufruf, wie bei `std`.

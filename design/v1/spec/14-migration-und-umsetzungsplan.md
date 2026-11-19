@@ -3194,3 +3194,16 @@ Teile:
     `..` schon lexikalisch auflöst und nur das Verfolgen von Links ungeprüft war. Ein Test mit einem Link
     nach außen (`ln -s`; wo es das nicht gibt, hat er nichts zu zeigen) tötet ihn jetzt.
   - Spec 17 Regel 5. 431 Tests, 870 Fälle.
+
+**S8f1, Ergebnis (2026-11-19).**
+- **Gebaut:** Der Parser liest `@Name` und `@Name(args)` vor einer Deklaration, auf eigener Zeile oder
+  davor auf derselben, und hängt sie an Funktion, Typ, Enum oder Interface. Vor allem anderen ist es
+  `LYS-PAR0042`. Der Checker prüft die geschlossene Liste vor dem Deklarieren: ein Name zweimal
+  (`SEM0068`), ein Argument, das kein Literal und keine Variante ohne Nutzlast ist (`SEM0066`),
+  `@Requires` außerhalb eines Moduls des Hosts (`SEM0065`, bis S8f2 also immer), jeder andere Name
+  (`SEM0011`).
+- **Entschieden nach Empfehlung:** Ein Attribut, das nicht auf der Liste steht, ist ein Fehler und keine
+  Warnung, weil eine geschlossene Liste, die Unbekanntes duldet, keine ist (09 At). Verworfen: ignorieren
+  wie Python-Dekoratoren ohne Wirkung.
+- **Prüfung:** Fünf Konformanzfälle (Spec 11 Regel 1), auf S7 alle fünf rot. Drei Mutanten, alle getötet,
+  aber nur durch die Konformanz, die Unit-Tests sehen keinen. 431 Tests, 875 Fälle.

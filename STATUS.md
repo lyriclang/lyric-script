@@ -10,6 +10,7 @@ Lyric 4.x status up to the 4.6 cut is archived at
 ## Where things stand
 
 - **The design round is complete** (2026-10-28, lyric-script#1): areas 00–14, two probes.
+- **Script character** (2026-11-18): area 15 decides five things that make Script its own language for quick work — `main`'s signature as the command line, a process literal `` $`…` ``, `-e`/`-n`/`-p`, a checked regex literal `re"…"` as a `Pattern`, indentation dropped from `"""` strings; clocked to S10, S11, S12.
 - **The 4.x line ends**: tag `v4.6-final` and branch `archive/4.x` hold the C# toolchain and the
   .NET VM; `main` is Lyric-Script 1.0 in development, written in Lyric 5, version `1.0.0-dev`.
 - **S0 done** (2026-10-28, lyric-script#2, tag `s0-complete`): `lyric-script --version` built and run in CI on every Tier 1 target against Lyric 5 `c2e88a96`.

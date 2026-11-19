@@ -2937,3 +2937,14 @@ Lehren:
 - Die Konformanz liest ihren Cache nie zurück; diesen Weg prüfen nur die Unit-Tests.
 
 382 Tests, 865 Fälle; Bytecode-Format 47.
+
+## Uhren aus der Runde „Script-Charakter" (2026-11-18)
+
+Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:
+- **S10:** C5 (gemeinsame Einrückung in `"""`), C4 (Regex-Literal `re"…"` als `Pattern`) und C2
+  (Befehlsliteral `` $`…` `` mit `ProcessError`).
+- **S11:** C1 (die Signatur von `main` als Kommandozeile, die Hilfe aus dem Doc-Kommentar).
+- **S12:** C3 (`-e`, `-n`, `-p` und die Ausgabe des letzten Ausdrucks, mit dem REPL).
+
+Jeder Meilenstein schneidet sie in seine Slices, wenn er geplant wird; die Prüfung je Punkt sind
+Konformanzfälle und, für C1 und C3, Fälle der Kommandozeile.

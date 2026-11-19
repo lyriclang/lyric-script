@@ -265,7 +265,9 @@ fn __ioFailure(answer: int, path: ?string, detail: string): IoError {
         15 => IoErrorKind.Unsupported,
         _ => IoErrorKind.Other { code = code & 0xFFFFFFFF },
     }
-    return IoError { kind = kind, path = path, detail = detail }
+    // a refusal of the run's file scopes, not the system's (01 S1; S8e)
+    let said = if (code >> 32 == 2 && (code & 0xFFFFFFFF) == 4242) "outside the scopes this run was given" else detail
+    return IoError { kind = kind, path = path, detail = said }
 }
 class TimedOut :: Error {
     fn message(): string = "timed out"

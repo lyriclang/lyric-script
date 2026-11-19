@@ -16,6 +16,7 @@ import lyric_script.compiler.typed {
     TStmt,
     Ty,
     FieldInfo,
+    FnInfo,
     TypeInfo,
     elemOffset,
     isPlainRef,
@@ -26,8 +27,11 @@ import lyric_script.compiler.typed {
     typeOf,
 };
 import lyric_script.vm.module {
+    Boundary,
+    Callable,
     Function,
     Handler,
+    HostDecl,
     Module,
     ReturnKind,
     TypeDesc,
@@ -45,9 +49,27 @@ let scriptEntry: string = "<script>";
 fn generate(p: Program, name: string): Module {
     let layout = Placement.of(p);
     let functions = List<Function>.new();
+    // the functions of the host's modules, numbered in their order (S8f2)
+    let hosts = List<HostDecl>.new();
     var k = 0;
     while (k < p.functions.length()) {
         let g = FnGen.new(p, layout, k);
+        let f = p.functions[k];
+        if (f.host != "") {
+            g.host = hosts.length();
+            let params = List<Boundary>.new();
+            for (x in f.params) {
+                params.push(boundaryOf(x.ty));
+            }
+            hosts.push(
+                HostDecl {
+                    module = f.host,
+                    name = f.name,
+                    params = params.toArray(),
+                    result = boundaryOf(f.returns),
+                }
+            );
+        }
         functions.push(g.generate());
         k += 1;
     }
@@ -77,6 +99,55 @@ fn generate(p: Program, name: string): Module {
         errorCause = p.errorCause,
         cancelledType = cancelledType,
         channelClosedType = channelClosedType,
+        exports = exportsOf(p),
+        hosts = hosts.toArray(),
+    };
+}
+
+/// The functions of the entry a host may call (S8a3): the public ones of its top level, neither
+/// generic nor a lambda's, not the top level itself; each with the types at its boundary.
+fn exportsOf(p: Program): Callable[] {
+    let out = List<Callable>.new();
+    var k = 0;
+    while (k < p.functions.length()) {
+        let f = p.functions[k];
+        if (k != p.main
+            && f.owner < 0
+            && f.file == ""
+            && f.isPub
+            && !f.env
+            && !f.abstract
+            && f.typeParams.length() == 0
+            && f.templateOf < 0) {
+            let params = List<Boundary>.new();
+            for (x in f.params) {
+                params.push(boundaryOf(x.ty));
+            }
+            out.push(
+                Callable {
+                    name = f.name,
+                    function = k,
+                    params = params.toArray(),
+                    result = boundaryOf(f.returns),
+                }
+            );
+        }
+        k += 1;
+    }
+    return out.toArray();
+}
+
+/// The type `t` at a call's boundary (S8a3).
+fn boundaryOf(t: Ty): Boundary {
+    return match (t) {
+        .Int => Boundary.Int,
+        .Float => Boundary.Float,
+        .Bool => Boundary.Bool,
+        .Char => Boundary.Char,
+        .Str => Boundary.Str,
+        .Void => Boundary.Void,
+        .List(e) => Boundary.List(Box<Boundary> { value = boundaryOf(e.value) }),
+        _ => Boundary.Other,
     };
 }
 
@@ -620,6 +691,8 @@ class FnGen {
     var baseS: int = 0,
     var baseR: int = 0,
     var line: int = 0,
+    // a function of the host's module: its number (S8f2); -1 for any other
+    var host: int = -1,
 
     static fn new(p: Program, layout: Placement, index: int): FnGen {
         return FnGen {
@@ -688,8 +761,12 @@ class FnGen {
         this.baseR = this.nextR;
         this.maxS = this.nextS;
         this.maxR = this.nextR;
-        for (s in info.body) {
-            this.stmt(s);
+        if (this.host >= 0) {
+            this.hostBody(info, paramsS, paramsR);
+        } else {
+            for (s in info.body) {
+                this.stmt(s);
+            }
         }
         let (retS, retR) = this.slots(info.returns);
         let returns = if (retS == 0 && retR == 0) ReturnKind.Void
@@ -717,6 +794,23 @@ class FnGen {
             handlers = this.handlers.toArray(),
             file = info.file,
         };
+    }
+
+    /// The body of a function of the host's module (S8f2): its number in the register after the
+    /// parameters, `call.n host`, and its value back — from that register, or from the one after the
+    /// references.
+    mut fn hostBody(info: FnInfo, paramsS: int, paramsR: int): void {
+        this.need(paramsS + 1, paramsR + 1);
+        this.loadInt(paramsS, this.host);
+        this.emit(Op.CallN, nativeNumber(NativeFn.Host), paramsS, 0);
+        let (retS, retR) = this.slots(info.returns);
+        if (retS == 1) {
+            this.emit(Op.RetS, paramsS, 0, 0);
+        } else if (retR == 1) {
+            this.emit(Op.RetR, paramsR, 0, 0);
+        } else {
+            this.emit(Op.Ret, 0, 0, 0);
+        }
     }
 
     /// The module place of the descriptor of `t` (S3i).

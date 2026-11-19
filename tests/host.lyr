@@ -1,0 +1,286 @@
+// The host's modules (S8f2; Script 01 S2, 11 Hst): a module of functions without a body that the
+// host registers and implements; a script imports it as `host.<name>`, asks for the rights its
+// functions name, and calls them as its own. What the host's function cannot do is a panic.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { HostMisuse, LoadError, Vm, vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance };
+import lyric_script.vm.value { HostFailure, Value };
+
+fn intOf(v: Value): int {
+    return match (v) {
+        .Int(i) => i,
+        _ => -1,
+    };
+}
+
+fn strOf(v: Value): string {
+    return match (v) {
+        .Str(s) => s,
+        _ => "?",
+    };
+}
+
+fn floatOf(v: Value): float {
+    return match (v) {
+        .Float(f) => f,
+        _ => -1.0,
+    };
+}
+
+// a VM with the module `host.calc` and every function of it implemented
+fn calcVm(): Vm {
+    let vm = vmOf();
+    try! vm.host(
+        "calc",
+        "/// twice the number\nfn twice(n: int): int\nfn greet(name: string): string\nfn sum(xs: int[]): int\nfn mix(a: int, s: string, b: float, xs: string[]): string\nfn count(): int\nfn broken(n: int): int\nfn wrong(): int\n@Requires(\"saves\")\nfn save(slot: int): bool\n"
+    );
+    try! vm.implement("calc", "twice", (args) => Value.Int(intOf(args[0]) * 2));
+    try! vm.implement("calc", "greet", (args) => Value.Str(f"hello, {strOf(args[0])}"));
+    try! vm.implement(
+        "calc",
+        "sum",
+        (args) => {
+            var n = 0;
+            match (args[0]) {
+                .List(xs) => {
+                    for (x in xs) {
+                        n += intOf(x);
+                    }
+                }
+                _ => { }
+            }
+            Value.Int(n)
+        }
+    );
+    try! vm.implement(
+        "calc",
+        "mix",
+        (args) => {
+            var tail = "";
+            match (args[3]) {
+                .List(xs) => {
+                    for (x in xs) {
+                        tail = tail + strOf(x);
+                    }
+                }
+                _ => { }
+            }
+            Value.Str(f"{intOf(args[0])} {strOf(args[1])} {floatOf(args[2])} {tail}")
+        }
+    );
+    var calls = 0;
+    try! vm.implement(
+        "calc",
+        "count",
+        (_) => {
+            calls += 1;
+            Value.Int(calls)
+        }
+    );
+    try! vm.implement(
+        "calc",
+        "broken",
+        (_) => {
+            throw HostFailure { reason = "the disk is full" };
+        }
+    );
+    try! vm.implement("calc", "wrong", (_) => Value.Str("no number"));
+    try! vm.implement("calc", "save", (args) => Value.Bool(intOf(args[0]) > 0));
+    return vm;
+}
+
+fn ready(vm: Vm, source: string, allow: string[] = []): Instance {
+    let inst = try! vm.load("t.lyrs", source, allow);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn result(inst: Instance, name: string, args: Value[] = []): Value {
+    return match (try! inst.call(name, args, Budget { })) {
+        .Ok(v) => v,
+        _ => Value.Str("no value"),
+    };
+}
+
+// the code of the panic a call ended in; "" where it did not panic
+fn panicOf(inst: Instance, name: string): string {
+    return match (try! inst.call(name, [], Budget { })) {
+        .Panic(p) => f"{p.code}: {p.message}",
+        _ => "",
+    };
+}
+
+fn loadError(vm: Vm, source: string, allow: string[] = []): ?LoadError {
+    try {
+        vm.load("t.lyrs", source, allow);
+    } catch (e: LoadError) {
+        return e;
+    }
+    return null;
+}
+
+fn hostError(vm: Vm, name: string, source: string): ?LoadError {
+    try {
+        vm.host(name, source);
+    } catch (e: LoadError) {
+        return e;
+    }
+    return null;
+}
+
+// the codes of a load error's error findings, joined
+fn codesOf(e: ?LoadError): string {
+    if (let found = e) {
+        let out = List<string>.new();
+        for (f in found.findings) {
+            if (f.error) {
+                out.push(f.code);
+            }
+        }
+        return if (out.length() == 0) found.reason else out.toArray().join(" ");
+    }
+    return "loaded";
+}
+
+fn misuse(vm: Vm, module: string, name: string): string {
+    try {
+        vm.implement(module, name, (_) => Value.Void);
+    } catch (e: HostMisuse) {
+        return e.message();
+    }
+    return "taken";
+}
+
+@Test
+fn aScriptCallsTheHostsFunctions(): void {
+    let inst = ready(
+        calcVm(),
+        "import host.calc { twice, greet, sum }\npub fn a(): int = twice(21)\npub fn b(): string = greet(\"Ada\")\npub fn c(): int = sum([1, 2, 3, 4])\n"
+    );
+    assertEq(intOf(result(inst, "a")), 42);
+    assertEq(strOf(result(inst, "b")), "hello, Ada");
+    assertEq(intOf(result(inst, "c")), 10);
+}
+
+@Test
+fn theArgumentsComeInTheirOrder(): void {
+    // scalars and references interleaved: each lands in its own file of registers
+    let inst = ready(
+        calcVm(),
+        "import host.calc { mix }\npub fn a(): string = mix(7, \"x\", 2.5, [\"p\", \"q\"])\n"
+    );
+    assertEq(strOf(result(inst, "a")), "7 x 2.5 pq");
+}
+
+@Test
+fn theHostsStateLivesInTheHost(): void {
+    let inst = ready(
+        calcVm(),
+        "import host.calc\npub fn a(): int {\n    calc.count()\n    calc.count()\n    return calc.count()\n}\n",
+        ["saves"]
+    );
+    // the whole module asks for every right of its functions
+
+    assertEq(intOf(result(inst, "a")), 3);
+}
+
+@Test
+fn aHostFailureIsAPanic(): void {
+    let inst = ready(
+        calcVm(),
+        "import host.calc { broken, wrong }\npub fn a(): int = broken(1)\npub fn b(): int = wrong()\n"
+    );
+    assertEq(panicOf(inst, "a"), "LYS-RT0900: host.calc.broken failed: the disk is full");
+    assertEq(
+        panicOf(inst, "b"),
+        "LYS-RT0900: host.calc.wrong gave a value of another type than it declares"
+    );
+    // the instance stays usable after the panic (S8a)
+    assertEq(panicOf(inst, "a"), "LYS-RT0900: host.calc.broken failed: the disk is full");
+}
+
+@Test
+fn aRightOfTheHostIsAsked(): void {
+    let vm = calcVm();
+    let source = "import host.calc { save }\npub fn a(): bool = save(2)\n";
+    let e = loadError(vm, source);
+    assertTrue(e != null, "a load without the right");
+    if (let found = e) {
+        assertEq(found.missing.length(), 1);
+        assertEq(found.missing[0].right, "saves");
+        assertEq(found.missing[0].module, "host.calc");
+        assertEq(found.message(), "the script asks for rights it was not given: saves");
+    }
+    let inst = ready(vm, source, ["saves"]);
+    assertTrue(result(inst, "a") == Value.Bool(true));
+    // a selective import of what asks for nothing asks for nothing; the whole module asks for all
+    assertTrue(loadError(vm, "import host.calc { twice }\npub fn a(): int = twice(1)\n") == null);
+    assertTrue(loadError(vm, "import host.calc\npub fn a(): int = calc.twice(1)\n") != null);
+}
+
+@Test
+fn everyFunctionHasItsImplementation(): void {
+    let vm = vmOf();
+    try! vm.host("half", "fn one(): int\nfn two(): int\n");
+    try! vm.implement("half", "one", (_) => Value.Int(1));
+    let e = loadError(vm, "import host.half { one }\npub fn a(): int = one()\n");
+    assertEq(codesOf(e), "the host gave no implementation of 'host.half.two'");
+    try! vm.implement("half", "two", (_) => Value.Int(2));
+    assertTrue(loadError(vm, "import host.half { one }\npub fn a(): int = one()\n") == null);
+}
+
+@Test
+fn aModuleOfTheHostIsChecked(): void {
+    let vm = vmOf();
+    assertEq(codesOf(hostError(vm, "a", "fn f(): int {\n    return 1\n}\n")), "LYS-SEM0907");
+    assertEq(codesOf(hostError(vm, "b", "struct S {\n    x: int\n}\n")), "LYS-SEM0907");
+    assertEq(codesOf(hostError(vm, "c", "fn f(x: ?int): int\n")), "LYS-SEM0907");
+    assertEq(codesOf(hostError(vm, "d", "fn f(): int throws Error\n")), "LYS-SEM0907");
+    assertEq(codesOf(hostError(vm, "e", "@Requires(\"Saves\")\nfn f(): int\n")), "LYS-SEM0908");
+    assertEq(codesOf(hostError(vm, "f", "@Requires(\"a\", \"b\")\nfn f(): int\n")), "LYS-SEM0908");
+    assertEq(codesOf(hostError(vm, "g", "fn f(: int\n")), "LYS-PAR0026");
+    assertEq(
+        codesOf(hostError(vm, "no.t-a.name", "fn f(): int\n")).startsWith("'no.t-a.name' is no"),
+        true
+    );
+    // a module that failed is not registered: the name is free again
+    assertTrue(hostError(vm, "a", "fn f(): int\n") == null);
+    assertEq(
+        codesOf(hostError(vm, "a", "fn f(): int\n")),
+        "a module 'host.a' is registered already"
+    );
+}
+
+@Test
+fn theHostsMistakesAreItsOwn(): void {
+    let vm = calcVm();
+    assertEq(misuse(vm, "nope", "f"), "no module 'host.nope' is registered");
+    assertEq(misuse(vm, "calc", "nope"), "'host.calc' declares no function 'nope'");
+    assertEq(misuse(vm, "calc", "twice"), "'host.calc.twice' has its implementation already");
+}
+
+@Test
+fn aModuleTheHostDidNotRegister(): void {
+    assertEq(codesOf(loadError(vmOf(), "import host.calc\npub fn a(): int = 1\n")), "LYS-RES0003");
+}
+
+@Test
+fn bytecodeKeepsTheHostsFunctions(): void {
+    let vm = calcVm();
+    let bytes = try! vm.compile(
+        "t.lyrs",
+        "import host.calc { twice }\npub fn a(): int = twice(4)\n"
+    );
+    let inst = try! vm.loadTrusted(bytes);
+    try! inst.init(Budget { });
+    assertEq(intOf(result(inst, "a")), 8);
+    // another VM without the implementations does not load it
+    let bare = vmOf();
+    try {
+        bare.loadTrusted(bytes);
+        assertTrue(false, "loaded without implementations");
+    } catch (e: LoadError) {
+        assertEq(e.message(), "the host gave no implementation of 'host.calc.twice'");
+    }
+}

@@ -1,0 +1,118 @@
+// A started call (S8d; Script 07 Wait): `start` and `step` never wait — what is ready runs, then
+// the host gets the call's end or `Waiting` back; a call the budget halted steps on with a new
+// budget.
+import std.task { sleep };
+import std.test { assertEq, assertTrue };
+import std.time { Duration, Monotonic };
+import lyric_script.embed { vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance, InstanceMisuse, InstancePhase, Step };
+import lyric_script.vm.value { Value };
+
+let source: string = "fn nap(ms: int): int {\n    sleep(Duration.ofMillis(ms))\n    return 7\n}\nfn now(): int = 5\nfn spin(n: int): int {\n    var i = 0\n    while (i < n) {\n        i += 1\n    }\n    return i\n}\n";
+
+fn ready(): Instance {
+    let inst = try! vmOf().load("t.lyrs", source);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn ok(s: Step): Value {
+    return match (s) {
+        .Done(.Ok(v)) => v,
+        .Done(.Suspended) => Value.Str("suspended"),
+        .Waiting => Value.Str("waiting"),
+        _ => Value.Str("not ok"),
+    };
+}
+
+// the call's end, stepping every millisecond; how many steps came back waiting
+fn stepToEnd(inst: Instance, first: Step): (Step, int) {
+    var s = first;
+    var waits = 0;
+    while (waits < 100000) {
+        match (s) {
+            .Waiting => {
+                waits += 1;
+                try? sleep(Duration.ofMillis(1));
+                s = try! inst.step();
+            }
+            _ => {
+                return (s, waits);
+            }
+        }
+    }
+    return (s, waits);
+}
+
+fn refusesStep(inst: Instance): bool {
+    try {
+        inst.step();
+    } catch (e: InstanceMisuse) {
+        return true;
+    }
+    return false;
+}
+
+fn refusesCall(inst: Instance): bool {
+    try {
+        inst.call("now", [], Budget { });
+    } catch (e: InstanceMisuse) {
+        return true;
+    }
+    return false;
+}
+
+@Test
+fn aStartedCallEndsInSteps(): void {
+    let inst = ready();
+    let clock = Monotonic.now();
+    let first = try! inst.start("nap", [Value.Int(50)], Budget { });
+    assertEq(ok(first), Value.Str("waiting"));
+    assertTrue(clock.elapsed().nanos() < 40000000, "start waited for the sleep");
+    assertTrue(inst.phase() == InstancePhase.Started);
+    let (end, waits) = stepToEnd(inst, first);
+    assertEq(ok(end), Value.Int(7));
+    assertTrue(waits > 0, "no step came back waiting");
+    assertTrue(clock.elapsed().nanos() >= 50000000, "the sleep was cut short");
+    assertTrue(inst.phase() == InstancePhase.Ready);
+}
+
+@Test
+fn aStepNeverWaits(): void {
+    let inst = ready();
+    try! inst.start("nap", [Value.Int(300)], Budget { });
+    var k = 0;
+    while (k < 5) {
+        let clock = Monotonic.now();
+        assertEq(ok(try! inst.step()), Value.Str("waiting"));
+        assertTrue(clock.elapsed().nanos() < 40000000, "a step waited");
+        k += 1;
+    }
+    try! inst.abort();
+}
+
+@Test
+fn aCallThatDoesNotWaitEndsAtItsStart(): void {
+    let inst = ready();
+    assertEq(ok(try! inst.start("now", [], Budget { })), Value.Int(5));
+}
+
+@Test
+fn aStartedCallTakesOnlySteps(): void {
+    let inst = ready();
+    assertTrue(refusesStep(inst), "a step with nothing started");
+    try! inst.start("nap", [Value.Int(100)], Budget { });
+    assertTrue(refusesCall(inst), "a call beside a started one");
+    try! inst.abort();
+}
+
+@Test
+fn aHaltedStartedCallStepsOnWithABudget(): void {
+    let inst = ready();
+    assertEq(
+        ok(try! inst.start("spin", [Value.Int(1000)], Budget { fuel = 10 })),
+        Value.Str("suspended")
+    );
+    assertTrue(refusesStep(inst), "a halted call without a budget");
+    assertEq(ok(try! inst.step(Budget { })), Value.Int(1000));
+}

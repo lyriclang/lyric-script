@@ -102,6 +102,8 @@ pub class ScriptBigInt :: [HeapRef] {
 /// What a `File` holds (S7g4): Lyric 5's file, once one is open.
 pub class ScriptFile :: [HeapRef] {
     pub var file: ?File = null,
+    /// Closed by the script: its instance need not close it at an abort (S8b3).
+    pub var closed: bool = false,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -120,6 +122,8 @@ pub class ScriptChild :: [HeapRef] {
 /// What a `ReadDirIter` holds (S7g5): Lyric 5's iterator, once the directory is open.
 pub class ScriptDir :: [HeapRef] {
     pub var dir: ?ReadDirIter = null,
+    /// Closed by the script (S8b3).
+    pub var closed: bool = false,
 
     pub fn desc(): ?TypeDesc {
         return null;

@@ -77,10 +77,11 @@ let maxNesting: int = 64;
 
 /// Reads `source`, the program's file `file`, into its syntax tree: its spans and its diagnostics
 /// name the file (S5a) — 0 the entry, -1 the prelude.
-fn parse(source: string, file: int = 0): Parsed {
+fn parse(source: string, file: int = 0, host: bool = false): Parsed {
     let lexed = lex(source);
     let p = Parser.new(source, lexed.tokens);
     p.file = file;
+    p.host = host;
     let module = p.parseModule();
     let errors = List<Diagnostic>.new();
     for (d in lexed.errors) {
@@ -120,6 +121,8 @@ class Parser {
     var inGuard: bool = false,
     // in an interface's body, where a member without a body is abstract
     var inInterface: bool = false,
+    // in a module of the host (S8f2), whose functions have no body: the host implements them
+    var host: bool = false,
     // the program's file this one is (S5a)
     var file: int = 0,
     // the labels of the loops around, "" for one without (07 §1 rule 3), and the label written
@@ -571,7 +574,7 @@ class Parser {
         let body = if (this.at(.Assign)) {
             this.advance();
             FnBody.Expr(try this.parseExpr())
-        } else if (this.inInterface && !this.at(.LBrace)) {
+        } else if ((this.inInterface || this.host) && !this.at(.LBrace)) {
             FnBody.None
         } else {
             this.skipNewlines();

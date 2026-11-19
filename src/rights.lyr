@@ -6,6 +6,7 @@
 //! The standard library's table is fixed (S7a, plan 14): a module below one of its rows counts as
 //! that row; a module it does not name asks for nothing.
 import std.collections { List };
+import lyric_script.compiler.ast { Expr };
 import lyric_script.vm.module { RightUse };
 
 /// The classes of rights (12 Rechte).
@@ -36,6 +37,26 @@ fn stdTable(): (string, string)[] {
         ("std.time", "os"),
         ("std.random.system", "os"),
     ];
+}
+
+/// The right `@Requires(x)` names (S8f2; 01 S2): a string of lowercase letters, digits and `-`,
+/// beginning with a letter; `null` where `x` is none. A name of a class of `std` is that class.
+fn rightNamed(x: Expr): ?string {
+    let text = match (x) {
+        .Str(s, _) => s,
+        _ => {
+            return null;
+        }
+    };
+    var first = true;
+    for (c in text.chars()) {
+        let letter = c >= 'a' && c <= 'z';
+        if (!letter && (first || !((c >= '0' && c <= '9') || c == '-'))) {
+            return null;
+        }
+        first = false;
+    }
+    return if (first) null else text;
 }
 
 /// The grants an `--allow` names, between commas — a class, or `file` and `net` with a scope after

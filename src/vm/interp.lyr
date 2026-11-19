@@ -79,7 +79,17 @@ import lyric_script.vm.elementary { mathOne, mathTwo };
 import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
 import lyric_script.vm.op { Instr };
 import lyric_script.vm.module { Boundary, Callable, Function, Handler, Module, TypeDesc };
-import lyric_script.vm.value { Value, bitsOf, fits, isScalarAt, refOf, valueOfBits, valueOfRef };
+import lyric_script.vm.value {
+    HostCall,
+    HostFailure,
+    Value,
+    bitsOf,
+    fits,
+    isScalarAt,
+    refOf,
+    valueOfBits,
+    valueOfRef,
+};
 import lyric_script.vm.heap {
     ScriptArray,
     ScriptIndex,
@@ -493,6 +503,9 @@ class RunShared {
     var resources: List<HeapRef> = List<HeapRef>.new(),
     // S8e: the roots of the file scopes the run was given, resolved; `null` for every file
     var scopes: ?string[] = null,
+    // the functions of the host's modules with their implementations, as `call.n host` numbers them
+    // (S8f2)
+    var hosts: HostCall[] = [],
     var timerSeq: int = 0,
     clock: Monotonic = Monotonic.now(),
     // S6e: the script's tasks waiting for a native, and the Lyric 5 channel a native's task
@@ -920,10 +933,16 @@ fn resultOf(out: Outcome, result: Boundary): CallResult {
 
 /// A new instance of `module`, its top level not run yet; `argv` is what `args` gives the script,
 /// its own name first (S8a1).
-pub fn instanceOf(module: Module, argv: string[] = [], scopes: ?string[] = null): Instance {
+pub fn instanceOf(
+    module: Module,
+    argv: string[] = [],
+    scopes: ?string[] = null,
+    hosts: HostCall[] = []
+): Instance {
     let feeds = List<Channel<Signal>>.new();
     let shared = newShared(module, -1, argv, feeds);
     shared.scopes = scopes;
+    shared.hosts = hosts;
     return Instance { shared = shared, feeds = feeds };
 }
 
@@ -1562,6 +1581,46 @@ struct NativeFault {
     message: string,
 }
 
+/// A function of the host's module (S8f2): its number at `s[x]`, its scalar arguments in the registers
+/// before it, its references from `r[y]`; its value goes to `s[x]`, or after the references. What it
+/// could not do, or a value of another type than it declares, is a panic of the script (`LYS-RT0900`).
+fn hostCall(s: uint64[], r: HeapRef[], x: int, y: int, shared: RunShared): ?NativeFault {
+    let h = shared.hosts[s[x] as int];
+    var si = x;
+    for (p in h.decl.params) {
+        if (isScalarAt(p)) {
+            si -= 1;
+        }
+    }
+    var ri = y;
+    let args = List<Value>.new();
+    for (p in h.decl.params) {
+        if (isScalarAt(p)) {
+            args.push(valueOfBits(p, s[si]));
+            si += 1;
+        } else {
+            args.push(valueOfRef(p, r[ri]));
+            ri += 1;
+        }
+    }
+    let shown = f"host.{h.decl.module}.{h.decl.name}";
+    let v = try h.run(args.toArray()) catch (e: HostFailure) {
+        return NativeFault { code = "LYS-RT0900", message = f"{shown} failed: {e.message()}" };
+    };
+    if (!fits(v, h.decl.result)) {
+        return NativeFault {
+            code = "LYS-RT0900",
+            message = f"{shown} gave a value of another type than it declares",
+        };
+    }
+    if (isScalarAt(h.decl.result)) {
+        s[x] = bitsOf(v);
+    } else if (h.decl.result != Boundary.Void) {
+        r[ri] = refOf(v, h.decl.result);
+    }
+    return null;
+}
+
 /// Runs the native `which` on its scalars from `s[x]` and its references from `r[y]`; what it returns goes
 /// where its first argument stood; its panic where it has one. Out of `runTask` (S7f2): Lyric 5
 /// checks a function's entry against twice its temporaries, and the natives' arms in the loop took
@@ -1698,6 +1757,9 @@ fn callNative(
         }
         // what a zone of rules says at a moment, its nanoseconds since 1970 (S7h6a): the offset in
         // seconds twice, the lowest bit daylight time; the abbreviation into the holder
+        .Host => {
+            return hostCall(s, r, x, y, shared);
+        }
         .TimeZoneAt => {
             let o = r[y];
             if (o is ScriptZone) {

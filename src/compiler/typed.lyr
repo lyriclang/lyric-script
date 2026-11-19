@@ -267,6 +267,9 @@ class FnInfo {
     // written without `private` or `internal`: a top-level one of the entry is a host's to call
     // (S8a3)
     var isPub: bool = false,
+    // a function of a module of the host (S8f2): that module's name after `host.`; empty for any
+    // other
+    var host: string = "",
 }
 
 /// A binding of the module: a top-level `let` or `var` of the script (07 Top).

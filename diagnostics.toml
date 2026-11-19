@@ -1239,6 +1239,18 @@ severity = "error"
 area = "04-modules"
 summary = "The entry module runs statements and declares `fn main`: either is an entry, both are two. Keep the statements, or move them into `main`. Script's own: a Lyric 5 module has no statements."
 
+[LYS-SEM0907]
+title = "what a module of the host does not hold"
+severity = "error"
+area = "17-host"
+summary = "A module the host registers (`import host.<name>`) declares functions the host implements: without a body, without type parameters and `throws`, their parameters and result values of a call's boundary — `int`, `float`, `bool`, `char`, `string`, lists of them. Anything else in it — a body, a type, a statement — is the host's error, reported when it registers the module. Lyric-Script's own (design/v1, 11 Hst)."
+
+[LYS-SEM0908]
+title = "a right `@Requires` does not name"
+severity = "error"
+area = "17-host"
+summary = "`@Requires` on a function of the host's module names one right as a string: lowercase letters, digits and `-`, a letter first — `@Requires(\"saves\")`. A name of a class of the standard library (`file`, `net`, …) is that class. Lyric-Script's own (design/v1, 01 S2)."
+
 [LYS-NYI0001]
 title = "a form a later milestone builds"
 severity = "error"
@@ -1298,6 +1310,12 @@ title = "a deadlock"
 severity = "panic"
 area = "10-concurrency"
 summary = "Every task of the run waits — for another task — and nothing can wake one: the run panics, exit code 101. The code and its meaning are Lyric 5's LYR-RT0018."
+
+[LYS-RT0900]
+title = "a function of the host failed"
+severity = "panic"
+area = "17-host"
+summary = "A function of the host's module could not do what the script asked — its implementation threw a `HostFailure` —, or gave a value of another type than it declares. The message names the function and the host's reason. Lyric-Script's own (S8f2)."
 
 [LYS-CLI0004]
 title = "an unknown option"

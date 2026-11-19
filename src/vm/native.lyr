@@ -214,6 +214,10 @@ enum NativeFn :: [Equatable] {
     TimeZone,
     TimeZoneOpen,
     TimeZoneAt,
+    /// A function of the host's module (S8f2): its number in the register at the scalar base, its
+    /// scalar arguments in the registers before it, its references from the reference base; its value
+    /// at the scalar base, or after its references.
+    Host,
 }
 
 /// What a native takes and gives: its name in the text form, its scalar and reference
@@ -227,7 +231,7 @@ struct NativeInfo {
 }
 
 /// How many natives there are: the numbers `0..nativeCount` name them.
-let nativeCount: int = 156;
+let nativeCount: int = 157;
 
 /// The native of a number; the numbers are the order of `NativeFn`.
 fn nativeOf(n: int): NativeFn {
@@ -387,7 +391,8 @@ fn nativeOf(n: int): NativeFn {
         152 => NativeFn.TimeMonotonic,
         153 => NativeFn.TimeZone,
         154 => NativeFn.TimeZoneOpen,
-        _ => NativeFn.TimeZoneAt,
+        155 => NativeFn.TimeZoneAt,
+        _ => NativeFn.Host,
     };
 }
 
@@ -550,6 +555,7 @@ fn nativeNumber(n: NativeFn): int {
         .TimeZone => 153,
         .TimeZoneOpen => 154,
         .TimeZoneAt => 155,
+        .Host => 156,
     };
 }
 
@@ -711,6 +717,7 @@ fn nativeInfo(n: NativeFn): NativeInfo {
         .TimeZone => sig("time.zone", 0, 0, false, true),
         .TimeZoneOpen => sig("time.zoneOpen", 1, 5, true, false),
         .TimeZoneAt => sig("time.zoneAt", 1, 2, true, false),
+        .Host => sig("host", 1, 0, false, false),
     };
 }
 

@@ -10,6 +10,9 @@ import std.core { embed };
 /// them keeps `internal` stays its own.
 let stdPackage: int = -1;
 
+/// The package of the modules a host registers (S8f2; 11 Hst): none of the program's either.
+let hostPackage: int = -2;
+
 /// The modules of the standard library, by their names.
 let stdModules: string[] = [
     "std.cli",

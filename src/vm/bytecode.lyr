@@ -9,6 +9,7 @@ import lyric_script.vm.module {
     Callable,
     Function,
     Handler,
+    HostDecl,
     Module,
     RightUse,
     ReturnKind,
@@ -139,6 +140,17 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
             writeBoundary(w, b);
         }
         writeBoundary(w, x.result);
+    }
+    // the functions of the host's modules (S8f2)
+    w.word(module.hosts.length());
+    for (h in module.hosts) {
+        w.text(h.module);
+        w.text(h.name);
+        w.word(h.params.length());
+        for (b in h.params) {
+            writeBoundary(w, b);
+        }
+        writeBoundary(w, h.result);
     }
     return w.out.toArray();
 }
@@ -385,6 +397,23 @@ fn decode(
         );
         nx -= 1;
     }
+    let hosts = List<HostDecl>.new();
+    var nh = try r.word();
+    while (nh > 0) {
+        let hmodule = try r.text();
+        let hname = try r.text();
+        let params = List<Boundary>.new();
+        var np = try r.word();
+        while (np > 0) {
+            params.push(try readBoundary(r));
+            np -= 1;
+        }
+        let result = try readBoundary(r);
+        hosts.push(
+            HostDecl { module = hmodule, name = hname, params = params.toArray(), result = result }
+        );
+        nh -= 1;
+    }
     if (!r.atEnd()) {
         throw NotOurs { reason = "bytes after the module" };
     }
@@ -400,6 +429,7 @@ fn decode(
         channelClosedType = channelClosedType,
         rights = rights.toArray(),
         exports = exports.toArray(),
+        hosts = hosts.toArray(),
     };
 }
 

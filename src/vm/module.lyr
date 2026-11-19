@@ -108,6 +108,17 @@ pub class Module :: [Identity] {
     var rights: RightUse[] = [],
     /// The functions a host may call, with the types at their boundary (S8a3).
     var exports: Callable[] = [],
+    /// The functions of the host's modules, in the order `call.n host` numbers them (S8f2).
+    var hosts: HostDecl[] = [],
+}
+
+/// A function of a module of the host (S8f2; 11 Hst): its module's name after `host.`, its own,
+/// the types at its boundary. The host gives its implementation when the module is loaded.
+pub struct HostDecl :: [Debug] {
+    pub module: string,
+    pub name: string,
+    pub params: Boundary[],
+    pub result: Boundary,
 }
 
 /// A type at a call's boundary between host and script (S8a3): the scalars, `string`, and lists

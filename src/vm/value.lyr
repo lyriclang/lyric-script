@@ -3,7 +3,7 @@
 //! instance (01 S9). Other types at the boundary come as handles with S8g.
 import std.collections { List };
 import lyric_script.vm.heap { HeapRef, ScriptArray, ScriptString };
-import lyric_script.vm.module { Boundary };
+import lyric_script.vm.module { Boundary, HostDecl };
 
 /// A value at a call's boundary.
 pub enum Value :: [Equatable, Debug] {
@@ -14,6 +14,22 @@ pub enum Value :: [Equatable, Debug] {
     Char(char),
     Str(string),
     List(Value[]),
+}
+
+/// What a function of the host could not do (S8f2): a panic of the script, `LYS-RT0900`, its reason
+/// in the message.
+pub struct HostFailure :: [Error] {
+    pub reason: string,
+
+    pub fn message(): string {
+        return this.reason;
+    }
+}
+
+/// A function of the host's module and its implementation, as an instance calls it (S8f2).
+pub struct HostCall {
+    decl: HostDecl,
+    run: fn(Value[]) -> Value throws HostFailure,
 }
 
 /// Whether `v` is a value of the type `b` — every element of a list too.

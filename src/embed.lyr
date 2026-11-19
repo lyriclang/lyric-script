@@ -8,12 +8,14 @@ import lyric_script.cache { loadIn, sourceKey, storeIn };
 import lyric_script.compiler.checker { ProgramUnit, checkModule };
 import lyric_script.compiler.codegen { generate };
 import lyric_script.compiler.diagnostic { Diagnostic };
-import lyric_script.loader { Loaded, loadProgram };
+import lyric_script.compiler.parser { parse };
+import lyric_script.loader { LoadOptions, Loaded, loadProgram };
 import lyric_script.rights { classesOf, missing };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.bytecode { NotOurs, decode, encode };
 import lyric_script.vm.interp { Instance, fileScopes, instanceOf };
-import lyric_script.vm.module { CheckError, Module, RightUse, check };
+import lyric_script.vm.module { Boundary, CheckError, HostDecl, Module, RightUse, check };
+import lyric_script.vm.value { HostCall, HostFailure, Value };
 
 /// A diagnostic of a load, as the host reads it: an error or a warning, its code from the catalog
 /// (`diagnostics.toml`), its message, the file and the line and column (from 1) it is about, and
@@ -50,10 +52,107 @@ pub struct LoadError :: [Error] {
     }
 }
 
+/// A host's mistake in what it gives its VM (S8f2): an implementation of a function its modules do not
+/// declare, or one given twice.
+pub struct HostMisuse :: [Error] {
+    reason: string,
+
+    pub fn message(): string {
+        return this.reason;
+    }
+}
+
 /// The VM of a host (11 Emb a): the code it compiled is shared by the instances it gives; its
 /// cache directory is the host's to name, `null` for none.
 pub class Vm {
     cacheDir: ?string,
+    // the modules the host registered, each name after `host.` beside its source, and the
+    // implementations it gave (S8f2)
+    hostNames: List<string>,
+    hostSources: List<string>,
+    impls: List<HostCall>,
+
+    /// Registers the module `host.<name>` (S8f2; 11 Hst): functions without a body, whose
+    /// parameters and result are values of a call's boundary, `@Requires("right")` on those that
+    /// ask for a right. A script imports it as `import host.<name>`; `implement` gives each function.
+    /// It is checked here: an error in it is the host's, a `LoadError` whose findings name it.
+    pub fn host(name: string, source: string): void throws LoadError {
+        if (!isModuleName(name)) {
+            throw LoadError {
+                reason = f"'{name}' is no module's name: words of letters, digits and '_', between dots",
+            };
+        }
+        for (n in this.hostNames) {
+            if (n == name) {
+                throw LoadError { reason = f"a module 'host.{name}' is registered already" };
+            }
+        }
+        let hosts = List<(string, string)>.new();
+        for (h in this.hostPairs()) {
+            hosts.push(h);
+        }
+        hosts.push((name, source));
+        let l = loadProgram(
+            "<host>",
+            f"import host.{name}\n",
+            LoadOptions { hosts = hosts.toArray() }
+        );
+        let c = compileLoaded(l);
+        if (c.module == null) {
+            throw LoadError { findings = findingsOf(l, c), reason = faultsOf(name, c.faults) };
+        }
+        this.hostNames.push(name);
+        this.hostSources.push(source);
+    }
+
+    /// Gives the function `name` of the module `host.<module>` its implementation (S8f2): it takes
+    /// the arguments as values of the boundary and gives its result as one. A `HostFailure` it
+    /// throws, or a value of another type than the function declares, is a panic of the script.
+    pub fn implement(
+        module: string,
+        name: string,
+        run: fn(Value[]) -> Value throws HostFailure
+    ): void throws HostMisuse {
+        var k = 0;
+        while (k < this.hostNames.length() && this.hostNames[k] != module) {
+            k += 1;
+        }
+        if (k == this.hostNames.length()) {
+            throw HostMisuse { reason = f"no module 'host.{module}' is registered" };
+        }
+        if (!declares(this.hostSources[k], name)) {
+            throw HostMisuse { reason = f"'host.{module}' declares no function '{name}'" };
+        }
+        for (h in this.impls) {
+            if (h.decl.module == module && h.decl.name == name) {
+                throw HostMisuse {
+                    reason = f"'host.{module}.{name}' has its implementation already",
+                };
+            }
+        }
+        this.impls.push(
+            HostCall {
+                decl = HostDecl {
+                    module = module,
+                    name = name,
+                    params = [],
+                    result = Boundary.Void,
+                },
+                run = run,
+            }
+        );
+    }
+
+    // the registered modules as the loader takes them
+    fn hostPairs(): (string, string)[] {
+        let out = List<(string, string)>.new();
+        var k = 0;
+        while (k < this.hostNames.length()) {
+            out.push((this.hostNames[k], this.hostSources[k]));
+            k += 1;
+        }
+        return out.toArray();
+    }
 
     /// An instance of the script `source`, named `name` — its diagnostics' path, and where its
     /// own imports are looked for —, with the rights in `allow` (`file`, `net`, `process`, `os`,
@@ -65,7 +164,7 @@ pub class Vm {
         all: bool = false
     ): Instance throws LoadError {
         let module = try this.compiled(name, source);
-        return try granted(module, name, allow, all);
+        return try granted(module, name, allow, all, this.impls.toArray());
     }
 
     /// The bytecode of the script `source`, for `loadTrusted` (01 S10): an artefact of the
@@ -86,13 +185,13 @@ pub class Vm {
         let module = try decode(bytes, bytecodeFormat, version, null) catch (e: NotOurs) {
             throw LoadError { reason = f"the bytecode does not load: {e.message()}" };
         };
-        return try granted(module, module.name, allow, all);
+        return try granted(module, module.name, allow, all, this.impls.toArray());
     }
 
     // the module of a source: from the cache where it is there, else compiled — and kept where it
     // had no warning, so that they are found again
     fn compiled(name: string, source: string): Module throws LoadError {
-        let l = loadProgram(name, source);
+        let l = loadProgram(name, source, LoadOptions { hosts = this.hostPairs() });
         let key = l.cacheText();
         let root = this.cacheDir;
         if (root != null && l.errors.length() == 0) {
@@ -114,16 +213,77 @@ pub class Vm {
 
 /// A host's VM; `cacheDir` where compiled scripts are kept, `null` for none.
 pub fn vmOf(cacheDir: ?string = null): Vm {
-    return Vm { cacheDir = cacheDir };
+    return Vm {
+        cacheDir = cacheDir,
+        hostNames = List<string>.new(),
+        hostSources = List<string>.new(),
+        impls = List<HostCall>.new(),
+    };
 }
 
-// an instance of `module` where the host gave every right its imports ask for
-fn granted(module: Module, name: string, allow: string[], all: bool): Instance throws LoadError {
+// an instance of `module` where the host gave every right its imports ask for, and an implementation
+// of every function of the host's modules it imports (11 Hst)
+fn granted(
+    module: Module,
+    name: string,
+    allow: string[],
+    all: bool,
+    impls: HostCall[]
+): Instance throws LoadError {
     let lacking = missing(module.rights, allow, all);
     if (lacking.length() > 0) {
         throw LoadError { missing = lacking };
     }
-    return instanceOf(module, [name], fileScopes(allow, all));
+    let calls = List<HostCall>.new();
+    for (d in module.hosts) {
+        var found: ?HostCall = null;
+        for (h in impls) {
+            if (h.decl.module == d.module && h.decl.name == d.name) {
+                found = h;
+            }
+        }
+        if (let h = found) {
+            calls.push(HostCall { decl = d, run = h.run });
+        } else {
+            throw LoadError {
+                reason = f"the host gave no implementation of 'host.{d.module}.{d.name}'",
+            };
+        }
+    }
+    return instanceOf(module, [name], fileScopes(allow, all), calls.toArray());
+}
+
+// whether a module's name is words of letters, digits and `_`, a letter or `_` first, between dots
+fn isModuleName(name: string): bool {
+    for (word in name.split('.')) {
+        var first = true;
+        for (c in word.chars()) {
+            let letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+            if (!letter && (first || !(c >= '0' && c <= '9'))) {
+                return false;
+            }
+            first = false;
+        }
+        if (first) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// whether the source of a module of the host declares a function `name`
+fn declares(source: string, name: string): bool {
+    for (item in parse(source, 0, true).module.items) {
+        match (item) {
+            .Decl(.Fn(f)) => {
+                if (f.name == name) {
+                    return true;
+                }
+            }
+            _ => { }
+        }
+    }
+    return false;
 }
 
 /// A diagnostic as it was said, an error or a warning.

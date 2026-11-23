@@ -3242,6 +3242,85 @@ S8b4. Neu geteilt:
     Modul-Attribute.
   - Rechte gelten je Import und nicht je Aufruf, wie bei `std`.
 
+**S8f2, Ergebnis (2026-11-19).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - `vm.host` übersetzt beim Anmelden ein Probeprogramm `import host.<name>`. Ein Fehler darin ist ein
+    `LoadError` mit den Befunden, und der Name bleibt frei.
+  - Der Loader führt die Module des Hosts als eigenes Paket (`hostPackage`). Der Parser nimmt dort
+    Funktionen ohne Rumpf.
+  - Die Rechte eines Imports zählt der Loader aus den `@Requires` der genannten Funktionen.
+  - Jede Funktion des Hosts wird ein Stummel aus drei Befehlen über das Native `host` (Nummer 156).
+    `callNative` hat dafür einen Arm mehr, `runTask` ist unberührt.
+  - Das Modul trägt die Tabelle seiner Funktionen des Hosts (Format 49). `loadTrusted` prüft sie gegen
+    die Implementierungen wie `load`.
+- **Prüfung:**
+  - Zehn Unit-Tests und ein Konformanzfall (Spec 13 Regel 5: Die Kommandozeile meldet kein Modul an). Der
+    Fall ist auf S7 rot, über seinen Text.
+  - Fünf Mutanten, alle getötet, aber nur durch die Unit-Tests: Die Kommandozeile hat keinen Host. L2 (jeder
+    Import verlangt jedes Recht) tötete fünf Tests statt des einen vorhergesagten.
+  - Kontrolle nach P47: siehe unten.
+  - 441 Tests, 876 Fälle.
+
+**S8f3, Zuschnitt (2026-11-19).** Gelesen gegen den Code. Die std hält Objekte des Systems als Klasse mit
+einem Feld `handle: Any` (`File` über `ScriptFile`). Typen, deren Werte die VM ohne Deskriptor hält
+(`vmHeld`: `Task`, `Channel` …), gibt es schon, und ihre Methoden sind gewöhnliche Funktionen. Drei Teile:
+- **S8f3a Griffe:**
+  - Ein Modul des Hosts darf `class Name { … }` deklarieren: ohne Felder, Typparameter, Konformanzen und
+    Konstanten, mit Methoden ohne Rumpf, auch `static`. Die Klasse ist `vmHeld`, ihr Wert ein Objekt
+    `HostHandle` der VM mit dem Namen der Klasse und einer Nummer.
+  - An der Grenze ist sie `Boundary.Handle("game.Sprite")` und `Value.Handle(Handle { type, id })` (Format
+    50). Die Nummer gehört dem Host, der die Tabelle seiner Objekte führt. Eine Methode heißt beim
+    Implementieren `"Sprite.move"`, und ihr Empfänger ist das erste Argument.
+  - Das Skript baut keinen Griff: `Sprite { }` ist `LYS-SEM0909`. `==` auf Griffen ist `LYS-SEM0059` wie
+    bei jeder Klasse ohne `Identity` und `Equatable`.
+  - **Attribute vor Methoden.** S8f1 las Attribute nur vor Deklarationen der obersten Ebene. Vor einer
+    Methode war ein `@` ein Syntaxfehler, obwohl 09 At Attribute an allen Deklarationen erlaubt. Der Parser
+    nimmt sie jetzt vor jeder Methode und jedem Interface-Mitglied, und vor einem Feld sind sie
+    `LYS-PAR0042`. `@Requires` an einer Methode eines Griffs gibt ein Recht. Ein Import, der den Griff
+    nennt, verlangt die Rechte seiner Methoden.
+- **S8f3b Structs und Fehler:**
+  - Ein Modul des Hosts darf Structs mit Feldern der Grenze deklarieren. Sie gehen als Kopie über die
+    Grenze (`Value.Struct`).
+  - Ein Fehler des Hosts ist ein solcher Struct mit `:: [Error]`. Eine Funktion des Hosts darf mit ihnen
+    `throws` schreiben, und ihre Menge ist die Deklaration (P14). Ein `HostFailure`, der einen solchen Wert
+    trägt, wird im Skript geworfen.
+  - Woher `message()` eines solchen Structs kommt, entscheidet sein Zuschnitt.
+- **S8f3c Callbacks:**
+  - Ein Funktionstyp darf Parameter einer Funktion des Hosts sein. Der Host bekommt einen Wert, den er
+    über die Instanz aufruft: während seine Implementierung läuft, oder später als eigenen Aufruf.
+  - Ein Callback darf nicht warten (11 Co). Er läuft mit `pumping` aus, und ein Warten darin ist ein Fehler
+    mit eigenem Code. Nach einem Reload ist er `.Stale` (01 S7c).
+- **Entschieden nach Empfehlung:**
+  - Ein Griff ist eine Nummer des Hosts und kein Lyric-5-Objekt in `Value`. Lyric 5 hat keinen gemeinsamen
+    Typ für die Objekte eines Hosts, und über die C-ABI (S8h) geht ohnehin nur eine Zahl, wie Luas light
+    userdata. Verworfen: ein Interface `HostObject`, das jeder Typ des Hosts erfüllen müsste.
+  - Ein Griff hat kein `==`. Was zwei Griffe gleich macht, weiß der Host, und er kann es als Methode
+    geben. Verworfen wurden zwei Wege. Griffe je Nummer in der Instanz zu internieren, hielte jeden Griff
+    bis zum Ende der Instanz. Ein Vergleich nach Nummer wäre ein zweiter Begriff von Gleichheit neben
+    `Identity` und `Equatable`.
+  - Ein Griff sagt dem Host nicht, wann das Skript ihn fallen lässt, denn Script hat keine Finalizer. Der
+    Host räumt seine Tabelle selbst, etwa je Instanz.
+  - Structs an der Grenze kommen mit den Fehlern in S8f3b und nicht erst in S8g, weil ein Fehler des Hosts
+    ohne sie nichts tragen kann. S8g behält die Isolation zwischen Instanzen.
+
+**S8f3a, Ergebnis (2026-11-23).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - Eine Klasse eines Moduls des Hosts ist beim Deklarieren `vmHeld` und trägt den Namen ihres Moduls.
+    Ihre Methoden werden Stummel wie die Funktionen des Hosts, mit dem Empfänger als erstem Parameter
+    der Tabelle.
+  - Die VM hält einen Griff als `HostHandle`. `refOf` und `valueOfRef` kopieren ihn über die Grenze
+    wie einen String.
+  - Der Loader zählt die `@Requires` der Methoden, wenn ein Import die Klasse nennt.
+- **Lyric-5-Fehler:** Ein `if` mit einem bloßen `null`-Zweig als Wert eines Match-Arms unter einem
+  optionalen `let` ließ den Compiler abstürzen (`LYR-ICE0001`, lyric#740). Umgangen in
+  `Checker.hostItem`, indem der Arm früh verlassen wird.
+- **Prüfung:**
+  - Acht Unit-Tests und zwei Konformanzfälle (Spec 11 Regel 1, Spec 13 Regel 6).
+  - Sechs Mutanten, alle getötet, M5 (Methoden verlieren ihre Attribute) auch durch einen Fall. Gegen die
+    Vorhersage tötete M1 (`boundaryOf` vergisst Griffe) den Test der fremden Klasse nicht. Mit `Other`
+    scheitert auch die richtige Klasse an `fits`, und die Meldung lautet gleich.
+  - 449 Tests, 878 Fälle; Format 50.
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

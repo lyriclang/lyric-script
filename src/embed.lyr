@@ -271,13 +271,21 @@ fn isModuleName(name: string): bool {
     return true;
 }
 
-// whether the source of a module of the host declares a function `name`
+// whether the source of a module of the host declares a function `name`, or a method of a handle
+// as `Class.method` (S8f3a)
 fn declares(source: string, name: string): bool {
     for (item in parse(source, 0, true).module.items) {
         match (item) {
             .Decl(.Fn(f)) => {
                 if (f.name == name) {
                     return true;
+                }
+            }
+            .Decl(.Type(t)) => {
+                for (m in t.methods) {
+                    if (f"{t.name}.{m.name}" == name) {
+                        return true;
+                    }
                 }
             }
             _ => { }

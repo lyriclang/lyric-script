@@ -2,7 +2,7 @@
 //! `string`, and lists of them, as values of the host's — a copy, never a reference into the
 //! instance (01 S9). Other types at the boundary come as handles with S8g.
 import std.collections { List };
-import lyric_script.vm.heap { HeapRef, ScriptArray, ScriptString };
+import lyric_script.vm.heap { HeapRef, HostHandle, ScriptArray, ScriptString };
 import lyric_script.vm.module { Boundary, HostDecl };
 
 /// A value at a call's boundary.
@@ -14,6 +14,14 @@ pub enum Value :: [Equatable, Debug] {
     Char(char),
     Str(string),
     List(Value[]),
+    Handle(Handle),
+}
+
+/// A handle of the host at the boundary (S8f3a): its class, `game.Sprite`, and the number the host
+/// gave it. The host keeps the table of what its numbers stand for; a script never makes one.
+pub struct Handle :: [Equatable, Debug] {
+    pub type: string,
+    pub id: int,
 }
 
 /// What a function of the host could not do (S8f2): a panic of the script, `LYS-RT0900`, its reason
@@ -41,6 +49,7 @@ fn fits(v: Value, b: Boundary): bool {
         .Bool(_) => b == Boundary.Bool,
         .Char(_) => b == Boundary.Char,
         .Str(_) => b == Boundary.Str,
+        .Handle(h) => b == Boundary.Handle(h.type),
         .List(xs) => match (b) {
             .List(e) => {
                 for (x in xs) {
@@ -80,6 +89,9 @@ fn refOf(v: Value, b: Boundary): HeapRef {
     match (v) {
         .Str(text) => {
             return ScriptString { text = text };
+        }
+        .Handle(h) => {
+            return HostHandle { type = h.type, id = h.id };
         }
         _ => { }
     }
@@ -128,6 +140,11 @@ fn valueOfRef(b: Boundary, o: HeapRef): Value {
         .Str => {
             if (o is ScriptString) {
                 return Value.Str(o.text);
+            }
+        }
+        .Handle(_) => {
+            if (o is HostHandle) {
+                return Value.Handle(Handle { type = o.type, id = o.id });
             }
         }
         .List(e) => {

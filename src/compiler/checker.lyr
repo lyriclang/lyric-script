@@ -808,6 +808,14 @@ class Checker {
     mut fn mayBuild(i: int, at: Span): void {
         let base = if (this.types[i].template >= 0) this.types[i].template else i;
         let t = this.types[base];
+        if (t.host != "") {
+            this.error(
+                "LYS-SEM0909",
+                f"'{t.name}' is a handle of the host: the host makes it, a script gets it from the host's functions",
+                at
+            );
+            return;
+        }
         if (t.mod == this.mod) {
             return;
         }
@@ -1640,6 +1648,19 @@ class Checker {
         this.types.push(
             TypeInfo { name = name, kind = kind, methods = Map<string, int>.new(), mod = this.mod }
         );
+        // a class of a module of the host is a handle (S8f3a): its value is the VM's, which holds
+        // the host's number
+        if (kind == .Class && this.inHost(at)) {
+            let info = this.types[this.types.length() - 1];
+            info.vmHeld = true;
+            info.host = this.hostModuleOf(at);
+        }
+    }
+
+    /// The name after `host.` of the module of the host `at` lies in (S8f2).
+    mut fn hostModuleOf(at: Span): string {
+        let m = this.modNames.get(at.file) ?? "host.";
+        return m[5..m.length()].toString();
     }
 
     mut fn declareMembers(t: TypeDecl): void {
@@ -5877,9 +5898,25 @@ class Checker {
         for (item in module.items) {
             match (item) {
                 .Decl(.Fn(f)) => this.attributesOf(f.attributes, this.inHost(f.span)),
-                .Decl(.Type(t)) => this.attributesOf(t.attributes, false),
+                .Decl(.Type(t)) => {
+                    this.attributesOf(t.attributes, false);
+                    // a method of a handle of the host may ask for a right (S8f3a)
+                    for (m in t.methods) {
+                        this.attributesOf(m.attributes, t.isClass && this.inHost(m.span));
+                    }
+                }
                 .Decl(.Enum(e)) => this.attributesOf(e.attributes, false),
-                .Decl(.Interface(i)) => this.attributesOf(i.attributes, false),
+                .Decl(.Interface(i)) => {
+                    this.attributesOf(i.attributes, false);
+                    for (m in i.members) {
+                        this.attributesOf(m.attributes, false);
+                    }
+                }
+                .Decl(.Extend(x)) => {
+                    for (m in x.methods) {
+                        this.attributesOf(m.attributes, false);
+                    }
+                }
                 _ => { }
             }
             this.hostItem(item);
@@ -5891,9 +5928,18 @@ class Checker {
         return at.file >= 0 && this.pkgOf(at.file) == hostPackage;
     }
 
-    /// A module of the host holds functions without a body and imports (S8f2; 11 Hst): anything
-    /// else there is `LYS-SEM0907`.
+    /// A module of the host holds functions without a body, handles and imports (S8f2, S8f3a;
+    /// 11 Hst): anything else there is `LYS-SEM0907`.
     mut fn hostItem(item: Item): void {
+        match (item) {
+            .Decl(.Type(t)) => {
+                if (t.isClass) {
+                    this.hostClass(t);
+                    return;
+                }
+            }
+            _ => { }
+        }
         let at: ?Span = match (item) {
             .Decl(.Fn(_)) | .Decl(.Import(_)) => null,
             .Decl(.Type(t)) => t.span,
@@ -5911,6 +5957,25 @@ class Checker {
                     a
                 );
             }
+        }
+    }
+
+    /// A handle of the host (S8f3a; 11 Hst): a class without fields, type parameters or conformances,
+    /// whose methods the host implements. Its values are the host's, a number it gave.
+    mut fn hostClass(t: TypeDecl): void {
+        if (!this.inHost(t.span)) {
+            return;
+        }
+        let what = if (t.fields.length() > 0) "fields"
+            else if (t.typeParams.length() > 0) "type parameters"
+                else if (t.conforms.length() > 0) "conformances"
+                    else if (t.statics.length() > 0 || t.answers.length() > 0) "constants" else "";
+        if (what != "") {
+            this.error(
+                "LYS-SEM0907",
+                f"the handle '{t.name}' has {what}: a handle of the host is a class with methods alone, its state the host's",
+                t.span
+            );
         }
     }
 
@@ -5940,21 +6005,32 @@ class Checker {
             );
         }
         for (p in info.params) {
-            if (p.ty == Ty.Void || !crossesBoundary(p.ty)) {
+            if (p.ty == Ty.Void || !this.crossesBoundary(p.ty)) {
                 this.error(
                     "LYS-SEM0907",
-                    f"the parameter '{p.name}' of '{f.name}' is no value of a call's boundary: an int, a float, a bool, a char, a string, or a list of them",
+                    f"the parameter '{p.name}' of '{f.name}' is no value of a call's boundary: an int, a float, a bool, a char, a string, a handle of the host, or a list of them",
                     f.span
                 );
             }
         }
-        if (!crossesBoundary(info.returns)) {
+        if (!this.crossesBoundary(info.returns)) {
             this.error(
                 "LYS-SEM0907",
-                f"what '{f.name}' gives is no value of a call's boundary: an int, a float, a bool, a char, a string, or a list of them",
+                f"what '{f.name}' gives is no value of a call's boundary: an int, a float, a bool, a char, a string, a handle of the host, or a list of them",
                 f.span
             );
         }
+    }
+
+    /// Whether a value of `t` crosses a call's boundary between host and script (S8a3): the
+    /// scalars, `string`, nothing as a result, a handle of the host (S8f3a), and lists of them.
+    mut fn crossesBoundary(t: Ty): bool {
+        return match (t) {
+            .Int | .Float | .Bool | .Char | .Str | .Void => true,
+            .List(e) => e.value != Ty.Void && this.crossesBoundary(e.value),
+            .Named(i) => this.types[i].host != "",
+            _ => false,
+        };
     }
 
     mut fn attributesOf(attrs: Attribute[], host: bool): void {
@@ -6124,9 +6200,8 @@ class Checker {
             info.typeParams = this.types[owner].typeParams;
         }
         // a function of a module of the host (S8f2): the host implements it
-        if (owner < 0 && this.inHost(f.span)) {
-            let m = this.modNames.get(f.span.file) ?? "host.";
-            info.host = m[5..m.length()].toString();
+        if ((owner < 0 || this.types[owner].host != "") && this.inHost(f.span)) {
+            info.host = this.hostModuleOf(f.span);
             this.hostSignature(f, info);
         }
         this.typeParams = savedScope;
@@ -19249,16 +19324,6 @@ fn isConstantArg(x: Expr): bool {
             _ => false,
         },
         .Implicit(_, _) => true,
-        _ => false,
-    };
-}
-
-/// Whether a value of `t` crosses a call's boundary between host and script (S8a3): the scalars,
-/// `string`, nothing as a result, and lists of them.
-fn crossesBoundary(t: Ty): bool {
-    return match (t) {
-        .Int | .Float | .Bool | .Char | .Str | .Void => true,
-        .List(e) => e.value != Ty.Void && crossesBoundary(e.value),
         _ => false,
     };
 }

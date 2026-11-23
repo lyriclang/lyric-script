@@ -453,7 +453,8 @@ VM's call path, S7k measurement point 3.
   - **S8e done** — scopes on `file` and `net` grants; every file native checks its resolved paths (links followed); 431 tests, 870 cases.
   - **S8f1 done** — attributes of kind 2: `@Name(args)` before a declaration, the closed list checked (`SEM0011`, `0065`, `0066`, `0068`, `PAR0042`); 875 cases.
   - **S8f2 done** — the host's modules: `vm.host(name, source)`, `import host.<name>`, `@Requires("right")` asked at load like `std`, `vm.implement`, a `HostFailure` is a panic (`LYS-RT0900`); the call goes through `call.n` with a stub, `runTask` untouched; format 49; 441 tests, 876 cases.
-  - Next: **S8f3** — handles, the host's errors per declaration (P14), callbacks that must not wait.
+  - **S8f3a done** — the host's handles: a class without fields in a module of the host, a number of the host's at the boundary (`Value.Handle`, format 50), `LYS-SEM0909` for one the script builds; attributes stand before methods now (09 At, missed in S8f1); Lyric 5 bug lyric#740 worked around; 449 tests, 878 cases.
+  - Next: **S8f3b** — the host's structs and errors (P14), then S8f3c callbacks that must not wait.
 
 ## Working mode
 

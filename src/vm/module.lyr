@@ -121,8 +121,9 @@ pub struct HostDecl :: [Debug] {
     pub result: Boundary,
 }
 
-/// A type at a call's boundary between host and script (S8a3): the scalars, `string`, and lists
-/// of them; `Other` for any other type, which a host does not call with.
+/// A type at a call's boundary between host and script (S8a3): the scalars, `string`, a handle
+/// of the host by its module and class, `game.Sprite` (S8f3a), and lists of them; `Other` for any
+/// other type, which a host does not call with.
 pub enum Boundary :: [Equatable, Debug] {
     Void,
     Int,
@@ -131,6 +132,7 @@ pub enum Boundary :: [Equatable, Debug] {
     Char,
     Str,
     List(Box<Boundary>),
+    Handle(string),
     Other,
 }
 

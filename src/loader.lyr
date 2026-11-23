@@ -413,26 +413,31 @@ fn hostRights(l: Loaded): void {
 fn rightsNamed(host: Parsed, im: ImportDecl): string[] {
     let out = List<string>.new();
     for (item in host.module.items) {
-        let f = match (item) {
-            .Decl(.Fn(f)) => f,
+        // a function, or a handle with its methods (S8f3a): what the import names asks for the
+        // rights of each
+        let (name, fns) = match (item) {
+            .Decl(.Fn(f)) => (f.name, [f]),
+            .Decl(.Type(t)) => (t.name, t.methods),
             _ => {
                 continue;
             }
         };
         var named = !im.selective;
         for (n in im.items) {
-            if (n.name == f.name) {
+            if (n.name == name) {
                 named = true;
             }
         }
         if (!named) {
             continue;
         }
-        for (a in f.attributes) {
-            if (a.name == "Requires" && a.args.length() == 1) {
-                if (let right = rightNamed(a.args[0])) {
-                    if (indexOf(out, right) < 0) {
-                        out.push(right);
+        for (f in fns) {
+            for (a in f.attributes) {
+                if (a.name == "Requires" && a.args.length() == 1) {
+                    if (let right = rightNamed(a.args[0])) {
+                        if (indexOf(out, right) < 0) {
+                            out.push(right);
+                        }
                     }
                 }
             }

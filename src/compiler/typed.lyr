@@ -186,6 +186,8 @@ class TypeInfo {
     // a type whose values the VM holds without a descriptor — a task, a coroutine, a scope, a
     // channel, a semaphore: an interface value of it is a box (S7c4b)
     var vmHeld: bool = false,
+    // a handle of the host (S8f3a): the name after `host.` of its module; empty for any other type
+    var host: string = "",
     // a blanket block's entry (05 §13 rule 7; S7c4c2): which of its parameters the receiver is;
     // -1 for any other type
     var blanketAt: int = -1,

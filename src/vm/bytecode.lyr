@@ -169,6 +169,10 @@ fn writeBoundary(w: Writer, b: Boundary): void {
             writeBoundary(w, e.value);
         }
         .Other => w.byte(7),
+        .Handle(name) => {
+            w.byte(8);
+            w.text(name);
+        }
     }
 }
 
@@ -183,6 +187,7 @@ fn readBoundary(r: Reader): Boundary throws NotOurs {
         5 => Boundary.Str,
         6 => Boundary.List(Box<Boundary> { value = try readBoundary(r) }),
         7 => Boundary.Other,
+        8 => Boundary.Handle(try r.text()),
         _ => throw NotOurs { reason = "a type at the boundary that is none" },
     };
 }

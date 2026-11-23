@@ -99,6 +99,17 @@ pub class ScriptBigInt :: [HeapRef] {
     }
 }
 
+/// A handle of the host (S8f3a; 11 V3 `HostHandle`): the class's name, `game.Sprite`, and the
+/// number the host gave; what it stands for the host holds.
+pub class HostHandle :: [HeapRef] {
+    pub type: string,
+    pub id: int,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
 /// What a `File` holds (S7g4): Lyric 5's file, once one is open.
 pub class ScriptFile :: [HeapRef] {
     pub var file: ?File = null,

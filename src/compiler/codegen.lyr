@@ -58,15 +58,23 @@ fn generate(p: Program, name: string): Module {
         if (f.host != "") {
             g.host = hosts.length();
             let params = List<Boundary>.new();
+            var name = f.name;
+            // a handle's method (S8f3a): `Class.method`, its receiver the first argument
+            if (f.owner >= 0) {
+                name = f"{p.types[f.owner].name}.{f.name}";
+                if (!f.isStatic) {
+                    params.push(boundaryOf(p, Ty.Named(f.owner)));
+                }
+            }
             for (x in f.params) {
-                params.push(boundaryOf(x.ty));
+                params.push(boundaryOf(p, x.ty));
             }
             hosts.push(
                 HostDecl {
                     module = f.host,
-                    name = f.name,
+                    name = name,
                     params = params.toArray(),
-                    result = boundaryOf(f.returns),
+                    result = boundaryOf(p, f.returns),
                 }
             );
         }
@@ -121,14 +129,14 @@ fn exportsOf(p: Program): Callable[] {
             && f.templateOf < 0) {
             let params = List<Boundary>.new();
             for (x in f.params) {
-                params.push(boundaryOf(x.ty));
+                params.push(boundaryOf(p, x.ty));
             }
             out.push(
                 Callable {
                     name = f.name,
                     function = k,
                     params = params.toArray(),
-                    result = boundaryOf(f.returns),
+                    result = boundaryOf(p, f.returns),
                 }
             );
         }
@@ -137,8 +145,9 @@ fn exportsOf(p: Program): Callable[] {
     return out.toArray();
 }
 
-/// The type `t` at a call's boundary (S8a3).
-fn boundaryOf(t: Ty): Boundary {
+/// The type `t` at a call's boundary (S8a3): a handle of the host by its module's name after
+/// `host.` and its own (S8f3a).
+fn boundaryOf(p: Program, t: Ty): Boundary {
     return match (t) {
         .Int => Boundary.Int,
         .Float => Boundary.Float,
@@ -146,7 +155,11 @@ fn boundaryOf(t: Ty): Boundary {
         .Char => Boundary.Char,
         .Str => Boundary.Str,
         .Void => Boundary.Void,
-        .List(e) => Boundary.List(Box<Boundary> { value = boundaryOf(e.value) }),
+        .List(e) => Boundary.List(Box<Boundary> { value = boundaryOf(p, e.value) }),
+        .Named(i) => if (p.types[i].host != "") Boundary.Handle(
+            f"{p.types[i].host}.{p.types[i].name}"
+        )
+            else Boundary.Other,
         _ => Boundary.Other,
     };
 }

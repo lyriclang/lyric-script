@@ -149,7 +149,7 @@ fn uiVm(seen: Seen): Vm {
                 }
                 if (let kept = seen.kept) {
                     try {
-                        try inst.invoke(kept, [Value.Str("x")], Budget { });
+                        inst.invoke(kept, [Value.Str("x")], Budget { });
                     } catch (e: InstanceMisuse) {
                         said = f"{said}; {e.message()}";
                     }
@@ -178,7 +178,7 @@ fn result(inst: Instance, name: string, args: Value[] = [], budget: Budget = Bud
 // the message of the host's mistake `run` makes; "taken" where it is none
 fn misuse(run: fn() -> void throws InstanceMisuse): string {
     try {
-        try run();
+        run();
     } catch (e: InstanceMisuse) {
         return e.message();
     }

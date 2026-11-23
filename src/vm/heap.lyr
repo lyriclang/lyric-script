@@ -214,8 +214,6 @@ pub class ScriptObject :: [HeapRef] {
     pub typeDesc: TypeDesc,
     pub scalars: uint64[],
     pub refs: HeapRef[],
-    /// The instance the object belongs to (01 S9); set from S8.
-    pub var owner: int = 0,
     /// The version of its type the object was built for (01 S7a); set from S9.
     pub var version: int = 0,
     /// Its number, given the first time it is hashed by its identity (01 S8: no addresses; S7d1);

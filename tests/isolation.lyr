@@ -1,0 +1,97 @@
+// Isolation and determinism (S8g; 01 S8, 01 S9): what goes between instances is a copy, and an
+// instance with a seed hashes alike in every run — under the zero key with the seed first.
+import std.hash { DefaultHasher, FixedHasher };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { Vm, vmOf };
+import lyric_script.vm.interp { Budget, Instance };
+import lyric_script.vm.value { Value };
+
+let hashSource: string = "pub fn ofText(s: string): int {\n    let h = Hasher { }\n    s.hash(h)\n    return h.finish()\n}\npub fn ofInt(n: int): int {\n    let h = Hasher { }\n    n.hash(h)\n    return h.finish()\n}\n";
+
+fn ready(inst: Instance): Instance {
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn result(inst: Instance, name: string, args: Value[] = []): Value {
+    return match (try! inst.call(name, args, Budget { })) {
+        .Ok(v) => v,
+        .Panic(p) => Value.Str(f"{p.code}: {p.message}"),
+        _ => Value.Str("no value"),
+    };
+}
+
+fn intOf(v: Value): int {
+    return match (v) {
+        .Int(i) => i,
+        _ => -1,
+    };
+}
+
+// the hash of "abc" an instance gives
+fn textHash(inst: Instance): int {
+    return intOf(result(inst, "ofText", [Value.Str("abc")]));
+}
+
+// what a seeded instance's hash of "abc" is: the seed, the hasher's state 0, the text
+fn seededText(seed: int): int {
+    var h = FixedHasher.new();
+    h.writeUint(seed as uint64);
+    h.writeUint(0 as uint64);
+    "abc".hash(&h);
+    return h.finish() as int;
+}
+
+@Test
+fn aSeedFixesTheHashes(): void {
+    let a = ready(try! vmOf().load("a.lyrs", hashSource, seed: 42));
+    assertEq(textHash(a), seededText(42));
+    var h = FixedHasher.new();
+    h.writeUint(42 as uint64);
+    h.writeUint(0 as uint64);
+    h.writeUint(7 as uint64);
+    assertEq(intOf(result(a, "ofInt", [Value.Int(7)])), h.finish() as int);
+    // another VM, and bytecode the host trusts, alike
+    let vm = vmOf();
+    let b = ready(try! vm.loadTrusted(try! vm.compile("b.lyrs", hashSource), seed: 42));
+    assertEq(textHash(b), seededText(42));
+    let c = ready(try! vmOf().load("c.lyrs", hashSource, seed: 43));
+    assertEq(textHash(c), seededText(43));
+    assertTrue(textHash(c) != textHash(a), "two seeds, one hash");
+    // without a seed, the process's key
+    let d = ready(try! vmOf().load("d.lyrs", hashSource));
+    var p = DefaultHasher.new();
+    p.writeUint(0 as uint64);
+    "abc".hash(&p);
+    assertEq(textHash(d), p.finish() as int);
+}
+
+@Test
+fn aSeededMapFindsItsKeys(): void {
+    let inst = ready(
+        try! vmOf().load(
+            "m.lyrs",
+            "pub fn walk(): string {\n    let m = Map<string, int>.new()\n    var k = 0\n    while (k < 12) {\n        m[f\"k{k}\"] = k * k\n        k += 1\n    }\n    var out = \"\"\n    for (key in m.keys()) {\n        let v = m[key] ?? -1\n        out += f\"{key}={v} \"\n    }\n    let seven = m[\"k7\"] ?? -1\n    return out + f\"{seven}\"\n}\n",
+            seed: 5
+        )
+    );
+    assertEq(
+        result(inst, "walk"),
+        Value.Str("k0=0 k1=1 k2=4 k3=9 k4=16 k5=25 k6=36 k7=49 k8=64 k9=81 k10=100 k11=121 49")
+    );
+}
+
+@Test
+fn aValueCrossesAsACopy(): void {
+    let vm = vmOf();
+    let a = ready(try! vm.load("a.lyrs", "var xs = [1, 2, 3]\npub fn get(): int[] = xs\n"));
+    let b = ready(
+        try! vm.load(
+            "b.lyrs",
+            "pub fn bump(xs: int[]): int[] {\n    xs[0] = 99\n    return xs\n}\n"
+        )
+    );
+    let given = result(a, "get");
+    assertEq(result(b, "bump", [given]), Value.List([Value.Int(99), Value.Int(2), Value.Int(3)]));
+    assertEq(result(a, "get"), Value.List([Value.Int(1), Value.Int(2), Value.Int(3)]));
+}

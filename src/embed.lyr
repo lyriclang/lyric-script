@@ -157,15 +157,17 @@ pub class Vm {
 
     /// An instance of the script `source`, named `name` — its diagnostics' path, and where its
     /// own imports are looked for —, with the rights in `allow` (`file`, `net`, `process`, `os`,
-    /// `native`), or every right with `all`. Its top level has not run: `init` runs it.
+    /// `native`), or every right with `all`. Its top level has not run: `init` runs it. With a
+    /// `seed`, its hashes are the same in every run (01 S8); without one, they are this process's.
     pub fn load(
         name: string,
         source: string,
         allow: string[] = [],
-        all: bool = false
+        all: bool = false,
+        seed: ?int = null
     ): Instance throws LoadError {
         let module = try this.compiled(name, source);
-        return try granted(module, name, allow, all, this.impls.toArray());
+        return try granted(module, name, allow, all, this.impls.toArray(), seed);
     }
 
     /// The bytecode of the script `source`, for `loadTrusted` (01 S10): an artefact of the
@@ -181,12 +183,13 @@ pub class Vm {
     pub fn loadTrusted(
         bytes: uint8[],
         allow: string[] = [],
-        all: bool = false
+        all: bool = false,
+        seed: ?int = null
     ): Instance throws LoadError {
         let module = try decode(bytes, bytecodeFormat, version, null) catch (e: NotOurs) {
             throw LoadError { reason = f"the bytecode does not load: {e.message()}" };
         };
-        return try granted(module, module.name, allow, all, this.impls.toArray());
+        return try granted(module, module.name, allow, all, this.impls.toArray(), seed);
     }
 
     // the module of a source: from the cache where it is there, else compiled — and kept where it
@@ -229,7 +232,8 @@ fn granted(
     name: string,
     allow: string[],
     all: bool,
-    impls: HostCall[]
+    impls: HostCall[],
+    seed: ?int
 ): Instance throws LoadError {
     let lacking = missing(module.rights, allow, all);
     if (lacking.length() > 0) {
@@ -251,7 +255,7 @@ fn granted(
             };
         }
     }
-    return instanceOf(module, [name], fileScopes(allow, all), calls.toArray());
+    return instanceOf(module, [name], fileScopes(allow, all), calls.toArray(), seed);
 }
 
 // whether a module's name is words of letters, digits and `_`, a letter or `_` first, between dots

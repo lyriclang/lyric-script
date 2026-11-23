@@ -3439,6 +3439,99 @@ Lyric-5-Task der VM, mitten in `runTask`, auf 256 KiB Stack. Während eines Aufr
 - **Uhr bleibt:** der nicht wartende Start eines Callbacks, im Beispiel-Host des Spiels beim Abschluss
   von S8.
 
+**S8g, Zuschnitt (2026-11-23).** Gelesen gegen den Code.
+- Kein Wert der API hält einen Verweis in den Heap einer Instanz. `Value` ist eine Kopie, ein Griff ist
+  eine Nummer des Hosts, und ein Callback trägt die Nummer seiner Instanz, die geprüft wird. Das Eigentum
+  je Instanz (01 S9) folgt also aus den Typen der API. Das Feld `owner` an jedem Objekt wurde nie gesetzt.
+- Die Maps von Script hashen über `DefaultHasher`, unter dem Schlüssel des Prozesses (`hash.mixInt`,
+  `hash.mixStr`). Lyric 5 hat daneben nur `FixedHasher`, unter dem Nullschlüssel. Zeit und Zufall aus
+  dem System gehören schon zum Recht `os`.
+- S8a3 hat Maps an der Grenze auf S8g verschoben, „als Handles". S8f3 hat Griffe danach als Nummern des
+  Hosts entschieden. Für die Maps fehlt also eine Entscheidung, und die Zeile S8a nennt sie.
+- Gemeinsamer veränderlicher Zustand über Instanzen hinweg:
+  - der Zähler `serials`, ein gewöhnliches Feld;
+  - `vm.impls`, das `implement` auch nach dem ersten `load` ändert;
+  - die Teildatei des Caches, `<pfad>.<pid>.tmp`, in die zwei Threads eines Prozesses gleichzeitig
+    schreiben würden.
+- Eine Instanz mit einem wartenden Native hält einen Lyric-5-Task auf dem Thread, der ihn startete.
+  Lyric 5 bewegt keinen Task zwischen Threads und gibt keine Kennung des Threads heraus.
+
+Drei Teile:
+- **S8g1 Seed und Eigentum:**
+  - `vm.load(…, seed: ?int = null)` und ebenso `loadTrusted`. Mit einem Seed mischt die Instanz jeden
+    Hash unter `FixedHasher`, mit dem Seed als erstem Wort. Ohne Seed bleibt es beim Schlüssel des
+    Prozesses.
+  - `owner` fällt weg. Spec 13 sagt in einer Regel, was zwischen Instanzen geht: Werte der API, also
+    Kopien, Griffe des Hosts und Callbacks nur in ihrer eigenen Instanz.
+  - Prüfung: gleicher Seed in zwei Instanzen gibt dieselben Hashes; ein anderer Seed andere. Ein Wert,
+    den eine Instanz gibt und eine andere bekommt, ist eine Kopie: Eine Änderung in der zweiten sieht die
+    erste nicht.
+- **S8g2 Maps an der Grenze:**
+  - `Map<K, V>` mit Schlüsseln aus `int`, `char`, `bool` und `string` und Werten der Grenze geht als
+    tiefe Kopie über die Grenze: `Boundary.Map`, `Value.Map(MapValue { keys, values })`, in der
+    Reihenfolge der Map (Format 53).
+  - Der Host baut sie mit den Hashes, die das Skript selbst rechnen würde, unter dem Schlüssel der
+    Instanz. Ein Schlüssel, der zweimal vorkommt, ist ein `InstanceMisuse`.
+  - `Set` und andere Klassen des Skripts gehen nicht über die Grenze.
+  - Prüfung: hin und zurück, Nachschlagen im Skript nach dem Bau durch den Host (mit und ohne Seed),
+    Reihenfolge mit einem Dutzend Schlüsseln, doppelter Schlüssel, Bytecode.
+- **S8g3 Threads:**
+  - `serials` wird ein `Atomic<int>`.
+  - Jede Instanz trägt eine Sperre aus einem `Atomic<int>`. Jeder Eintritt nimmt sie mit
+    `compareAndSet`: `init`, `call`, `start`, `step`, `resume`, `invoke`, `abort` und `release`. Findet
+    ein Eintritt sie genommen, ist das ein `InstanceMisuse` („the instance is running a call"), ob vom
+    selben Thread aus einer Implementierung oder von einem anderen.
+  - `inst.resting()` ist wahr, wenn kein Aufruf läuft und kein Native wartet. Nur dann darf der Host die
+    Instanz auf einen anderen Thread geben (11 Thr).
+  - Die `Vm` ist nach dem ersten `load` versiegelt: `host` und `implement` sind danach ein
+    `HostMisuse`. So teilen Threads sie nur lesend.
+  - Die Teildatei des Caches trägt neben der pid eine Nummer aus einem `Atomic`.
+  - Prüfung:
+    - zwei Instanzen auf zwei Threads (`Thread.spawn`) gleichzeitig, mit richtigem Ergebnis;
+    - eine ruhende Instanz, die nacheinander auf zwei Threads gerufen wird;
+    - ein zweiter Eintritt, während eine Implementierung des Hosts auf einen Kanal wartet: Misuse,
+      danach geht die Instanz weiter;
+    - `implement` nach `load`;
+    - zwei Threads, die dieselbe Quelle mit Cache laden.
+- **Entschieden nach Empfehlung:**
+  - **Eigentum aus den Typen, kein Feld.** Verworfen: `owner` setzen und an der Grenze prüfen. Kein
+    Verweis kreuzt die Grenze, also gäbe es nichts zu prüfen, und jedes Objekt zahlte 8 Byte
+    (Messpunkt 4). Erlang trennt Prozesse ebenso über Kopien, ohne Etikett am Objekt.
+  - **Der Seed als Präfix unter `FixedHasher`.** Ein geheimer Seed macht den Zustand nach dem ersten
+    Wort geheim, also bleibt der Schutz vor HashDoS. Verworfen: ein Hasher mit freiem Schlüssel in
+    Lyric 5s std.hash, denn das wäre eine Änderung an Lyric 5 und hielte S8 an. Bietet Lyric 5 ihn
+    später, ist der Tausch lokal.
+  - **Der Seed beim Laden, nicht an der Instanz.** `init` hasht schon, also muss er vor dem
+    Top-Level-Code feststehen. Ein Parameter wie `allow` kann nicht zu spät kommen. Verworfen:
+    `inst.seed(n)` vor `init`, eine Phase mehr für eine Zahl.
+  - **Maps als Kopie mit den Hashes des Skripts.** Verworfen: Maps als Griffe. Ein Griff ist seit S8f3
+    eine Nummer des Hosts, und ein Verweis in den Heap bräche 01 S9. Ebenfalls verworfen: den Index
+    beim ersten Zugriff im Skript bauen. Dann prüfte jeder Zugriff jeder Map ein Flag. Die Formeln der
+    vier Schlüsseltypen nachzubilden ist klein, und das Nachschlagen nach dem Bau prüft sie.
+  - **Eine Sperre je Instanz, die Bewegung über `resting`.** Lyric 5 gibt keine Kennung des Threads
+    heraus. Prüfen lässt sich deshalb der gleichzeitige Eintritt, nicht der Wechsel mit wartendem
+    Native. V8 trennt dasselbe: ein `Locker` für den Eintritt, und ein Isolate wechselt den Thread nur
+    ohne laufende Arbeit. Verworfen: jede Instanz threadsicher machen (11 Thr C). Das hieße Locks in
+    jedem Befehl, gegen 07.
+  - **Die `Vm` versiegelt.** Verworfen: ein Lock um `impls`. Eine Implementierung, die nach dem Laden
+    käme, würde ohnehin nicht geprüft, denn `load` prüft jede Funktion gegen die Implementierungen.
+  - **Objekte des Skripts beim Host:** Neben den behaltenen Callbacks gibt es in 1.0 keine. Die
+    „Host-Referenzen" in 01 S7a sind damit die Callbacks, und die werden beim Reload `.Stale`.
+
+**S8g1, Ergebnis (2026-11-23).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - `seed` an `load` und `loadTrusted` steht im `RunShared` der Instanz. `hash.mixInt` und `hash.mixStr`
+    gehen über `mixWord` und `mixText`, die mit einem Seed unter `FixedHasher` mischen, den Seed als
+    erstes Wort, und ohne Seed unter `DefaultHasher`.
+  - `owner` ist weg. Spec 13 Regel 9 sagt, was zwischen Instanzen geht.
+- **Nicht versprochen:** Die Spec verspricht nur die Hashes mit Seed, nicht den Determinismus eines Laufs
+  ohne Rechte. `sleep` steht ohne Recht im Prelude und hängt an der Wanduhr (P50, Uhr: Abschluss von S8).
+- **Prüfung:**
+  - Drei Unit-Tests in `tests/isolation.lyr`. Der erwartete Hash wird im Test mit Lyric 5s `FixedHasher`
+    nachgerechnet, nicht nur zwischen zwei Instanzen verglichen. 467 Tests.
+  - Drei Mutanten, alle vom vorhergesagten Test getötet: Seed nicht gesetzt, Seed nicht gemischt,
+    `loadTrusted` ohne Seed. Die Kontrolle aus S8f3a tötet nur ihren Test.
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

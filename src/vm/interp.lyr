@@ -34,7 +34,7 @@ import std.fs {
     tempDir as fsTempDir,
     tempFile as fsTempFile,
 };
-import std.hash { DefaultHasher };
+import std.hash { DefaultHasher, FixedHasher };
 import std.io { IoError, SeekFrom, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
 import std.os {
     arch as osArch,
@@ -521,6 +521,8 @@ class RunShared {
     // S8f3c: the instance's number, which its callbacks carry; its callbacks by their numbers, and
     // the next number; how deep callbacks nest in functions of the host now
     var serial: int = 0,
+    // the seed of the instance's hashes, `null` for the process's key (01 S8; S8g1)
+    var seed: ?int = null,
     callbacks: Map<int, CallbackEntry> = Map<int, CallbackEntry>.new(),
     var nextCallback: int = 0,
     var callbackDepth: int = 0,
@@ -1000,12 +1002,14 @@ pub fn instanceOf(
     module: Module,
     argv: string[] = [],
     scopes: ?string[] = null,
-    hosts: HostCall[] = []
+    hosts: HostCall[] = [],
+    seed: ?int = null
 ): Instance {
     let feeds = List<Channel<Signal>>.new();
     let shared = newShared(module, -1, argv, feeds);
     shared.scopes = scopes;
     shared.hosts = hosts;
+    shared.seed = seed;
     serials.next += 1;
     shared.serial = serials.next;
     return Instance { shared = shared, feeds = feeds };
@@ -2078,19 +2082,12 @@ fn callNative(
             let b = s[x];
             s[x] = if ((b >> 63) != 0) b ^ mask else b;
         }
-        // a hash's mixing (S7d1): SipHash-1-3 under the process's key, a word or a
-        // string's bytes into the state
+        // a hash's mixing (S7d1): a word or a string's bytes into the state
         .HashMixInt => {
-            var h = DefaultHasher.new();
-            h.writeUint(s[x]);
-            h.writeUint(s[x + 1]);
-            s[x] = h.finish();
+            s[x] = mixWord(shared, s[x], s[x + 1]);
         }
         .HashMixStr => {
-            var h = DefaultHasher.new();
-            h.writeUint(s[x]);
-            textOf(r[y]).hash(&h);
-            s[x] = h.finish();
+            s[x] = mixText(shared, s[x], textOf(r[y]));
         }
         // an object's number for a hash by identity, given at its first (01 S8); a
         // value the VM holds otherwise has none of its own
@@ -5516,9 +5513,39 @@ fn signalValue(s: Signal, forms: ScriptArray): HeapRef {
         typeDesc = form.typeDesc,
         scalars = scalars,
         refs = form.refs,
-        owner = form.owner,
         version = form.version,
     };
+}
+
+/// The state `a` with the word `b` mixed in (S7d1): SipHash-1-3 under the process's key, or, where the
+/// instance has a seed, under the zero key with the seed first (01 S8; S8g1).
+fn mixWord(shared: RunShared, a: uint64, b: uint64): uint64 {
+    if (let seed = shared.seed) {
+        var h = FixedHasher.new();
+        h.writeUint(seed as uint64);
+        h.writeUint(a);
+        h.writeUint(b);
+        return h.finish();
+    }
+    var h = DefaultHasher.new();
+    h.writeUint(a);
+    h.writeUint(b);
+    return h.finish();
+}
+
+/// The state `a` with the bytes of `text` mixed in, under the key `mixWord` takes.
+fn mixText(shared: RunShared, a: uint64, text: string): uint64 {
+    if (let seed = shared.seed) {
+        var h = FixedHasher.new();
+        h.writeUint(seed as uint64);
+        h.writeUint(a);
+        text.hash(&h);
+        return h.finish();
+    }
+    var h = DefaultHasher.new();
+    h.writeUint(a);
+    text.hash(&h);
+    return h.finish();
 }
 
 /// The signal of a kind as `std.os`'s `Signal` counts its variants, `number` for an `Other`.

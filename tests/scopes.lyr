@@ -87,7 +87,9 @@ fn underScopesThereIsNoTemporaryDirectory(): void {
 }
 
 // a link inside the scope that points outside it does not open the outside: the path is resolved
-// before it is compared (needs `ln -s`; where there is none, the test has nothing to show)
+// before it is compared (needs `ln -s`; where there is none, the test has nothing to show — and
+// where `ln` copies, as MSYS's on Windows does, it has made no link: a directory made in `out`
+// afterwards does not show through it)
 @Test
 fn aLinkDoesNotLeaveTheScope(): void {
     let dir = try! tempDir();
@@ -98,6 +100,11 @@ fn aLinkDoesNotLeaveTheScope(): void {
         args = ["-s", f"{dir}/out", f"{dir}/in/link"],
     }.status();
     if (made == null || !made.success()) {
+        try? removeAll(dir);
+        return;
+    }
+    try! createDir(f"{dir}/out/after");
+    if (!exists(f"{dir}/in/link/after")) {
         try? removeAll(dir);
         return;
     }

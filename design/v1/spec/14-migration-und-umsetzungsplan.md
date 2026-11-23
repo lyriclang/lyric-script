@@ -3258,7 +3258,8 @@ S8b4. Neu geteilt:
     Fall ist auf S7 rot, über seinen Text.
   - Fünf Mutanten, alle getötet, aber nur durch die Unit-Tests: Die Kommandozeile hat keinen Host. L2 (jeder
     Import verlangt jedes Recht) tötete fünf Tests statt des einen vorhergesagten.
-  - Kontrolle nach P47: siehe unten.
+  - Kontrolle nach P47: Die Befehlszahlen von `fib`, `loop` und `objects` im Release-Build weichen
+    höchstens um 5e-6 von S8b4 ab. Der neue Arm von `callNative` verschiebt `runTask` nicht.
   - 441 Tests, 876 Fälle.
 
 **S8f3, Zuschnitt (2026-11-19).** Gelesen gegen den Code. Die std hält Objekte des Systems als Klasse mit
@@ -3315,7 +3316,8 @@ einem Feld `handle: Any` (`File` über `ScriptFile`). Typen, deren Werte die VM 
   optionalen `let` ließ den Compiler abstürzen (`LYR-ICE0001`, lyric#740). Umgangen in
   `Checker.hostItem`, indem der Arm früh verlassen wird.
 - **Prüfung:**
-  - Acht Unit-Tests und zwei Konformanzfälle (Spec 11 Regel 1, Spec 13 Regel 6).
+  - Acht Unit-Tests und zwei Konformanzfälle (Spec 11 Regel 1, Spec 13 Regel 6). Beide Fälle sind auf
+    S8f2 rot.
   - Sechs Mutanten, alle getötet, M5 (Methoden verlieren ihre Attribute) auch durch einen Fall. Gegen die
     Vorhersage tötete M1 (`boundaryOf` vergisst Griffe) den Test der fremden Klasse nicht. Mit `Other`
     scheitert auch die richtige Klasse an `fits`, und die Meldung lautet gleich.

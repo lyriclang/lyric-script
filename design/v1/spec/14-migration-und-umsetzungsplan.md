@@ -3532,6 +3532,24 @@ Drei Teile:
   - Drei Mutanten, alle vom vorhergesagten Test getötet: Seed nicht gesetzt, Seed nicht gemischt,
     `loadTrusted` ohne Seed. Die Kontrolle aus S8f3a tötet nur ihren Test.
 
+**S8g2, Ergebnis (2026-11-23).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - Der Checker lässt `Map<K, V>` an die Grenze, wenn `K` aus `int`, `char`, `bool`, `string` ist und `V`
+    selbst die Grenze kreuzt. Der Codegen schreibt je solcher Instanz eine Zeile `MapDesc` (Grenze und
+    Typbeschreibung) in die neue Tabelle `maps` des Moduls; Format 53.
+  - `refOf` baut eine Map des Hosts als Objekt der Klasse `Map` aus std.collections: Schlüssel, Werte,
+    Hashes, Lebend-Bits und den Index, die Hashes über dieselben `mixWord`/`mixText` wie das Skript und
+    unter dem Seed der Instanz. `valueOfRef` gibt nur die lebenden Einträge in ihrer Reihenfolge zurück.
+  - `fits` prüft eine Map des Hosts: gleich viele Schlüssel und Werte, passende Typen, kein Schlüssel
+    zweimal; sonst `InstanceMisuse` wie bei jedem anderen Argument.
+- **Eine Regel fiel:** Drei alte Pins nahmen `Map<int, int>` als Typ, der die Grenze nicht kreuzt. Sie
+  stehen jetzt auf `Map<(int, int), int>`, das weiter nicht kreuzt.
+- **Prüfung:**
+  - Fünf Unit-Tests in `tests/boundarymaps.lyr`, darunter ein Fund jedes Schlüssels einer Map des Hosts
+    mit und ohne Seed, und eine Map, die das Skript weiterbaut. 472 Tests, 878 Konformanzfälle.
+  - Acht Mutanten, alle getötet. Drei töteten mehr als vorhergesagt, weil die Vorhersage nur den
+    gemeinten Test las, nicht jeden, der die Funktion ruft.
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

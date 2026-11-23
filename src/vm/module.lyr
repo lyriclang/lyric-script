@@ -112,6 +112,8 @@ pub class Module :: [Identity] {
     var hosts: HostDecl[] = [],
     /// The structs of the host's modules the program names, for the boundary (S8f3b).
     var hostStructs: HostStruct[] = [],
+    /// The types of map the program names, for the boundary (S8g2).
+    var maps: MapDesc[] = [],
 }
 
 /// A function of a module of the host (S8f2; 11 Hst): its module's name after `host.`, its own,
@@ -140,7 +142,23 @@ pub enum Boundary :: [Equatable, Debug] {
     Struct(string),
     /// A function value of the script, as a parameter of a function of the host (S8f3c).
     Fn(FnBoundary),
+    /// A map of the script, as a copy (S8g2).
+    Map(MapBoundary),
     Other,
+}
+
+/// A map at the boundary (S8g2): its keys' type — `int`, `char`, `bool` or `string` — and its
+/// values'.
+pub struct MapBoundary :: [Equatable, Debug] {
+    pub key: Box<Boundary>,
+    pub value: Box<Boundary>,
+}
+
+/// A type of map the program names at its boundary (S8g2): its keys' and values' types and the
+/// descriptor of its instance of `Map`, which a map the host gives is built as.
+pub struct MapDesc :: [Debug] {
+    pub type: MapBoundary,
+    pub desc: int,
 }
 
 /// A function type at the boundary (S8f3c): its parameters' types and its result's.

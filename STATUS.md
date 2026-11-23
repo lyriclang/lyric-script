@@ -457,7 +457,8 @@ VM's call path, S7k measurement point 3.
   - **S8f3b done** — the host's structs cross as copies (`Value.Struct`, format 51); errors of the host are structs `:: [Error]` its functions name in `throws` (P14), thrown in the script; an undeclared one is a panic; 454 tests.
   - **S8f3c done** — callbacks: a function type at a parameter of the host's function (`Boundary.Fn`, `Value.Callback`, format 52); the implementation gets its `Caller` first and calls a callback to its end within the call's budget — a wait, the budget's end or `exit` in it is `LYS-RT0901`, nesting stops at 64 (`LYS-RT0006`); callbacks are lent, `caller.keep` keeps them for `inst.invoke`, `inst.release` lets go; phase `Running`; Lyric 5 bug lyric#744 worked around; 464 tests.
   - **S8g1 done** — a seed at `load`/`loadTrusted` fixes the instance's hashes (zero key, seed first); `owner` gone, ownership follows from the API's types (spec 13 rule 9); P50 (`sleep` without a right) opened; 467 tests.
-  - Next: **S8g2** — maps at the boundary as deep copies; then S8g3 (threads).
+  - **S8g2 done** — `Map<K, V>` with a key of `int`, `char`, `bool` or `string` and a value that crosses goes over the boundary as a copy in its order; the host's map is built with the script's hashes under the instance's seed, a key twice is misuse; format 53; 472 tests.
+  - Next: **S8g3** — threads: one call at a time per instance, the Vm sealed after the first load, a thread-unique cache part file.
 
 ## Working mode
 

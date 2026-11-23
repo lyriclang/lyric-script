@@ -1,9 +1,18 @@
 //! What a host passes to a script and gets back (design/v1, 01 S11; 11 Emb; S8a3): the scalars,
-//! `string`, and lists of them, as values of the host's — a copy, never a reference into the
-//! instance (01 S9). Other types at the boundary come as handles with S8g.
-import std.collections { List };
-import lyric_script.vm.heap { HeapRef, HostHandle, ScriptArray, ScriptObject, ScriptString };
-import lyric_script.vm.module { Boundary, HostStruct, Module };
+//! `string`, lists, the host's structs and maps by a scalar key, as values of the host's — a copy,
+//! never a reference into the instance (01 S9). The host's classes cross as handles (S8f).
+import std.collections { List, Map, Set };
+import std.hash { DefaultHasher, FixedHasher };
+import lyric_script.vm.heap {
+    HeapRef,
+    HostHandle,
+    nil,
+    ScriptArray,
+    ScriptIndex,
+    ScriptObject,
+    ScriptString,
+};
+import lyric_script.vm.module { Boundary, HostStruct, MapBoundary, Module };
 
 /// A value at a call's boundary.
 pub enum Value :: [Equatable, Debug] {
@@ -19,6 +28,14 @@ pub enum Value :: [Equatable, Debug] {
     /// A function value of the script a function of the host was given (S8f3c): the host calls it
     /// through its `Caller` or the instance.
     Callback(Callback),
+    /// A map of the script (S8g2): a copy, its entries in the order the map walks them.
+    Map(MapValue),
+}
+
+/// A map at the boundary (S8g2): its keys and the value of each, in the map's order.
+pub struct MapValue :: [Equatable, Debug] {
+    pub keys: Value[],
+    pub values: Value[],
 }
 
 /// A function value of the script at the boundary (S8f3c): its instance's number and its own in that
@@ -98,6 +115,86 @@ fn fits(v: Value, b: Boundary, m: Module): bool {
             }
             _ => false,
         },
+        .Map(mv) => match (b) {
+            .Map(mb) => mapFits(mv, mb, m),
+            _ => false,
+        },
+    };
+}
+
+// whether `mv` is a map of the type `mb` the module builds: as many values as keys, each of its
+// type, no key twice
+fn mapFits(mv: MapValue, mb: MapBoundary, m: Module): bool {
+    if (mapDescOf(m, mb) < 0 || mv.keys.length() != mv.values.length()) {
+        return false;
+    }
+    let seen = Set<string>.new();
+    var k = 0;
+    while (k < mv.keys.length()) {
+        if (!fits(mv.keys[k], mb.key.value, m) || !fits(mv.values[k], mb.value.value, m)) {
+            return false;
+        }
+        let shown = f"{mv.keys[k]:?}";
+        if (seen.contains(shown)) {
+            return false;
+        }
+        seen.insert(shown);
+        k += 1;
+    }
+    return true;
+}
+
+/// The descriptor of the instance of `Map` the module builds a map of the type `mb` as; -1 where
+/// the program names none.
+fn mapDescOf(m: Module, mb: MapBoundary): int {
+    for (e in m.maps) {
+        if (e.type == mb) {
+            return e.desc;
+        }
+    }
+    return -1;
+}
+
+/// The state `a` with the word `b` mixed in (S7d1): SipHash-1-3 under the process's key, or, where the
+/// instance has a seed, under the zero key with the seed first (01 S8; S8g1).
+fn mixWord(seed: ?int, a: uint64, b: uint64): uint64 {
+    if (let n = seed) {
+        var h = FixedHasher.new();
+        h.writeUint(n as uint64);
+        h.writeUint(a);
+        h.writeUint(b);
+        return h.finish();
+    }
+    var h = DefaultHasher.new();
+    h.writeUint(a);
+    h.writeUint(b);
+    return h.finish();
+}
+
+/// The state `a` with the bytes of `text` mixed in, under the key `mixWord` takes.
+fn mixText(seed: ?int, a: uint64, text: string): uint64 {
+    if (let n = seed) {
+        var h = FixedHasher.new();
+        h.writeUint(n as uint64);
+        h.writeUint(a);
+        text.hash(&h);
+        return h.finish();
+    }
+    var h = DefaultHasher.new();
+    h.writeUint(a);
+    text.hash(&h);
+    return h.finish();
+}
+
+/// The hash the script gives the key `v` (S8g2), as the prelude's `hash` of its type writes it into a
+/// new hasher: an `int` and a `char` as a word, a `bool` as its byte, a `string` as its text.
+fn keyHash(v: Value, seed: ?int): uint64 {
+    return match (v) {
+        .Int(i) => mixWord(seed, 0, i as uint64),
+        .Char(c) => mixWord(seed, 0, (c as uint32) as uint64),
+        .Bool(b) => mixWord(seed, 0, if (b) 1 else 0),
+        .Str(s) => mixText(seed, 0, s),
+        _ => 0,
     };
 }
 
@@ -144,7 +241,7 @@ fn bitsOf(v: Value): uint64 {
 
 /// A new object of the instance for a value of reference type `b`: a string, a handle, a struct of
 /// the host (S8f3b), or a list whose elements are made the same way.
-fn refOf(v: Value, b: Boundary, m: Module): HeapRef {
+fn refOf(v: Value, b: Boundary, m: Module, seed: ?int): HeapRef {
     match (v) {
         .Str(text) => {
             return ScriptString { text = text };
@@ -154,7 +251,15 @@ fn refOf(v: Value, b: Boundary, m: Module): HeapRef {
         }
         .Struct(sv) => {
             if (let e = hostStructOf(m, sv.type)) {
-                return structOf(sv, e, m);
+                return structOf(sv, e, m, seed);
+            }
+        }
+        .Map(mv) => {
+            match (b) {
+                .Map(mb) => {
+                    return mapOf(mv, mb, m, seed);
+                }
+                _ => { }
             }
         }
         _ => { }
@@ -168,6 +273,11 @@ fn refOf(v: Value, b: Boundary, m: Module): HeapRef {
         .List(e) => e.value,
         _ => Boundary.Other,
     };
+    return arrayOf(xs, e, m, seed);
+}
+
+// a list of the script of `xs`, its elements of the type `e`
+fn arrayOf(xs: Value[], e: Boundary, m: Module, seed: ?int): ScriptArray {
     let scalar = isScalarAt(e);
     let s = List<uint64>.new();
     let r = List<HeapRef>.new();
@@ -175,7 +285,7 @@ fn refOf(v: Value, b: Boundary, m: Module): HeapRef {
         if (scalar) {
             s.push(bitsOf(x));
         } else {
-            r.push(refOf(x, e, m));
+            r.push(refOf(x, e, m, seed));
         }
     }
     return ScriptArray {
@@ -185,6 +295,50 @@ fn refOf(v: Value, b: Boundary, m: Module): HeapRef {
         r = r,
         n = xs.length(),
     };
+}
+
+// a map of the script of `mv` (S8g2), as the prelude's `Map` holds one: its keys, values, their
+// hashes — the script's own, under the instance's seed — and which are live in lists, and the index
+// of the places by hash
+fn mapOf(mv: MapValue, mb: MapBoundary, m: Module, seed: ?int): ScriptObject {
+    let d = m.types[mapDescOf(m, mb)];
+    let n = mv.keys.length();
+    let hashes = List<uint64>.new();
+    let live = List<uint64>.new();
+    let ix = ScriptIndex { table = Map<uint64, List<int>>.new() };
+    var k = 0;
+    while (k < n) {
+        let h = keyHash(mv.keys[k], seed);
+        hashes.push(h);
+        live.push(1);
+        if (let places = ix.table.get(h)) {
+            places.push(k);
+        } else {
+            let places = List<int>.new();
+            places.push(k);
+            ix.table.insert(h, places);
+        }
+        k += 1;
+    }
+    let s = List<uint64>.new();
+    for (name in d.scalarFields) {
+        s.push(if (name == "count") n as uint64 else 0);
+    }
+    let r = List<HeapRef>.new();
+    for (name in d.refFields) {
+        let none: HeapRef = nil;
+        r.push(
+            match (name) {
+                "ks" => arrayOf(mv.keys, mb.key.value, m, seed),
+                "vs" => arrayOf(mv.values, mb.value.value, m, seed),
+                "hs" => ScriptArray { ns = 1, nr = 0, s = hashes, r = List<HeapRef>.new(), n = n },
+                "live" => ScriptArray { ns = 1, nr = 0, s = live, r = List<HeapRef>.new(), n = n },
+                "ix" => ix,
+                _ => none,
+            }
+        );
+    }
+    return ScriptObject { typeDesc = d, scalars = s.toArray(), refs = r.toArray() };
 }
 
 /// The value of type `b` whose register holds `bits`.
@@ -199,7 +353,7 @@ fn valueOfBits(b: Boundary, bits: uint64): Value {
 }
 
 /// The object of the struct `sv` of the host, its fields where its descriptor places them.
-fn structOf(sv: StructValue, e: HostStruct, m: Module): ScriptObject {
+fn structOf(sv: StructValue, e: HostStruct, m: Module, seed: ?int): ScriptObject {
     let d = m.types[e.desc];
     let s = List<uint64>.new();
     for (name in d.scalarFields) {
@@ -209,9 +363,35 @@ fn structOf(sv: StructValue, e: HostStruct, m: Module): ScriptObject {
     let r = List<HeapRef>.new();
     for (name in d.refFields) {
         let k = placeOf(e.fields, name);
-        r.push(refOf(sv.fields[k], e.bounds[k], m));
+        r.push(refOf(sv.fields[k], e.bounds[k], m, seed));
     }
     return ScriptObject { typeDesc = d, scalars = s.toArray(), refs = r.toArray() };
+}
+
+// the entries of the map `o` that are live, in its order (S8g2)
+fn mapValueOf(o: ScriptObject, mb: MapBoundary, m: Module): Value {
+    let d = o.typeDesc;
+    let ks = o.refs[placeOf(d.refFields, "ks")];
+    let vs = o.refs[placeOf(d.refFields, "vs")];
+    let live = o.refs[placeOf(d.refFields, "live")];
+    let keys = List<Value>.new();
+    let values = List<Value>.new();
+    if (ks is ScriptArray && vs is ScriptArray && live is ScriptArray) {
+        var k = 0;
+        while (k < ks.n) {
+            if (live.s[k] != 0) {
+                keys.push(elementOf(ks, k, mb.key.value, m));
+                values.push(elementOf(vs, k, mb.value.value, m));
+            }
+            k += 1;
+        }
+    }
+    return Value.Map(MapValue { keys = keys.toArray(), values = values.toArray() });
+}
+
+// the element `k` of the list `a`, of the type `e`, copied out
+fn elementOf(a: ScriptArray, k: int, e: Boundary, m: Module): Value {
+    return if (isScalarAt(e)) valueOfBits(e, a.s[k]) else valueOfRef(e, a.r[k], m);
 }
 
 /// The value of type `b` the object `o` is, copied out of the instance.
@@ -246,6 +426,11 @@ fn valueOfRef(b: Boundary, o: HeapRef, m: Module): Value {
                     }
                     return Value.Struct(StructValue { type = name, fields = out.toArray() });
                 }
+            }
+        }
+        .Map(mb) => {
+            if (o is ScriptObject) {
+                return mapValueOf(o, mb, m);
             }
         }
         .List(e) => {

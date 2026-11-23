@@ -220,7 +220,7 @@ fn whatTheHostDoesNotDeclareIsAPanic(): void {
 @Test
 fn aStructOfTheHostIsChecked(): void {
     assertEq(hostCodes("a", "struct S {\n    x: int = 1\n}\n"), "LYS-SEM0907");
-    assertEq(hostCodes("b", "struct S {\n    m: Map<int, int>\n}\n"), "LYS-SEM0907");
+    assertEq(hostCodes("b", "struct S {\n    m: Map<(int, int), int>\n}\n"), "LYS-SEM0907");
     assertEq(hostCodes("c", "struct S<T> {\n    x: int\n}\n"), "LYS-SEM0907");
     assertTrue(
         hostCodes("d", "struct S :: [Equatable] {\n    x: int\n}\n").startsWith("LYS-SEM0907"),

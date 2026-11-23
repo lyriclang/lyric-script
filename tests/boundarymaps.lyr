@@ -1,0 +1,206 @@
+// Maps at the boundary (S8g2; 01 S9): a map of the script crosses as a copy, its entries in its
+// order; one the host gives is built with the hashes the script would give its keys, under the
+// instance's seed.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { LoadError, Vm, vmOf };
+import lyric_script.vm.interp { Budget, Instance, InstanceMisuse };
+import lyric_script.vm.value { HostFailure, MapValue, Value };
+
+let mapSource: string = """
+pub fn scores(): Map<string, int> {
+    let m = Map<string, int>.new()
+    var k = 0
+    while (k < 12) {
+        m[f"k{k}"] = k
+        k += 1
+    }
+    m["k3"] = null
+    return m
+}
+pub fn look(m: Map<string, int>, k: string): int = m[k] ?? -1
+pub fn lookInt(m: Map<int, string>, k: int): string = m[k] ?? "none"
+pub fn lookChar(m: Map<char, int>, c: char): int = m[c] ?? -1
+pub fn lookBool(m: Map<bool, int>, b: bool): int = m[b] ?? -1
+pub fn size(m: Map<string, int>): int = m.length()
+pub fn grow(m: Map<string, int>): Map<string, int> {
+    m["new"] = 100
+    return m
+}
+pub fn lists(m: Map<string, int[]>): Map<string, int[]> = m
+""";
+
+fn ready(inst: Instance): Instance {
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn result(inst: Instance, name: string, args: Value[] = []): Value {
+    return match (try! inst.call(name, args, Budget { })) {
+        .Ok(v) => v,
+        .Panic(p) => Value.Str(f"{p.code}: {p.message}"),
+        _ => Value.Str("no value"),
+    };
+}
+
+fn mapOf(keys: Value[], values: Value[]): Value {
+    return Value.Map(MapValue { keys = keys, values = values });
+}
+
+// a map of "s0" … "s11" to 0 … 11
+fn twelve(): Value {
+    let keys = List<Value>.new();
+    let values = List<Value>.new();
+    var k = 0;
+    while (k < 12) {
+        keys.push(Value.Str(f"s{k}"));
+        values.push(Value.Int(k));
+        k += 1;
+    }
+    return mapOf(keys.toArray(), values.toArray());
+}
+
+@Test
+fn aMapCrossesBothWays(): void {
+    let inst = ready(try! vmOf().load("m.lyrs", mapSource));
+    let keys = List<Value>.new();
+    let values = List<Value>.new();
+    var k = 0;
+    while (k < 12) {
+        if (k != 3) {
+            keys.push(Value.Str(f"k{k}"));
+            values.push(Value.Int(k));
+        }
+        k += 1;
+    }
+    // in the map's order, the key it took out gone
+    assertEq(result(inst, "scores"), mapOf(keys.toArray(), values.toArray()));
+    let lists = mapOf(
+        [Value.Str("a"), Value.Str("b")],
+        [Value.List([Value.Int(1), Value.Int(2)]), Value.List([])]
+    );
+    assertEq(result(inst, "lists", [lists]), lists);
+}
+
+@Test
+fn theHostsMapIsFound(): void {
+    for (round in [0, 1]) {
+        let seed: ?int = if (round == 0) null else 9;
+        let inst = ready(try! vmOf().load("m.lyrs", mapSource, seed: seed));
+        let m = twelve();
+        var k = 0;
+        while (k < 12) {
+            assertEq(result(inst, "look", [m, Value.Str(f"s{k}")]), Value.Int(k));
+            k += 1;
+        }
+        assertEq(result(inst, "look", [m, Value.Str("s12")]), Value.Int(-1));
+        assertEq(result(inst, "size", [m]), Value.Int(12));
+        let ints = mapOf(
+            [Value.Int(-5), Value.Int(0), Value.Int(1 << 40)],
+            [Value.Str("minus"), Value.Str("zero"), Value.Str("big")]
+        );
+        assertEq(result(inst, "lookInt", [ints, Value.Int(1 << 40)]), Value.Str("big"));
+        assertEq(result(inst, "lookInt", [ints, Value.Int(-5)]), Value.Str("minus"));
+        assertEq(result(inst, "lookInt", [ints, Value.Int(7)]), Value.Str("none"));
+        let chars = mapOf([Value.Char('a'), Value.Char('é')], [Value.Int(1), Value.Int(2)]);
+        assertEq(result(inst, "lookChar", [chars, Value.Char('é')]), Value.Int(2));
+        let bools = mapOf([Value.Bool(true), Value.Bool(false)], [Value.Int(1), Value.Int(0)]);
+        assertEq(result(inst, "lookBool", [bools, Value.Bool(false)]), Value.Int(0));
+        assertEq(result(inst, "lookBool", [bools, Value.Bool(true)]), Value.Int(1));
+        // the script goes on with a map the host built: a new key comes last
+        match (result(inst, "grow", [m])) {
+            .Map(g) => {
+                assertEq(g.keys.length(), 13);
+                assertEq(g.keys[12], Value.Str("new"));
+                assertEq(g.values[12], Value.Int(100));
+            }
+            _ => assertTrue(false, "no map"),
+        }
+    }
+}
+
+// the message of the host's mistake a call makes; "taken" where it is none
+fn misuse(inst: Instance, name: string, args: Value[]): string {
+    try {
+        inst.call(name, args, Budget { });
+    } catch (e: InstanceMisuse) {
+        return e.message();
+    }
+    return "taken";
+}
+
+@Test
+fn aMapOfTheHostIsChecked(): void {
+    let inst = ready(try! vmOf().load("m.lyrs", mapSource));
+    let twice = mapOf([Value.Str("a"), Value.Str("a")], [Value.Int(1), Value.Int(2)]);
+    let uneven = mapOf([Value.Str("a"), Value.Str("b")], [Value.Int(1)]);
+    let wrong = mapOf([Value.Str("a")], [Value.Str("one")]);
+    let wrongKey = mapOf([Value.Int(1)], [Value.Int(1)]);
+    for (bad in [twice, uneven, wrong, wrongKey]) {
+        let said = misuse(inst, "look", [bad, Value.Str("a")]);
+        assertTrue(said.startsWith("argument 1 of 'look' is not a Boundary.Map"), said);
+    }
+    // the instance goes on
+    assertEq(result(inst, "size", [twelve()]), Value.Int(12));
+}
+
+fn hostCodes(source: string): string {
+    try {
+        vmOf().host("cb", source);
+    } catch (e: LoadError) {
+        let out = List<string>.new();
+        for (f in e.findings) {
+            if (f.error) {
+                out.push(f.code);
+            }
+        }
+        return if (out.length() == 0) e.message() else out.toArray().join(" ");
+    }
+    return "registered";
+}
+
+@Test
+fn mapsAtTheHostsFunctions(): void {
+    let vm = vmOf();
+    try! vm.host("store", "fn tally(): Map<string, int>\nfn take(m: Map<int, string>): int\n");
+    try! vm.implement(
+        "store",
+        "tally",
+        (_, _args) => mapOf([Value.Str("a"), Value.Str("b")], [Value.Int(1), Value.Int(2)])
+    );
+    try! vm.implement(
+        "store",
+        "take",
+        (_, args) => {
+            match (args[0]) {
+                .Map(m) => Value.Int(m.keys.length() * 10 + m.keys.length()),
+                _ => {
+                    throw HostFailure { reason = "no map" };
+                }
+            }
+        }
+    );
+    let inst = ready(
+        try! vm.load(
+            "s.lyrs",
+            "import host.store { tally, take }\npub fn a(): int = tally()[\"b\"] ?? -1\npub fn b(): int {\n    let m = Map<int, string>.new()\n    m[1] = \"x\"\n    m[2] = \"y\"\n    m[1] = null\n    return take(m)\n}\n"
+        )
+    );
+    assertEq(result(inst, "a"), Value.Int(2));
+    assertEq(result(inst, "b"), Value.Int(11));
+    // keys that do not cross, values that do not
+    assertEq(hostCodes("fn bad(m: Map<(int, int), int>): void\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn worse(m: Map<string, fn() -> int>): void\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn fine(m: Map<char, bool[]>): Map<bool, string>\n"), "registered");
+}
+
+@Test
+fn bytecodeKeepsTheMaps(): void {
+    let vm = vmOf();
+    let inst = ready(try! vm.loadTrusted(try! vm.compile("m.lyrs", mapSource), seed: 3));
+    assertEq(result(inst, "look", [twelve(), Value.Str("s11")]), Value.Int(11));
+    match (result(inst, "scores")) {
+        .Map(m) => assertEq(m.keys.length(), 11),
+        _ => assertTrue(false, "no map"),
+    }
+}

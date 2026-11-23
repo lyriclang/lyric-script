@@ -834,6 +834,8 @@ struct Program {
     cancelled: int = -1,
     // the prelude's `ChannelClosed`, which a send on a closed channel throws (S6d1)
     channelClosed: int = -1,
+    // the prelude's `Map`, whose instances cross the boundary as copies (S8g2)
+    map: int = -1,
 }
 
 /// How many scalar and reference slots a value of the type holds (11 V2): one of its file for a

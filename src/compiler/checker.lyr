@@ -610,6 +610,7 @@ class Checker {
             spawns = this.spawns,
             cancelled = this.typeIndex.get("Cancelled") ?? -1,
             channelClosed = this.typeIndex.get("ChannelClosed") ?? -1,
+            map = this.typeIndex.get("Map") ?? -1,
         };
     }
 
@@ -6093,14 +6094,28 @@ class Checker {
 
     /// Whether a value of `t` crosses a call's boundary between host and script (S8a3): the
     /// scalars, `string`, nothing as a result, a handle or a struct of the host (S8f3a, S8f3b),
-    /// and lists of them.
+    /// lists of them, and maps of them by `int`, `char`, `bool` or `string` (S8g2).
     mut fn crossesBoundary(t: Ty): bool {
         return match (t) {
             .Int | .Float | .Bool | .Char | .Str | .Void => true,
             .List(e) => e.value != Ty.Void && this.crossesBoundary(e.value),
-            .Named(i) => this.types[i].host != "",
+            .Named(i) => this.types[i].host != "" || this.mapCrosses(i),
             _ => false,
         };
+    }
+
+    /// Whether the type `i` is a map whose keys and values cross the boundary (S8g2).
+    mut fn mapCrosses(i: int): bool {
+        let m = this.typeIndex.get("Map") ?? -1;
+        let t = this.types[i];
+        if (m < 0 || t.template != m || t.args.length() != 2) {
+            return false;
+        }
+        let keyed = match (t.args[0]) {
+            .Int | .Char | .Bool | .Str => true,
+            _ => false,
+        };
+        return keyed && t.args[1] != Ty.Void && this.crossesBoundary(t.args[1]);
     }
 
     mut fn attributesOf(attrs: Attribute[], host: bool): void {

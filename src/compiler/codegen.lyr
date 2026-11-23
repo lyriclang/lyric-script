@@ -30,6 +30,8 @@ import lyric_script.vm.module {
     Boundary,
     Callable,
     FnBoundary,
+    MapBoundary,
+    MapDesc,
     Function,
     Handler,
     HostDecl,
@@ -118,6 +120,36 @@ fn generate(p: Program, name: string): Module {
         exports = exportsOf(p),
         hosts = hosts.toArray(),
         hostStructs = hostStructsOf(p, layout),
+        maps = mapsOf(p, layout),
+    };
+}
+
+/// The types of map at the boundary (S8g2): each instance of `Map` whose keys and values cross, with
+/// its descriptor.
+fn mapsOf(p: Program, layout: Placement): MapDesc[] {
+    let out = List<MapDesc>.new();
+    var i = 0;
+    while (i < p.types.length()) {
+        match (boundaryOf(p, Ty.Named(i))) {
+            .Map(mb) => {
+                if (crosses(mb.key.value) && crosses(mb.value.value)) {
+                    out.push(MapDesc { type = mb, desc = layout.typeDescOf[i] });
+                }
+            }
+            _ => { }
+        }
+        i += 1;
+    }
+    return out.toArray();
+}
+
+// whether a type at the boundary holds no type that does not cross
+fn crosses(b: Boundary): bool {
+    return match (b) {
+        .Other => false,
+        .List(e) => crosses(e.value),
+        .Map(mb) => crosses(mb.key.value) && crosses(mb.value.value),
+        _ => true,
     };
 }
 
@@ -193,13 +225,40 @@ fn boundaryOf(p: Program, t: Ty): Boundary {
         .Str => Boundary.Str,
         .Void => Boundary.Void,
         .List(e) => Boundary.List(Box<Boundary> { value = boundaryOf(p, e.value) }),
-        .Named(i) => if (p.types[i].host != "" && p.types[i].kind == .Struct) Boundary.Struct(
-            f"{p.types[i].host}.{p.types[i].name}"
-        )
-            else if (p.types[i].host != "") Boundary.Handle(f"{p.types[i].host}.{p.types[i].name}")
-                else Boundary.Other,
+        .Named(i) => namedBoundaryOf(p, i),
         _ => Boundary.Other,
     };
+}
+
+// the type `i` of the program at the boundary: a map (S8g2), a struct or a handle of the host
+fn namedBoundaryOf(p: Program, i: int): Boundary {
+    let t = p.types[i];
+    if (p.map >= 0 && t.template == p.map && t.args.length() == 2) {
+        return mapBoundaryOf(p, t.args[0], t.args[1]);
+    }
+    if (t.host == "") {
+        return Boundary.Other;
+    }
+    let name = f"{t.host}.{t.name}";
+    return if (t.kind == .Struct) Boundary.Struct(name) else Boundary.Handle(name);
+}
+
+/// A map of keys `k` and values `v` at the boundary (S8g2): its keys `int`, `char`, `bool` or
+/// `string`, else no type the host passes.
+fn mapBoundaryOf(p: Program, k: Ty, v: Ty): Boundary {
+    let key = match (k) {
+        .Int | .Char | .Bool | .Str => boundaryOf(p, k),
+        _ => Boundary.Other,
+    };
+    if (key == Boundary.Other) {
+        return Boundary.Other;
+    }
+    return Boundary.Map(
+        MapBoundary {
+            key = Box<Boundary> { value = key },
+            value = Box<Boundary> { value = boundaryOf(p, v) },
+        }
+    );
 }
 
 /// The type of a parameter of a function of the host (S8f3c): a function type is a callback there,

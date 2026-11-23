@@ -204,7 +204,10 @@ fn aHandleIsChecked(): void {
         hostCodes("d", "class C {\n    fn f(): int {\n        return 1\n    }\n}\n"),
         "LYS-SEM0907"
     );
-    assertEq(hostCodes("e", "class C {\n    fn f(m: Map<int, int>): int\n}\n"), "LYS-SEM0907");
+    assertEq(
+        hostCodes("e", "class C {\n    fn f(m: Map<(int, int), int>): int\n}\n"),
+        "LYS-SEM0907"
+    );
     assertEq(hostCodes("f", "class C {\n    fn f(): int\n}\nfn g(c: C): C\n"), "registered");
 }
 

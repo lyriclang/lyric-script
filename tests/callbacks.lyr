@@ -392,8 +392,8 @@ fn theHostsMistakesWithCallbacks(): void {
 fn aCallbackOfTheHostIsChecked(): void {
     assertEq(hostCodes("fn f(): fn() -> int\n"), "LYS-SEM0907");
     assertEq(hostCodes("fn f(gs: (fn() -> int)[]): int\n"), "LYS-SEM0907");
-    assertEq(hostCodes("fn f(g: fn(Map<int, int>) -> int): int\n"), "LYS-SEM0907");
-    assertEq(hostCodes("fn f(g: fn() -> Map<int, int>): int\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn f(g: fn(Map<(int, int), int>) -> int): int\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn f(g: fn() -> Map<(int, int), int>): int\n"), "LYS-SEM0907");
     assertEq(hostCodes("fn f(g: fn(fn() -> int) -> int): int\n"), "LYS-SEM0907");
     assertEq(hostCodes("struct S {\n    g: fn() -> int\n}\n"), "LYS-SEM0907");
     assertEq(hostCodes("fn f(g: fn(int, string) -> bool, h: fn() -> void): int\n"), "registered");

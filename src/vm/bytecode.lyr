@@ -8,6 +8,8 @@ import lyric_script.vm.module {
     Boundary,
     Callable,
     FnBoundary,
+    MapBoundary,
+    MapDesc,
     Function,
     Handler,
     HostDecl,
@@ -168,6 +170,12 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
             writeBoundary(w, b);
         }
     }
+    // the types of map at the boundary (S8g2)
+    w.word(module.maps.length());
+    for (e in module.maps) {
+        writeBoundary(w, Boundary.Map(e.type));
+        w.word(e.desc);
+    }
     return w.out.toArray();
 }
 
@@ -201,6 +209,11 @@ fn writeBoundary(w: Writer, b: Boundary): void {
             }
             writeBoundary(w, f.result.value);
         }
+        .Map(mb) => {
+            w.byte(11);
+            writeBoundary(w, mb.key.value);
+            writeBoundary(w, mb.value.value);
+        }
     }
 }
 
@@ -229,6 +242,15 @@ fn readBoundary(r: Reader): Boundary throws NotOurs {
                 FnBoundary {
                     params = params.toArray(),
                     result = Box<Boundary> { value = try readBoundary(r) },
+                }
+            )
+        }
+        11 => {
+            let key = try readBoundary(r);
+            Boundary.Map(
+                MapBoundary {
+                    key = Box<Boundary> { value = key },
+                    value = Box<Boundary> { value = try readBoundary(r) },
                 }
             )
         }
@@ -490,6 +512,17 @@ fn decode(
         );
         ns -= 1;
     }
+    let maps = List<MapDesc>.new();
+    var nm = try r.word();
+    while (nm > 0) {
+        match (try readBoundary(r)) {
+            .Map(mb) => {
+                maps.push(MapDesc { type = mb, desc = try r.word() });
+            }
+            _ => throw NotOurs { reason = "a type of map that is none" },
+        }
+        nm -= 1;
+    }
     if (!r.atEnd()) {
         throw NotOurs { reason = "bytes after the module" };
     }
@@ -507,6 +540,7 @@ fn decode(
         exports = exports.toArray(),
         hosts = hosts.toArray(),
         hostStructs = hostStructs.toArray(),
+        maps = maps.toArray(),
     };
 }
 

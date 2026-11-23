@@ -648,7 +648,7 @@ pub class Instance {
     /// Runs the script's top level (07 Top) within `budget`.
     pub mut fn init(budget: Budget): CallResult throws InstanceMisuse {
         this.pending = Boundary.Void;
-        return resultOf(try this.initOutcome(budget), Boundary.Void);
+        return resultOf(try this.initOutcome(budget), Boundary.Void, this.shared.module);
     }
 
     /// Goes on with the call the budget halted (01 S5b; S8b1), within `budget` and what was left
@@ -670,7 +670,7 @@ pub class Instance {
             }
         );
         this.settle(out);
-        return resultOf(out, this.pending);
+        return resultOf(out, this.pending, this.shared.module);
     }
 
     /// Calls the function `name` a host may call (S8a3) with `args`, of the types its parameters
@@ -681,7 +681,7 @@ pub class Instance {
         let p = try this.prepared(name, args);
         this.pending = p.result;
         this.shared.pumping = true;
-        return resultOf(this.enter(p.function, p.s, p.r, budget), p.result);
+        return resultOf(this.enter(p.function, p.s, p.r, budget), p.result, this.shared.module);
     }
 
     /// Starts a call as `call` does, but never waits (07 Wait; S8d): it runs until the call ends or
@@ -732,7 +732,7 @@ pub class Instance {
             _ => { }
         }
         this.settle(out);
-        return Step.Done(resultOf(out, this.pending));
+        return Step.Done(resultOf(out, this.pending, this.shared.module));
     }
 
     // the function `name` a host may call, with `args` in its registers; the host's mistakes thrown
@@ -772,13 +772,13 @@ pub class Instance {
                     reason = f"'{name}' takes a parameter {k + 1} of a type the host does not pass",
                 };
             }
-            if (!fits(args[k], b)) {
+            if (!fits(args[k], b, this.shared.module)) {
                 throw InstanceMisuse { reason = f"argument {k + 1} of '{name}' is not a {b:?}" };
             }
             if (isScalarAt(b)) {
                 s.push(bitsOf(args[k]));
             } else {
-                r.push(refOf(args[k], b));
+                r.push(refOf(args[k], b, this.shared.module));
             }
             k += 1;
         }
@@ -911,11 +911,11 @@ pub enum CallResult {
 }
 
 /// How the VM ended a call, as the host reads it, the result of type `result`.
-fn resultOf(out: Outcome, result: Boundary): CallResult {
+fn resultOf(out: Outcome, result: Boundary, m: Module): CallResult {
     return match (out) {
         .Void => CallResult.Ok(Value.Void),
         .Scalar(bits) => CallResult.Ok(valueOfBits(result, bits)),
-        .Ref(o) => CallResult.Ok(valueOfRef(result, o)),
+        .Ref(o) => CallResult.Ok(valueOfRef(result, o, m)),
         .Slots(_, _) => CallResult.Ok(Value.Void),
         .Panic(p) => CallResult.Panic(p),
         .Error(e) => CallResult.Error(e),
@@ -1599,15 +1599,33 @@ fn hostCall(s: uint64[], r: HeapRef[], x: int, y: int, shared: RunShared): ?Nati
             args.push(valueOfBits(p, s[si]));
             si += 1;
         } else {
-            args.push(valueOfRef(p, r[ri]));
+            args.push(valueOfRef(p, r[ri], shared.module));
             ri += 1;
         }
     }
     let shown = f"host.{h.decl.module}.{h.decl.name}";
+    // a function that declares errors learns at `s[x + 1]` whether it threw one (S8f3b)
+    if (h.decl.throws.length() > 0) {
+        s[x + 1] = 0;
+    }
     let v = try h.run(args.toArray()) catch (e: HostFailure) {
+        if (let thrown = e.error) {
+            for (t in h.decl.throws) {
+                if (fits(thrown, t, shared.module)) {
+                    // the stub throws it: the error where a reference result goes, the flag set
+                    r[ri] = refOf(thrown, t, shared.module);
+                    s[x + 1] = 1;
+                    return null;
+                }
+            }
+            return NativeFault {
+                code = "LYS-RT0900",
+                message = f"{shown} threw an error it does not declare",
+            };
+        }
         return NativeFault { code = "LYS-RT0900", message = f"{shown} failed: {e.message()}" };
     };
-    if (!fits(v, h.decl.result)) {
+    if (!fits(v, h.decl.result, shared.module)) {
         return NativeFault {
             code = "LYS-RT0900",
             message = f"{shown} gave a value of another type than it declares",
@@ -1616,7 +1634,7 @@ fn hostCall(s: uint64[], r: HeapRef[], x: int, y: int, shared: RunShared): ?Nati
     if (isScalarAt(h.decl.result)) {
         s[x] = bitsOf(v);
     } else if (h.decl.result != Boundary.Void) {
-        r[ri] = refOf(v, h.decl.result);
+        r[ri] = refOf(v, h.decl.result, shared.module);
     }
     return null;
 }

@@ -3323,6 +3323,41 @@ einem Feld `handle: Any` (`File` über `ScriptFile`). Typen, deren Werte die VM 
     scheitert auch die richtige Klasse an `fits`, und die Meldung lautet gleich.
   - 449 Tests, 878 Fälle; Format 50.
 
+**S8f3b, Ergebnis (2026-11-23).** Gebaut wie geschnitten. Den offenen Punkt des Zuschnitts, woher
+`message()` kommt, entscheidet die Regel der Griffe.
+- **Gebaut:**
+  - Ein Struct eines Moduls des Hosts trägt den Namen seines Moduls. Seine Felder müssen Werte der Grenze
+    sein, ohne Vorgaben, und `Error` ist seine einzige mögliche Konformanz (`LYS-SEM0907`).
+  - An der Grenze ist er `Boundary.Struct("store.Pos")` und `Value.Struct(StructValue { type, fields })`,
+    die Felder in der Reihenfolge der Deklaration. Das Modul trägt eine Tabelle dieser Structs mit
+    Deskriptor und Feldern (Format 51). Die Umwandlungen legen jedes Feld dorthin, wo der Deskriptor es
+    nach Namen führt.
+  - Eine Funktion des Hosts darf `throws` mit Fehlern des Hosts schreiben. Jede andere Menge, auch die
+    nackte Form, ist `LYS-SEM0907`.
+  - `HostFailure` trägt optional einen Fehler. Passt er zu einem deklarierten Typ, legt das Native ihn
+    in das Register eines Referenzergebnisses und setzt ein Flag hinter der Nummer. Der Stummel prüft das
+    Flag mit `jump.if.not` und wirft mit dem vorhandenen `throw`. Ein undeklarierter Fehler ist
+    `LYS-RT0900`. `runTask` ist unberührt, `callNative` unverändert.
+- **Entschieden nach Empfehlung:**
+  - Jede Methode eines Typs des Hosts ist die des Hosts, auch `message()` eines Fehlers. Der Host
+    implementiert `"SaveError.message"` und bekommt den Fehler als Kopie. Verworfen wurden drei Wege.
+    Rümpfe in Modulen des Hosts brächen die Regel „nur Deklarationen". Eine Nachricht aus einem Feld
+    mit festem Namen wäre stille Magie. Ein eigenes Feld in `HostFailure` trennte die Nachricht vom Wert,
+    den das Skript fängt.
+  - Felder haben keine Vorgaben. Eine Vorgabe ist ein Ausdruck, und ein Modul des Hosts hält keinen
+    Code. Ein Skript, das einen solchen Struct baut, nennt jedes Feld.
+  - Die Felder an der Grenze stehen in der Reihenfolge der Deklaration, nicht nach Namen. So liest es
+    sich wie ein Tupel, und die C-ABI (S8h) gibt sie ebenso.
+- **Prüfung:**
+  - Fünf Unit-Tests: Kopie hin und zurück, geworfen und gefangen, nicht gefangen als `.Error` beim Host,
+    undeklariert als Panik, über Bytecode.
+  - Ein Test aus S8f2 erwartete `SEM0907` für einen Struct. Die Regel fiel mit diesem Slice, der Test
+    prüft jetzt ein Enum.
+  - Kein Konformanzfall, weil die Kommandozeile keinen Host hat. 454 Tests, 878 Fälle.
+  - Sieben Mutanten, alle getötet: Fehler als Panik, Stummel ohne Wurf, Felder vertauscht, Felder
+    ungeprüft, jede `throws`-Menge erlaubt, jede Konformanz erlaubt, Bytecode ohne `throws`. Die
+    Kontrolle aus S8f3a tötet nur ihren Test.
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

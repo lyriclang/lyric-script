@@ -234,7 +234,8 @@ fn everyFunctionHasItsImplementation(): void {
 fn aModuleOfTheHostIsChecked(): void {
     let vm = vmOf();
     assertEq(codesOf(hostError(vm, "a", "fn f(): int {\n    return 1\n}\n")), "LYS-SEM0907");
-    assertEq(codesOf(hostError(vm, "b", "struct S {\n    x: int\n}\n")), "LYS-SEM0907");
+    // a struct crosses as a copy since S8f3b; an enum does not cross
+    assertEq(codesOf(hostError(vm, "b", "enum E {\n    A\n}\n")), "LYS-SEM0907");
     assertEq(codesOf(hostError(vm, "c", "fn f(x: ?int): int\n")), "LYS-SEM0907");
     assertEq(codesOf(hostError(vm, "d", "fn f(): int throws Error\n")), "LYS-SEM0907");
     assertEq(codesOf(hostError(vm, "e", "@Requires(\"Saves\")\nfn f(): int\n")), "LYS-SEM0908");

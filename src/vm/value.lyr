@@ -2,8 +2,8 @@
 //! `string`, and lists of them, as values of the host's — a copy, never a reference into the
 //! instance (01 S9). Other types at the boundary come as handles with S8g.
 import std.collections { List };
-import lyric_script.vm.heap { HeapRef, HostHandle, ScriptArray, ScriptString };
-import lyric_script.vm.module { Boundary, HostDecl };
+import lyric_script.vm.heap { HeapRef, HostHandle, ScriptArray, ScriptObject, ScriptString };
+import lyric_script.vm.module { Boundary, HostDecl, HostStruct, Module };
 
 /// A value at a call's boundary.
 pub enum Value :: [Equatable, Debug] {
@@ -15,6 +15,14 @@ pub enum Value :: [Equatable, Debug] {
     Str(string),
     List(Value[]),
     Handle(Handle),
+    Struct(StructValue),
+}
+
+/// A struct of the host at the boundary (S8f3b): its name, `game.Pos`, and its fields' values in the
+/// order the struct declares them — a copy either way.
+pub struct StructValue :: [Equatable, Debug] {
+    pub type: string,
+    pub fields: Value[],
 }
 
 /// A handle of the host at the boundary (S8f3a): its class, `game.Sprite`, and the number the host
@@ -28,6 +36,9 @@ pub struct Handle :: [Equatable, Debug] {
 /// in the message.
 pub struct HostFailure :: [Error] {
     pub reason: string,
+    /// An error of the host its function declares it throws (S8f3b): the script gets it thrown;
+    /// `null` for a failure, which is a panic.
+    pub error: ?Value = null,
 
     pub fn message(): string {
         return this.reason;
@@ -40,8 +51,9 @@ pub struct HostCall {
     run: fn(Value[]) -> Value throws HostFailure,
 }
 
-/// Whether `v` is a value of the type `b` — every element of a list too.
-fn fits(v: Value, b: Boundary): bool {
+/// Whether `v` is a value of the type `b` — every element of a list and every field of a struct
+/// too; `m` names the host's structs.
+fn fits(v: Value, b: Boundary, m: Module): bool {
     return match (v) {
         .Void => b == Boundary.Void,
         .Int(_) => b == Boundary.Int,
@@ -50,10 +62,29 @@ fn fits(v: Value, b: Boundary): bool {
         .Char(_) => b == Boundary.Char,
         .Str(_) => b == Boundary.Str,
         .Handle(h) => b == Boundary.Handle(h.type),
+        .Struct(sv) => {
+            if (b != Boundary.Struct(sv.type)) {
+                return false;
+            }
+            if (let e = hostStructOf(m, sv.type)) {
+                if (sv.fields.length() != e.bounds.length()) {
+                    return false;
+                }
+                var k = 0;
+                while (k < e.bounds.length()) {
+                    if (!fits(sv.fields[k], e.bounds[k], m)) {
+                        return false;
+                    }
+                    k += 1;
+                }
+                return true;
+            }
+            false
+        }
         .List(xs) => match (b) {
             .List(e) => {
                 for (x in xs) {
-                    if (!fits(x, e.value)) {
+                    if (!fits(x, e.value, m)) {
                         return false;
                     }
                 }
@@ -62,6 +93,28 @@ fn fits(v: Value, b: Boundary): bool {
             _ => false,
         },
     };
+}
+
+/// The host's struct named `name` in `m`'s table.
+fn hostStructOf(m: Module, name: string): ?HostStruct {
+    for (e in m.hostStructs) {
+        if (e.name == name) {
+            return e;
+        }
+    }
+    return null;
+}
+
+/// The place of `name` among `names`; -1 where it is none.
+fn placeOf(names: string[], name: string): int {
+    var k = 0;
+    while (k < names.length()) {
+        if (names[k] == name) {
+            return k;
+        }
+        k += 1;
+    }
+    return -1;
 }
 
 /// Whether a value of the type `b` lies in a scalar register; else it is a reference.
@@ -83,15 +136,20 @@ fn bitsOf(v: Value): uint64 {
     };
 }
 
-/// A new object of the instance for a value of reference type `b`: a string, or a list whose
-/// elements are made the same way.
-fn refOf(v: Value, b: Boundary): HeapRef {
+/// A new object of the instance for a value of reference type `b`: a string, a handle, a struct of
+/// the host (S8f3b), or a list whose elements are made the same way.
+fn refOf(v: Value, b: Boundary, m: Module): HeapRef {
     match (v) {
         .Str(text) => {
             return ScriptString { text = text };
         }
         .Handle(h) => {
             return HostHandle { type = h.type, id = h.id };
+        }
+        .Struct(sv) => {
+            if (let e = hostStructOf(m, sv.type)) {
+                return structOf(sv, e, m);
+            }
         }
         _ => { }
     }
@@ -111,7 +169,7 @@ fn refOf(v: Value, b: Boundary): HeapRef {
         if (scalar) {
             s.push(bitsOf(x));
         } else {
-            r.push(refOf(x, e));
+            r.push(refOf(x, e, m));
         }
     }
     return ScriptArray {
@@ -134,8 +192,24 @@ fn valueOfBits(b: Boundary, bits: uint64): Value {
     };
 }
 
+/// The object of the struct `sv` of the host, its fields where its descriptor places them.
+fn structOf(sv: StructValue, e: HostStruct, m: Module): ScriptObject {
+    let d = m.types[e.desc];
+    let s = List<uint64>.new();
+    for (name in d.scalarFields) {
+        let k = placeOf(e.fields, name);
+        s.push(if (k >= 0) bitsOf(sv.fields[k]) else 0);
+    }
+    let r = List<HeapRef>.new();
+    for (name in d.refFields) {
+        let k = placeOf(e.fields, name);
+        r.push(refOf(sv.fields[k], e.bounds[k], m));
+    }
+    return ScriptObject { typeDesc = d, scalars = s.toArray(), refs = r.toArray() };
+}
+
 /// The value of type `b` the object `o` is, copied out of the instance.
-fn valueOfRef(b: Boundary, o: HeapRef): Value {
+fn valueOfRef(b: Boundary, o: HeapRef, m: Module): Value {
     match (b) {
         .Str => {
             if (o is ScriptString) {
@@ -147,6 +221,27 @@ fn valueOfRef(b: Boundary, o: HeapRef): Value {
                 return Value.Handle(Handle { type = o.type, id = o.id });
             }
         }
+        .Struct(name) => {
+            if (o is ScriptObject) {
+                if (let e = hostStructOf(m, name)) {
+                    let d = o.typeDesc;
+                    let out = List<Value>.new();
+                    var k = 0;
+                    while (k < e.fields.length()) {
+                        let f = e.bounds[k];
+                        out.push(
+                            if (isScalarAt(f)) valueOfBits(
+                                f,
+                                o.scalars[placeOf(d.scalarFields, e.fields[k])]
+                            )
+                                else valueOfRef(f, o.refs[placeOf(d.refFields, e.fields[k])], m)
+                        );
+                        k += 1;
+                    }
+                    return Value.Struct(StructValue { type = name, fields = out.toArray() });
+                }
+            }
+        }
         .List(e) => {
             if (o is ScriptArray) {
                 let out = List<Value>.new();
@@ -154,7 +249,7 @@ fn valueOfRef(b: Boundary, o: HeapRef): Value {
                 while (k < o.n) {
                     out.push(
                         if (isScalarAt(e.value)) valueOfBits(e.value, o.s[k])
-                            else valueOfRef(e.value, o.r[k])
+                            else valueOfRef(e.value, o.r[k], m)
                     );
                     k += 1;
                 }

@@ -10,6 +10,7 @@ import lyric_script.vm.module {
     Function,
     Handler,
     HostDecl,
+    HostStruct,
     Module,
     RightUse,
     ReturnKind,
@@ -151,6 +152,20 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
             writeBoundary(w, b);
         }
         writeBoundary(w, h.result);
+        w.word(h.throws.length());
+        for (b in h.throws) {
+            writeBoundary(w, b);
+        }
+    }
+    // the structs of the host's modules (S8f3b)
+    w.word(module.hostStructs.length());
+    for (e in module.hostStructs) {
+        w.text(e.name);
+        w.word(e.desc);
+        w.texts(e.fields);
+        for (b in e.bounds) {
+            writeBoundary(w, b);
+        }
     }
     return w.out.toArray();
 }
@@ -173,6 +188,10 @@ fn writeBoundary(w: Writer, b: Boundary): void {
             w.byte(8);
             w.text(name);
         }
+        .Struct(name) => {
+            w.byte(9);
+            w.text(name);
+        }
     }
 }
 
@@ -188,6 +207,7 @@ fn readBoundary(r: Reader): Boundary throws NotOurs {
         6 => Boundary.List(Box<Boundary> { value = try readBoundary(r) }),
         7 => Boundary.Other,
         8 => Boundary.Handle(try r.text()),
+        9 => Boundary.Struct(try r.text()),
         _ => throw NotOurs { reason = "a type at the boundary that is none" },
     };
 }
@@ -414,10 +434,37 @@ fn decode(
             np -= 1;
         }
         let result = try readBoundary(r);
+        let throws = List<Boundary>.new();
+        var nt = try r.word();
+        while (nt > 0) {
+            throws.push(try readBoundary(r));
+            nt -= 1;
+        }
         hosts.push(
-            HostDecl { module = hmodule, name = hname, params = params.toArray(), result = result }
+            HostDecl {
+                module = hmodule,
+                name = hname,
+                params = params.toArray(),
+                result = result,
+                throws = throws.toArray(),
+            }
         );
         nh -= 1;
+    }
+    let hostStructs = List<HostStruct>.new();
+    var ns = try r.word();
+    while (ns > 0) {
+        let sname = try r.text();
+        let desc = try r.word();
+        let fields = try r.texts();
+        let bounds = List<Boundary>.new();
+        for (_ in fields) {
+            bounds.push(try readBoundary(r));
+        }
+        hostStructs.push(
+            HostStruct { name = sname, desc = desc, fields = fields, bounds = bounds.toArray() }
+        );
+        ns -= 1;
     }
     if (!r.atEnd()) {
         throw NotOurs { reason = "bytes after the module" };
@@ -435,6 +482,7 @@ fn decode(
         rights = rights.toArray(),
         exports = exports.toArray(),
         hosts = hosts.toArray(),
+        hostStructs = hostStructs.toArray(),
     };
 }
 

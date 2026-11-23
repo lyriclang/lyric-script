@@ -137,6 +137,7 @@ pub class Vm {
                     name = name,
                     params = [],
                     result = Boundary.Void,
+                    throws = [],
                 },
                 run = run,
             }

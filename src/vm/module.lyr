@@ -110,6 +110,8 @@ pub class Module :: [Identity] {
     var exports: Callable[] = [],
     /// The functions of the host's modules, in the order `call.n host` numbers them (S8f2).
     var hosts: HostDecl[] = [],
+    /// The structs of the host's modules the program names, for the boundary (S8f3b).
+    var hostStructs: HostStruct[] = [],
 }
 
 /// A function of a module of the host (S8f2; 11 Hst): its module's name after `host.`, its own,
@@ -119,6 +121,8 @@ pub struct HostDecl :: [Debug] {
     pub name: string,
     pub params: Boundary[],
     pub result: Boundary,
+    /// The errors of the host it declares it throws (S8f3b; P14).
+    pub throws: Boundary[],
 }
 
 /// A type at a call's boundary between host and script (S8a3): the scalars, `string`, a handle
@@ -133,7 +137,17 @@ pub enum Boundary :: [Equatable, Debug] {
     Str,
     List(Box<Boundary>),
     Handle(string),
+    Struct(string),
     Other,
+}
+
+/// A struct of the host's modules (S8f3b): its name, `game.Pos`; its descriptor among the module's
+/// types; its fields' names and types in the order they are declared.
+pub struct HostStruct :: [Debug] {
+    pub name: string,
+    pub desc: int,
+    pub fields: string[],
+    pub bounds: Boundary[],
 }
 
 /// A function of the entry module a host may call (S8a3): a public one of the top level, not

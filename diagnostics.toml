@@ -1243,7 +1243,7 @@ summary = "The entry module runs statements and declares `fn main`: either is an
 title = "what a module of the host does not hold"
 severity = "error"
 area = "17-host"
-summary = "A module the host registers (`import host.<name>`) declares functions the host implements: without a body, without type parameters and `throws`, their parameters and result values of a call's boundary — `int`, `float`, `bool`, `char`, `string`, its handles, lists of them —, and handles: classes without fields, type parameters or conformances, whose methods the host implements likewise. Anything else in it — a body, a struct, a statement — is the host's error, reported when it registers the module. Lyric-Script's own (design/v1, 11 Hst)."
+summary = "A module the host registers (`import host.<name>`) declares functions the host implements: without a body or type parameters, their parameters and result values of a call's boundary — `int`, `float`, `bool`, `char`, `string`, its handles and structs, lists of them —, a `throws` that names its errors; handles: classes without fields, type parameters or conformances, whose methods the host implements likewise; and structs whose fields are values of the boundary, without defaults, `Error` their one conformance — an error its functions throw. Anything else in it — a body, an enum, a statement — is the host's error, reported when it registers the module. Lyric-Script's own (design/v1, 11 Hst)."
 
 [LYS-SEM0908]
 title = "a right `@Requires` does not name"

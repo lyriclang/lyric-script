@@ -1,0 +1,254 @@
+// The host's structs and errors (S8f3b; 11 Hst; P14): a struct of a module of the host crosses the
+// boundary as a copy, field by field; one that is an `Error` is what the host's functions declare
+// they throw, and the script catches it as its own.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { LoadError, Vm, vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance };
+import lyric_script.vm.value { HostFailure, StructValue, Value };
+
+let storeSource: string = "struct Pos {\n    x: float\n    y: float\n}\nstruct SaveError :: [Error] {\n    slot: int\n    reason: string\n    fn message(): string\n}\nstruct OtherError :: [Error] {\n    code: int\n    fn message(): string\n}\nfn origin(): Pos\nfn shift(p: Pos, by: float): Pos\nfn save(slot: int): bool throws SaveError\nfn wild(): int throws SaveError\nfn bare(): int throws SaveError\nfn other(): int throws OtherError\n";
+
+fn floatOf(v: Value): float {
+    return match (v) {
+        .Float(f) => f,
+        _ => -1.0,
+    };
+}
+
+fn intOf(v: Value): int {
+    return match (v) {
+        .Int(i) => i,
+        _ => -1,
+    };
+}
+
+fn strOf(v: Value): string {
+    return match (v) {
+        .Str(s) => s,
+        _ => "?",
+    };
+}
+
+fn fieldsOf(v: Value): Value[] {
+    let none: Value[] = [];
+    return match (v) {
+        .Struct(sv) => sv.fields,
+        _ => none,
+    };
+}
+
+fn pos(x: float, y: float): Value {
+    return Value.Struct(
+        StructValue { type = "store.Pos", fields = [Value.Float(x), Value.Float(y)] }
+    );
+}
+
+fn saveError(slot: int, reason: string): Value {
+    return Value.Struct(
+        StructValue { type = "store.SaveError", fields = [Value.Int(slot), Value.Str(reason)] }
+    );
+}
+
+// a VM with `host.store`: positions shift, slot 0 is full
+fn storeVm(): Vm {
+    let vm = vmOf();
+    try! vm.host("store", storeSource);
+    try! vm.implement("store", "origin", (_) => pos(1.0, 2.0));
+    try! vm.implement(
+        "store",
+        "shift",
+        (args) => {
+            let f = fieldsOf(args[0]);
+            let by = floatOf(args[1]);
+            pos(floatOf(f[0]) + by, floatOf(f[1]) + by)
+        }
+    );
+    try! vm.implement(
+        "store",
+        "SaveError.message",
+        (args) => {
+            let f = fieldsOf(args[0]);
+            Value.Str(f"slot {intOf(f[0])}: {strOf(f[1])}")
+        }
+    );
+    try! vm.implement(
+        "store",
+        "OtherError.message",
+        (args) => Value.Str(f"code {intOf(fieldsOf(args[0])[0])}")
+    );
+    try! vm.implement(
+        "store",
+        "save",
+        (args) => {
+            if (intOf(args[0]) == 0) {
+                throw HostFailure { reason = "full", error = saveError(0, "the disk is full") };
+            }
+            Value.Bool(true)
+        }
+    );
+    try! vm.implement(
+        "store",
+        "wild",
+        (_) => {
+            throw HostFailure {
+                reason = "wrong",
+                error = Value.Struct(
+                    StructValue { type = "store.OtherError", fields = [Value.Int(7)] }
+                ),
+            };
+        }
+    );
+    try! vm.implement(
+        "store",
+        "bare",
+        (_) => {
+            throw HostFailure { reason = "the cable is out" };
+        }
+    );
+    try! vm.implement(
+        "store",
+        "other",
+        (_) => {
+            throw HostFailure {
+                reason = "other",
+                error = Value.Struct(
+                    StructValue { type = "store.OtherError", fields = [Value.Int(3)] }
+                ),
+            };
+        }
+    );
+    return vm;
+}
+
+fn ready(vm: Vm, source: string): Instance {
+    let inst = try! vm.load("t.lyrs", source);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn result(inst: Instance, name: string, args: Value[] = []): Value {
+    return match (try! inst.call(name, args, Budget { })) {
+        .Ok(v) => v,
+        .Panic(p) => Value.Str(f"{p.code}: {p.message}"),
+        .Error(e) => Value.Str(f"error {e.typeName}: {e.message}"),
+        _ => Value.Str("no value"),
+    };
+}
+
+// the codes of a load error's error findings, joined; "loaded" where it loaded
+fn codesOf(e: ?LoadError): string {
+    if (let found = e) {
+        let out = List<string>.new();
+        for (f in found.findings) {
+            if (f.error) {
+                out.push(f.code);
+            }
+        }
+        return if (out.length() == 0) found.message() else out.toArray().join(" ");
+    }
+    return "loaded";
+}
+
+fn hostCodes(name: string, source: string): string {
+    try {
+        vmOf().host(name, source);
+    } catch (e: LoadError) {
+        return codesOf(e);
+    }
+    return "registered";
+}
+
+@Test
+fn aStructCrossesAsACopy(): void {
+    let inst = ready(
+        storeVm(),
+        "import host.store { Pos, origin, shift }\npub fn a(): float {\n    let p = shift(origin(), 2.0)\n    return p.x + p.y\n}\npub fn make(): Pos = Pos { x = 1.5, y = 2.5 }\npub fn sum(p: Pos): float = p.x + p.y\n"
+    );
+    assertEq(floatOf(result(inst, "a")), 7.0);
+    assertTrue(result(inst, "make") == pos(1.5, 2.5), "the fields come back in their order");
+    assertEq(floatOf(result(inst, "sum", [pos(0.5, 4.0)])), 4.5);
+    // a struct with a field of another type is no argument
+    var refused = false;
+    try {
+        inst.call(
+            "sum",
+            [
+                Value.Struct(
+                    StructValue { type = "store.Pos", fields = [Value.Int(1), Value.Float(2.0)] }
+                ),
+            ],
+            Budget { }
+        );
+    } catch (_: Error) {
+        refused = true;
+    }
+    assertTrue(refused, "a field of another type");
+}
+
+@Test
+fn aHostErrorIsThrown(): void {
+    let inst = ready(
+        storeVm(),
+        "import host.store { save, SaveError }\npub fn a(slot: int): string {\n    try {\n        save(slot)\n        return \"saved\"\n    } catch (e: SaveError) {\n        return f\"{e.slot} {e.message()}\"\n    }\n}\npub fn b(): bool = save(0)\n"
+    );
+    assertEq(strOf(result(inst, "a", [Value.Int(1)])), "saved");
+    assertEq(strOf(result(inst, "a", [Value.Int(0)])), "0 slot 0: the disk is full");
+    // one no clause takes reaches the host as the script's error
+    assertEq(strOf(result(inst, "b")), "error SaveError: slot 0: the disk is full");
+}
+
+@Test
+fn whatTheHostDoesNotDeclareIsAPanic(): void {
+    let inst = ready(
+        storeVm(),
+        "import host.store { wild, bare }\npub fn a(): int = wild()\npub fn b(): int = bare()\n"
+    );
+    assertEq(
+        strOf(result(inst, "a")),
+        "LYS-RT0900: host.store.wild threw an error it does not declare"
+    );
+    assertEq(strOf(result(inst, "b")), "LYS-RT0900: host.store.bare failed: the cable is out");
+    // a function that declares the other error throws it
+    let other = ready(
+        storeVm(),
+        "import host.store { other, OtherError }\npub fn a(): string {\n    try {\n        other()\n        return \"no\"\n    } catch (e: OtherError) {\n        return e.message()\n    }\n}\n"
+    );
+    assertEq(strOf(result(other, "a")), "code 3");
+}
+
+@Test
+fn aStructOfTheHostIsChecked(): void {
+    assertEq(hostCodes("a", "struct S {\n    x: int = 1\n}\n"), "LYS-SEM0907");
+    assertEq(hostCodes("b", "struct S {\n    m: Map<int, int>\n}\n"), "LYS-SEM0907");
+    assertEq(hostCodes("c", "struct S<T> {\n    x: int\n}\n"), "LYS-SEM0907");
+    assertTrue(
+        hostCodes("d", "struct S :: [Equatable] {\n    x: int\n}\n").startsWith("LYS-SEM0907"),
+        "a conformance other than Error"
+    );
+    // what a function of the host throws: errors of the host, named
+    assertEq(hostCodes("e", "fn f(): int throws Error\n"), "LYS-SEM0907");
+    assertEq(hostCodes("f", "fn f(): int throws\n"), "LYS-SEM0907");
+    assertEq(hostCodes("g", "struct P {\n    x: int\n}\nfn f(): int throws P\n"), "LYS-SEM0030");
+    assertEq(
+        hostCodes(
+            "h",
+            "struct E :: [Error] {\n    x: int\n    fn message(): string\n}\nstruct P {\n    q: P[]\n    e: E\n}\nfn f(p: P): P throws E\n"
+        ),
+        "registered"
+    );
+}
+
+@Test
+fn bytecodeKeepsTheHostsStructs(): void {
+    let vm = storeVm();
+    let bytes = try! vm.compile(
+        "t.lyrs",
+        "import host.store { Pos, shift, save, SaveError }\npub fn a(p: Pos): Pos = shift(p, 1.0)\npub fn b(): int {\n    try {\n        save(0)\n    } catch (e: SaveError) {\n        return e.slot + 10\n    }\n    return -1\n}\n"
+    );
+    let inst = try! vm.loadTrusted(bytes);
+    try! inst.init(Budget { });
+    assertTrue(result(inst, "a", [pos(1.0, 1.0)]) == pos(2.0, 2.0), "a struct through bytecode");
+    // what a function of the host throws comes through bytecode too
+    assertEq(intOf(result(inst, "b")), 10);
+}

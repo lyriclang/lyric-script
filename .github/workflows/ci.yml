@@ -76,6 +76,10 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ steps.zig.outputs.version }}
+          # A cancelled run saves zig's cache half written, and every later run restores the newest
+          # one: on Windows each compile then failed with "failed to link with LLD: FileNotFound"
+          # (2026-11-23). A new key starts clean; bump it if that happens again.
+          cache-key: clean-2
 
       - name: Build
         shell: bash

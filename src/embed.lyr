@@ -13,9 +13,9 @@ import lyric_script.loader { LoadOptions, Loaded, loadProgram };
 import lyric_script.rights { classesOf, missing };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.bytecode { NotOurs, decode, encode };
-import lyric_script.vm.interp { Instance, fileScopes, instanceOf };
+import lyric_script.vm.interp { Caller, HostCall, Instance, fileScopes, instanceOf };
 import lyric_script.vm.module { Boundary, CheckError, HostDecl, Module, RightUse, check };
-import lyric_script.vm.value { HostCall, HostFailure, Value };
+import lyric_script.vm.value { HostFailure, Value };
 
 /// A diagnostic of a load, as the host reads it: an error or a warning, its code from the catalog
 /// (`diagnostics.toml`), its message, the file and the line and column (from 1) it is about, and
@@ -111,7 +111,7 @@ pub class Vm {
     pub fn implement(
         module: string,
         name: string,
-        run: fn(Value[]) -> Value throws HostFailure
+        run: fn(Caller, Value[]) -> Value throws HostFailure
     ): void throws HostMisuse {
         var k = 0;
         while (k < this.hostNames.length() && this.hostNames[k] != module) {

@@ -34,26 +34,26 @@ fn gameVm(): Vm {
     try! vm.implement(
         "game",
         "Sprite.spawn",
-        (args) => {
+        (_, args) => {
             xs.push(floatOf(args[0]));
             sprite(xs.length() - 1)
         }
     );
-    try! vm.implement("game", "Sprite.x", (args) => Value.Float(xs[idOf(args[0])]));
+    try! vm.implement("game", "Sprite.x", (_, args) => Value.Float(xs[idOf(args[0])]));
     try! vm.implement(
         "game",
         "Sprite.moveBy",
-        (args) => {
+        (_, args) => {
             let k = idOf(args[0]);
             xs[k] = xs[k] + floatOf(args[1]);
             Value.Void
         }
     );
-    try! vm.implement("game", "Sprite.draw", (_) => Value.Void);
+    try! vm.implement("game", "Sprite.draw", (_, _args) => Value.Void);
     try! vm.implement(
         "game",
         "sprites",
-        (_) => {
+        (_, _args) => {
             let out = List<Value>.new();
             var k = 0;
             while (k < xs.length()) {
@@ -63,11 +63,11 @@ fn gameVm(): Vm {
             Value.List(out.toArray())
         }
     );
-    try! vm.implement("game", "named", (args) => Value.Str(f"sprite {idOf(args[0])}"));
+    try! vm.implement("game", "named", (_, args) => Value.Str(f"sprite {idOf(args[0])}"));
     try! vm.implement(
         "game",
         "stranger",
-        (_) => Value.Handle(Handle { type = "game.Other", id = 0 })
+        (_, _args) => Value.Handle(Handle { type = "game.Other", id = 0 })
     );
     return vm;
 }
@@ -222,12 +222,12 @@ fn aMethodsImplementationIsNamedByItsClass(): void {
     let vm = vmOf();
     try! vm.host("w", "class C {\n    fn f(): int\n}\n");
     try {
-        vm.implement("w", "f", (_) => Value.Int(1));
+        vm.implement("w", "f", (_, _args) => Value.Int(1));
         assertTrue(false, "a method by its own name alone");
     } catch (e: HostMisuse) {
         assertEq(e.message(), "'host.w' declares no function 'f'");
     }
-    try! vm.implement("w", "C.f", (_) => Value.Int(1));
+    try! vm.implement("w", "C.f", (_, _args) => Value.Int(1));
 }
 
 @Test

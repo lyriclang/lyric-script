@@ -1321,7 +1321,13 @@ summary = "Every task of the run waits — for another task — and nothing can 
 title = "a function of the host failed"
 severity = "panic"
 area = "17-host"
-summary = "A function of the host's module could not do what the script asked — its implementation threw a `HostFailure` —, or gave a value of another type than it declares. The message names the function and the host's reason. Lyric-Script's own (S8f2)."
+summary = "A function of the host's module could not do what the script asked — its implementation threw a `HostFailure` without an error, or with one the function does not declare in its `throws` (S8f3b) —, or gave a value of another type than it declares. The message names the function and the host's reason. Lyric-Script's own (S8f2)."
+
+[LYS-RT0901]
+title = "a callback could not end in the host's function"
+severity = "panic"
+area = "17-host"
+summary = "A callback the host calls while its function runs — through its `Caller` — runs to its end there, and nothing else of the instance runs meanwhile: it may not wait, its call's budget may not run out in it, and it may not call `exit`. The host gets this panic as the callback's result and decides; the instance goes on, and the call halts for the budget after the host's function, not in it. A callback the host keeps and calls later through the instance is a call of its own and may wait. Lyric-Script's own (S8f3c)."
 
 [LYS-CLI0004]
 title = "an unknown option"

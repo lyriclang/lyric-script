@@ -35,12 +35,12 @@ fn calcVm(): Vm {
         "calc",
         "/// twice the number\nfn twice(n: int): int\nfn greet(name: string): string\nfn sum(xs: int[]): int\nfn mix(a: int, s: string, b: float, xs: string[]): string\nfn count(): int\nfn broken(n: int): int\nfn wrong(): int\n@Requires(\"saves\")\nfn save(slot: int): bool\n"
     );
-    try! vm.implement("calc", "twice", (args) => Value.Int(intOf(args[0]) * 2));
-    try! vm.implement("calc", "greet", (args) => Value.Str(f"hello, {strOf(args[0])}"));
+    try! vm.implement("calc", "twice", (_, args) => Value.Int(intOf(args[0]) * 2));
+    try! vm.implement("calc", "greet", (_, args) => Value.Str(f"hello, {strOf(args[0])}"));
     try! vm.implement(
         "calc",
         "sum",
-        (args) => {
+        (_, args) => {
             var n = 0;
             match (args[0]) {
                 .List(xs) => {
@@ -56,7 +56,7 @@ fn calcVm(): Vm {
     try! vm.implement(
         "calc",
         "mix",
-        (args) => {
+        (_, args) => {
             var tail = "";
             match (args[3]) {
                 .List(xs) => {
@@ -73,7 +73,7 @@ fn calcVm(): Vm {
     try! vm.implement(
         "calc",
         "count",
-        (_) => {
+        (_, _args) => {
             calls += 1;
             Value.Int(calls)
         }
@@ -81,12 +81,12 @@ fn calcVm(): Vm {
     try! vm.implement(
         "calc",
         "broken",
-        (_) => {
+        (_, _args) => {
             throw HostFailure { reason = "the disk is full" };
         }
     );
-    try! vm.implement("calc", "wrong", (_) => Value.Str("no number"));
-    try! vm.implement("calc", "save", (args) => Value.Bool(intOf(args[0]) > 0));
+    try! vm.implement("calc", "wrong", (_, _args) => Value.Str("no number"));
+    try! vm.implement("calc", "save", (_, args) => Value.Bool(intOf(args[0]) > 0));
     return vm;
 }
 
@@ -145,7 +145,7 @@ fn codesOf(e: ?LoadError): string {
 
 fn misuse(vm: Vm, module: string, name: string): string {
     try {
-        vm.implement(module, name, (_) => Value.Void);
+        vm.implement(module, name, (_, _args) => Value.Void);
     } catch (e: HostMisuse) {
         return e.message();
     }
@@ -223,10 +223,10 @@ fn aRightOfTheHostIsAsked(): void {
 fn everyFunctionHasItsImplementation(): void {
     let vm = vmOf();
     try! vm.host("half", "fn one(): int\nfn two(): int\n");
-    try! vm.implement("half", "one", (_) => Value.Int(1));
+    try! vm.implement("half", "one", (_, _args) => Value.Int(1));
     let e = loadError(vm, "import host.half { one }\npub fn a(): int = one()\n");
     assertEq(codesOf(e), "the host gave no implementation of 'host.half.two'");
-    try! vm.implement("half", "two", (_) => Value.Int(2));
+    try! vm.implement("half", "two", (_, _args) => Value.Int(2));
     assertTrue(loadError(vm, "import host.half { one }\npub fn a(): int = one()\n") == null);
 }
 

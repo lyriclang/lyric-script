@@ -7,6 +7,7 @@ import std.core { variants };
 import lyric_script.vm.module {
     Boundary,
     Callable,
+    FnBoundary,
     Function,
     Handler,
     HostDecl,
@@ -192,6 +193,14 @@ fn writeBoundary(w: Writer, b: Boundary): void {
             w.byte(9);
             w.text(name);
         }
+        .Fn(f) => {
+            w.byte(10);
+            w.half(f.params.length());
+            for (p in f.params) {
+                writeBoundary(w, p);
+            }
+            writeBoundary(w, f.result.value);
+        }
     }
 }
 
@@ -208,6 +217,21 @@ fn readBoundary(r: Reader): Boundary throws NotOurs {
         7 => Boundary.Other,
         8 => Boundary.Handle(try r.text()),
         9 => Boundary.Struct(try r.text()),
+        10 => {
+            let n = try r.half();
+            let params = List<Boundary>.new();
+            var k = 0;
+            while (k < n) {
+                params.push(try readBoundary(r));
+                k += 1;
+            }
+            Boundary.Fn(
+                FnBoundary {
+                    params = params.toArray(),
+                    result = Box<Boundary> { value = try readBoundary(r) },
+                }
+            )
+        }
         _ => throw NotOurs { reason = "a type at the boundary that is none" },
     };
 }

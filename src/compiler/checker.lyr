@@ -6058,10 +6058,15 @@ class Checker {
             );
         }
         for (p in info.params) {
-            if (p.ty == Ty.Void || !this.crossesBoundary(p.ty)) {
+            // a function of the script crosses as a callback, as a parameter alone (S8f3c)
+            let crosses = match (p.ty) {
+                .Fn(fty) => this.callbackCrosses(fty),
+                _ => p.ty != Ty.Void && this.crossesBoundary(p.ty),
+            };
+            if (!crosses) {
                 this.error(
                     "LYS-SEM0907",
-                    f"the parameter '{p.name}' of '{f.name}' is no value of a call's boundary: an int, a float, a bool, a char, a string, a handle of the host, or a list of them",
+                    f"the parameter '{p.name}' of '{f.name}' is no value of a call's boundary: an int, a float, a bool, a char, a string, a handle or a struct of the host, a list of them, or a function over them",
                     f.span
                 );
             }
@@ -6073,6 +6078,17 @@ class Checker {
                 f.span
             );
         }
+    }
+
+    /// Whether a function of `f` crosses to the host as a callback (S8f3c): its parameters and its
+    /// result are values of the boundary.
+    mut fn callbackCrosses(f: FnTy): bool {
+        for (p in f.params) {
+            if (p == Ty.Void || !this.crossesBoundary(p)) {
+                return false;
+            }
+        }
+        return this.crossesBoundary(f.result.value);
     }
 
     /// Whether a value of `t` crosses a call's boundary between host and script (S8a3): the

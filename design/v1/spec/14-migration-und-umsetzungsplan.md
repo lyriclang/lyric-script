@@ -3358,6 +3358,87 @@ einem Feld `handle: Any` (`File` über `ScriptFile`). Typen, deren Werte die VM 
     ungeprüft, jede `throws`-Menge erlaubt, jede Konformanz erlaubt, Bytecode ohne `throws`. Die
     Kontrolle aus S8f3a tötet nur ihren Test.
 
+**S8f3c, Zuschnitt (2026-11-23).** Gelesen gegen den Code. Eine Implementierung des Hosts ist
+`fn(Value[]) -> Value` und hängt an der `Vm`, die viele Instanzen teilen. Sie weiß nicht, welche Instanz
+sie ruft. Ein Funktionswert des Skripts ist ein `ScriptObject` mit der Nummer seiner Funktion in
+`scalars[0]`, und ein Aufruf über ihn legt das Objekt nach `r[0]` des Gerufenen. `hostCall` läuft im
+Lyric-5-Task der VM, mitten in `runTask`, auf 256 KiB Stack. Während eines Aufrufs bleibt die Instanz in
+`Ready`, und ein `call` aus einer Implementierung heraus würde die laufende Warteschlange zerlegen.
+- **Gebaut wird:**
+  - Ein Funktionstyp, dessen Parameter und Ergebnis Werte der Grenze sind, darf Parameter einer Funktion
+    des Hosts sein. Das gilt nur dort und nur auf oberster Ebene. Als Ergebnis, in einer Liste, in einem
+    Feld oder an einer Funktion, die der Host ruft, ist er `LYS-SEM0907`. An der Grenze ist er
+    `Boundary.Fn(params, result)`. Der Wert für den Host ist `Value.Callback(Callback { instance, id })`,
+    ein Eintrag in einer Tabelle der Instanz und kein Verweis in ihren Heap (01 S9).
+  - Eine Implementierung bekommt als erstes Argument ihren **`Caller`**, den Aufruf der Instanz, der sie
+    ruft. `vm.implement(module, name, fn(Caller, Value[]) -> Value throws HostFailure)`.
+  - **Während die Implementierung läuft:** `caller.invoke(cb, args)` ruft den Callback als eigenen Task
+    auf einem eigenen Lyric-5-Task bis zu seinem Ende. Sonst läuft nichts in der Instanz. Er zahlt aus
+    dem Budget des Aufrufs, in dem er steht. Wartet er, hält ihn das Budget an oder ruft er `exit`, ist
+    sein Ergebnis eine Panik `LYS-RT0901`, und die Instanz bleibt bedienbar. Callbacks, die sich über
+    Funktionen des Hosts gegenseitig rufen, enden bei 64 Ebenen mit `LYS-RT0006`.
+  - **Danach:** Ein Callback gilt, solange die Implementierung läuft, der er übergeben wurde.
+    `caller.keep(cb)` behält ihn, bis `inst.release(cb)` ihn freigibt oder die Instanz endet.
+    `inst.invoke(cb, args, budget)` ruft einen behaltenen Callback wie `call`: Er darf warten, und das
+    Budget hält ihn an, mit `resume`. Ein nicht behaltener, freigegebener oder fremder Callback und ein
+    `Caller` nach dem Ende seiner Implementierung sind ein `InstanceMisuse`.
+  - Eine neue Phase **`Running`** gilt, solange ein Aufruf der Instanz läuft. `call`, `start`, `init`,
+    `resume` und `inst.invoke` aus einer Implementierung heraus sind darin ein `InstanceMisuse`.
+  - Format 52 für `Boundary.Fn`.
+- **Entschieden nach Empfehlung:**
+  - **Der `Caller` als Argument.** Der Host muss wissen, welche Instanz ihn ruft, um in sie
+    zurückzurufen. Verworfen wurden drei Wege. Eine „aktuelle Instanz" je Thread wäre stille Magie. Ein
+    Verweis auf die Instanz im `Value` bräche die Regel „eine Kopie, nie ein Verweis" (01 S9). Eine
+    zweite Form von `implement` mit Kontext wäre ein zweiter Mechanismus für dasselbe.
+  - **Geliehen, behalten mit `keep`** (JNIs lokale und globale Referenzen). Der häufige Fall, ein
+    Vergleicher oder ein `forEach`, räumt sich selbst. Verworfen: jeden Callback zu behalten, bis der
+    Host ihn freigibt (Luas `luaL_ref`). Ein vergessenes `release` je Bild eines Spiels wüchse ohne Ende.
+  - **Das Budget des Aufrufs** gilt für einen Callback während der Implementierung. Sonst entkäme eine
+    Schleife über einen Callback dem Budget des Sandkastens. Verworfen: ein eigenes Budget je
+    verschachteltem Aufruf. Halten könnte es nicht, denn unter dem Callback steht die Implementierung
+    auf dem Stack. Ein Callback danach ist ein eigener Aufruf mit eigenem Budget, wie `call`
+    (11 „Budget je Aufruf").
+  - **Kein `.Stale` hier.** `.Stale` hängt am Reload, und der kommt mit S9 (Plan-Zeile S9: `Stale`).
+    Die Tabelle der Instanz ist die Stelle, an der S9 alte Callbacks verwirft.
+  - **Ein nicht wartender Start eines Callbacks** (`start` für einen Callback, für das `onTick` eines
+    Spiels) kommt nicht mit diesem Slice. **Uhr:** der Beispiel-Host des Spiels im Abschluss von S8.
+- **Prüfung:** Unit-Tests für Aufruf während und nach der Implementierung, `keep` und `release`,
+  Warten, Budget und `exit` im Callback (`RT0901`), Tiefe (`RT0006`), Fehler und Panik des Callbacks
+  als Ergebnis, fremde Instanz, `Running`, Checker-Regeln und Bytecode. Mutanten mit Vorhersage. P47:
+  `runTask` und `callNative` bleiben unberührt, deshalb keine `.lyrsasm`-Kontrolle, es sei denn, der Diff
+  berührt sie doch.
+
+**S8f3c, Ergebnis (2026-11-23).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - `Boundary.Fn(FnBoundary { params, result })` steht nur an Parametern einer Funktion des Hosts
+    (Format 52). Der Checker nimmt einen Funktionstyp dort, wenn seine Parameter und sein Ergebnis die
+    Grenze kreuzen; sonst bleibt er `LYS-SEM0907`.
+  - `hostCall` trägt jeden Callback als geliehenen Eintrag in die Tabelle der Instanz ein und übergibt
+    `Value.Callback { instance, id }`. Die Nummer der Instanz zählt je Prozess hoch, damit ein Callback
+    einer anderen Instanz nie passt. Am Ende der Implementierung, ob sie wirft oder nicht, endet der
+    `Caller`, und die nicht behaltenen Einträge gehen.
+  - `caller.invoke` baut den Task wie ein Aufruf über einen Funktionswert (Objekt in `r[0]`) und lässt
+    ihn auf einem eigenen Lyric-5-Task laufen. Ein Task, der warten würde, wird aus jedem Warteort
+    genommen (`unpark`, jetzt auch von `cancelTask` benutzt) und als Waise markiert; der Scheduler
+    überspringt Waisen. Hält das Budget an, wird es auf 0 gesetzt, nicht auf −2: sonst wiederholte das
+    `resume` die Funktion des Hosts (P34). Nach `exit` gilt das Budget von vorher wieder.
+  - `inst.invoke` und `inst.release` an der Instanz, die Phase `Running` in `resume`, `step` und dem
+    Eintritt eines Aufrufs.
+  - Fehler eines Callbacks sind sein Ergebnis `.Error`, eine Panik `.Panic`; die Implementierung
+    entscheidet, was sie daraus macht.
+- **Prüfung:**
+  - Zehn Unit-Tests in `tests/callbacks.lyr`. Kein Konformanzfall, weil die Kommandozeile keinen Host
+    hat. 464 Tests, 878 Fälle.
+  - Zwölf Mutanten mit Vorhersage, alle getötet, jeder vom vorhergesagten Test: ohne Waisen-Sprung, ohne
+    `unpark`, Budget bleibt −2, Budget nach `exit` nicht zurück, ohne Tiefengrenze, geliehene bleiben,
+    `Caller` bleibt aktiv, ohne `Running`, ohne Instanzprüfung, jeder Funktionstyp erlaubt, Bytecode ohne
+    Ergebnis, falsche Instanznummer. Die Kontrolle aus S8f3a tötet nur ihren Test.
+  - Der Mutant ohne `unpark` überlebte den ersten Testsatz: nur ein Timer blieb liegen. Der Test mit
+    einem Kanal kam deshalb dazu.
+  - Lyric-5-Fehler lyric#744: `(_, _) =>` ist ein ICE; die Tests schreiben `(_, _args)`.
+- **Uhr bleibt:** der nicht wartende Start eines Callbacks, im Beispiel-Host des Spiels beim Abschluss
+  von S8.
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

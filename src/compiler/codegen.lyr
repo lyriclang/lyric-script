@@ -29,6 +29,7 @@ import lyric_script.compiler.typed {
 import lyric_script.vm.module {
     Boundary,
     Callable,
+    FnBoundary,
     Function,
     Handler,
     HostDecl,
@@ -68,7 +69,7 @@ fn generate(p: Program, name: string): Module {
                 }
             }
             for (x in f.params) {
-                params.push(boundaryOf(p, x.ty));
+                params.push(hostParamOf(p, x.ty));
             }
             let throws = List<Boundary>.new();
             for (t in f.throws ?? []) {
@@ -198,6 +199,26 @@ fn boundaryOf(p: Program, t: Ty): Boundary {
             else if (p.types[i].host != "") Boundary.Handle(f"{p.types[i].host}.{p.types[i].name}")
                 else Boundary.Other,
         _ => Boundary.Other,
+    };
+}
+
+/// The type of a parameter of a function of the host (S8f3c): a function type is a callback there,
+/// and nowhere else at the boundary.
+fn hostParamOf(p: Program, t: Ty): Boundary {
+    return match (t) {
+        .Fn(f) => {
+            let params = List<Boundary>.new();
+            for (x in f.params) {
+                params.push(boundaryOf(p, x));
+            }
+            Boundary.Fn(
+                FnBoundary {
+                    params = params.toArray(),
+                    result = Box<Boundary> { value = boundaryOf(p, f.result.value) },
+                }
+            )
+        }
+        _ => boundaryOf(p, t),
     };
 }
 

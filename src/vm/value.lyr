@@ -3,7 +3,7 @@
 //! instance (01 S9). Other types at the boundary come as handles with S8g.
 import std.collections { List };
 import lyric_script.vm.heap { HeapRef, HostHandle, ScriptArray, ScriptObject, ScriptString };
-import lyric_script.vm.module { Boundary, HostDecl, HostStruct, Module };
+import lyric_script.vm.module { Boundary, HostStruct, Module };
 
 /// A value at a call's boundary.
 pub enum Value :: [Equatable, Debug] {
@@ -16,6 +16,16 @@ pub enum Value :: [Equatable, Debug] {
     List(Value[]),
     Handle(Handle),
     Struct(StructValue),
+    /// A function value of the script a function of the host was given (S8f3c): the host calls it
+    /// through its `Caller` or the instance.
+    Callback(Callback),
+}
+
+/// A function value of the script at the boundary (S8f3c): its instance's number and its own in that
+/// instance's table — no reference into the instance (01 S9).
+pub struct Callback :: [Equatable, Debug] {
+    pub instance: int,
+    pub id: int,
 }
 
 /// A struct of the host at the boundary (S8f3b): its name, `game.Pos`, and its fields' values in the
@@ -45,12 +55,6 @@ pub struct HostFailure :: [Error] {
     }
 }
 
-/// A function of the host's module and its implementation, as an instance calls it (S8f2).
-pub struct HostCall {
-    decl: HostDecl,
-    run: fn(Value[]) -> Value throws HostFailure,
-}
-
 /// Whether `v` is a value of the type `b` — every element of a list and every field of a struct
 /// too; `m` names the host's structs.
 fn fits(v: Value, b: Boundary, m: Module): bool {
@@ -62,6 +66,8 @@ fn fits(v: Value, b: Boundary, m: Module): bool {
         .Char(_) => b == Boundary.Char,
         .Str(_) => b == Boundary.Str,
         .Handle(h) => b == Boundary.Handle(h.type),
+        // a callback goes to the host only, and back as nothing (S8f3c)
+        .Callback(_) => false,
         .Struct(sv) => {
             if (b != Boundary.Struct(sv.type)) {
                 return false;

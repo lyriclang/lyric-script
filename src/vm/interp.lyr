@@ -78,9 +78,18 @@ import lyric_script.vm.bigint {
 import lyric_script.vm.elementary { mathOne, mathTwo };
 import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
 import lyric_script.vm.op { Instr };
-import lyric_script.vm.module { Boundary, Callable, Function, Handler, Module, TypeDesc };
+import lyric_script.vm.module {
+    Boundary,
+    Callable,
+    FnBoundary,
+    Function,
+    Handler,
+    HostDecl,
+    Module,
+    TypeDesc,
+};
 import lyric_script.vm.value {
-    HostCall,
+    Callback,
     HostFailure,
     Value,
     bitsOf,
@@ -321,6 +330,9 @@ class TaskState {
     // S6b: the contexts that pulled the coroutine running now, the innermost last; the fields
     // above are the running context's
     pullers: List<Pull> = List<Pull>.new(),
+    // S8f3c: a callback's task that waited under a function of the host: it ended there, and
+    // whatever wakes it later finds nothing to run
+    var orphan: bool = false,
 }
 
 /// Where code stands: a task's, or a coroutine's while it is parked (S6b).
@@ -506,6 +518,12 @@ class RunShared {
     // the functions of the host's modules with their implementations, as `call.n host` numbers them
     // (S8f2)
     var hosts: HostCall[] = [],
+    // S8f3c: the instance's number, which its callbacks carry; its callbacks by their numbers, and
+    // the next number; how deep callbacks nest in functions of the host now
+    var serial: int = 0,
+    callbacks: Map<int, CallbackEntry> = Map<int, CallbackEntry>.new(),
+    var nextCallback: int = 0,
+    var callbackDepth: int = 0,
     var timerSeq: int = 0,
     clock: Monotonic = Monotonic.now(),
     // S6e: the script's tasks waiting for a native, and the Lyric 5 channel a native's task
@@ -607,6 +625,9 @@ pub enum InstancePhase :: [Equatable] {
     Ready,
     /// A started call waits; it takes `step` (S8d).
     Started,
+    /// A call runs: a function of the host it calls takes no call of the instance but its
+    /// callbacks' (S8f3c).
+    Running,
     Suspended,
     Ended,
     Broken,
@@ -662,6 +683,7 @@ pub class Instance {
         let fuel = if (budget.fuel < 0) -1 else shared.carry + budget.fuel;
         let deadline = nanosOf(budget);
         let alloc = budget.alloc;
+        this.at = InstancePhase.Running;
         // the thread the VM runs on counts the allocations: the budget starts there (S8c)
         let out = onOwnTask(
             () => {
@@ -701,6 +723,7 @@ pub class Instance {
         let shared = this.shared;
         if (this.at == InstancePhase.Started) {
             shared.pumping = false;
+            this.at = InstancePhase.Running;
             return this.stepped(onOwnTask(() => schedule(shared)));
         }
         if (this.at == InstancePhase.Suspended && !shared.pumping) {
@@ -708,6 +731,7 @@ pub class Instance {
                 let fuel = if (b.fuel < 0) -1 else shared.carry + b.fuel;
                 let deadline = nanosOf(b);
                 let alloc = b.alloc;
+                this.at = InstancePhase.Running;
                 return this.stepped(
                     onOwnTask(
                         () => {
@@ -808,7 +832,9 @@ pub class Instance {
     /// processes it started killed, its subscriptions to signals ended. It takes no call after.
     /// An instance that ended already does not take it.
     pub mut fn abort(): CallResult throws InstanceMisuse {
-        if (this.at == InstancePhase.Ended || this.at == InstancePhase.Broken) {
+        if (this.at == InstancePhase.Ended
+            || this.at == InstancePhase.Broken
+            || this.at == InstancePhase.Running) {
             throw InstanceMisuse { reason = f"abort on an instance that is {phaseName(this.at)}" };
         }
         let shared = this.shared;
@@ -837,13 +863,50 @@ pub class Instance {
     }
 
     mut fn enter(fi: int, s: uint64[], r: HeapRef[], budget: Budget): Outcome {
+        return this.enterTask(taskOf(this.shared.module, fi, s, r), budget);
+    }
+
+    mut fn enterTask(main: TaskState, budget: Budget): Outcome {
         let shared = this.shared;
         let fuel = budget.fuel;
         let deadline = nanosOf(budget);
         let alloc = budget.alloc;
-        let out = onOwnTask(() => callIn(shared, fi, s, r, fuel, deadline, alloc));
+        this.at = InstancePhase.Running;
+        let out = onOwnTask(() => callIn(shared, main, fuel, deadline, alloc));
         this.settle(out);
         return out;
+    }
+
+    /// Calls a callback the host kept (S8f3c) with `args`, of the types its parameters have, as
+    /// `call` calls a function: it may wait, and the budget may halt it for `resume`. A callback the
+    /// host did not keep, released, or of another instance, is the host's mistake.
+    pub mut fn invoke(
+        cb: Callback,
+        args: Value[],
+        budget: Budget
+    ): CallResult throws InstanceMisuse {
+        if (this.at != InstancePhase.Ready) {
+            throw InstanceMisuse {
+                reason = f"a callback's call on an instance that is {phaseName(this.at)}",
+            };
+        }
+        let e = try entryOf(this.shared, cb);
+        if (!e.kept) {
+            throw InstanceMisuse { reason = "a callback the host did not keep" };
+        }
+        let t = try callbackTask(this.shared, e, args);
+        this.pending = e.sig.result.value;
+        this.shared.pumping = true;
+        return resultOf(this.enterTask(t, budget), this.pending, this.shared.module);
+    }
+
+    /// Lets go of a callback the host kept (S8f3c): it takes no call after.
+    pub mut fn release(cb: Callback): void throws InstanceMisuse {
+        let e = try entryOf(this.shared, cb);
+        if (!e.kept) {
+            throw InstanceMisuse { reason = "a callback the host did not keep" };
+        }
+        this.shared.callbacks.remove(cb.id);
     }
 
     // the phase a call's end leaves the instance in
@@ -943,6 +1006,8 @@ pub fn instanceOf(
     let shared = newShared(module, -1, argv, feeds);
     shared.scopes = scopes;
     shared.hosts = hosts;
+    serials.next += 1;
+    shared.serial = serials.next;
     return Instance { shared = shared, feeds = feeds };
 }
 
@@ -1064,6 +1129,7 @@ fn phaseName(p: InstancePhase): string {
         .Fresh => "not initialised",
         .Ready => "ready",
         .Started => "in a started call",
+        .Running => "running a call",
         .Suspended => "suspended",
         .Ended => "ended",
         .Broken => "broken by a failure of the VM",
@@ -1085,7 +1151,7 @@ fn runOn(
             ScriptPanic { code = "LYS-ICE0001", message = f"no function '{entry}'", trace = [] }
         );
     }
-    return callIn(newShared(module, fuel, argv, feeds), fi, args, [], fuel, -1, -1);
+    return callIn(newShared(module, fuel, argv, feeds), taskOf(module, fi, args, []), fuel, -1, -1);
 }
 
 /// The place of the function named `name` in `module`, the last of that name; -1 where none is.
@@ -1121,16 +1187,18 @@ fn newShared(module: Module, fuel: int, argv: string[], feeds: List<Channel<Sign
 /// Calls function `fi` of `shared`'s module with `args` in its first scalar registers, as the
 /// first task of this call, with `fuel` units of budget, and schedules until that task ends (S8a1).
 /// What an earlier call left waiting stays in the queue; the tasks that ended are forgotten.
-fn callIn(
-    shared: RunShared,
-    fi: int,
-    args: uint64[],
-    refs: HeapRef[],
-    fuel: int,
-    deadline: int,
-    alloc: int
-): Outcome {
-    let first = shared.module.functions[fi];
+fn callIn(shared: RunShared, main: TaskState, fuel: int, deadline: int, alloc: int): Outcome {
+    startBudget(shared, fuel, deadline, alloc);
+    shared.failed = null;
+    forgetEnded(shared);
+    shared.queue.push(main);
+    return schedule(shared);
+}
+
+/// A task of function `fi` of `module`, `args` in its first scalar registers and `refs` in its first
+/// references.
+fn taskOf(module: Module, fi: int, args: uint64[], refs: HeapRef[]): TaskState {
+    let first = module.functions[fi];
     let main = TaskState {
         s = [0 as uint64] * grown(0, first.scalars),
         r = refArray(grown(0, first.refs)),
@@ -1147,11 +1215,7 @@ fn callIn(
         main.r[k] = refs[k];
         k += 1;
     }
-    startBudget(shared, fuel, deadline, alloc);
-    shared.failed = null;
-    forgetEnded(shared);
-    shared.queue.push(main);
-    return schedule(shared);
+    return main;
 }
 
 /// Drops from `shared` what an earlier call left behind and nobody needs: the queue's entries
@@ -1287,6 +1351,9 @@ fn schedule(shared: RunShared): Outcome {
         }
         let t = shared.queue[shared.head];
         shared.head += 1;
+        if (t.orphan) {
+            continue;
+        }
         let out = runTask(t, shared);
         match (out) {
             .Switch => { }
@@ -1407,12 +1474,20 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
         return;
     }
     h.cancelled = true;
-    let st = h.state;
+    if (unpark(h.state, shared)) {
+        shared.queue.push(h.state);
+    }
+}
+
+/// Takes `st` out of what it waits on — a task, a channel, a semaphore, a select, a native that lets
+/// go, a sleep —; whether it waited on one (S6c1; S8f3c).
+fn unpark(st: TaskState, shared: RunShared): bool {
+    var parked = false;
     let w = st.waitingOn;
     if (w != null) {
         removeFrom(w.waiters, st);
         st.waitingOn = null;
-        shared.queue.push(st);
+        parked = true;
     }
     // S6d1: a channel's or a semaphore's wait ends as well; a value it waited to send stays its own
     let ch = st.waitingChan;
@@ -1421,24 +1496,24 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
         removeFrom(ch.senders, st);
         st.waitingChan = null;
         st.sendItem = null;
-        shared.queue.push(st);
+        parked = true;
     }
     let sem = st.waitingSem;
     if (sem != null) {
         removeFrom(sem.waiters, st);
         st.waitingSem = null;
-        shared.queue.push(st);
+        parked = true;
     }
     // S6d2: a select's wait ends as well
     if (st.watching.length() > 0) {
         unwatchAll(st);
-        shared.queue.push(st);
+        parked = true;
     }
     // S6e: and a native's
     if (st.nativePending && !st.nativeToItsEnd) {
         st.nativePending = false;
         shared.pendingNatives -= 1;
-        shared.queue.push(st);
+        parked = true;
     }
     // S6d3: and a sleep
     let e = st.sleeping;
@@ -1452,8 +1527,9 @@ fn cancelTask(h: ScriptTask, shared: RunShared): void {
             k += 1;
         }
         st.sleeping = null;
-        shared.queue.push(st);
+        parked = true;
     }
+    return parked;
 }
 
 /// Closes `ch` (Lyric 5 10 §6 rule 4): its receivers get none, its senders throw, its watchers
@@ -1581,6 +1657,170 @@ struct NativeFault {
     message: string,
 }
 
+/// A function of the host's module and its implementation, as an instance calls it (S8f2): the
+/// implementation takes the `Caller` that called it first (S8f3c).
+pub struct HostCall {
+    decl: HostDecl,
+    run: fn(Caller, Value[]) -> Value throws HostFailure,
+}
+
+/// A function value of the script the host was given (S8f3c): the closure, its type at the boundary,
+/// and whether the host keeps it past the function it was given to.
+class CallbackEntry {
+    env: HeapRef,
+    sig: FnBoundary,
+    var kept: bool = false,
+}
+
+/// The numbers the instances of this process take, which their callbacks carry (S8f3c).
+class Serials {
+    var next: int = 0,
+}
+
+let serials: Serials = Serials { };
+
+/// The deepest callbacks nest in functions of the host before the call ends in a stack overflow
+/// (S8f3c): each level is a task of Lyric 5's with its own stack.
+let maxCallbackDepth: int = 64;
+
+/// The call of an instance that called a function of the host (S8f3c): while that function runs, it
+/// calls the callbacks it was given and keeps those it calls later through the instance.
+pub class Caller {
+    shared: RunShared,
+    var active: bool = true,
+
+    /// Calls the callback `cb` with `args`, of the types its parameters have, to its end, within the
+    /// call's budget: nothing else of the instance runs meanwhile. A callback that would wait, that
+    /// the budget halts, or that calls `exit` ends in a panic (`LYS-RT0901`); the instance goes on.
+    pub fn invoke(cb: Callback, args: Value[]): CallResult throws InstanceMisuse {
+        if (!this.active) {
+            throw InstanceMisuse { reason = "a caller whose function of the host returned" };
+        }
+        let shared = this.shared;
+        let e = try entryOf(shared, cb);
+        let t = try callbackTask(shared, e, args);
+        if (shared.callbackDepth >= maxCallbackDepth) {
+            return CallResult.Panic(
+                ScriptPanic {
+                    code = "LYS-RT0006",
+                    message = f"stack overflow: callbacks nest in {maxCallbackDepth} functions of the host",
+                    trace = [],
+                }
+            );
+        }
+        shared.callbackDepth += 1;
+        let out = onOwnTask(() => runCallback(t, shared));
+        shared.callbackDepth -= 1;
+        return resultOf(out, e.sig.result.value, shared.module);
+    }
+
+    /// Keeps the callback `cb` past the function of the host it was given to: the instance's
+    /// `invoke` calls it until `release` lets it go or the instance ends.
+    pub fn keep(cb: Callback): void throws InstanceMisuse {
+        if (!this.active) {
+            throw InstanceMisuse { reason = "a caller whose function of the host returned" };
+        }
+        let e = try entryOf(this.shared, cb);
+        e.kept = true;
+    }
+}
+
+/// The entry of the callback `cb` in `shared`'s table; one of another instance, or one gone, is the
+/// host's mistake (S8f3c).
+fn entryOf(shared: RunShared, cb: Callback): CallbackEntry throws InstanceMisuse {
+    if (cb.instance != shared.serial) {
+        throw InstanceMisuse { reason = "a callback of another instance" };
+    }
+    if (let e = shared.callbacks.get(cb.id)) {
+        return e;
+    }
+    throw InstanceMisuse { reason = "a callback the host did not keep, or released" };
+}
+
+/// A task of the callback `e` with `args` (S8f3c): its closure in `r[0]` as a call through a function
+/// value has it, the arguments after; arguments of other types are the host's mistake.
+fn callbackTask(
+    shared: RunShared,
+    e: CallbackEntry,
+    args: Value[]
+): TaskState throws InstanceMisuse {
+    let params = e.sig.params;
+    if (args.length() != params.length()) {
+        throw InstanceMisuse {
+            reason = f"the callback takes {params.length()} arguments, given {args.length()}",
+        };
+    }
+    let s = List<uint64>.new();
+    let r = List<HeapRef>.new();
+    r.push(e.env);
+    var k = 0;
+    while (k < args.length()) {
+        let b = params[k];
+        if (!fits(args[k], b, shared.module)) {
+            throw InstanceMisuse { reason = f"argument {k + 1} of the callback is not a {b:?}" };
+        }
+        if (isScalarAt(b)) {
+            s.push(bitsOf(args[k]));
+        } else {
+            r.push(refOf(args[k], b, shared.module));
+        }
+        k += 1;
+    }
+    let env = e.env;
+    var target = -1;
+    if (env is ScriptObject) {
+        target = env.scalars[0] as int;
+    }
+    if (target < 0 || target >= shared.module.functions.length()) {
+        throw InstanceMisuse { reason = "a callback of no function" };
+    }
+    return taskOf(shared.module, target, s.toArray(), r.toArray());
+}
+
+/// Runs a callback's task under a function of the host to its end (S8f3c): only it runs; a wait, the
+/// budget's end and `exit` end it in `LYS-RT0901`. What the budget left halts the call after the
+/// function of the host, never before it — that function ran and is not run again.
+fn runCallback(t: TaskState, shared: RunShared): Outcome {
+    let before = shared.budget;
+    while (true) {
+        let out = runTask(t, shared);
+        match (out) {
+            .Suspended => {
+                if (sliced(shared) && refill(shared)) {
+                    continue;
+                }
+                shared.budget = 0;
+                return callbackFault("the call's budget ended in it");
+            }
+            .Switch => {
+                // whatever wakes it later runs nothing
+                unpark(t, shared);
+                t.orphan = true;
+                return callbackFault("it would wait");
+            }
+            .Exit(_) => {
+                shared.exitCode = null;
+                shared.budget = before;
+                return callbackFault("it called exit");
+            }
+            _ => {
+                return out;
+            }
+        }
+    }
+}
+
+// a callback that could not end under the function of the host that called it (S8f3c)
+fn callbackFault(why: string): Outcome {
+    return Outcome.Panic(
+        ScriptPanic {
+            code = "LYS-RT0901",
+            message = f"a callback the host calls in its function must end there: {why}",
+            trace = [],
+        }
+    );
+}
+
 /// A function of the host's module (S8f2): its number at `s[x]`, its scalar arguments in the registers
 /// before it, its references from `r[y]`; its value goes to `s[x]`, or after the references. What it
 /// could not do, or a value of another type than it declares, is a panic of the script (`LYS-RT0900`).
@@ -1594,7 +1834,21 @@ fn hostCall(s: uint64[], r: HeapRef[], x: int, y: int, shared: RunShared): ?Nati
     }
     var ri = y;
     let args = List<Value>.new();
+    // the callbacks it is given, lent for as long as it runs (S8f3c)
+    let lent = List<int>.new();
     for (p in h.decl.params) {
+        match (p) {
+            .Fn(sig) => {
+                let id = shared.nextCallback;
+                shared.nextCallback += 1;
+                shared.callbacks.insert(id, CallbackEntry { env = r[ri], sig = sig });
+                lent.push(id);
+                args.push(Value.Callback(Callback { instance = shared.serial, id = id }));
+                ri += 1;
+                continue;
+            }
+            _ => { }
+        }
         if (isScalarAt(p)) {
             args.push(valueOfBits(p, s[si]));
             si += 1;
@@ -1603,12 +1857,14 @@ fn hostCall(s: uint64[], r: HeapRef[], x: int, y: int, shared: RunShared): ?Nati
             ri += 1;
         }
     }
+    let caller = Caller { shared = shared };
     let shown = f"host.{h.decl.module}.{h.decl.name}";
     // a function that declares errors learns at `s[x + 1]` whether it threw one (S8f3b)
     if (h.decl.throws.length() > 0) {
         s[x + 1] = 0;
     }
-    let v = try h.run(args.toArray()) catch (e: HostFailure) {
+    let v = try h.run(caller, args.toArray()) catch (e: HostFailure) {
+        endCall(caller, lent);
         if (let thrown = e.error) {
             for (t in h.decl.throws) {
                 if (fits(thrown, t, shared.module)) {
@@ -1625,6 +1881,7 @@ fn hostCall(s: uint64[], r: HeapRef[], x: int, y: int, shared: RunShared): ?Nati
         }
         return NativeFault { code = "LYS-RT0900", message = f"{shown} failed: {e.message()}" };
     };
+    endCall(caller, lent);
     if (!fits(v, h.decl.result, shared.module)) {
         return NativeFault {
             code = "LYS-RT0900",
@@ -1637,6 +1894,19 @@ fn hostCall(s: uint64[], r: HeapRef[], x: int, y: int, shared: RunShared): ?Nati
         r[ri] = refOf(v, h.decl.result, shared.module);
     }
     return null;
+}
+
+/// The end of a function of the host (S8f3c): its caller takes no call after, and the callbacks it was
+/// lent and did not keep go.
+fn endCall(caller: Caller, lent: List<int>): void {
+    caller.active = false;
+    for (id in lent) {
+        if (let e = caller.shared.callbacks.get(id)) {
+            if (!e.kept) {
+                caller.shared.callbacks.remove(id);
+            }
+        }
+    }
 }
 
 /// Runs the native `which` on its scalars from `s[x]` and its references from `r[y]`; what it returns goes

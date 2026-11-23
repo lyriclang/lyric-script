@@ -54,11 +54,11 @@ fn saveError(slot: int, reason: string): Value {
 fn storeVm(): Vm {
     let vm = vmOf();
     try! vm.host("store", storeSource);
-    try! vm.implement("store", "origin", (_) => pos(1.0, 2.0));
+    try! vm.implement("store", "origin", (_, _args) => pos(1.0, 2.0));
     try! vm.implement(
         "store",
         "shift",
-        (args) => {
+        (_, args) => {
             let f = fieldsOf(args[0]);
             let by = floatOf(args[1]);
             pos(floatOf(f[0]) + by, floatOf(f[1]) + by)
@@ -67,7 +67,7 @@ fn storeVm(): Vm {
     try! vm.implement(
         "store",
         "SaveError.message",
-        (args) => {
+        (_, args) => {
             let f = fieldsOf(args[0]);
             Value.Str(f"slot {intOf(f[0])}: {strOf(f[1])}")
         }
@@ -75,12 +75,12 @@ fn storeVm(): Vm {
     try! vm.implement(
         "store",
         "OtherError.message",
-        (args) => Value.Str(f"code {intOf(fieldsOf(args[0])[0])}")
+        (_, args) => Value.Str(f"code {intOf(fieldsOf(args[0])[0])}")
     );
     try! vm.implement(
         "store",
         "save",
-        (args) => {
+        (_, args) => {
             if (intOf(args[0]) == 0) {
                 throw HostFailure { reason = "full", error = saveError(0, "the disk is full") };
             }
@@ -90,7 +90,7 @@ fn storeVm(): Vm {
     try! vm.implement(
         "store",
         "wild",
-        (_) => {
+        (_, _args) => {
             throw HostFailure {
                 reason = "wrong",
                 error = Value.Struct(
@@ -102,14 +102,14 @@ fn storeVm(): Vm {
     try! vm.implement(
         "store",
         "bare",
-        (_) => {
+        (_, _args) => {
             throw HostFailure { reason = "the cable is out" };
         }
     );
     try! vm.implement(
         "store",
         "other",
-        (_) => {
+        (_, _args) => {
             throw HostFailure {
                 reason = "other",
                 error = Value.Struct(

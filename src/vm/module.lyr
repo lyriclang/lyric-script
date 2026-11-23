@@ -138,7 +138,15 @@ pub enum Boundary :: [Equatable, Debug] {
     List(Box<Boundary>),
     Handle(string),
     Struct(string),
+    /// A function value of the script, as a parameter of a function of the host (S8f3c).
+    Fn(FnBoundary),
     Other,
+}
+
+/// A function type at the boundary (S8f3c): its parameters' types and its result's.
+pub struct FnBoundary :: [Equatable, Debug] {
+    pub params: Boundary[],
+    pub result: Box<Boundary>,
 }
 
 /// A struct of the host's modules (S8f3b): its name, `game.Pos`; its descriptor among the module's

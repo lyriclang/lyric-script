@@ -455,7 +455,8 @@ VM's call path, S7k measurement point 3.
   - **S8f2 done** — the host's modules: `vm.host(name, source)`, `import host.<name>`, `@Requires("right")` asked at load like `std`, `vm.implement`, a `HostFailure` is a panic (`LYS-RT0900`); the call goes through `call.n` with a stub, `runTask` untouched; format 49; 441 tests, 876 cases.
   - **S8f3a done** — the host's handles: a class without fields in a module of the host, a number of the host's at the boundary (`Value.Handle`, format 50), `LYS-SEM0909` for one the script builds; attributes stand before methods now (09 At, missed in S8f1); Lyric 5 bug lyric#740 worked around; 449 tests, 878 cases.
   - **S8f3b done** — the host's structs cross as copies (`Value.Struct`, format 51); errors of the host are structs `:: [Error]` its functions name in `throws` (P14), thrown in the script; an undeclared one is a panic; 454 tests.
-  - Next: **S8f3c** — callbacks that must not wait.
+  - **S8f3c done** — callbacks: a function type at a parameter of the host's function (`Boundary.Fn`, `Value.Callback`, format 52); the implementation gets its `Caller` first and calls a callback to its end within the call's budget — a wait, the budget's end or `exit` in it is `LYS-RT0901`, nesting stops at 64 (`LYS-RT0006`); callbacks are lent, `caller.keep` keeps them for `inst.invoke`, `inst.release` lets go; phase `Running`; Lyric 5 bug lyric#744 worked around; 464 tests.
+  - Next: **S8g** — isolation between instances.
 
 ## Working mode
 

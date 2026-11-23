@@ -7,6 +7,7 @@ import std.core { StringBuilder };
 import std.crypto { sha256 };
 import std.fs { createDirAll, exists, readBytes, remove, removeAll, rename, writeBytes };
 import std.os { Platform, env, homeDir, pid, platform };
+import std.sync { Atomic };
 import lyric_script { version };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.bytecode { NotOurs, decode, encode };
@@ -98,11 +99,15 @@ fn store(source: string, module: Module): void {
     storeIn(root, source, module);
 }
 
+/// The numbers of the part files this process writes, each its own (S8g3).
+let partials: Atomic<int> = Atomic<int>.new(0);
+
 /// Keeps a source's module under `root`, as `store` does in the user's cache (S8a2).
 fn storeIn(root: string, source: string, module: Module): void {
     let key = sourceKey(source);
     let path = pathOf(root, key);
-    let partial = f"{path}.{pid()}.tmp";
+    // two threads of a process may keep the same source at once (S8g3)
+    let partial = f"{path}.{pid()}.{partials.addAndFetch(1)}.tmp";
     let bytes = encode(module, bytecodeFormat, version, key);
     try {
         createDirAll(f"{root}/bytecode");

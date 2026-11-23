@@ -1,0 +1,343 @@
+// Threads (S8g3; 11 Thr): instances of one VM run on threads of their own at once; an instance
+// takes one entry of the host's at a time, from whatever thread; a resting one moves to another
+// thread; the VM is sealed by its first load, and loads keep the same source in the cache at once.
+import std.collections { List };
+import std.fs { readDir, removeAll, tempDir };
+import std.task { Channel, Task };
+import std.test { assertEq, assertTrue };
+import std.thread { Thread };
+import lyric_script.embed { HostMisuse, LoadError, Vm, vmOf };
+import lyric_script.vm.interp { Budget, Instance, InstanceMisuse, Step };
+import lyric_script.vm.value { Callback, Value };
+
+let workSource: string = """
+var calls = 0
+pub fn squares(n: int): int {
+    let m = Map<int, int>.new()
+    var t = 0
+    var k = 0
+    while (k < n) {
+        m[k] = k * k
+        t += m[k] ?? 0
+        k += 1
+    }
+    return t
+}
+pub fn bump(): int {
+    calls += 1
+    return calls
+}
+pub fn later(): int {
+    sleep(Duration.ofMillis(20))
+    return calls + 100
+}
+""";
+
+fn ready(inst: Instance): Instance {
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn result(inst: Instance, name: string, args: Value[] = []): Value {
+    return match (try! inst.call(name, args, Budget { })) {
+        .Ok(v) => v,
+        .Panic(p) => Value.Str(f"{p.code}: {p.message}"),
+        _ => Value.Str("no value"),
+    };
+}
+
+// the message of the host's mistake `body` makes; "taken" where it is none
+fn misuse(body: fn() -> void throws InstanceMisuse): string {
+    try {
+        body();
+    } catch (e: InstanceMisuse) {
+        return e.message();
+    }
+    return "taken";
+}
+
+// the sum of the squares below `n`
+fn squares(n: int): int {
+    return (n - 1) * n * (2 * n - 1) / 6;
+}
+
+@Test
+fn twoInstancesOnTwoThreads(): void {
+    let vm = vmOf();
+    let a = Thread.spawn(
+        () => {
+            let inst = ready(try! vm.load("a.lyrs", workSource));
+            var sum = 0;
+            for (round in 0..20) {
+                sum += match (result(inst, "squares", [Value.Int(300 + round)])) {
+                    .Int(v) => v,
+                    _ => -1,
+                };
+            }
+            return sum;
+        }
+    );
+    let b = Thread.spawn(
+        () => {
+            let inst = ready(try! vm.load("b.lyrs", workSource));
+            var sum = 0;
+            for (round in 0..20) {
+                sum += match (result(inst, "squares", [Value.Int(400 + round)])) {
+                    .Int(v) => v,
+                    _ => -1,
+                };
+            }
+            return sum;
+        }
+    );
+    var wantA = 0;
+    var wantB = 0;
+    for (round in 0..20) {
+        wantA += squares(300 + round);
+        wantB += squares(400 + round);
+    }
+    assertEq(try! a.await(), wantA);
+    assertEq(try! b.await(), wantB);
+}
+
+@Test
+fn aRestingInstanceMovesThreads(): void {
+    let inst = ready(try! vmOf().load("r.lyrs", workSource));
+    assertTrue(inst.resting());
+    let first = Thread.spawn(() => result(inst, "bump"));
+    assertEq(try! first.await(), Value.Int(1));
+    assertTrue(inst.resting());
+    let second = Thread.spawn(() => result(inst, "bump"));
+    assertEq(try! second.await(), Value.Int(2));
+    assertEq(result(inst, "bump"), Value.Int(3));
+    // a call started here that waits for a timer goes on there
+    match (try! inst.start("later", [], Budget { })) {
+        .Waiting => { }
+        _ => assertTrue(false, "the call did not wait"),
+    }
+    assertTrue(inst.resting());
+    let there = Thread.spawn(
+        () => {
+            var s = try! inst.step();
+            var steps = 0;
+            while (steps < 100000) {
+                match (s) {
+                    .Waiting => {
+                        steps += 1;
+                        s = try! inst.step();
+                    }
+                    .Done(.Ok(v)) => {
+                        return v;
+                    }
+                    _ => {
+                        return Value.Str("not ok");
+                    }
+                }
+            }
+            return Value.Str("never done");
+        }
+    );
+    assertEq(try! there.await(), Value.Int(103));
+}
+
+class Kept {
+    var cb: ?Callback = null,
+}
+
+@Test
+fn aSecondEntryWaits(): void {
+    let vm = vmOf();
+    try! vm.host("gate", "fn pass(): int\nfn hold(f: fn() -> int): void\n");
+    let entered = Channel<int>.new(1);
+    let open = Channel<int>.new(1);
+    let kept = Kept { };
+    try! vm.implement(
+        "gate",
+        "pass",
+        (_, _args) => {
+            try! entered.send(1);
+            return Value.Int(try! open.recv() ?? -1);
+        }
+    );
+    try! vm.implement(
+        "gate",
+        "hold",
+        (caller, args) => {
+            match (args[0]) {
+                .Callback(cb) => {
+                    try! caller.keep(cb);
+                    kept.cb = cb;
+                }
+                _ => { }
+            }
+            return Value.Void;
+        }
+    );
+    let inst = ready(
+        try! vm.load(
+            "g.lyrs",
+            "import host.gate { pass, hold }\nfn one(): int = 1\npub fn a(): int = pass()\npub fn b(): int = 2\npub fn k() {\n    hold(one)\n}\n"
+        )
+    );
+    result(inst, "k");
+    let cb = kept.cb ?? Callback { instance = -1, id = -1 };
+    let t = Thread.spawn(() => result(inst, "a"));
+    // the call on the other thread waits in the host's function
+    try! entered.recv();
+    assertTrue(!inst.resting());
+    let said = List<string>.new();
+    said.push(
+        misuse(
+            () => {
+                try inst.call("b", [], Budget { });
+            }
+        )
+    );
+    said.push(
+        misuse(
+            () => {
+                try inst.invoke(cb, [], Budget { });
+            }
+        )
+    );
+    said.push(
+        misuse(
+            () => {
+                try inst.release(cb);
+            }
+        )
+    );
+    said.push(
+        misuse(
+            () => {
+                try inst.step();
+            }
+        )
+    );
+    said.push(
+        misuse(
+            () => {
+                try inst.abort();
+            }
+        )
+    );
+    assertEq(
+        said.toArray().join("; "),
+        "a call on an instance that is running a call; a callback's call on an instance that is running a call; release on an instance that is running a call; a step on an instance that is running a call; abort on an instance that is running a call"
+    );
+    try! open.send(5);
+    assertEq(try! t.await(), Value.Int(5));
+    // the instance goes on, the callback still kept
+    assertTrue(inst.resting());
+    assertEq(result(inst, "b"), Value.Int(2));
+    match (try! inst.invoke(cb, [], Budget { })) {
+        .Ok(v) => assertEq(v, Value.Int(1)),
+        _ => assertTrue(false, "the callback did not run"),
+    }
+}
+
+@Test
+fn entriesFromTwoThreadsTakeTurns(): void {
+    let inst = ready(try! vmOf().load("t.lyrs", workSource));
+    let tries = Thread.spawn(
+        () => {
+            var taken = 0;
+            for (_ in 0..300) {
+                try {
+                    inst.call("bump", [], Budget { });
+                    taken += 1;
+                } catch (_: InstanceMisuse) { }
+            }
+            return taken;
+        }
+    );
+    var taken = 0;
+    for (_ in 0..300) {
+        try {
+            inst.call("bump", [], Budget { });
+            taken += 1;
+        } catch (_: InstanceMisuse) { }
+    }
+    taken += try! tries.await();
+    // every call taken ran alone: none lost
+    assertEq(result(inst, "bump"), Value.Int(taken + 1));
+}
+
+@Test
+fn aLoadSealsTheVm(): void {
+    let vm = vmOf();
+    try! vm.host("a", "fn f(): int\n");
+    try! vm.implement("a", "f", (_, _args) => Value.Int(1));
+    let inst = ready(try! vm.load("s.lyrs", "import host.a { f }\npub fn g(): int = f()\n"));
+    assertEq(result(inst, "g"), Value.Int(1));
+    var said = "registered";
+    try {
+        vm.host("b", "fn h(): int\n");
+    } catch (e: LoadError) {
+        said = e.message();
+    }
+    assertEq(
+        said,
+        "the VM loaded a script already: a host registers its modules and implementations before"
+    );
+    said = "implemented";
+    try {
+        vm.implement("a", "f", (_, _args) => Value.Int(2));
+    } catch (e: HostMisuse) {
+        said = e.message();
+    }
+    assertEq(
+        said,
+        "the VM loaded a script already: a host registers its modules and implementations before"
+    );
+    // a fresh VM compiles first: that seals it as well
+    let other = vmOf();
+    try! other.compile("c.lyrs", "pub fn g(): int = 1\n");
+    said = "registered";
+    try {
+        other.host("b", "fn h(): int\n");
+    } catch (e: LoadError) {
+        said = e.message();
+    }
+    assertTrue(said.startsWith("the VM loaded a script already"), said);
+}
+
+@Test
+fn threadsKeepOneSourceAtOnce(): void {
+    let root = try! tempDir();
+    let vm = vmOf(root);
+    let loads = List<Task<int>>.new();
+    for (k in 0..4) {
+        loads.push(
+            Thread.spawn(
+                () => {
+                    var ok = 0;
+                    for (_ in 0..5) {
+                        let inst = ready(try! vm.load("c.lyrs", workSource));
+                        if (result(inst, "squares", [Value.Int(10)]) == Value.Int(squares(10))) {
+                            ok += 1;
+                        }
+                    }
+                    return ok;
+                }
+            )
+        );
+    }
+    var ok = 0;
+    for (l in loads) {
+        ok += try! l.await();
+    }
+    assertEq(ok, 20);
+    // one file kept, no part left behind
+    let names = List<string>.new();
+    try {
+        for (e in readDir(f"{root}/bytecode")) {
+            names.push(e.name);
+        }
+    } catch (_) {
+        names.push("unread.tmp");
+    }
+    assertEq(names.length(), 1, names.toArray().join(", "));
+    assertTrue(!names[0].endsWith(".tmp"), names[0]);
+    try? removeAll(root);
+}

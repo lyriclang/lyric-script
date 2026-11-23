@@ -226,8 +226,12 @@ fn everyFunctionHasItsImplementation(): void {
     try! vm.implement("half", "one", (_, _args) => Value.Int(1));
     let e = loadError(vm, "import host.half { one }\npub fn a(): int = one()\n");
     assertEq(codesOf(e), "the host gave no implementation of 'host.half.two'");
-    try! vm.implement("half", "two", (_, _args) => Value.Int(2));
-    assertTrue(loadError(vm, "import host.half { one }\npub fn a(): int = one()\n") == null);
+    // a load that failed sealed the VM as well (S8g3): the host gives everything first
+    let whole = vmOf();
+    try! whole.host("half", "fn one(): int\nfn two(): int\n");
+    try! whole.implement("half", "one", (_, _args) => Value.Int(1));
+    try! whole.implement("half", "two", (_, _args) => Value.Int(2));
+    assertTrue(loadError(whole, "import host.half { one }\npub fn a(): int = one()\n") == null);
 }
 
 @Test

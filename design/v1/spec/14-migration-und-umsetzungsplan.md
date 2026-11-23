@@ -3550,6 +3550,95 @@ Drei Teile:
   - Acht Mutanten, alle getötet. Drei töteten mehr als vorhergesagt, weil die Vorhersage nur den
     gemeinten Test las, nicht jeden, der die Funktion ruft.
 
+**S8g3, Ergebnis (2026-11-23).** Gebaut wie geschnitten, mit drei Abweichungen.
+- **Gebaut:**
+  - `Instance` trägt `busy: Atomic<bool>`. `init`, `call`, `start`, `step`, `resume`, `invoke`,
+    `release` und `abort` nehmen es mit `compareAndSet` und geben es mit einem `defer` zurück.
+  - `inst.resting()` ist wahr, wenn kein Eintritt läuft, kein Native wartet und kein Abo auf Signale
+    offen ist.
+  - `serials` ist ein `Atomic<int>`. Die Teildatei des Caches heißt `<pfad>.<pid>.<n>.tmp`, `n` aus einem
+    `Atomic` des Prozesses.
+  - Die `Vm` trägt `sealed: Atomic<bool>`. `load`, `loadTrusted` und `compile` setzen es.
+- **Abweichungen vom Zuschnitt:**
+  - Die Meldung einer zweiten Entry hat die Form der Phasenmeldungen („a call on an instance that is
+    running a call"), nicht „the instance is running a call". So bleiben die Pins aus S8f3c gültig, und
+    der Host liest eine Form.
+  - `host` nach dem Siegel ist ein `LoadError` mit Grund, nicht ein `HostMisuse`: `host` wirft schon
+    heute `LoadError` für jeden Fehler des Hosts (auch „registered already"), und eine zweite Fehlerart
+    bräche jeden Aufrufer.
+  - Auch `compile` und ein gescheiterter `load` siegeln. Jeder Load liest, was registriert ist; ein
+    Siegel, das am Ergebnis hängt, wäre eine zweite Regel. Ein alter Test implementierte nach einem
+    gescheiterten Load, er nimmt jetzt eine frische `Vm`.
+- **Prüfung:**
+  - Sechs Unit-Tests in `tests/threads.lyr`. 478 Tests, 878 Konformanzfälle.
+  - Sieben Mutanten. Ohne Sperre (T1) fällt neben `aSecondEntryWaits` auch der Renntest
+    `entriesFromTwoThreadsTakeTurns`: zwei Threads rufen je 300 Mal, ein genommener Aufruf ging verloren.
+    Das ist ein Lauf, kein Beweis, dass er das Rennen immer fängt.
+  - Zwei Mutanten überleben, wie vorhergesagt: die Teildatei des Caches ohne eigene Nummer (vier Threads
+    laden dieselbe Quelle, und das Rennen traf nicht) und die Seriennummer ohne atomares Inkrement. Beide
+    Rennen sind ungetestet.
+
+**S8h, Zuschnitt (2026-11-23).** Gelesen gegen Lyric 5s `@Export` (Spec 13 ABI am Pin, `TypeChecker`
+`CheckExport`, `std.ffi`, `examples/embedded-host`):
+- Ein Export nimmt und gibt nur Skalare, `bool`, `char`, `Ptr<T>`, `CStr`, `@Layout(C)`-Structs und
+  -Enums und C-Funktionszeiger. Kein `string`, keine Klasse, kein Array, kein Lyric-`fn`.
+- Ein Export mit `throws` gibt `LyrStatus` und schreibt sein Ergebnis in einen Zeiger; der Fehler (Typ,
+  Meldung, Ursache) liegt je Thread für `lyr_take_error`. Eine Panik in einem Export **ohne** `throws`
+  beendet den Prozess.
+- Ein Objekt lebt über Aufrufe aus C nur als `GcHandle<T>` einer Klasse; der GC bewegt nicht.
+- Die Probe (Paket außerhalb des Repos) bestätigt: `Ptr<CStr>` wird `const char **`, ein
+  `@Layout(C)`-Struct geht als Wert, ein Parameter `extern "C" fn(...)` wird ein typisierter
+  Funktionszeiger, den Lyric aufruft, und ein geworfener Fehler kommt als `LYR_ERROR` mit Typ und
+  Meldung an.
+- `lyr_init` muss vor dem ersten Export laufen. Fremde Threads hängen sich beim ersten Export an.
+- `lyric5 build --lib` baut `liblyric_script.a` (oder mit `--shared` die geteilte Bibliothek) und den
+  Header `lyric_script.h` mit `lyric.h` darin.
+
+Zwei Teile:
+- **S8h1 Kern:**
+  - VM: `lyrs_vm_new` (Cache-Verzeichnis oder NULL), `lyrs_vm_host`, `lyrs_vm_load` (Name, Quelle,
+    Rechte als Array von `const char *`, `all`, Seed mit eigenem Schalter).
+  - Instanz: `init`, `call`, `start`, `step`, `resume`, `abort`, `resting`, `phase`. Das Budget ist ein
+    `@Layout(C)`-Struct `lyrs_budget { fuel, deadline_ns, alloc }`, `-1` für „keine Grenze".
+  - Werte: Konstruktoren für `void`, `int`, `float`, `bool`, `char`, Text (Zeiger und Länge), Liste und
+    Map (aus Arrays von Werten) und Struct (Typname und Felder); Leser für Art, Skalar, Länge, Element,
+    Schlüssel, Wert, Typname. Ein Ergebnis liest Art, Wert, Code und Meldung, den Exit-Code.
+  - Text nach C kopiert der Host in einen eigenen Puffer (`uint8_t *`, NULL zum Messen):
+    `lyrs_*_text(h, buf, cap, &n)` gibt die volle Länge zurück, wie `snprintf`.
+  - `lyrs_release` gibt jeden Griff frei.
+  - Prüfung: ein C-Test (`tests/c/abi.c`) gegen die statische Bibliothek, in der CI auf allen vier
+    Zielen; Spec 13 Regel 11.
+- **S8h2 Host-Funktionen aus C:**
+  - `lyrs_vm_implement(vm, module, name, fn, userdata)` mit
+    `void *(*)(void *userdata, void *caller, void *const *args, int64_t n)`. Ein Ergebnis NULL ist ein
+    Scheitern, mit dem Grund aus `lyrs_caller_fail`.
+  - Callbacks (`lyrs_caller_invoke`, `lyrs_caller_keep`, `lyrs_instance_invoke`, `lyrs_instance_release`).
+  - Griffe des Hosts als Werte, `lyrs_vm_compile` und `lyrs_vm_load_trusted`, `lyrs_set_heap_limit`.
+  - Prüfung: derselbe C-Test, erweitert.
+- **Entschieden nach Empfehlung:**
+  - **Werte als Griffe, je Wert einer** (wie JNI, Pythons C-API). Verworfen:
+    - ein Stapel je Instanz wie bei Lua (`lua_push*`/`lua_to*`): weniger Freigaben, aber impliziter
+      Zustand, und ein Fehler in der Stapeldisziplin ist still;
+    - ein Format für Werte (JSON, MessagePack): eine Funktion statt vieler, aber `int`, `float` und
+      `char` verlieren ihre Grenze, und jeder Aufruf kodiert;
+    - ein `@Layout(C)`-Wert mit Skalaren inline (wasmtime): spart die Allokation je Skalar, aber zwei
+      Formen für einen Wert; der Aufruf aus C ist nicht der heiße Pfad (Messpunkt 4 misst den Start).
+  - **Griffe sind Nummern** (`int64_t`, 0 nie gültig) in einer Tabelle des Prozesses unter einer
+    Sperre; ein Eintrag hält VM, Instanz, Wert oder Ergebnis. `lyrs_release` nimmt jeden. Ein Griff der
+    falschen Art, ein freigegebener oder ein erfundener ist ein Fehler des Hosts mit Status. Verworfen:
+    `GcHandle<T>.asPtr()` als `void *` — eine Probe (2026-11-23) zeigt, dass die zweite Freigabe
+    desselben Zeigers den Prozess mit einem Segfault beendet; Lyric 5 sagt das so (ein freigegebener
+    Root ist mit seinem Speicher weg, `from` ist das Wort des `unsafe`-Blocks). Ein Fehler des Hosts
+    soll ein Status sein, kein Absturz. Die Tabelle kostet einen Map-Zugriff je Export.
+  - **Jeder Export wirft:** so kommt jeder Fehler als Status an und keiner beendet den Prozess. Die
+    eigenen Fehler (`LoadError`, `InstanceMisuse`, `HostMisuse`) gehen über Lyric 5s `lyr_take_error`;
+    keine eigene Fehlerform. Die Funde eines `LoadError` außer dem ersten bleiben in S8h1 außen vor.
+  - **Text hinein mit Länge, Namen und Quellen als `const char *`.** Ein Wert darf ein NUL enthalten,
+    ein Name nicht.
+  - **Die Form des Callbacks (offen seit dem Plan):** ein Funktionszeiger mit `userdata` und einem
+    Ergebnisgriff, NULL für ein Scheitern. Verworfen: ein Statuscode mit Ergebnis im Zeiger — ein Zeiger
+    mehr für dasselbe; eine Signatur je Stelligkeit — nicht über C-Funktionszeiger zu prüfen.
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

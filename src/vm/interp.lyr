@@ -53,6 +53,7 @@ import std.os { Signal, platform, signals };
 import std.process { Child, Command, Stdio };
 import std.path { separator as pathSeparator };
 import std.random { Random };
+import std.sync { Atomic };
 import std.task { Cancelled, Channel, Select, sleep, spawn, spawnDetached, yieldNow };
 import std.time { Duration, Instant, Monotonic, TimeError as HostTimeError, Zone as HostZone };
 import lyric_script.vm.bigint {
@@ -653,9 +654,15 @@ pub struct InstanceMisuse :: [Error] {
 /// module as the first task of that call. A task the call leaves waiting — detached, or on a
 /// timer — stays and goes on in the next call; after a panic of the script the instance takes
 /// calls as before (01 S11), the call's frames gone, its globals as they were.
+///
+/// It takes one entry of the host's at a time, from any thread (11 Thr; S8g3): a second, from
+/// another thread or from a function of the host the call runs, is the host's mistake. Only a
+/// resting instance goes to another thread.
 pub class Instance {
     shared: RunShared,
     feeds: List<Channel<Signal>>,
+    // whether an entry of the host's runs (S8g3)
+    busy: Atomic<bool>,
     var at: InstancePhase = InstancePhase.Fresh,
     // the type of the result of the call in flight, which a `resume` ends (S8b1)
     var pending: Boundary = Boundary.Void,
@@ -665,6 +672,28 @@ pub class Instance {
         return this.at;
     }
 
+    /// Whether the instance may go to another thread (11 Thr; S8g3): no entry of the host's runs,
+    /// and no native nor a subscription to signals of its script waits — each is a task of the
+    /// thread it started on.
+    pub fn resting(): bool {
+        return !this.busy.load() && this.shared.pendingNatives == 0 && this.shared.openFeeds == 0;
+    }
+
+    // takes the instance for an entry of the host's, `what` in the message of a second one; the
+    // entry gives it back with a `defer`
+    fn take(what: string): void throws InstanceMisuse {
+        let busy = this.busy;
+        if (!busy.compareAndSet(false, true)) {
+            throw InstanceMisuse { reason = f"{what} on an instance that is running a call" };
+        }
+    }
+
+    // gives the instance back after an entry
+    fn give(): void {
+        let busy = this.busy;
+        busy.store(false);
+    }
+
     /// What halted the call in flight, where one is halted (S8c).
     pub fn haltedBy(): ?Halt {
         return if (this.at == InstancePhase.Suspended) this.shared.halt else null;
@@ -672,6 +701,10 @@ pub class Instance {
 
     /// Runs the script's top level (07 Top) within `budget`.
     pub mut fn init(budget: Budget): CallResult throws InstanceMisuse {
+        try this.take("init");
+        defer {
+            this.give();
+        }
         this.pending = Boundary.Void;
         return resultOf(try this.initOutcome(budget), Boundary.Void, this.shared.module);
     }
@@ -679,6 +712,10 @@ pub class Instance {
     /// Goes on with the call the budget halted (01 S5b; S8b1), within `budget` and what was left
     /// when it halted (P34): a native dearer than one grant gets through after some.
     pub mut fn resume(budget: Budget): CallResult throws InstanceMisuse {
+        try this.take("resume");
+        defer {
+            this.give();
+        }
         if (this.at != InstancePhase.Suspended) {
             throw InstanceMisuse { reason = f"resume on an instance that is {phaseName(this.at)}" };
         }
@@ -704,6 +741,10 @@ pub class Instance {
     /// host may not call, an argument of another type, or a parameter or result of a type the
     /// host does not pass is the host's mistake.
     pub mut fn call(name: string, args: Value[], budget: Budget): CallResult throws InstanceMisuse {
+        try this.take("a call");
+        defer {
+            this.give();
+        }
         let p = try this.prepared(name, args);
         this.pending = p.result;
         this.shared.pumping = true;
@@ -714,6 +755,10 @@ pub class Instance {
     /// every task of the instance waits — for a timer, a native, a channel —, and the host goes on
     /// with `step`. A host that must not stall, a game's frame, calls this.
     pub mut fn start(name: string, args: Value[], budget: Budget): Step throws InstanceMisuse {
+        try this.take("a call");
+        defer {
+            this.give();
+        }
         let p = try this.prepared(name, args);
         this.pending = p.result;
         this.shared.pumping = false;
@@ -724,6 +769,10 @@ pub class Instance {
     /// call's end or `Waiting`. A started call the budget halted goes on only with a new `budget`,
     /// as `resume` gives one (01 S5b).
     pub mut fn step(budget: ?Budget = null): Step throws InstanceMisuse {
+        try this.take("a step");
+        defer {
+            this.give();
+        }
         let shared = this.shared;
         if (this.at == InstancePhase.Started) {
             shared.pumping = false;
@@ -836,6 +885,10 @@ pub class Instance {
     /// processes it started killed, its subscriptions to signals ended. It takes no call after.
     /// An instance that ended already does not take it.
     pub mut fn abort(): CallResult throws InstanceMisuse {
+        try this.take("abort");
+        defer {
+            this.give();
+        }
         if (this.at == InstancePhase.Ended
             || this.at == InstancePhase.Broken
             || this.at == InstancePhase.Running) {
@@ -889,6 +942,10 @@ pub class Instance {
         args: Value[],
         budget: Budget
     ): CallResult throws InstanceMisuse {
+        try this.take("a callback's call");
+        defer {
+            this.give();
+        }
         if (this.at != InstancePhase.Ready) {
             throw InstanceMisuse {
                 reason = f"a callback's call on an instance that is {phaseName(this.at)}",
@@ -906,6 +963,10 @@ pub class Instance {
 
     /// Lets go of a callback the host kept (S8f3c): it takes no call after.
     pub mut fn release(cb: Callback): void throws InstanceMisuse {
+        try this.take("release");
+        defer {
+            this.give();
+        }
         let e = try entryOf(this.shared, cb);
         if (!e.kept) {
             throw InstanceMisuse { reason = "a callback the host did not keep" };
@@ -1012,9 +1073,8 @@ pub fn instanceOf(
     shared.scopes = scopes;
     shared.hosts = hosts;
     shared.seed = seed;
-    serials.next += 1;
-    shared.serial = serials.next;
-    return Instance { shared = shared, feeds = feeds };
+    shared.serial = serials.addAndFetch(1);
+    return Instance { shared = shared, feeds = feeds, busy = Atomic<bool>.new(false) };
 }
 
 /// The file scopes of grants (01 S1; S8e): `null` where `file` is given whole — without a scope,
@@ -1678,12 +1738,9 @@ class CallbackEntry {
     var kept: bool = false,
 }
 
-/// The numbers the instances of this process take, which their callbacks carry (S8f3c).
-class Serials {
-    var next: int = 0,
-}
-
-let serials: Serials = Serials { };
+/// The numbers the instances of this process take, which their callbacks carry (S8f3c), from any
+/// thread (S8g3).
+let serials: Atomic<int> = Atomic<int>.new(0);
 
 /// The deepest callbacks nest in functions of the host before the call ends in a stack overflow
 /// (S8f3c): each level is a task of Lyric 5's with its own stack.

@@ -3,6 +3,7 @@
 //! cache directory — or from bytecode the host trusts, and gives an `Instance` to call. What the
 //! source gets wrong comes back as values, never printed: the host decides who sees it.
 import std.collections { List };
+import std.sync { Atomic };
 import lyric_script { version };
 import lyric_script.cache { loadIn, sourceKey, storeIn };
 import lyric_script.compiler.checker { ProgramUnit, checkModule };
@@ -64,8 +65,14 @@ pub struct HostMisuse :: [Error] {
 
 /// The VM of a host (11 Emb a): the code it compiled is shared by the instances it gives; its
 /// cache directory is the host's to name, `null` for none.
+///
+/// Its first `load`, `loadTrusted` or `compile` seals it (S8g3): it takes no module and no
+/// implementation after, and threads load from it at the same time. What a host registers, it
+/// registers before it gives the VM to another thread.
 pub class Vm {
     cacheDir: ?string,
+    // whether a load sealed it
+    sealed: Atomic<bool>,
     // the modules the host registered, each name after `host.` beside its source, and the
     // implementations it gave (S8f2)
     hostNames: List<string>,
@@ -77,6 +84,9 @@ pub class Vm {
     /// ask for a right. A script imports it as `import host.<name>`; `implement` gives each function.
     /// It is checked here: an error in it is the host's, a `LoadError` whose findings name it.
     pub fn host(name: string, source: string): void throws LoadError {
+        if (this.sealed.load()) {
+            throw LoadError { reason = sealedReason };
+        }
         if (!isModuleName(name)) {
             throw LoadError {
                 reason = f"'{name}' is no module's name: words of letters, digits and '_', between dots",
@@ -113,6 +123,9 @@ pub class Vm {
         name: string,
         run: fn(Caller, Value[]) -> Value throws HostFailure
     ): void throws HostMisuse {
+        if (this.sealed.load()) {
+            throw HostMisuse { reason = sealedReason };
+        }
         var k = 0;
         while (k < this.hostNames.length() && this.hostNames[k] != module) {
             k += 1;
@@ -144,6 +157,12 @@ pub class Vm {
         );
     }
 
+    // a load reads what the host registered: from now on, nothing changes it
+    fn seal(): void {
+        let sealed = this.sealed;
+        sealed.store(true);
+    }
+
     // the registered modules as the loader takes them
     fn hostPairs(): (string, string)[] {
         let out = List<(string, string)>.new();
@@ -166,6 +185,7 @@ pub class Vm {
         all: bool = false,
         seed: ?int = null
     ): Instance throws LoadError {
+        this.seal();
         let module = try this.compiled(name, source);
         return try granted(module, name, allow, all, this.impls.toArray(), seed);
     }
@@ -173,6 +193,7 @@ pub class Vm {
     /// The bytecode of the script `source`, for `loadTrusted` (01 S10): an artefact of the
     /// host's own, as `pack` makes one.
     pub fn compile(name: string, source: string): uint8[] throws LoadError {
+        this.seal();
         let module = try this.compiled(name, source);
         return encode(module, bytecodeFormat, version, sourceKey(source));
     }
@@ -186,6 +207,7 @@ pub class Vm {
         all: bool = false,
         seed: ?int = null
     ): Instance throws LoadError {
+        this.seal();
         let module = try decode(bytes, bytecodeFormat, version, null) catch (e: NotOurs) {
             throw LoadError { reason = f"the bytecode does not load: {e.message()}" };
         };
@@ -222,8 +244,12 @@ pub fn vmOf(cacheDir: ?string = null): Vm {
         hostNames = List<string>.new(),
         hostSources = List<string>.new(),
         impls = List<HostCall>.new(),
+        sealed = Atomic<bool>.new(false),
     };
 }
+
+// why a sealed VM takes no module and no implementation
+let sealedReason: string = "the VM loaded a script already: a host registers its modules and implementations before";
 
 // an instance of `module` where the host gave every right its imports ask for, and an implementation
 // of every function of the host's modules it imports (11 Hst)

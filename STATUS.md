@@ -459,8 +459,9 @@ VM's call path, S7k measurement point 3.
   - **S8g1 done** — a seed at `load`/`loadTrusted` fixes the instance's hashes (zero key, seed first); `owner` gone, ownership follows from the API's types (spec 13 rule 9); P50 (`sleep` without a right) opened; 467 tests.
   - **S8g2 done** — `Map<K, V>` with a key of `int`, `char`, `bool` or `string` and a value that crosses goes over the boundary as a copy in its order; the host's map is built with the script's hashes under the instance's seed, a key twice is misuse; format 53; 472 tests.
   - **S8g3 done** — an instance takes one entry of the host's at a time from any thread (an atomic per instance), `inst.resting()` says when it may move, the Vm is sealed by its first load/compile, the cache's part file is unique per thread; 478 tests.
-  - **S8h1 done** — the C ABI's core: `liblyric_script` with 35 exports over numbered handles (VM, instance, values, results), every export a status, a C test (62 checks) in the CI on all four targets; `version` moved to `lyric_script.toolchain`.
-  - Next: **S8h2** — functions of the host in C (`lyrs_vm_implement`), callbacks, handles, compile/loadTrusted.
+  - **S8h1 done** — the C ABI's core: `liblyric_script` with 36 exports over numbered handles (VM, instance, values, results), every export a status, a C test (62 checks) in the CI on all four targets; `version` moved to `lyric_script.toolchain`.
+  - **S8h2 done** — functions of the host's in C (`lyrs_vm_implement` with a function pointer over numbers), fail/throw/invoke/keep through the call's number, callbacks kept and invoked, handles, compile and loadTrusted, the heap limit; 49 exports, the C test at 99 checks on Linux and Windows.
+  - Next: **S8i** — `@ScriptApi` (plan against Lyric 5's macros first).
 
 ## Working mode
 

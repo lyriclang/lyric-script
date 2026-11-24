@@ -4,6 +4,7 @@
  *   lyric5 build --lib
  *   zig cc tests/c/abi.c -I out/debug/<target> out/debug/<target>/liblyric_script.a <libs> */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "lyric_script.h"
 
@@ -88,6 +89,203 @@ static const char *source =
     "    sleep(Duration.ofMillis(5))\n"
     "    return 7\n"
     "}\n";
+
+/* functions of the host's in C (S8h2) */
+
+static const char *ioSource =
+    "struct Bad :: [Error] {\n"
+    "    code: int\n"
+    "    fn message(): string\n"
+    "}\n"
+    "class Box {\n"
+    "    fn size(): int\n"
+    "}\n"
+    "fn twice(n: int): int\n"
+    "fn refuse(): int\n"
+    "fn bad(n: int): int throws Bad\n"
+    "fn sum(xs: int[], f: fn(int) -> int): int\n"
+    "fn hold(f: fn() -> int): void\n"
+    "fn box(): Box\n";
+
+static const char *ioScript =
+    "import host.io { Bad, bad, box, hold, refuse, sum, twice }\n"
+    "pub fn a(): int = twice(21)\n"
+    "pub fn b(): int = refuse()\n"
+    "pub fn c(): string {\n"
+    "    try {\n"
+    "        bad(1)\n"
+    "        return \"none\"\n"
+    "    } catch (e: Bad) {\n"
+    "        return f\"{e.code} {e.message()}\"\n"
+    "    }\n"
+    "}\n"
+    "pub fn d(): int = sum([1, 2, 3], (x: int) => x * x)\n"
+    "fn seven(): int = 7\n"
+    "pub fn e() {\n"
+    "    hold(seven)\n"
+    "}\n"
+    "pub fn f(): int = box().size()\n";
+
+static int64_t keptCallback = 0;
+
+static int64_t intValue(int64_t n) {
+    int64_t v = 0;
+    lyrs_int(n, &v);
+    return v;
+}
+
+static int64_t twice(void *userdata, int64_t call, int64_t *args, int64_t count) {
+    int64_t x = 0;
+    (void)call;
+    (*(int *)userdata)++;
+    if (count != 1 || lyrs_value_int(args[0], &x) != LYR_OK) {
+        return 0;
+    }
+    return intValue(x * 2);
+}
+
+static int64_t refuse(void *userdata, int64_t call, int64_t *args, int64_t count) {
+    (void)userdata, (void)args, (void)count;
+    lyrs_call_fail(call, "the host says no");
+    return 0;
+}
+
+static int64_t bad(void *userdata, int64_t call, int64_t *args, int64_t count) {
+    int64_t code = intValue(7), error = 0;
+    (void)userdata, (void)args, (void)count;
+    lyrs_struct("io.Bad", &code, 1, &error);
+    lyrs_call_throw(call, error);
+    lyrs_release(error);
+    lyrs_release(code);
+    return 0;
+}
+
+static int64_t badMessage(void *userdata, int64_t call, int64_t *args, int64_t count) {
+    int64_t s = 0;
+    (void)userdata, (void)call, (void)args, (void)count;
+    lyrs_str((uint8_t *)"went bad", 8, &s);
+    return s;
+}
+
+/* calls the callback for every element and adds what it answers */
+static int64_t sum(void *userdata, int64_t call, int64_t *args, int64_t count) {
+    int64_t n = 0, total = 0;
+    (void)userdata, (void)count;
+    lyrs_value_length(args[0], &n);
+    for (int64_t k = 0; k < n; k++) {
+        int64_t item = 0, r = 0, v = 0, x = 0;
+        lyrs_value_item(args[0], k, &item);
+        if (lyrs_call_invoke(call, args[1], &item, 1, &r) != LYR_OK || lyrs_result_value(r, &v) != LYR_OK) {
+            lyrs_call_fail(call, "the callback gave nothing");
+            return 0;
+        }
+        lyrs_value_int(v, &x);
+        total += x;
+        lyrs_release(item);
+        lyrs_release(r);
+        lyrs_release(v);
+    }
+    return intValue(total);
+}
+
+static int64_t hold(void *userdata, int64_t call, int64_t *args, int64_t count) {
+    int64_t v = 0;
+    (void)userdata, (void)count;
+    lyrs_call_keep(call, args[0], &keptCallback);
+    lyrs_void(&v);
+    return v;
+}
+
+static int64_t box(void *userdata, int64_t call, int64_t *args, int64_t count) {
+    int64_t h = 0;
+    (void)userdata, (void)call, (void)args, (void)count;
+    lyrs_handle("io.Box", 4, &h);
+    return h;
+}
+
+static int64_t boxSize(void *userdata, int64_t call, int64_t *args, int64_t count) {
+    int64_t id = 0;
+    (void)userdata, (void)call, (void)count;
+    lyrs_value_handle(args[0], &id);
+    return intValue(id * 10);
+}
+
+static int64_t callFor(int64_t inst, const char *name) {
+    lyric_script_abi_Budget none = { -1, -1, -1 };
+    int64_t r = 0;
+    ok(lyrs_instance_call(inst, name, NULL, 0, none, &r), 0, name);
+    return r;
+}
+
+static void host(void) {
+    lyric_script_abi_Budget none = { -1, -1, -1 };
+    int calls = 0;
+    int64_t vm = 0, inst = 0, r = 0, v = 0, n = 0, kind = -1;
+    ok(lyrs_vm_new(NULL, &vm), 0, "a VM for the host");
+    ok(lyrs_vm_host(vm, "io", ioSource), 0, "host.io");
+    ok(lyrs_vm_implement(vm, "io", "twice", twice, &calls), 0, "twice");
+    ok(lyrs_vm_implement(vm, "io", "refuse", refuse, NULL), 0, "refuse");
+    ok(lyrs_vm_implement(vm, "io", "bad", bad, NULL), 0, "bad");
+    ok(lyrs_vm_implement(vm, "io", "Bad.message", badMessage, NULL), 0, "Bad.message");
+    ok(lyrs_vm_implement(vm, "io", "sum", sum, NULL), 0, "sum");
+    ok(lyrs_vm_implement(vm, "io", "hold", hold, NULL), 0, "hold");
+    ok(lyrs_vm_implement(vm, "io", "box", box, NULL), 0, "box");
+    ok(lyrs_vm_implement(vm, "io", "Box.size", boxSize, NULL), 0, "Box.size");
+    check(lyrs_vm_implement(vm, "io", "nothing", twice, NULL) == LYR_ERROR, "a function not declared");
+    check(strstr(taken(), "declares no function 'nothing'") != NULL, "said so");
+
+    /* through bytecode: compiled, copied out, loaded as the host's own */
+    int64_t code = 0, length = 0;
+    ok(lyrs_vm_compile(vm, "io.lyrs", ioScript, &code), 0, "compile");
+    ok(lyrs_bytes(code, NULL, 0, &length), 0, "measure the bytecode");
+    check(length > 0, "bytecode");
+    uint8_t *bytes = (uint8_t *)malloc((size_t)length);
+    lyrs_bytes(code, bytes, length, &length);
+    ok(lyrs_vm_load_trusted(vm, bytes, length, NULL, 0, false, false, 0, &inst), 0, "load the bytecode");
+    free(bytes);
+    lyrs_release(code);
+    ok(lyrs_instance_init(inst, none, &r), 0, "init");
+
+    r = callFor(inst, "a");
+    lyrs_result_value(r, &v);
+    lyrs_value_int(v, &n);
+    check(n == 42 && calls == 1, "twice(21), the userdata counted");
+
+    r = callFor(inst, "b");
+    lyrs_result_kind(r, &kind);
+    check(kind == 2, "a failed function is a panic");
+    check(strstr(message(r), "the host says no") != NULL, "with the host's reason");
+
+    r = callFor(inst, "c");
+    lyrs_result_value(r, &v);
+    check(strcmp(text(v), "7 went bad") == 0, "the host's error caught");
+
+    r = callFor(inst, "d");
+    lyrs_result_value(r, &v);
+    lyrs_value_int(v, &n);
+    check(n == 14, "1 + 4 + 9 through the callback");
+
+    r = callFor(inst, "e");
+    check(keptCallback != 0, "a kept callback");
+    ok(lyrs_instance_invoke(inst, keptCallback, NULL, 0, none, &r), 0, "invoke");
+    lyrs_result_value(r, &v);
+    lyrs_value_int(v, &n);
+    check(n == 7, "the kept callback's value");
+    ok(lyrs_instance_release(inst, keptCallback), 0, "release the callback");
+    check(lyrs_instance_invoke(inst, keptCallback, NULL, 0, none, &r) == LYR_ERROR, "no call after");
+
+    r = callFor(inst, "f");
+    lyrs_result_value(r, &v);
+    lyrs_value_int(v, &n);
+    check(n == 40, "a handle's method");
+
+    /* the VM is sealed by its first load */
+    check(lyrs_vm_host(vm, "late", "fn f(): int\n") == LYR_ERROR, "a module after the load");
+    check(strstr(taken(), "loaded a script already") != NULL, "said so");
+    ok(lyrs_set_heap_limit(0), 0, "no heap limit");
+    lyrs_release(inst);
+    lyrs_release(vm);
+}
 
 int main(void) {
     lyr_init(NULL);
@@ -247,6 +445,7 @@ int main(void) {
     lyrs_release(inst);
     lyrs_release(vm);
 
+    host();
     printf("abi: %d checks, %d failed\n", checks, failed);
     return failed == 0 ? 0 : 1;
 }

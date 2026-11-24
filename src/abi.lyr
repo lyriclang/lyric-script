@@ -3,18 +3,23 @@
 //! calls C — makes a VM, loads scripts into instances and calls them with values, as a host of
 //! Lyric 5's does with `lyric_script.embed`.
 //!
-//! What C holds is a number, `int64_t`, never an address: a VM, an instance, a value or a call's
-//! result, in a table of the process until `lyrs_release` lets it go. 0 is never one. A number
-//! of another kind, released or never given is the host's mistake, a status, not a crash.
+//! What C holds is a number, `int64_t`, never an address: a VM, an instance, a value, a call's
+//! result, compiled bytecode, or the call of a function of the host's (S8h2), in a table of the
+//! process until `lyrs_release` lets it go. 0 is never one. A number of another kind, released or
+//! never given is the host's mistake, a status, not a crash.
+//!
+//! A function of the host's in C (S8h2) is a function pointer with the host's `userdata`; the
+//! numbers it is given — its caller and its arguments — are its call's, gone when it returns, and
+//! the value it answers with is the VM's from then on.
 //! Every export throws: C gets `LYR_OK`, `LYR_ERROR` — the error's type and message from
 //! `lyr_take_error` — or `LYR_PANIC`, and the process goes on. `lyr_init` runs first.
 import std.collections { List, Map };
 import std.ffi { CStr, Ptr };
 import std.sync { Atomic, Mutex };
 import std.time { Duration };
-import lyric_script.embed { Vm, vmOf };
-import lyric_script.vm.interp { Budget as VmBudget, CallResult, Instance, Step };
-import lyric_script.vm.value { MapValue, StructValue, Value };
+import lyric_script.embed { Vm, setHeapLimit, vmOf };
+import lyric_script.vm.interp { Budget as VmBudget, CallResult, Caller, Instance, Step };
+import lyric_script.vm.value { Callback, Handle, HostFailure, MapValue, StructValue, Value };
 
 /// The version of the C ABI (`lyrs_abi_version`): it changes with every incompatible change of an
 /// export.
@@ -45,7 +50,22 @@ enum Held {
     Inst(Instance),
     Val(Value),
     Res(CallResult),
+    Bytes(uint8[]),
+    Call(HostCallState),
 }
+
+/// The call of a function of the host's in C while it runs (S8h2): its caller, and why it failed
+/// or the error it threw, where it says so.
+class HostCallState {
+    caller: Caller,
+    var reason: ?string = null,
+    var error: ?Value = null,
+}
+
+/// A function of the host's as C gives it (S8h2): the host's `userdata`, the number of the call,
+/// the numbers of its arguments and their count; it answers the number of its value, 0 where it
+/// failed.
+pub type HostFn = extern "C" fn(?Ptr<void>, int, ?Ptr<int>, int) -> int;
 
 // the numbers C holds, each what it stands for, and the last number given
 let held: Mutex<Map<int, Held>> = Mutex<Map<int, Held>>.new(Map<int, Held>.new());
@@ -87,6 +107,26 @@ fn valueAt(n: int): Value throws Error {
         .Val(v) => v,
         _ => throw AbiMisuse { reason = f"{n} is no value" },
     };
+}
+
+fn callAt(n: int): HostCallState throws Error {
+    return match (try heldAt(n)) {
+        .Call(s) => s,
+        _ => throw AbiMisuse { reason = f"{n} is no call of a function of the host's" },
+    };
+}
+
+fn callbackAt(n: int): Callback throws Error {
+    return match (try valueAt(n)) {
+        .Callback(cb) => cb,
+        _ => throw AbiMisuse { reason = f"{n} is no callback" },
+    };
+}
+
+// lets the number `n` go; false where it was none
+fn forget(n: int): bool throws Error {
+    let gone = try held.lock { &m => m.remove(n) };
+    return gone != null;
 }
 
 fn resultAt(n: int): CallResult throws Error {
@@ -138,10 +178,10 @@ fn textOf(c: CStr): string throws Error {
     };
 }
 
-// the `count` bytes at `p` as text
-fn bytesText(p: ?Ptr<uint8>, count: int): string throws Error {
+// the `count` bytes at `p`
+fn bytesAt(p: ?Ptr<uint8>, count: int): uint8[] throws Error {
     if (count <= 0) {
-        return "";
+        return [];
     }
     if (let q = p) {
         let bytes = [0u8] * count;
@@ -150,11 +190,34 @@ fn bytesText(p: ?Ptr<uint8>, count: int): string throws Error {
             bytes[k] = byteAt(q, k);
             k += 1;
         }
-        return try string.fromUtf8(bytes[..]) catch (_) {
-            throw AbiMisuse { reason = "text that is no UTF-8" };
-        };
+        return bytes;
     }
     throw AbiMisuse { reason = f"{count} bytes at a null pointer" };
+}
+
+// the `count` bytes at `p` as text
+fn bytesText(p: ?Ptr<uint8>, count: int): string throws Error {
+    let bytes = try bytesAt(p, count);
+    return try string.fromUtf8(bytes[..]) catch (_) {
+        throw AbiMisuse { reason = "text that is no UTF-8" };
+    };
+}
+
+// the `count` rights at `allow`
+fn rightsAt(allow: ?Ptr<CStr>, count: int): string[] throws Error {
+    let rights = List<string>.new();
+    if (count > 0) {
+        if (let p = allow) {
+            var k = 0;
+            while (k < count) {
+                rights.push(try textOf(cstrAt(p, k)));
+                k += 1;
+            }
+        } else {
+            throw AbiMisuse { reason = f"{count} rights at a null pointer" };
+        }
+    }
+    return rights.toArray();
 }
 
 // copies `text` into C's buffer, as much as `capacity` takes; its whole length in bytes
@@ -209,27 +272,167 @@ pub fn vmLoad(
     seeded: bool,
     seed: int
 ): int throws Error {
-    let rights = List<string>.new();
-    if (count > 0) {
-        if (let p = allow) {
-            var k = 0;
-            while (k < count) {
-                rights.push(try textOf(cstrAt(p, k)));
-                k += 1;
-            }
-        } else {
-            throw AbiMisuse { reason = f"{count} rights at a null pointer" };
-        }
-    }
     let machine = try vmAt(vm);
     let inst = try machine.load(
         textOf(name),
         textOf(source),
-        rights.toArray(),
+        rightsAt(allow, count),
         all,
         if (seeded) seed else null
     );
     return try hold(Held.Inst(inst));
+}
+
+/// Gives the function `name` of the module `host.<module>` its implementation in C (S8f2; S8h2):
+/// `run`, called with `userdata`.
+@Export("lyrs_vm_implement")
+pub fn vmImplement(
+    vm: int,
+    module: CStr,
+    name: CStr,
+    run: HostFn,
+    userdata: ?Ptr<void>
+): void throws Error {
+    let machine = try vmAt(vm);
+    try machine.implement(
+        textOf(module),
+        textOf(name),
+        (caller, args) => {
+            return try hostCall(run, userdata, caller, args);
+        }
+    );
+}
+
+// a call of a function of the host's in C: its numbers made, the function called, its numbers
+// gone, its answer read
+fn hostCall(
+    run: HostFn,
+    userdata: ?Ptr<void>,
+    caller: Caller,
+    args: Value[]
+): Value throws HostFailure {
+    let state = HostCallState { caller = caller };
+    let numbers = List<int>.new();
+    var call = 0;
+    try {
+        call = hold(Held.Call(state));
+        for (a in args) {
+            numbers.push(hold(Held.Val(a)));
+        }
+    } catch (e: Error) {
+        throw HostFailure { reason = f"the ABI's table: {e.message()}" };
+    }
+    let given = numbers.toArray();
+    let answer = run(userdata, call, given.asPtr(), given.length());
+    try? forget(call);
+    for (n in given) {
+        try? forget(n);
+    }
+    if (let e = state.error) {
+        throw HostFailure { reason = state.reason ?? "the host's function threw", error = e };
+    }
+    if (answer == 0) {
+        throw HostFailure { reason = state.reason ?? "the host's function failed" };
+    }
+    var v: ?Value = null;
+    try {
+        v = valueAt(answer);
+        forget(answer);
+    } catch (_: Error) { }
+    if (let value = v) {
+        return value;
+    }
+    throw HostFailure { reason = f"the host's function answered {answer}, which is no value" };
+}
+
+/// Says why the function of the host's whose call `call` is fails, before it answers 0.
+@Export("lyrs_call_fail")
+pub fn callFail(call: int, reason: CStr): void throws Error {
+    let s = try callAt(call);
+    s.reason = try textOf(reason);
+}
+
+/// Throws the error `error` — a value of a struct of the host's its function declares it throws
+/// (S8f3b) — from the function whose call `call` is; it answers 0 after.
+@Export("lyrs_call_throw")
+pub fn callThrow(call: int, error: int): void throws Error {
+    let s = try callAt(call);
+    s.error = try valueAt(error);
+}
+
+/// Calls the callback `cb` the function was given, with the `count` values at `args`, to its end
+/// (S8f3c); the number of its result.
+@Export("lyrs_call_invoke")
+pub fn callInvoke(call: int, cb: int, args: ?Ptr<int>, count: int): int throws Error {
+    let s = try callAt(call);
+    let r = try s.caller.invoke(callbackAt(cb), valuesAt(args, count));
+    return try hold(Held.Res(r));
+}
+
+/// Keeps the callback `cb` past the function it was given to: `lyrs_instance_invoke` calls it later.
+/// A new number of the host's for it, since the number of an argument goes with the call.
+@Export("lyrs_call_keep")
+pub fn callKeep(call: int, cb: int): int throws Error {
+    let s = try callAt(call);
+    let kept = try callbackAt(cb);
+    try s.caller.keep(kept);
+    return try hold(Held.Val(Value.Callback(kept)));
+}
+
+/// The bytecode of the script `source` (01 S10), for `lyrs_vm_load_trusted`: a number, its bytes
+/// copied with `lyrs_bytes`.
+@Export("lyrs_vm_compile")
+pub fn vmCompile(vm: int, name: CStr, source: CStr): int throws Error {
+    let machine = try vmAt(vm);
+    return try hold(Held.Bytes(machine.compile(textOf(name), textOf(source))));
+}
+
+/// Copies compiled bytes into `buffer`, at most `capacity`; their whole length — NULL measures.
+@Export("lyrs_bytes")
+pub fn bytes(n: int, buffer: ?Ptr<uint8>, capacity: int): int throws Error {
+    let b = match (try heldAt(n)) {
+        .Bytes(b) => b,
+        _ => throw AbiMisuse { reason = f"{n} is no bytecode" },
+    };
+    if (let out = buffer) {
+        var k = 0;
+        while (k < b.length() && k < capacity) {
+            unsafe {
+                out.offset(k).write(b[k]);
+            }
+            k += 1;
+        }
+    }
+    return b.length();
+}
+
+/// An instance of the `count` bytes of bytecode at `code` the host trusts (01 S10), with rights and
+/// seed as `lyrs_vm_load` takes them.
+@Export("lyrs_vm_load_trusted")
+pub fn vmLoadTrusted(
+    vm: int,
+    code: ?Ptr<uint8>,
+    count: int,
+    allow: ?Ptr<CStr>,
+    rights: int,
+    all: bool,
+    seeded: bool,
+    seed: int
+): int throws Error {
+    let machine = try vmAt(vm);
+    let inst = try machine.loadTrusted(
+        bytesAt(code, count),
+        rightsAt(allow, rights),
+        all,
+        if (seeded) seed else null
+    );
+    return try hold(Held.Inst(inst));
+}
+
+/// Sets the process's heap limit in bytes (01 S6), 0 for none.
+@Export("lyrs_set_heap_limit")
+pub fn heapLimit(bytes: int): void throws Error {
+    setHeapLimit(bytes);
 }
 
 /// Runs the instance's top level within `budget`; the number of its result.
@@ -293,6 +496,28 @@ pub fn instanceResume(inst: int, budget: Budget): int throws Error {
 @Export("lyrs_instance_abort")
 pub fn instanceAbort(inst: int): int throws Error {
     return try hold(Held.Res((instanceAt(inst)).abort()));
+}
+
+/// Calls the callback `cb` a function of the host's kept (S8f3c), with the `count` values at `args`,
+/// within `budget`; the number of its result.
+@Export("lyrs_instance_invoke")
+pub fn instanceInvoke(
+    inst: int,
+    cb: int,
+    args: ?Ptr<int>,
+    count: int,
+    budget: Budget
+): int throws Error {
+    let i = try instanceAt(inst);
+    let r = try i.invoke(callbackAt(cb), valuesAt(args, count), budgetOf(budget));
+    return try hold(Held.Res(r));
+}
+
+/// Lets go of the callback `cb` a function of the host's kept: it takes no call after.
+@Export("lyrs_instance_release")
+pub fn instanceRelease(inst: int, cb: int): void throws Error {
+    let i = try instanceAt(inst);
+    try i.release(callbackAt(cb));
 }
 
 /// Whether the instance may go to another thread (11 Thr).
@@ -382,6 +607,21 @@ pub fn valueStruct(type: CStr, fields: ?Ptr<int>, count: int): int throws Error 
     return try hold(Held.Val(Value.Struct(s)));
 }
 
+/// A handle of the host's class `type` (S8f3a) with the host's number `id` for it.
+@Export("lyrs_handle")
+pub fn valueHandle(type: CStr, id: int): int throws Error {
+    return try hold(Held.Val(Value.Handle(Handle { type = textOf(type), id = id })));
+}
+
+/// The host's number of a handle.
+@Export("lyrs_value_handle")
+pub fn valueAsHandle(v: int): int throws Error {
+    return match (try valueAt(v)) {
+        .Handle(h) => h.id,
+        _ => throw AbiMisuse { reason = f"{v} is no handle" },
+    };
+}
+
 /// What the value is: 0 void, 1 int, 2 float, 3 bool, 4 char, 5 string, 6 list, 7 map, 8 struct,
 /// 9 handle, 10 callback.
 @Export("lyrs_value_kind")
@@ -433,14 +673,15 @@ pub fn valueAsChar(v: int): char throws Error {
     };
 }
 
-/// Copies a string's UTF-8 bytes, or a struct's type, into `buffer`, at most `capacity`; their
-/// whole length — NULL measures.
+/// Copies a string's UTF-8 bytes, or the type of a struct or a handle, into `buffer`, at most
+/// `capacity`; their whole length — NULL measures.
 @Export("lyrs_value_text")
 pub fn valueText(v: int, buffer: ?Ptr<uint8>, capacity: int): int throws Error {
     return match (try valueAt(v)) {
         .Str(s) => copyOut(s, buffer, capacity),
         .Struct(s) => copyOut(s.type, buffer, capacity),
-        _ => throw AbiMisuse { reason = f"{v} is no string and no struct" },
+        .Handle(h) => copyOut(h.type, buffer, capacity),
+        _ => throw AbiMisuse { reason = f"{v} is no string, struct or handle" },
     };
 }
 

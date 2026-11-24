@@ -3641,7 +3641,7 @@ Zwei Teile:
 
 **S8h1, Ergebnis (2026-11-24).** Gebaut wie geschnitten.
 - **Gebaut:**
-  - `src/abi.lyr` mit 35 Exporten (`lyrs_vm_*`, `lyrs_instance_*`, Werte, Ergebnisse, `lyrs_release`).
+  - `src/abi.lyr` mit 35 Exporten, 36 mit `lyrs_abi_version` (`lyrs_vm_*`, `lyrs_instance_*`, Werte, Ergebnisse, `lyrs_release`).
     Die Nummern liegen in einer `Map<int, Held>` unter einem `Mutex`, die Zählung in einem `Atomic`.
   - Das Budget heißt im Header `lyric_script_abi_Budget`: Lyric 5 setzt den Modulpfad vor den Namen.
   - `version` zog in ein Blattmodul `lyric_script.toolchain`. `lib.lyr` importiert `abi`, und `abi`
@@ -3657,6 +3657,28 @@ Zwei Teile:
     behält den Eintrag (2 Prüfungen), die Werte ab dem zweiten gelesen (24), die Art einer Map falsch (1).
 - **Offen, klein:** Der Bibliotheksbau warnt viermal über Funktionen, die nur die Kommandozeile ruft
   (`cache.load`, `store`, `clean`, `rights.allowed`). Der Binärbau bleibt ohne Warnung.
+
+**S8h2, Ergebnis (2026-11-24).** Gebaut wie geschnitten, mit zwei Abweichungen.
+- **Gebaut:**
+  - `lyrs_vm_implement(vm, module, name, run, userdata)`. `run` ist
+    `int64_t (*)(void *userdata, int64_t call, int64_t *args, int64_t count)` und antwortet die Nummer
+    seines Werts oder 0.
+  - Über die Nummer des Aufrufs: `lyrs_call_fail` (Grund), `lyrs_call_throw` (ein Fehler, den die
+    Deklaration nennt), `lyrs_call_invoke` und `lyrs_call_keep`.
+  - `lyrs_instance_invoke` und `lyrs_instance_release` für behaltene Callbacks; `lyrs_handle` und
+    `lyrs_value_handle` für Griffe; `lyrs_vm_compile`, `lyrs_bytes` und `lyrs_vm_load_trusted`;
+    `lyrs_set_heap_limit`. 49 Exporte.
+- **Abweichungen vom Zuschnitt:**
+  - Der Funktionszeiger nimmt und gibt Nummern, nicht `void *`: die Entscheidung für Nummern aus S8h1
+    gilt auch hier.
+  - `lyrs_call_keep` gibt eine neue Nummer des Hosts für den Callback. Die Nummern der Argumente gehen
+    mit dem Aufruf; ein behaltener Callback brauchte sonst eine Nummer, die verfällt.
+- **Prüfung:**
+  - Der C-Test wächst um ein Host-Modul mit Fehler-Struct, Griffklasse, Callback und Behalten, geladen
+    über Bytecode: 99 Prüfungen, unter Linux und quer für Windows je alle grün.
+  - Drei Mutanten. Getötet: der Status 0 ungeprüft (der Grund des Hosts fehlt), der Fehler nicht gesetzt.
+    Überlebt, wie vorhergesagt: die Nummern der Argumente nicht vergessen. Das ist ein Leck, das kein
+    Test sieht, weil die Tabelle nach außen keine Größe hat.
 
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 

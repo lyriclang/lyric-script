@@ -2,6 +2,9 @@
 
 > **Messpunkt 3** (S7k, 2026-11-09), die Bench-Suite aus Script-Quelltext: [unten](#messpunkt-3-die-bench-suite-aus-script-quelltext).
 > Der Ratchet ≥ 5× **hält** (5,18× und 5,13×).
+>
+> **Messpunkt 4** (S8, 2026-11-24), eingebettet: [unten](#messpunkt-4-eingebettet). Beide Ziele
+> **halten** — nachdem die erste Messung zeigte, dass jede Instanz ihren eigenen Code trug.
 
 Status: **gemessen und entschieden** (2026-10-28). Die Zahlen hier; die Entscheidung in
 design/v1/spec/11 (Offen) und 14 (S1): V3 bleibt A', kein Neuzuschnitt (verfehlt um weniger als
@@ -351,3 +354,81 @@ python3 bench/suite.py --script <release lyric-script> \
 Dateien: `src/*.lyrs`, `v46/*.lyr`, `oracle.py`, `prepare_suite.sh`, `suite.py`. In `results/`:
 `suite1`–`suite4` (`.json` mit allen Einzelzeiten, `.txt` mit den Tabellen) und
 `suite-machine.txt` (Maschine und Binaries von Lauf 4).
+
+# Messpunkt 4: eingebettet
+
+Ziele aus 11 Perf: eine VM und eine kleine Instanz eingebettet **≤ 5 ms**, eine leere Instanz
+**≤ 100 KiB**. Gemessen mit `bench/embed/measure.c` über die C-ABI, WSL2, dieselbe Maschine wie
+Messpunkt 3, sonst lief nichts (Last 1,5–1,7).
+
+## Erwartung vorab
+
+Notiert vor der ersten Messung:
+- die erste Instanz aus Quelltext in einem frischen Prozess 15–30 ms, also verfehlt, wenn das
+  Übersetzen zum Ziel zählt;
+- aus Bytecode 0,2–1 ms;
+- eine leere Instanz 30–80 KiB.
+
+## Messung 1: verfehlt um das Achtfache
+
+Release ließ sich nicht messen: das Laden aus Quelltext endet im Export mit einem Stack-Überlauf
+(P48). Also Debug, drei Läufe:
+
+| | Debug |
+|---|---|
+| erste Instanz aus Quelltext, frischer Prozess | 329–340 ms |
+| weitere Instanz aus Quelltext, VM warm | 318–320 ms |
+| weitere Instanz aus Bytecode | 3,3–3,5 ms |
+| leere Instanz, Zuwachs des Resident Set | **801–807 KiB** |
+
+Die lebenden Bytes nach einer vollen Sammlung zeigen die Ursache: 357 KiB je Instanz schon **vor**
+`init`. Jede Instanz übersetzte oder dekodierte ihr eigenes Modul, das Prelude darin. 01 S9 und
+11 Thr sagen dagegen: kompilierter Code ist unveränderlich und geteilt.
+
+## Die Änderung
+
+Die `Vm` hält jedes Modul, das sie übersetzt oder dekodiert, unter seinem Schlüssel: Quelltext
+unter dem Schlüssel des Caches, Bytecode unter dem Hash der Quelle aus seinem Kopf und seiner
+Länge. Ein Treffer bei Bytecode zählt nur bei gleichen Bytes. Die Typen werden einmal nummeriert,
+bevor die erste Instanz sie liest. Das Modul wird zur Laufzeit nicht beschrieben; das ist geprüft,
+die einzige Schreibstelle war die Nummerierung.
+
+Ein Zwischenschritt mit SHA-256 über den ganzen Bytecode als Schlüssel kostete in Debug 10,5 ms
+statt 3,3 ms. Der Hash war teurer als das Dekodieren selbst.
+
+## Messung 2: gehalten
+
+| | Debug | Release |
+|---|---|---|
+| erste Instanz aus Bytecode, frischer Prozess, Datei lesen eingeschlossen | 6,3–7,9 ms | **1,54–1,58 ms** |
+| weitere Instanz aus Quelltext, VM warm | 1,25–1,6 ms | — |
+| weitere Instanz aus Bytecode | 2,8–2,9 ms | — |
+| leere Instanz, lebend nach `init` | **17,7 KiB** | — |
+| leere Instanz, Zuwachs des Resident Set | 17,4 KiB | — |
+| erste Instanz aus Quelltext, frischer Prozess | 267–278 ms | Stack-Überlauf |
+
+- **≤ 5 ms hält** für das, was „eingebettet" heißt: ein Host, der seine Skripte als Bytecode
+  mitbringt oder dessen VM schon läuft.
+- **≤ 100 KiB hält** mit dem Faktor 5,6.
+- **Nicht gehalten:** die erste Instanz aus Quelltext in einem frischen Prozess. Das ist das
+  Übersetzen: Prelude, Prüfer und Codegen in Debug. In Release lässt es sich nicht messen, solange
+  der Compiler in einem Export am Stack scheitert (P48, Uhr S15). Dass der Compiler die
+  Strukturprüfung jeder Ausgabe macht, die 01 S10 nur für Tests und Debug vorsieht, ist ein Teil
+  davon (P51).
+
+## Grenzen
+
+- Der Speicher ist in Debug gemessen. Release legt dieselben Objekte an, die Zahl ist eine obere
+  Grenze.
+- Die leere Instanz ist `pub fn f() { }`. Ihr Speicher wächst mit den Globals ihres Moduls, und das
+  Prelude hat welche.
+- Eine Messung, kein Pinnen.
+
+## Reproduzieren
+
+```
+lyric5 build --lib --profile release   # und --profile debug
+zig cc -O2 bench/embed/measure.c -I out/<profile>/<target> out/<profile>/<target>/liblyric_script.a     -lpthread -lm -lunwind -o measure
+./measure-debug                          # schreibt small.lyrsc
+./measure-release --bytecode small.lyrsc
+```

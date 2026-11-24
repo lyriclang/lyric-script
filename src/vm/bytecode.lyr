@@ -258,6 +258,26 @@ fn readBoundary(r: Reader): Boundary throws NotOurs {
     };
 }
 
+/// The source's hash the head of `bytes` names, where they are bytecode of this format and version;
+/// `null` where they are not. It reads the head alone (S8, Messpunkt 4): a VM keeps the module of
+/// bytecode it decoded by it.
+pub fn headKey(bytes: uint8[], format: int, version: string): ?string {
+    let r = Reader { bytes = bytes };
+    try {
+        for (b in magic) {
+            if (r.byte() != b) {
+                return null;
+            }
+        }
+        if (r.word() != format || r.text() != version) {
+            return null;
+        }
+        return r.text();
+    } catch (_: NotOurs) {
+        return null;
+    }
+}
+
 /// The module in `bytes`, when their head names this format, version and source; `sourceHash`
 /// `null` takes the bytecode of any source, as `loadTrusted` does (01 S10; S8a2).
 fn decode(

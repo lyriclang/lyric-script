@@ -184,11 +184,11 @@ jobs:
           py=python3; command -v python3 > /dev/null || py=python
           "$py" lyric-spec/tools/run_conformance.py --lyric-script "$bin" --toolchain-version 1.0.0
 
-      # The C ABI (S8h; spec 13 rule 11): the library and its header, and a host of C's that
-      # links it and runs against it. The static archive everywhere but Windows, where archiving
-      # every object on one command line is too long (lyric#746): there the DLL, linked through a
-      # response file, with its import library.
-      - name: Build the C ABI library and its test
+      # The C ABI (S8h; spec 13 rule 11): the library and its header, a test of C's that links it
+      # and runs against it, and the example host of C's. The static archive everywhere but
+      # Windows, where archiving every object on one command line is too long (lyric#746): there
+      # the DLL, linked through a response file, with its import library.
+      - name: Build the C ABI library, its test and the example host
         shell: bash
         run: |
           lyric5=lyric5/lyric5; [ "${{ runner.os }}" = "Windows" ] && lyric5=lyric5/lyric5.exe
@@ -207,6 +207,11 @@ jobs:
           zig cc tests/c/abi.c -I "$dir" "$lib" $libs -o "$exe"
           code=0; "./$exe" || code=$?
           [ "$code" -eq 0 ]
+          # the example host of C's (the close of S8): a mod under a budget, its output pinned
+          host="host-$exe"
+          zig cc examples/hosts/c/host.c -I "$dir" "$lib" $libs -o "$host"
+          "./$host" > host-out.txt
+          diff --strip-trailing-cr examples/hosts/c/expected.txt host-out.txt
 
       # The example host of Lyric 5's (S8i): `@ScriptApi` makes its module of functions, and a mod
       # runs under a budget. Its output is pinned in expected.txt. `lyric5 test` expands no macro

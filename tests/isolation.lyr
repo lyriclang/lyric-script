@@ -95,3 +95,53 @@ fn aValueCrossesAsACopy(): void {
     assertEq(result(b, "bump", [given]), Value.List([Value.Int(99), Value.Int(2), Value.Int(3)]));
     assertEq(result(a, "get"), Value.List([Value.Int(1), Value.Int(2), Value.Int(3)]));
 }
+
+let counterSource: string = "var n = 0\npub fn bump(): int {\n    n += 1\n    return n\n}\n";
+
+@Test
+fn instancesShareTheCodeNotTheGlobals(): void {
+    // the VM keeps the module of a source and of bytecode (01 S9; Messpunkt 4): its instances share
+    // it, each with globals of its own
+    let vm = vmOf();
+    let a = ready(try! vm.load("c.lyrs", counterSource));
+    let b = ready(try! vm.load("c.lyrs", counterSource));
+    assertEq(result(a, "bump"), Value.Int(1));
+    assertEq(result(a, "bump"), Value.Int(2));
+    assertEq(result(b, "bump"), Value.Int(1));
+    let code = try! vm.compile("c.lyrs", counterSource);
+    let c = ready(try! vm.loadTrusted(code));
+    let d = ready(try! vm.loadTrusted(code));
+    assertEq(result(c, "bump"), Value.Int(1));
+    assertEq(result(c, "bump"), Value.Int(2));
+    assertEq(result(d, "bump"), Value.Int(1));
+    assertEq(result(a, "bump"), Value.Int(3));
+}
+
+@Test
+fn otherBytesOfTheSameHeadAreDecodedAnew(): void {
+    // bytes with the same head and length but another body are not the kept module's: one letter
+    // of a string constant changed
+    let vm = vmOf();
+    let one = try! vm.compile("w.lyrs", "pub fn word(): string = \"qqqqzz\"\n");
+    assertEq(result(ready(try! vm.loadTrusted(one)), "word"), Value.Str("qqqqzz"));
+    let other = [0u8] * one.length();
+    var k = 0;
+    while (k < one.length()) {
+        other[k] = one[k];
+        k += 1;
+    }
+    k = 0;
+    var changed = false;
+    while (k + 5 < other.length() && !changed) {
+        if (other[k] == 113u8
+            && other[k + 1] == 113u8
+            && other[k + 4] == 122u8
+            && other[k + 5] == 122u8) {
+            other[k + 5] = 121u8;
+            changed = true;
+        }
+        k += 1;
+    }
+    assertTrue(changed, "the constant in the bytecode");
+    assertEq(result(ready(try! vm.loadTrusted(other)), "word"), Value.Str("qqqqzy"));
+}

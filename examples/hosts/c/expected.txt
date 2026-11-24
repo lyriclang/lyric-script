@@ -1,0 +1,10 @@
+mod: tick 1
+onTick(1) = 10
+mod: tick 2
+onTick(2) = 30
+mod: tick 3
+onTick(3) = 60
+spin() = halted by its budget
+abort = aborted
+the cheat: the script asks for rights it was not given: cheats
+score = 60

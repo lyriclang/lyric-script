@@ -3,7 +3,8 @@
 //! cache directory — or from bytecode the host trusts, and gives an `Instance` to call. What the
 //! source gets wrong comes back as values, never printed: the host decides who sees it.
 import std.collections { List };
-import std.sync { Atomic };
+import std.collections { Map };
+import std.sync { Atomic, Mutex };
 import lyric_script.toolchain { version };
 import lyric_script.cache { loadIn, sourceKey, storeIn };
 import lyric_script.compiler.checker { ProgramUnit, checkModule };
@@ -13,8 +14,9 @@ import lyric_script.compiler.parser { parse };
 import lyric_script.loader { LoadOptions, Loaded, loadProgram };
 import lyric_script.rights { classesOf, missing };
 import lyric_script.vm { bytecodeFormat };
-import lyric_script.vm.bytecode { NotOurs, decode, encode };
+import lyric_script.vm.bytecode { NotOurs, decode, encode, headKey };
 import lyric_script.vm.interp { Caller, HostCall, Instance, fileScopes, instanceOf };
+import lyric_script.vm.descriptor { numberTypes };
 import lyric_script.vm.module { Boundary, CheckError, HostDecl, Module, RightUse, check };
 import lyric_script.vm.value { HostFailure, Value };
 
@@ -73,6 +75,9 @@ pub class Vm {
     cacheDir: ?string,
     // whether a load sealed it
     sealed: Atomic<bool>,
+    // the modules it compiled or decoded, by their key: its instances share them, since code does
+    // not change (11 Thr; Messpunkt 4) — under a lock, for threads load at once (S8g3)
+    modules: Mutex<ModuleTable>,
     // the modules the host registered, each name after `host.` beside its source, and the
     // implementations it gave (S8f2)
     hostNames: List<string>,
@@ -208,10 +213,18 @@ pub class Vm {
         seed: ?int = null
     ): Instance throws LoadError {
         this.seal();
-        let module = try decode(bytes, bytecodeFormat, version, null) catch (e: NotOurs) {
-            throw LoadError { reason = f"the bytecode does not load: {e.message()}" };
-        };
-        return try granted(module, module.name, allow, all, this.impls.toArray(), seed);
+        // kept by the source's hash in the head and the length, and taken only for the same bytes
+        let key = f"bytes:{headKey(bytes, bytecodeFormat, version) ?? ""}:{bytes.length()}";
+        var module = this.knownBytes(key, bytes);
+        if (module == null) {
+            let decoded = try decode(bytes, bytecodeFormat, version, null) catch (e: NotOurs) {
+                throw LoadError { reason = f"the bytecode does not load: {e.message()}" };
+            };
+            this.keepBytes(key, decoded, bytes);
+            module = decoded;
+        }
+        let m = module!;
+        return try granted(m, m.name, allow, all, this.impls.toArray(), seed);
     }
 
     // the module of a source: from the cache where it is there, else compiled — and kept where it
@@ -219,9 +232,15 @@ pub class Vm {
     fn compiled(name: string, source: string): Module throws LoadError {
         let l = loadProgram(name, source, LoadOptions { hosts = this.hostPairs() });
         let key = l.cacheText();
+        if (l.errors.length() == 0) {
+            if (let shared = this.known(key)) {
+                return shared;
+            }
+        }
         let root = this.cacheDir;
         if (root != null && l.errors.length() == 0) {
             if (let cached = loadIn(root, key)) {
+                this.keep(key, cached);
                 return cached;
             }
         }
@@ -230,11 +249,59 @@ pub class Vm {
         if (module == null) {
             throw LoadError { findings = findingsOf(l, c), reason = faultsOf(name, c.faults) };
         }
-        if (root != null && c.warnings == 0) {
-            storeIn(root, key, module);
+        if (c.warnings == 0) {
+            this.keep(key, module);
+            if (root != null) {
+                storeIn(root, key, module);
+            }
         }
         return module;
     }
+
+    // the module kept under `key`, where there is one
+    fn known(key: string): ?Module {
+        try {
+            return this.modules.lock { &t => t.table[key] };
+        } catch (_: Error) {
+            return null;
+        }
+    }
+
+    // the module of the bytecode `bytes` kept under `key`, where the same bytes were decoded
+    fn knownBytes(key: string, bytes: uint8[]): ?Module {
+        try {
+            return this.modules.lock { &t =>
+                let same = (t.bytes[key] ?? []) == bytes;
+                if (same) t.table[key] else null
+            };
+        } catch (_: Error) {
+            return null;
+        }
+    }
+
+    // keeps the module of the bytecode `bytes` under `key`, as `keep` does
+    fn keepBytes(key: string, module: Module, bytes: uint8[]): void {
+        numberTypes(module);
+        try? this.modules.lock { &t =>
+            t.table[key] = module;
+            t.bytes[key] = bytes;
+        };
+    }
+
+    // keeps `module` under `key` for the instances to come, its types numbered first: an instance
+    // reads the numbers and writes none (Interning.of)
+    fn keep(key: string, module: Module): void {
+        numberTypes(module);
+        try? this.modules.lock { &t => t.table[key] = module; };
+    }
+}
+
+// the modules a VM keeps, by their key (a class around the map: `Mutex<Map<…>>` as a field of a class
+// stops Lyric 5's lowering, lyric#747)
+class ModuleTable {
+    table: Map<string, Module>,
+    // the bytes of the bytecode each module of `loadTrusted` was decoded from
+    bytes: Map<string, uint8[]>,
 }
 
 /// A host's VM; `cacheDir` where compiled scripts are kept, `null` for none.
@@ -245,6 +312,9 @@ pub fn vmOf(cacheDir: ?string = null): Vm {
         hostSources = List<string>.new(),
         impls = List<HostCall>.new(),
         sealed = Atomic<bool>.new(false),
+        modules = Mutex<ModuleTable>.new(
+            ModuleTable { table = Map<string, Module>.new(), bytes = Map<string, uint8[]>.new() }
+        ),
     };
 }
 

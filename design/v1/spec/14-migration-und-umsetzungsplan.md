@@ -3734,6 +3734,40 @@ Ein Teil, **S8i**:
   einer Kommandozeile (lyric#746). Windows baut jetzt die DLL, gelinkt über eine Response-Datei, und
   der C-Test linkt ihre Importbibliothek; quer gebaut geprüft.
 
+**S8, Abschluss (2026-11-24).**
+- **Beispiel-Hosts:**
+  - `examples/hosts/lyric5` (S8i) mit `@ScriptApi`.
+  - `examples/hosts/c/host.c` über die C-ABI: dasselbe Spiel, ein Mod unter Budget, ein Recht, das
+    fehlt.
+  - Die CI führt beide auf allen vier Zielen aus und vergleicht mit `expected.txt`.
+- **Messpunkt 4** (`bench/README.md`, Erwartung vorab):
+  - Die erste Messung verfehlte den Speicher um das Achtfache: 807 KiB je leerer Instanz, 357 KiB
+    davon lebend schon vor `init`. Jede Instanz trug ihr eigenes Modul.
+  - Nach der Änderung hält eine leere Instanz 17,7 KiB lebend. Die erste Instanz aus Bytecode in einem
+    frischen Prozess braucht in Release 1,55 ms.
+  - Beide Ziele halten. Nicht gehalten: die erste Instanz aus Quelltext, 270 ms in Debug; Release
+    scheitert dort am Stack (P48).
+  - Die Regel aus 11 Perf, „verfehlt um mehr als 2× → neu schneiden“, griff nicht: die Ursache war eine
+    Abweichung vom Entwurf (01 S9, 11 Thr), kein Ziel, das der Entwurf nicht hält.
+- **Geteilter Code:**
+  - Die `Vm` hält jedes Modul, das sie übersetzt oder dekodiert, unter seinem Schlüssel; ihre
+    Instanzen teilen es.
+  - Bytecode wird unter dem Hash der Quelle aus seinem Kopf und seiner Länge gehalten, ein Treffer nur
+    bei gleichen Bytes. Verworfen: SHA-256 über alle Bytes, in Debug dreimal so teuer wie das
+    Dekodieren.
+  - Die Typen werden einmal nummeriert, bevor eine Instanz sie liest.
+  - Prüfung: zwei Unit-Tests (geteilter Code, eigene Globals; ein geändertes Byte im Rumpf wird neu
+    dekodiert), zwei Mutanten.
+- **P50 entschieden**, das engere Versprechen: deterministisch sind die Werte und, mit Seed, die
+  Hashes; das Verschränken um ein `sleep` und eine Deadline folgen der Wanduhr (Spec 13 Regel 9, 01 S8).
+- **Bereichszeilen gegen den Code** (01 S1–S11; 11 Thr, Emb, Hst, Perf):
+  - Gebaut: S1–S6, S8, S11, Thr, Emb a und b, Hst, Perf.
+  - S9 war es erst mit dem geteilten Code.
+  - Offen: S10s „Strukturprüfung nur in Tests und Debug“ — der Compiler prüft jede Ausgabe (P51).
+  - S7a–d (Hot-Reload) gehören zu S9.
+- **Lyric 5:** lyric#745 (`lyric5 test` expandiert keine Makros), lyric#746 (das Archiv der Bibliothek
+  unter Windows), lyric#747 (`Mutex<Map<…>>` als Feld).
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

@@ -5,7 +5,7 @@
 
 /// Where a node stands: byte offsets into the source, and the line and column (from 1) of its
 /// start.
-struct Span :: [Equatable, Debug] {
+struct Span :: Equatable & Debug {
     start: int,
     end: int,
     line: int,
@@ -21,13 +21,13 @@ extend Span {
     }
 }
 
-enum UnaryOp :: [Equatable, Debug] {
+enum UnaryOp :: Equatable & Debug {
     Neg,
     Not,
     BitNot,
 }
 
-enum BinaryOp :: [Equatable, Debug] {
+enum BinaryOp :: Equatable & Debug {
     Add,
     Sub,
     Mul,

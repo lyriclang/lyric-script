@@ -40,7 +40,7 @@ fn cacheRoot(): ?string {
 /// A source's key: the hash of the source with the toolchain's version and bytecode format, as
 /// hex (11 Fmt) — another source, another toolchain, another key.
 fn sourceKey(source: string): string {
-    return hexOf(sha256(f"{source}\u{0}{version}\u{0}{bytecodeFormat}".toBytes()[..]));
+    return hexOf(sha256(f"{source}\u{0}{version}\u{0}{bytecodeFormat}".bytes()[..]));
 }
 
 // a digest's bytes as hexadecimal digits

@@ -5,7 +5,7 @@ import std.collections { List, Map, Set };
 import lyric_script.compiler.ast { BinaryOp, TypeExpr, UnaryOp };
 
 /// A type as the checker knows it.
-enum Ty :: [Equatable, Debug] {
+enum Ty :: Equatable & Debug {
     Int,
     Float,
     Bool,
@@ -53,7 +53,7 @@ struct FixedTy :: [Debug] {
 }
 
 /// A function type's parameters and result.
-pub struct FnTy :: [Debug, Equatable] {
+pub struct FnTy :: Debug & Equatable {
     params: Ty[],
     result: Box<Ty>,
 
@@ -81,7 +81,7 @@ struct CaptureInfo :: [Debug] {
 
 /// A tuple's elements, and the labels its written type gave them (`""` where none). A label is a
 /// name for the reader and no part of the type (Lyric 5 §6 rule 3): equality skips it.
-pub struct TupleTy :: [Debug, Equatable] {
+pub struct TupleTy :: Debug & Equatable {
     elements: Ty[],
     labels: string[],
 
@@ -123,7 +123,7 @@ fn elemOffset(tt: TupleTy, k: int, types: TypeInfo[]): (int, int) {
     return (s, r);
 }
 
-enum TypeKind :: [Equatable, Debug] {
+enum TypeKind :: Equatable & Debug {
     Struct,
     Class,
     Enum,
@@ -282,7 +282,7 @@ struct GlobalInfo :: [Debug] {
 }
 
 /// What the VM does natively for the core: the prelude's output and the operations on strings.
-enum Native :: [Equatable, Debug] {
+enum Native :: Equatable & Debug {
     Print,
     Println,
     Concat,
@@ -436,7 +436,7 @@ enum Place :: [Debug] {
 }
 
 /// What a list operation does (S7b1; design/v1, 03 S).
-enum ListOp :: [Equatable, Debug] {
+enum ListOp :: Equatable & Debug {
     /// `[a, b, c]`: the elements, in order.
     Lit,
     /// `xs.push(v)`: the list, the value.

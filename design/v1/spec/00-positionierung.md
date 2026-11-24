@@ -20,7 +20,7 @@ Releases gibt es nicht mehr; 4.6 ist Ausgangsmaterial, nicht Kompatibilitätsver
 | Z3 | Verhältnis zu Lyric 5 | **Sprachfamilie: Lyric 5 ist die Referenz.** Script weicht nur ab, wo die Abweichung dem Skript-Charakter dient; jede Abweichung steht mit Begründung in einer **Abweichungstabelle** (je Bereich, gesammelt im Plan). „Als Lyric erkennbar, mit den Abkürzungen einer Skriptsprache.“ |
 | Z4 | Abstand zu 4.6 | **Bytecode-VM bleibt das Ausführungsmodell** (kein Baum-Interpreter, kein nativer Compile); **Oberfläche und VM entstehen neu** (aus Z2, Z3). Das **Format darf brechen**: Erato 2 / Lyricpp hält eigene Werkzeugkopien und ist kein Abnehmer laufender Änderungen. |
 | Z5 | Fremdgrenze | **Native Module statt `extern`**: ein Lyric-5-Paket wird als Script-Modul gebaut (Bibliothek + erzeugte Schnittstellenbeschreibung aus `@Export`/`lyric api`), das Skript schreibt nur `import paket.modul`. **Kein rohes FFI in Script** (kein `extern "C"`, kein `extern "dotnet"`); C-Bibliotheken über eine Lyric-5-Hülle. Native Module tragen ein **eigenes Capability-Bit**, im Profil *embedded* standardmäßig gesperrt. Die Gegenrichtung (Lyric 5 bettet Script ein) geht über eine vom Host registrierte API (Lyric 5, 11 H9a). |
-| — | Name, Endung, Version | Binary `lyric-script`, Endung `.lyrs`, eigener Versionszähler ab 1.0.0 (bestätigt aus Lyric 5, 12 R6). |
+| — | Name, Endung, Version | Binary `lyric-script`, Endung `.lyrs`, eigener Versionszähler ab 1.0.0 (bestätigt aus Lyric 5, 12 R6). Kurzname `lys` als zweiter Name desselben Binarys (14, „Kurzname `lys`“, 2026-11-24). |
 
 ## Begründung
 

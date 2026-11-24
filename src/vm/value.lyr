@@ -15,7 +15,7 @@ import lyric_script.vm.heap {
 import lyric_script.vm.module { Boundary, HostStruct, MapBoundary, Module };
 
 /// A value at a call's boundary.
-pub enum Value :: [Equatable, Debug] {
+pub enum Value :: Equatable & Debug {
     Void,
     Int(int),
     Float(float),
@@ -116,28 +116,28 @@ fn mapRead<K :: [Hashable], V>(
 }
 
 /// A map at the boundary (S8g2): its keys and the value of each, in the map's order.
-pub struct MapValue :: [Equatable, Debug] {
+pub struct MapValue :: Equatable & Debug {
     pub keys: Value[],
     pub values: Value[],
 }
 
 /// A function value of the script at the boundary (S8f3c): its instance's number and its own in that
 /// instance's table — no reference into the instance (01 S9).
-pub struct Callback :: [Equatable, Debug] {
+pub struct Callback :: Equatable & Debug {
     pub instance: int,
     pub id: int,
 }
 
 /// A struct of the host at the boundary (S8f3b): its name, `game.Pos`, and its fields' values in the
 /// order the struct declares them — a copy either way.
-pub struct StructValue :: [Equatable, Debug] {
+pub struct StructValue :: Equatable & Debug {
     pub type: string,
     pub fields: Value[],
 }
 
 /// A handle of the host at the boundary (S8f3a): its class, `game.Sprite`, and the number the host
 /// gave it. The host keeps the table of what its numbers stand for; a script never makes one.
-pub struct Handle :: [Equatable, Debug] {
+pub struct Handle :: Equatable & Debug {
     pub type: string,
     pub id: int,
 }

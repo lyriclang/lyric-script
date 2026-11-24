@@ -130,7 +130,7 @@ pub struct HostDecl :: [Debug] {
 /// A type at a call's boundary between host and script (S8a3): the scalars, `string`, a handle
 /// of the host by its module and class, `game.Sprite` (S8f3a), and lists of them; `Other` for any
 /// other type, which a host does not call with.
-pub enum Boundary :: [Equatable, Debug] {
+pub enum Boundary :: Equatable & Debug {
     Void,
     Int,
     Float,
@@ -149,7 +149,7 @@ pub enum Boundary :: [Equatable, Debug] {
 
 /// A map at the boundary (S8g2): its keys' type — `int`, `char`, `bool` or `string` — and its
 /// values'.
-pub struct MapBoundary :: [Equatable, Debug] {
+pub struct MapBoundary :: Equatable & Debug {
     pub key: Box<Boundary>,
     pub value: Box<Boundary>,
 }
@@ -162,7 +162,7 @@ pub struct MapDesc :: [Debug] {
 }
 
 /// A function type at the boundary (S8f3c): its parameters' types and its result's.
-pub struct FnBoundary :: [Equatable, Debug] {
+pub struct FnBoundary :: Equatable & Debug {
     pub params: Boundary[],
     pub result: Box<Boundary>,
 }
@@ -187,7 +187,7 @@ pub struct Callable :: [Debug] {
 
 /// A right a module's import asks for: its class — `file`, `net`, `process`, `os`, `native` —,
 /// the module imported, and the file and line of the import.
-pub struct RightUse :: [Equatable, Debug] {
+pub struct RightUse :: Equatable & Debug {
     pub right: string,
     pub module: string,
     pub path: string,

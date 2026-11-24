@@ -100,9 +100,11 @@ pub fn assemble(text: string, name: string): Module throws AsmError {
         } else if (line.startsWith("type ")) {
             types.push(try typeLine(line.toString(), lineNo));
         } else if (line.startsWith("globals ")) {
-            let counts = line[8..line.length()].split(' ').filter { !it.isEmpty() }.map {
-                it.toString()
-            }.toArray();
+            let counts = line[8..line.length()]
+                .split(' ')
+                .filter { !it.isEmpty() }
+                .map { it.toString() }
+                .toArray();
             if (counts.length() != 2) {
                 throw AsmError { line = lineNo, text = "a globals line is 'globals S R'" };
             }
@@ -206,9 +208,11 @@ fn header(line: string, lineNo: int): Draft throws AsmError {
             throw AsmError { line = lineNo, text = f"a parameter is 's' or 'r', got '{kind}'" };
         }
     }
-    let rest = line[close + 1..line.length()].split(' ').filter { !it.isEmpty() }.map {
-        it.toString()
-    }.toArray();
+    let rest = line[close + 1..line.length()]
+        .split(' ')
+        .filter { !it.isEmpty() }
+        .map { it.toString() }
+        .toArray();
     var returns: ReturnKind = .Void;
     var retS = 0;
     var retR = 0;

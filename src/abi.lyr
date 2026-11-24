@@ -222,7 +222,7 @@ fn rightsAt(allow: ?Ptr<CStr>, count: int): string[] throws Error {
 
 // copies `text` into C's buffer, as much as `capacity` takes; its whole length in bytes
 fn copyOut(text: string, buffer: ?Ptr<uint8>, capacity: int): int {
-    let bytes = text.toBytes();
+    let bytes = text.bytes();
     if (let b = buffer) {
         var k = 0;
         while (k < bytes.length() && k < capacity) {

@@ -7749,10 +7749,11 @@ class Checker {
                     TExpr.IsParam(this.specBox(x, a), k, t)
                 }
             }
+            // `is T[]` (S7c4c3b): the copy's descriptor of the list type (the comment stands
+            // here, not at its arm: `fmt` drops it there, lyric#749)
             .IsDesc(x, d) => TExpr.IsDesc(
                 this.specBox(x, a),
                 match (d.value) {
-                    // `is T[]` (S7c4c3b): the copy's descriptor of the list type
                     .DescOfType(dt, _) => if (hasParam(dt)) boxE(this.descExpr(dt, a))
                         else this.specBox(d, a),
                     _ => this.specBox(d, a),

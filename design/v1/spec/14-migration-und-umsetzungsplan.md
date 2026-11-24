@@ -89,7 +89,7 @@ Spec (Widersprüche zwischen Spec und Compiler bleiben unsichtbar).
 |---|---|---|---|
 | **S11 Werkzeuge I** | `fmt`, `check`, `test` mit Doc-Tests, Diagnosekatalog + `explain` + NDJSON, Lints, `fix --from-lyric5`, `fix --from-4` (Kette), `doc`, `api` (12, 14) | Werkzeuge in der CI; Katalog geprüft | L |
 | **S12 Werkzeuge II** | LSP, DAP, REPL (inkrementell), Editor-Erweiterungen mit zwei Sprachservern, `tree-sitter-lyric-script` (12) | Editor mit Diagnosen, Hover, Debugger; REPL | XL |
-| **S13 Distribution** | `pack` mit vorgebauten Runtimes, `pack --native`, Archive je Tier-1, Kanäle stable/`dev`, minisign, `toolchain` (12) | `dev`-Build zum Herunterladen; `pack`-Binary auf allen Tier-1-Zielen | M |
+| **S13 Distribution** | `pack` mit vorgebauten Runtimes, `pack --native`, Archive je Tier-1 mit dem Kurznamen `lys`, Kanäle stable/`dev`, minisign, `toolchain` (12; `lys` unten) | `dev`-Build zum Herunterladen; `pack`-Binary auf allen Tier-1-Zielen | M |
 
 #### Phase 5 — Release
 
@@ -3778,3 +3778,24 @@ Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:
 
 Jeder Meilenstein schneidet sie in seine Slices, wenn er geplant wird; die Prüfung je Punkt sind
 Konformanzfälle und, für C1 und C3, Fälle der Kommandozeile.
+
+## Kurzname `lys` (2026-11-24)
+
+Der Maintainer schreibt `lyric-script …` zu oft; das Binary bekommt einen zweiten Namen.
+
+| Frage | Entscheidung |
+|---|---|
+| Name | **`lys`**, passend zum Präfix der Diagnosen (`LYS-…`); kein verbreitetes Kommando dieses Namens bekannt — vor dem Bau gegen Homebrew, Debian und winget geprüft. |
+| Mechanismus | **Ein Binary, zwei Namen**; das Programm liest `argv[0]` nicht. Linux und macOS: `lys` im Archiv als Link auf `lyric-script`. Windows: `lys.exe` als Kopie im Archiv, als Hardlink, wo `toolchain` installiert. |
+| Kanonisch | **`lyric-script`** bleibt der Name in Hilfe, Meldungen, Doku und Shebangs veröffentlichter Skripte; `lys` steht in einer Zeile des README und im Guide-Kapitel zur Installation. |
+| Uhr | **S13** (Archive je Tier-1, `toolchain`); die Prüfung: `lys --version` gleich `lyric-script --version` auf jedem Ziel in der CI. |
+| Manifest | **Nur der Befehl bekommt den Kurznamen.** Das Manifest bleibt `lyric-script.toml` (07 Man), der Lock `lyric-script.lock`; kein `lys.toml`. Der Kurzname spart Tipparbeit, und ein Manifest tippt man nicht: `init` legt es an, die Werkzeuge suchen es. |
+
+Verworfen: `lyrs` (liest sich als Dateityp, gleich der Endung); `lyric script …` als Unterbefehl
+nach dem Muster von git und cargo (länger als heute, braucht ein Feature in Lyric 5); `lsc`
+(LiveScript, zu nah an `ls`); ein `lys.cmd`-Shim unter Windows (Ctrl-C fragt „Batchvorgang
+abbrechen?“). `lys.toml` als zweiter Manifestname: jedes Werkzeug (Suche nach oben, Editor, LSP,
+CI-Vorlagen) müsste beide kennen, und ein Verzeichnis mit beiden bräuchte eine eigene
+Fehlerregel — Denos `deno.json`/`deno.jsonc` zeigt die Reibung; Cargo, npm und Lyric 5 kennen je
+einen Namen. `lys.toml` als einziger Name: dann stünde der Kurzname im Dateisystem, während Hilfe
+und Doku `lyric-script` sagen, und neben `lyric.toml` sagt `lyric-script.toml`, wozu es gehört.

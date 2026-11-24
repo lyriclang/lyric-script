@@ -18,7 +18,6 @@
 import std.collections { List, Map };
 import std.core { StringBuilder, UnicodeCategory };
 import std.core { arrayOf };
-import std.core { fstringFormatted, fstringPadded };
 import std.fs {
     File,
     OpenOptions,
@@ -35,6 +34,17 @@ import std.fs {
     tempFile as fsTempFile,
 };
 import std.hash { DefaultHasher };
+import std.math {
+    checkedAdd,
+    checkedDiv,
+    checkedMul,
+    checkedRem,
+    checkedSub,
+    leadingZeros,
+    popCount,
+    rotateLeft,
+    trailingZeros,
+};
 import std.io { IoError, SeekFrom, eprint, eprintln, flush, print, println, stderr, stdin, stdout };
 import std.os {
     arch as osArch,
@@ -72,9 +82,9 @@ import lyric_script.vm.bigint {
     shl as bigShl,
     shr as bigShr,
     sub as bigSub,
-    text as bigText,
     toFloat as bigToFloat,
     toInt as bigToInt,
+    toText as bigText,
 };
 import lyric_script.vm.elementary { mathOne, mathTwo };
 import lyric_script.vm.fmt { fmtKindOf, fmtProblem };
@@ -1172,7 +1182,7 @@ fn resolvedPath(name: string): string {
 }
 
 fn lastSeparator(path: string): int {
-    let bytes = path.toBytes();
+    let bytes = path.bytes();
     var k = bytes.length() - 1;
     while (k >= 0) {
         let b = bytes[k] as int;
@@ -1401,9 +1411,9 @@ fn schedule(shared: RunShared): Outcome {
                 if (shared.timers.length() > 0 || shared.deadlineNs >= 0) {
                     let wait = waitWithin(shared, earliestDeadline(shared) - nowNs(shared));
                     if (wait > 0) {
-                        try? Select.on(shared.wakeups) { _ => { } }.timeout(
-                            Duration.ofNanos(wait)
-                        ) { }.run();
+                        try? Select.on(shared.wakeups) { _ => { } }
+                            .timeout(Duration.ofNanos(wait)) { }
+                            .run();
                     }
                 } else {
                     try? shared.wakeups.recv();
@@ -2449,22 +2459,22 @@ fn callNative(
         // before — by the compiler, or at run time through `fmt.problem`
         .FmtInt => {
             let b = StringBuilder.new();
-            fstringFormatted(b, s[x] as int, textOf(r[y]));
+            (s[x] as int).format(textOf(r[y]), b);
             r[y] = ScriptString { text = b.toString() };
         }
         .FmtFloat => {
             let b = StringBuilder.new();
-            fstringFormatted(b, float.fromBits(s[x]), textOf(r[y]));
+            float.fromBits(s[x]).format(textOf(r[y]), b);
             r[y] = ScriptString { text = b.toString() };
         }
         .FmtStr => {
             let b = StringBuilder.new();
-            fstringFormatted(b, textOf(r[y]), textOf(r[y + 1]));
+            textOf(r[y]).format(textOf(r[y + 1]), b);
             r[y] = ScriptString { text = b.toString() };
         }
         .FmtPad => {
             let b = StringBuilder.new();
-            fstringPadded(b, textOf(r[y]), textOf(r[y + 1]));
+            textOf(r[y]).format(textOf(r[y + 1]), b);
             r[y] = ScriptString { text = b.toString() };
         }
         // an integer's bits (S7f1): Lyric 5's own `Integer` members; a float is its
@@ -2472,11 +2482,10 @@ fn callNative(
         .IntBits => {
             let v = s[x] as int;
             let k = s[x + 1] as int;
-            let n = if (k == 0) v.leadingZeros()
-                else if (k == 1) v.trailingZeros() else v.popCount();
+            let n = if (k == 0) leadingZeros(v) else if (k == 1) trailingZeros(v) else popCount(v);
             s[x] = n as uint64;
         }
-        .IntRotate => s[x] = (s[x] as int).rotateLeft(s[x + 1] as int) as uint64,
+        .IntRotate => s[x] = rotateLeft(s[x] as int, s[x + 1] as int) as uint64,
         .FloatFromBits | .FloatToBits => { }
         .BigFromInt | .BigAdd | .BigSub | .BigMul | .BigDiv | .BigRem | .BigNeg | .BigCmp | .BigText | .BigParse | .BigFitsInt | .BigToInt | .BigToFloat | .BigShl | .BigShr | .BigBitLength | .BigHash => {
             return bigNative(which, s, r, x, y, shared);
@@ -2631,7 +2640,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc += 1;
             }
             .AddI => {
-                let z = (s[bs + b] as int).checkedAdd(s[bs + c] as int);
+                let z = checkedAdd(s[bs + b] as int, s[bs + c] as int);
                 if (z == null) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
                 }
@@ -2639,7 +2648,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc += 1;
             }
             .SubI => {
-                let z = (s[bs + b] as int).checkedSub(s[bs + c] as int);
+                let z = checkedSub(s[bs + b] as int, s[bs + c] as int);
                 if (z == null) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
                 }
@@ -2647,7 +2656,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc += 1;
             }
             .MulI => {
-                let z = (s[bs + b] as int).checkedMul(s[bs + c] as int);
+                let z = checkedMul(s[bs + b] as int, s[bs + c] as int);
                 if (z == null) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
                 }
@@ -2669,8 +2678,8 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 let x = s[bs + b] as int;
                 // a match, not `==`: `==` on `Op` is a call into std.core (S7j)
                 let z = match (ins.op) {
-                    .DivI => x.checkedDiv(y),
-                    _ => x.checkedRem(y),
+                    .DivI => checkedDiv(x, y),
+                    _ => checkedRem(x, y),
                 };
                 if (z == null) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
@@ -2679,7 +2688,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc += 1;
             }
             .NegI => {
-                let z = (0).checkedSub(s[bs + b] as int);
+                let z = checkedSub(0, s[bs + b] as int);
                 if (z == null) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
                 }
@@ -2687,7 +2696,7 @@ fn runTask(t: TaskState, shared: RunShared): Outcome {
                 pc += 1;
             }
             .AddImm => {
-                let z = (s[bs + b] as int).checkedAdd(signed16(c));
+                let z = checkedAdd(s[bs + b] as int, signed16(c));
                 if (z == null) {
                     return panicOut(module, frames, fi, pc, "LYS-RT0002", "integer overflow");
                 }
@@ -4973,7 +4982,7 @@ fn bytesOf(v: HeapRef): uint8[] {
         if (let b = v.bytes) {
             return b;
         }
-        let b = v.text.toBytes();
+        let b = v.text.bytes();
         v.bytes = b;
         return b;
     }
@@ -5959,7 +5968,7 @@ fn bytesNative(
         .BytesOfText => {
             let t = textOf(r[y]);
             if (charge(shared, bytesCost(t.length()))) {
-                r[y] = ScriptBytes { data = List<uint8>.of(t.toBytes()) };
+                r[y] = ScriptBytes { data = List<uint8>.of(t.bytes()) };
             }
             return null;
         }
@@ -6416,7 +6425,7 @@ fn overLimit(shared: RunShared): bool {
 extern "C" fn threadAllocatedBytes(): int = "lyr_gc_thread_allocated_bytes";
 
 /// What halted a call (S8c): its fuel, its deadline, or its allocation budget.
-pub enum Halt :: [Equatable, Debug] {
+pub enum Halt :: Equatable & Debug {
     Fuel,
     Deadline,
     Memory,

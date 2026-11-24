@@ -603,7 +603,7 @@ class Writer {
     }
 
     mut fn text(s: string): void {
-        let bytes = s.toBytes();
+        let bytes = s.bytes();
         this.word(bytes.length());
         for (b in bytes) {
             this.out.push(b);

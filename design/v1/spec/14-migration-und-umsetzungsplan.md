@@ -3639,6 +3639,25 @@ Zwei Teile:
     Ergebnisgriff, NULL für ein Scheitern. Verworfen: ein Statuscode mit Ergebnis im Zeiger — ein Zeiger
     mehr für dasselbe; eine Signatur je Stelligkeit — nicht über C-Funktionszeiger zu prüfen.
 
+**S8h1, Ergebnis (2026-11-24).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - `src/abi.lyr` mit 35 Exporten (`lyrs_vm_*`, `lyrs_instance_*`, Werte, Ergebnisse, `lyrs_release`).
+    Die Nummern liegen in einer `Map<int, Held>` unter einem `Mutex`, die Zählung in einem `Atomic`.
+  - Das Budget heißt im Header `lyric_script_abi_Budget`: Lyric 5 setzt den Modulpfad vor den Namen.
+  - `version` zog in ein Blattmodul `lyric_script.toolchain`. `lib.lyr` importiert `abi`, und `abi`
+    importiert `embed`, das `version` las — ein Zyklus über die Wurzel der Bibliothek.
+  - `lyrs_abi_version` bleibt 1: neue Exporte sind kompatibel.
+- **Prüfung:**
+  - `tests/c/abi.c`, 62 Prüfungen: Skalare, Text mit NUL und zu kurzem Puffer, Liste, Map in ihrer
+    Reihenfolge, Panik, Anhalten und `resume`, ein gestarteter Aufruf bis zum Ende, Fehler des Hosts
+    (falsche Art, doppelte Freigabe, erfundene Nummer, 0), `abort`.
+  - Lokal unter Linux und für Windows quer gebaut (`build --lib --target x86_64-windows-gnu`, über
+    WSL ausgeführt), je 62 von 62. Die CI baut und führt ihn auf allen vier Zielen aus.
+  - Drei Mutanten in `abi.lyr`, je mit dem C-Test, alle wie vorhergesagt getötet: `lyrs_release`
+    behält den Eintrag (2 Prüfungen), die Werte ab dem zweiten gelesen (24), die Art einer Map falsch (1).
+- **Offen, klein:** Der Bibliotheksbau warnt viermal über Funktionen, die nur die Kommandozeile ruft
+  (`cache.load`, `store`, `clean`, `rights.allowed`). Der Binärbau bleibt ohne Warnung.
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

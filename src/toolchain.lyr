@@ -1,0 +1,5 @@
+//! The version of this toolchain (S0c), a module of its own so that every module of the
+//! package reads it without importing the library's root, which imports the C ABI (S8h).
+
+/// The version of this toolchain, as `lyric-script --version` reports it.
+pub let version: string = "1.0.0-dev";

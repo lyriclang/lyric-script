@@ -8,7 +8,7 @@ import std.crypto { sha256 };
 import std.fs { createDirAll, exists, readBytes, remove, removeAll, rename, writeBytes };
 import std.os { Platform, env, homeDir, pid, platform };
 import std.sync { Atomic };
-import lyric_script { version };
+import lyric_script.toolchain { version };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.bytecode { NotOurs, decode, encode };
 import lyric_script.vm.module { Module, check };

@@ -4,7 +4,7 @@
 //! source gets wrong comes back as values, never printed: the host decides who sees it.
 import std.collections { List };
 import std.sync { Atomic };
-import lyric_script { version };
+import lyric_script.toolchain { version };
 import lyric_script.cache { loadIn, sourceKey, storeIn };
 import lyric_script.compiler.checker { ProgramUnit, checkModule };
 import lyric_script.compiler.codegen { generate };

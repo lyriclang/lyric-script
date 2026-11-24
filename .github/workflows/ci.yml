@@ -184,7 +184,9 @@ jobs:
           py=python3; command -v python3 > /dev/null || py=python
           "$py" lyric-spec/tools/run_conformance.py --lyric-script "$bin" --toolchain-version 1.0.0
 
-      - name: Build the C ABI library
+      # The C ABI (S8h; spec 13 rule 11): the static library and its header, and a host of C's
+      # that links it and runs against it.
+      - name: Build the C ABI library and its test
         shell: bash
         run: |
           lyric5=lyric5/lyric5; [ "${{ runner.os }}" = "Windows" ] && lyric5=lyric5/lyric5.exe
@@ -192,3 +194,15 @@ jobs:
           header=$(find out -maxdepth 3 -type f -name 'lyric_script.h' | head -1)
           echo "header: $header"
           grep -q 'lyrs_abi_version' "$header"
+          dir=$(dirname "$header")
+          lib=$(find "$dir" -maxdepth 1 -type f \( -name 'liblyric_script.a' -o -name 'lyric_script.lib' \) | head -1)
+          echo "library: $lib"
+          exe=abi-test
+          case "${{ runner.os }}" in
+            Linux) libs="-lpthread -lm -lunwind" ;;
+            Windows) libs="-lshell32 -lws2_32"; exe=abi-test.exe ;;
+            *) libs="" ;;
+          esac
+          zig cc tests/c/abi.c -I "$dir" "$lib" $libs -o "$exe"
+          code=0; "./$exe" || code=$?
+          [ "$code" -eq 0 ]

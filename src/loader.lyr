@@ -23,7 +23,7 @@ import std.fs {
 import std.os { pid };
 import std.process { Command };
 import std.path { fileName, join, normalize, parent, stem };
-import lyric_script { version };
+import lyric_script.toolchain { version };
 import lyric_script.compiler.ast { ImportDecl };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };

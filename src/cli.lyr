@@ -6,7 +6,7 @@ import std.fs { exists, readText };
 import std.io { eprintln, flush, println, stdin };
 import std.os { args };
 import std.term { StdStream, isTerminal };
-import lyric_script { version };
+import lyric_script.toolchain { version };
 import lyric_script.cache { clean, load, store };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.render { SourceLines, renderJson, renderSummary, renderText };

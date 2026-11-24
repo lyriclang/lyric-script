@@ -5,6 +5,7 @@
 //! `bigNative` charges.
 
 import std.core { StringBuilder };
+import std.math { leadingZeros };
 
 /// A number. Never changed once made.
 pub struct Big {
@@ -200,7 +201,7 @@ fn divMag(u0: uint32[], v0: uint32[]): (uint32[], uint32[]) {
     }
     let b: uint64 = 0x100000000;
     // normalized: the divisor's top bit set, so a trial quotient is off by two at most
-    let bits = (v0[v0.length() - 1] as uint32).leadingZeros();
+    let bits = leadingZeros(v0[v0.length() - 1] as uint32);
     let n = v0.length();
     let m = u0.length() - n;
     let v = shiftedUp(v0, bits, n);
@@ -287,7 +288,7 @@ pub fn bitLength(a: Big): int {
     if (n == 0) {
         return 0;
     }
-    return n * 32 - a.mag[n - 1].leadingZeros();
+    return n * 32 - leadingZeros(a.mag[n - 1]);
 }
 
 fn shlMag(xs: uint32[], n: int): uint32[] {
@@ -407,7 +408,7 @@ pub fn toFloat(a: Big): float {
 }
 
 /// Its text in base `radix`, 2 to 36: a `-`, then digits, lowercase.
-pub fn text(a: Big, radix: int): string {
+pub fn toText(a: Big, radix: int): string {
     if (isZero(a)) {
         return "0";
     }
@@ -447,7 +448,7 @@ pub fn text(a: Big, radix: int): string {
 /// The number a text names in base `radix`: an optional sign, then digits, `_` between two of
 /// them; null where it is no such text.
 pub fn parse(s: string, radix: int): ?Big {
-    let bytes = s.toBytes();
+    let bytes = s.bytes();
     var i = 0;
     var negative = false;
     if (bytes.length() > 0 && (bytes[0] == 45 || bytes[0] == 43)) {

@@ -635,7 +635,7 @@ summary = "A binding has neither a type nor a value, its value gives none or is 
 title = "a name in type position that is no type"
 severity = "error"
 area = "03-types"
-summary = "The name names no type. Lyric 5's LYR-SEM0011."
+summary = "The name names no type — or, after `@`, no attribute of the closed list (09 At; S8f1). Lyric 5's LYR-SEM0011."
 
 [LYS-SEM0007]
 title = "a value that cannot be indexed or iterated"
@@ -1239,6 +1239,24 @@ severity = "error"
 area = "04-modules"
 summary = "The entry module runs statements and declares `fn main`: either is an entry, both are two. Keep the statements, or move them into `main`. Script's own: a Lyric 5 module has no statements."
 
+[LYS-SEM0907]
+title = "what a module of the host does not hold"
+severity = "error"
+area = "17-host"
+summary = "A module the host registers (`import host.<name>`) declares functions the host implements: without a body or type parameters, their parameters and result values of a call's boundary — `int`, `float`, `bool`, `char`, `string`, its handles and structs, lists of them —, a `throws` that names its errors; handles: classes without fields, type parameters or conformances, whose methods the host implements likewise; and structs whose fields are values of the boundary, without defaults, `Error` their one conformance — an error its functions throw. Anything else in it — a body, an enum, a statement — is the host's error, reported when it registers the module. Lyric-Script's own (design/v1, 11 Hst)."
+
+[LYS-SEM0908]
+title = "a right `@Requires` does not name"
+severity = "error"
+area = "17-host"
+summary = "`@Requires` on a function of the host's module names one right as a string: lowercase letters, digits and `-`, a letter first — `@Requires(\"saves\")`. A name of a class of the standard library (`file`, `net`, …) is that class. Lyric-Script's own (design/v1, 01 S2)."
+
+[LYS-SEM0909]
+title = "a handle the script makes"
+severity = "error"
+area = "17-host"
+summary = "A class of a module of the host is a handle: its value is a number the host gave, and what it stands for the host holds. A script gets one from the host's functions and never builds one with `Name { }`. Lyric-Script's own (design/v1, 11 Hst)."
+
 [LYS-NYI0001]
 title = "a form a later milestone builds"
 severity = "error"
@@ -1299,6 +1317,18 @@ severity = "panic"
 area = "10-concurrency"
 summary = "Every task of the run waits — for another task — and nothing can wake one: the run panics, exit code 101. The code and its meaning are Lyric 5's LYR-RT0018."
 
+[LYS-RT0900]
+title = "a function of the host failed"
+severity = "panic"
+area = "17-host"
+summary = "A function of the host's module could not do what the script asked — its implementation threw a `HostFailure` without an error, or with one the function does not declare in its `throws` (S8f3b) —, or gave a value of another type than it declares. The message names the function and the host's reason. Lyric-Script's own (S8f2)."
+
+[LYS-RT0901]
+title = "a callback could not end in the host's function"
+severity = "panic"
+area = "17-host"
+summary = "A callback the host calls while its function runs — through its `Caller` — runs to its end there, and nothing else of the instance runs meanwhile: it may not wait, its call's budget may not run out in it, and it may not call `exit`. The host gets this panic as the callback's result and decides; the instance goes on, and the call halts for the budget after the host's function, not in it. A callback the host keeps and calls later through the instance is a call of its own and may wait. Lyric-Script's own (S8f3c)."
+
 [LYS-CLI0004]
 title = "an unknown option"
 severity = "error"
@@ -1322,3 +1352,27 @@ title = "an --allow of no rights"
 severity = "error"
 area = "14-cli"
 summary = "`--allow` names classes of rights between commas — file, net, process, os, native —; another word is refused. The exit code is 2."
+
+[LYS-PAR0042]
+title = "an attribute with no declaration to carry it"
+severity = "error"
+area = "11-metaprogramming"
+summary = "An attribute stands before something that is no declaration — a statement, an `import`, an `extend` —, or at the end of the file. It describes the function, type, enum or interface after it (09 At; S8f1). Lyric 5's LYR-PAR0042."
+
+[LYS-SEM0065]
+title = "an attribute that cannot stand here"
+severity = "error"
+area = "11-metaprogramming"
+summary = "An attribute stands where it means nothing: `@Requires` belongs to a module of the host, which names the rights its functions ask for (01 S2; S8f1). Lyric 5's LYR-SEM0065."
+
+[LYS-SEM0066]
+title = "an attribute argument that is not a compile-time value"
+severity = "error"
+area = "11-metaprogramming"
+summary = "An attribute's argument is no literal and no variant without a payload: an attribute describes its declaration before anything runs (09 At). Lyric 5's LYR-SEM0066."
+
+[LYS-SEM0068]
+title = "an attribute repeated on one declaration"
+severity = "error"
+area = "11-metaprogramming"
+summary = "The same attribute stands twice on one declaration. Lyric 5's LYR-SEM0068."

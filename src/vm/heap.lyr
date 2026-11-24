@@ -99,9 +99,22 @@ pub class ScriptBigInt :: [HeapRef] {
     }
 }
 
+/// A handle of the host (S8f3a; 11 V3 `HostHandle`): the class's name, `game.Sprite`, and the
+/// number the host gave; what it stands for the host holds.
+pub class HostHandle :: [HeapRef] {
+    pub type: string,
+    pub id: int,
+
+    pub fn desc(): ?TypeDesc {
+        return null;
+    }
+}
+
 /// What a `File` holds (S7g4): Lyric 5's file, once one is open.
 pub class ScriptFile :: [HeapRef] {
     pub var file: ?File = null,
+    /// Closed by the script: its instance need not close it at an abort (S8b3).
+    pub var closed: bool = false,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -120,6 +133,8 @@ pub class ScriptChild :: [HeapRef] {
 /// What a `ReadDirIter` holds (S7g5): Lyric 5's iterator, once the directory is open.
 pub class ScriptDir :: [HeapRef] {
     pub var dir: ?ReadDirIter = null,
+    /// Closed by the script (S8b3).
+    pub var closed: bool = false,
 
     pub fn desc(): ?TypeDesc {
         return null;
@@ -199,8 +214,6 @@ pub class ScriptObject :: [HeapRef] {
     pub typeDesc: TypeDesc,
     pub scalars: uint64[],
     pub refs: HeapRef[],
-    /// The instance the object belongs to (01 S9); set from S8.
-    pub var owner: int = 0,
     /// The version of its type the object was built for (01 S7a); set from S9.
     pub var version: int = 0,
     /// Its number, given the first time it is hashed by its identity (01 S8: no addresses; S7d1);

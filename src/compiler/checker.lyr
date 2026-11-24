@@ -14,6 +14,7 @@ import std.collections { List, Map, Set };
 import std.core { StringBuilder };
 import lyric_script.compiler.ast {
     AliasDecl,
+    Attribute,
     Arg,
     BinaryOp,
     Block,
@@ -50,7 +51,15 @@ import lyric_script.compiler.ast {
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.compiler.throws { ThrowSets, Thrown };
-import lyric_script.stdsrc { bytesText, collectionsText, numbersText, preludeText, stdPackage };
+import lyric_script.stdsrc {
+    bytesText,
+    collectionsText,
+    hostPackage,
+    numbersText,
+    preludeText,
+    stdPackage,
+};
+import lyric_script.rights { rightNamed };
 import lyric_script.vm.fmt { FmtKind, fmtProblem };
 import lyric_script.vm.native { NativeFn, nativeInfo, nativeNamed, nativeNumber, nativeOf };
 import lyric_script.compiler.typed {
@@ -166,6 +175,7 @@ fn checkModule(
         text = parsed.text,
     };
     c.source = parsed.text;
+    c.checkAttributes(module);
     c.declare(module);
     c.checkMain(module);
     c.checkImports();
@@ -600,6 +610,7 @@ class Checker {
             spawns = this.spawns,
             cancelled = this.typeIndex.get("Cancelled") ?? -1,
             channelClosed = this.typeIndex.get("ChannelClosed") ?? -1,
+            map = this.typeIndex.get("Map") ?? -1,
         };
     }
 
@@ -798,6 +809,14 @@ class Checker {
     mut fn mayBuild(i: int, at: Span): void {
         let base = if (this.types[i].template >= 0) this.types[i].template else i;
         let t = this.types[base];
+        if (t.host != "" && t.kind == .Class) {
+            this.error(
+                "LYS-SEM0909",
+                f"'{t.name}' is a handle of the host: the host makes it, a script gets it from the host's functions",
+                at
+            );
+            return;
+        }
         if (t.mod == this.mod) {
             return;
         }
@@ -1462,6 +1481,24 @@ class Checker {
         }
         info.throws = out.toArray();
         this.throwsAt.insert(k, clause.span);
+        // a function of the host throws the errors of the host it names (S8f3b; P14): the set is
+        // its declaration, and the host's value has to be one of them
+        if (info.host != "") {
+            var named = clause.types.length() > 0;
+            for (t in out) {
+                named = named && match (t) {
+                    .Named(i) => this.types[i].host != "" && this.types[i].kind == .Struct,
+                    _ => false,
+                };
+            }
+            if (!named) {
+                this.error(
+                    "LYS-SEM0907",
+                    f"'{decl.name}' throws what is no error of the host: a function of the host names the structs ':: [Error]' of its modules it throws",
+                    clause.span
+                );
+            }
+        }
         this.typeParams = savedScope;
         this.genericFn = savedGeneric;
     }
@@ -1630,6 +1667,19 @@ class Checker {
         this.types.push(
             TypeInfo { name = name, kind = kind, methods = Map<string, int>.new(), mod = this.mod }
         );
+        // a class of a module of the host is a handle (S8f3a): its value is the VM's, which holds
+        // the host's number
+        if ((kind == .Class || kind == .Struct) && this.inHost(at)) {
+            let info = this.types[this.types.length() - 1];
+            info.vmHeld = kind == .Class;
+            info.host = this.hostModuleOf(at);
+        }
+    }
+
+    /// The name after `host.` of the module of the host `at` lies in (S8f2).
+    mut fn hostModuleOf(at: Span): string {
+        let m = this.modNames.get(at.file) ?? "host.";
+        return m[5..m.length()].toString();
     }
 
     mut fn declareMembers(t: TypeDecl): void {
@@ -1681,6 +1731,17 @@ class Checker {
             }
         }
         info.fields = fields.toArray();
+        if (info.host != "" && info.kind == .Struct) {
+            for (f in info.fields) {
+                if (!this.crossesBoundary(f.ty) || f.ty == Ty.Void) {
+                    this.error(
+                        "LYS-SEM0907",
+                        f"the field '{f.name}' of '{t.name}' is no value of a call's boundary: an int, a float, a bool, a char, a string, a handle or struct of the host, or a list of them",
+                        t.span
+                    );
+                }
+            }
+        }
         for (m in t.methods) {
             // a second member of a method's name joins its set, asked once the conformances
             // stand (S7c5d2); a field's name stays refused
@@ -5860,6 +5921,241 @@ class Checker {
         }
     }
 
+    /// The attributes of the program's declarations (09 At; S8f1): a closed list the compiler knows
+    /// (kind 2), each at most once on a declaration; its arguments compile-time values.
+    /// `@Requires` belongs to a module of the host (S8f2) — none is loaded yet.
+    mut fn checkAttributes(module: Module): void {
+        for (item in module.items) {
+            match (item) {
+                .Decl(.Fn(f)) => this.attributesOf(f.attributes, this.inHost(f.span)),
+                .Decl(.Type(t)) => {
+                    this.attributesOf(t.attributes, false);
+                    // a method of a handle of the host may ask for a right (S8f3a)
+                    for (m in t.methods) {
+                        this.attributesOf(m.attributes, this.inHost(m.span));
+                    }
+                }
+                .Decl(.Enum(e)) => this.attributesOf(e.attributes, false),
+                .Decl(.Interface(i)) => {
+                    this.attributesOf(i.attributes, false);
+                    for (m in i.members) {
+                        this.attributesOf(m.attributes, false);
+                    }
+                }
+                .Decl(.Extend(x)) => {
+                    for (m in x.methods) {
+                        this.attributesOf(m.attributes, false);
+                    }
+                }
+                _ => { }
+            }
+            this.hostItem(item);
+        }
+    }
+
+    /// Whether `at` lies in a module of the host (S8f2).
+    mut fn inHost(at: Span): bool {
+        return at.file >= 0 && this.pkgOf(at.file) == hostPackage;
+    }
+
+    /// A module of the host holds functions without a body, handles and imports (S8f2, S8f3a;
+    /// 11 Hst): anything else there is `LYS-SEM0907`.
+    mut fn hostItem(item: Item): void {
+        match (item) {
+            .Decl(.Type(t)) => {
+                if (t.isClass) {
+                    this.hostClass(t);
+                } else {
+                    this.hostStruct(t);
+                }
+                return;
+            }
+            _ => { }
+        }
+        let at: ?Span = match (item) {
+            .Decl(.Fn(_)) | .Decl(.Import(_)) => null,
+            .Decl(.Type(t)) => t.span,
+            .Decl(.Enum(e)) => e.span,
+            .Decl(.Alias(a)) => a.span,
+            .Decl(.Interface(i)) => i.span,
+            .Decl(.Extend(x)) => x.span,
+            .Stmt(s) => stmtSpan(s),
+        };
+        if (let a = at) {
+            if (this.inHost(a)) {
+                this.error(
+                    "LYS-SEM0907",
+                    "a module of the host holds functions without a body and imports alone: the host implements what it declares",
+                    a
+                );
+            }
+        }
+    }
+
+    /// A handle of the host (S8f3a; 11 Hst): a class without fields, type parameters or conformances,
+    /// whose methods the host implements. Its values are the host's, a number it gave.
+    mut fn hostClass(t: TypeDecl): void {
+        if (!this.inHost(t.span)) {
+            return;
+        }
+        let what = if (t.fields.length() > 0) "fields"
+            else if (t.typeParams.length() > 0) "type parameters"
+                else if (t.conforms.length() > 0) "conformances"
+                    else if (t.statics.length() > 0 || t.answers.length() > 0) "constants" else "";
+        if (what != "") {
+            this.error(
+                "LYS-SEM0907",
+                f"the handle '{t.name}' has {what}: a handle of the host is a class with methods alone, its state the host's",
+                t.span
+            );
+        }
+    }
+
+    /// A struct of the host (S8f3b): its fields cross the boundary as a copy; no type parameters,
+    /// no defaults, no constants, and `Error` the one conformance, which makes it an error the
+    /// host's functions throw. Its methods, like a handle's, the host implements.
+    mut fn hostStruct(t: TypeDecl): void {
+        if (!this.inHost(t.span)) {
+            return;
+        }
+        var what = if (t.typeParams.length() > 0) "type parameters"
+            else if (t.statics.length() > 0 || t.answers.length() > 0) "constants" else "";
+        for (c in t.conforms) {
+            if (c.name != "Error") {
+                what = f"the conformance '{c.name}'";
+            }
+        }
+        for (f in t.fields) {
+            if (f.default != null) {
+                what = f"a default for '{f.name}'";
+            }
+        }
+        if (what != "") {
+            this.error(
+                "LYS-SEM0907",
+                f"the struct '{t.name}' of the host has {what}: it is fields that cross the boundary, and 'Error' alone",
+                t.span
+            );
+        }
+    }
+
+    /// The signature of a function of the host (S8f2): no body, no type parameters, and what crosses
+    /// to it and back is a value of a call's boundary (S8a3); its `throws` is checked with the
+    /// others (`declareThrows`).
+    mut fn hostSignature(f: FnDecl, info: FnInfo): void {
+        match (f.body) {
+            .None => { }
+            _ => this.error(
+                "LYS-SEM0907",
+                f"'{f.name}' has a body: a function of the host's module is the host's to implement",
+                f.span
+            ),
+        }
+        if (f.typeParams.length() > 0) {
+            this.error(
+                "LYS-SEM0907",
+                f"'{f.name}' is generic: a function of the host takes the values of a call's boundary",
+                f.span
+            );
+        }
+        for (p in info.params) {
+            // a function of the script crosses as a callback, as a parameter alone (S8f3c)
+            let crosses = match (p.ty) {
+                .Fn(fty) => this.callbackCrosses(fty),
+                _ => p.ty != Ty.Void && this.crossesBoundary(p.ty),
+            };
+            if (!crosses) {
+                this.error(
+                    "LYS-SEM0907",
+                    f"the parameter '{p.name}' of '{f.name}' is no value of a call's boundary: an int, a float, a bool, a char, a string, a handle or a struct of the host, a list of them, or a function over them",
+                    f.span
+                );
+            }
+        }
+        if (!this.crossesBoundary(info.returns)) {
+            this.error(
+                "LYS-SEM0907",
+                f"what '{f.name}' gives is no value of a call's boundary: an int, a float, a bool, a char, a string, a handle of the host, or a list of them",
+                f.span
+            );
+        }
+    }
+
+    /// Whether a function of `f` crosses to the host as a callback (S8f3c): its parameters and its
+    /// result are values of the boundary.
+    mut fn callbackCrosses(f: FnTy): bool {
+        for (p in f.params) {
+            if (p == Ty.Void || !this.crossesBoundary(p)) {
+                return false;
+            }
+        }
+        return this.crossesBoundary(f.result.value);
+    }
+
+    /// Whether a value of `t` crosses a call's boundary between host and script (S8a3): the
+    /// scalars, `string`, nothing as a result, a handle or a struct of the host (S8f3a, S8f3b),
+    /// lists of them, and maps of them by `int`, `char`, `bool` or `string` (S8g2).
+    mut fn crossesBoundary(t: Ty): bool {
+        return match (t) {
+            .Int | .Float | .Bool | .Char | .Str | .Void => true,
+            .List(e) => e.value != Ty.Void && this.crossesBoundary(e.value),
+            .Named(i) => this.types[i].host != "" || this.mapCrosses(i),
+            _ => false,
+        };
+    }
+
+    /// Whether the type `i` is a map whose keys and values cross the boundary (S8g2).
+    mut fn mapCrosses(i: int): bool {
+        let m = this.typeIndex.get("Map") ?? -1;
+        let t = this.types[i];
+        if (m < 0 || t.template != m || t.args.length() != 2) {
+            return false;
+        }
+        let keyed = match (t.args[0]) {
+            .Int | .Char | .Bool | .Str => true,
+            _ => false,
+        };
+        return keyed && t.args[1] != Ty.Void && this.crossesBoundary(t.args[1]);
+    }
+
+    mut fn attributesOf(attrs: Attribute[], host: bool): void {
+        let seen = Set<string>.new();
+        for (a in attrs) {
+            if (seen.contains(a.name)) {
+                this.error("LYS-SEM0068", f"'@{a.name}' stands twice on one declaration", a.span);
+                continue;
+            }
+            seen.insert(a.name);
+            for (x in a.args) {
+                if (!isConstantArg(x)) {
+                    this.error(
+                        "LYS-SEM0066",
+                        f"an argument of '@{a.name}' is no compile-time value: a literal or a variant without a payload",
+                        a.span
+                    );
+                }
+            }
+            match (a.name) {
+                "Requires" => {
+                    if (!host) {
+                        this.error(
+                            "LYS-SEM0065",
+                            "'@Requires' stands only in a module of the host, which names the rights its functions ask for",
+                            a.span
+                        );
+                    } else if (a.args.length() != 1 || rightNamed(a.args[0]) == null) {
+                        this.error(
+                            "LYS-SEM0908",
+                            "'@Requires' names one right, a string of lowercase letters, digits and '-': @Requires(\"saves\")",
+                            a.span
+                        );
+                    }
+                }
+                _ => this.error("LYS-SEM0011", f"there is no attribute '@{a.name}'", a.span),
+            }
+        }
+    }
+
     /// Registers a function or a method and its signature; returns its index.
     mut fn declareFn(f: FnDecl, owner: int): int {
         let index = this.functions.length();
@@ -5869,6 +6165,7 @@ class Checker {
             isStatic = f.isStatic || owner < 0,
             line = f.span.line,
             file = this.fileText(fileModule(f.span.file)),
+            isPub = f.isPub && !f.isInternal,
         };
         // `Self` in its signature: its type's (S3i)
         let savedSelf = this.selfTyIs;
@@ -5986,6 +6283,11 @@ class Checker {
         }
         if (owner >= 0 && f.typeParams.length() == 0 && this.types[owner].typeParams.length() > 0) {
             info.typeParams = this.types[owner].typeParams;
+        }
+        // a function of a module of the host (S8f2): the host implements it
+        if ((owner < 0 || this.types[owner].host != "") && this.inHost(f.span)) {
+            info.host = this.hostModuleOf(f.span);
+            this.hostSignature(f, info);
         }
         this.typeParams = savedScope;
         this.functions.push(info);
@@ -7447,10 +7749,11 @@ class Checker {
                     TExpr.IsParam(this.specBox(x, a), k, t)
                 }
             }
+            // `is T[]` (S7c4c3b): the copy's descriptor of the list type (the comment stands
+            // here, not at its arm: `fmt` drops it there, lyric#749)
             .IsDesc(x, d) => TExpr.IsDesc(
                 this.specBox(x, a),
                 match (d.value) {
-                    // `is T[]` (S7c4c3b): the copy's descriptor of the list type
                     .DescOfType(dt, _) => if (hasParam(dt)) boxE(this.descExpr(dt, a))
                         else this.specBox(d, a),
                     _ => this.specBox(d, a),
@@ -19095,6 +19398,20 @@ fn boxE(e: TExpr): Box<TExpr> {
 
 fn boxTy(t: Ty): Box<Ty> {
     return Box<Ty> { value = t };
+}
+
+/// Whether an attribute's argument is a compile-time value (09 At): a literal — a string without
+/// holes —, or a variant without a payload (`.Saves`).
+fn isConstantArg(x: Expr): bool {
+    return match (x) {
+        .Int(_, _) | .Float(_, _) | .Bool(_, _) | .Char(_, _) | .Str(_, _) => true,
+        .Unary(.Neg, v, _) => match (v.value) {
+            .Int(_, _) | .Float(_, _) => true,
+            _ => false,
+        },
+        .Implicit(_, _) => true,
+        _ => false,
+    };
 }
 
 /// Whether every path through the statements ends: in a `return`, or a `loop` without a break.

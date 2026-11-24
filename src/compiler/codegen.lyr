@@ -16,6 +16,7 @@ import lyric_script.compiler.typed {
     TStmt,
     Ty,
     FieldInfo,
+    FnInfo,
     TypeInfo,
     elemOffset,
     isPlainRef,
@@ -26,8 +27,15 @@ import lyric_script.compiler.typed {
     typeOf,
 };
 import lyric_script.vm.module {
+    Boundary,
+    Callable,
+    FnBoundary,
+    MapBoundary,
+    MapDesc,
     Function,
     Handler,
+    HostDecl,
+    HostStruct,
     Module,
     ReturnKind,
     TypeDesc,
@@ -45,9 +53,41 @@ let scriptEntry: string = "<script>";
 fn generate(p: Program, name: string): Module {
     let layout = Placement.of(p);
     let functions = List<Function>.new();
+    // the functions of the host's modules, numbered in their order (S8f2)
+    let hosts = List<HostDecl>.new();
     var k = 0;
     while (k < p.functions.length()) {
         let g = FnGen.new(p, layout, k);
+        let f = p.functions[k];
+        if (f.host != "") {
+            g.host = hosts.length();
+            let params = List<Boundary>.new();
+            var name = f.name;
+            // a handle's method (S8f3a): `Class.method`, its receiver the first argument
+            if (f.owner >= 0) {
+                name = f"{p.types[f.owner].name}.{f.name}";
+                if (!f.isStatic) {
+                    params.push(boundaryOf(p, Ty.Named(f.owner)));
+                }
+            }
+            for (x in f.params) {
+                params.push(hostParamOf(p, x.ty));
+            }
+            let throws = List<Boundary>.new();
+            for (t in f.throws ?? []) {
+                throws.push(boundaryOf(p, t));
+            }
+            g.hostThrows = throws.length() > 0;
+            hosts.push(
+                HostDecl {
+                    module = f.host,
+                    name = name,
+                    params = params.toArray(),
+                    result = boundaryOf(p, f.returns),
+                    throws = throws.toArray(),
+                }
+            );
+        }
         functions.push(g.generate());
         k += 1;
     }
@@ -77,6 +117,167 @@ fn generate(p: Program, name: string): Module {
         errorCause = p.errorCause,
         cancelledType = cancelledType,
         channelClosedType = channelClosedType,
+        exports = exportsOf(p),
+        hosts = hosts.toArray(),
+        hostStructs = hostStructsOf(p, layout),
+        maps = mapsOf(p, layout),
+    };
+}
+
+/// The types of map at the boundary (S8g2): each instance of `Map` whose keys and values cross, with
+/// its descriptor.
+fn mapsOf(p: Program, layout: Placement): MapDesc[] {
+    let out = List<MapDesc>.new();
+    var i = 0;
+    while (i < p.types.length()) {
+        match (boundaryOf(p, Ty.Named(i))) {
+            .Map(mb) => {
+                if (crosses(mb.key.value) && crosses(mb.value.value)) {
+                    out.push(MapDesc { type = mb, desc = layout.typeDescOf[i] });
+                }
+            }
+            _ => { }
+        }
+        i += 1;
+    }
+    return out.toArray();
+}
+
+// whether a type at the boundary holds no type that does not cross
+fn crosses(b: Boundary): bool {
+    return match (b) {
+        .Other => false,
+        .List(e) => crosses(e.value),
+        .Map(mb) => crosses(mb.key.value) && crosses(mb.value.value),
+        _ => true,
+    };
+}
+
+/// The functions of the entry a host may call (S8a3): the public ones of its top level, neither
+/// generic nor a lambda's, not the top level itself; each with the types at its boundary.
+fn exportsOf(p: Program): Callable[] {
+    let out = List<Callable>.new();
+    var k = 0;
+    while (k < p.functions.length()) {
+        let f = p.functions[k];
+        if (k != p.main
+            && f.owner < 0
+            && f.file == ""
+            && f.isPub
+            && !f.env
+            && !f.abstract
+            && f.typeParams.length() == 0
+            && f.templateOf < 0) {
+            let params = List<Boundary>.new();
+            for (x in f.params) {
+                params.push(boundaryOf(p, x.ty));
+            }
+            out.push(
+                Callable {
+                    name = f.name,
+                    function = k,
+                    params = params.toArray(),
+                    result = boundaryOf(p, f.returns),
+                }
+            );
+        }
+        k += 1;
+    }
+    return out.toArray();
+}
+
+/// The structs of the host's modules (S8f3b): each with its descriptor and its fields' types at the
+/// boundary, in the order it declares them.
+fn hostStructsOf(p: Program, layout: Placement): HostStruct[] {
+    let out = List<HostStruct>.new();
+    var i = 0;
+    while (i < p.types.length()) {
+        let t = p.types[i];
+        if (t.host != "" && t.kind == .Struct) {
+            let names = List<string>.new();
+            let bounds = List<Boundary>.new();
+            for (f in t.fields) {
+                names.push(f.name);
+                bounds.push(boundaryOf(p, f.ty));
+            }
+            out.push(
+                HostStruct {
+                    name = f"{t.host}.{t.name}",
+                    desc = layout.typeDescOf[i],
+                    fields = names.toArray(),
+                    bounds = bounds.toArray(),
+                }
+            );
+        }
+        i += 1;
+    }
+    return out.toArray();
+}
+
+/// The type `t` at a call's boundary (S8a3): a handle of the host by its module's name after
+/// `host.` and its own (S8f3a).
+fn boundaryOf(p: Program, t: Ty): Boundary {
+    return match (t) {
+        .Int => Boundary.Int,
+        .Float => Boundary.Float,
+        .Bool => Boundary.Bool,
+        .Char => Boundary.Char,
+        .Str => Boundary.Str,
+        .Void => Boundary.Void,
+        .List(e) => Boundary.List(Box<Boundary> { value = boundaryOf(p, e.value) }),
+        .Named(i) => namedBoundaryOf(p, i),
+        _ => Boundary.Other,
+    };
+}
+
+// the type `i` of the program at the boundary: a map (S8g2), a struct or a handle of the host
+fn namedBoundaryOf(p: Program, i: int): Boundary {
+    let t = p.types[i];
+    if (p.map >= 0 && t.template == p.map && t.args.length() == 2) {
+        return mapBoundaryOf(p, t.args[0], t.args[1]);
+    }
+    if (t.host == "") {
+        return Boundary.Other;
+    }
+    let name = f"{t.host}.{t.name}";
+    return if (t.kind == .Struct) Boundary.Struct(name) else Boundary.Handle(name);
+}
+
+/// A map of keys `k` and values `v` at the boundary (S8g2): its keys `int`, `char`, `bool` or
+/// `string`, else no type the host passes.
+fn mapBoundaryOf(p: Program, k: Ty, v: Ty): Boundary {
+    let key = match (k) {
+        .Int | .Char | .Bool | .Str => boundaryOf(p, k),
+        _ => Boundary.Other,
+    };
+    if (key == Boundary.Other) {
+        return Boundary.Other;
+    }
+    return Boundary.Map(
+        MapBoundary {
+            key = Box<Boundary> { value = key },
+            value = Box<Boundary> { value = boundaryOf(p, v) },
+        }
+    );
+}
+
+/// The type of a parameter of a function of the host (S8f3c): a function type is a callback there,
+/// and nowhere else at the boundary.
+fn hostParamOf(p: Program, t: Ty): Boundary {
+    return match (t) {
+        .Fn(f) => {
+            let params = List<Boundary>.new();
+            for (x in f.params) {
+                params.push(boundaryOf(p, x));
+            }
+            Boundary.Fn(
+                FnBoundary {
+                    params = params.toArray(),
+                    result = Box<Boundary> { value = boundaryOf(p, f.result.value) },
+                }
+            )
+        }
+        _ => boundaryOf(p, t),
     };
 }
 
@@ -620,6 +821,10 @@ class FnGen {
     var baseS: int = 0,
     var baseR: int = 0,
     var line: int = 0,
+    // a function of the host's module: its number (S8f2); -1 for any other
+    var host: int = -1,
+    // whether that function of the host declares errors it throws (S8f3b)
+    var hostThrows: bool = false,
 
     static fn new(p: Program, layout: Placement, index: int): FnGen {
         return FnGen {
@@ -688,8 +893,12 @@ class FnGen {
         this.baseR = this.nextR;
         this.maxS = this.nextS;
         this.maxR = this.nextR;
-        for (s in info.body) {
-            this.stmt(s);
+        if (this.host >= 0) {
+            this.hostBody(info, paramsS, paramsR);
+        } else {
+            for (s in info.body) {
+                this.stmt(s);
+            }
         }
         let (retS, retR) = this.slots(info.returns);
         let returns = if (retS == 0 && retR == 0) ReturnKind.Void
@@ -717,6 +926,30 @@ class FnGen {
             handlers = this.handlers.toArray(),
             file = info.file,
         };
+    }
+
+    /// The body of a function of the host's module (S8f2): its number in the register after the
+    /// parameters, `call.n host`, and its value back — from that register, or from the one after the
+    /// references.
+    mut fn hostBody(info: FnInfo, paramsS: int, paramsR: int): void {
+        this.need(paramsS + 2, paramsR + 1);
+        this.loadInt(paramsS, this.host);
+        this.emit(Op.CallN, nativeNumber(NativeFn.Host), paramsS, 0);
+        // an error of the host it declares (S8f3b): the native sets the flag after the number and
+        // leaves the error where a reference result goes
+        if (this.hostThrows) {
+            let ok = this.emit(Op.JumpIfNot, paramsS + 1, 0, 0);
+            this.emit(Op.Throw, paramsR, 0, 0);
+            this.patch(ok, this.here());
+        }
+        let (retS, retR) = this.slots(info.returns);
+        if (retS == 1) {
+            this.emit(Op.RetS, paramsS, 0, 0);
+        } else if (retR == 1) {
+            this.emit(Op.RetR, paramsR, 0, 0);
+        } else {
+            this.emit(Op.Ret, 0, 0, 0);
+        }
     }
 
     /// The module place of the descriptor of `t` (S3i).

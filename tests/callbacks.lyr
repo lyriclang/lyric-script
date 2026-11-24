@@ -1,0 +1,412 @@
+// Callbacks (S8f3c; 11 Hst, 11 Co): a function of the script given to a function of the host is a
+// callback. The host calls it through its `Caller` while its function runs — to its end, within the
+// call's budget, without a wait — or, kept, through the instance later as a call of its own.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { LoadError, Vm, vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Caller, Instance, InstanceMisuse };
+import lyric_script.vm.value { Callback, HostFailure, Value };
+
+let uiSource: string = "fn each(xs: int[], f: fn(int) -> int): int\nfn probe(f: fn() -> int): string\nfn nest(n: int, f: fn(int) -> int): int\nfn keepIt(f: fn(string) -> string): void\nfn lend(f: fn() -> int): void\nfn again(): string\n";
+
+fn intOf(v: Value): int {
+    return match (v) {
+        .Int(i) => i,
+        _ => -1,
+    };
+}
+
+fn strOf(v: Value): string {
+    return match (v) {
+        .Str(s) => s,
+        _ => "?",
+    };
+}
+
+// how a callback's call ended, as a test reads it
+fn described(r: CallResult): string {
+    return match (r) {
+        .Ok(v) => match (v) {
+            .Int(i) => f"ok {i}",
+            .Str(s) => f"ok {s}",
+            _ => "ok",
+        },
+        .Panic(p) => f"{p.code}: {p.message}",
+        .Error(e) => f"error {e.typeName}",
+        .Suspended => "suspended",
+        _ => "other",
+    };
+}
+
+// what the host saw: the callbacks it kept and lent, the caller it held past its function, the
+// instance it calls into, how often `probe` ran
+class Seen {
+    var kept: ?Callback = null,
+    var lent: ?Callback = null,
+    var caller: ?Caller = null,
+    var inst: ?Instance = null,
+    var probes: int = 0,
+}
+
+// a VM with `host.ui`, its implementations writing to `seen`
+fn uiVm(seen: Seen): Vm {
+    let vm = vmOf();
+    try! vm.host("ui", uiSource);
+    try! vm.implement(
+        "ui",
+        "each",
+        (caller, args) => {
+            var sum = 0;
+            match (args[0]) {
+                .List(xs) => {
+                    for (x in xs) {
+                        match (args[1]) {
+                            .Callback(cb) => {
+                                match (try! caller.invoke(cb, [x])) {
+                                    .Ok(v) => {
+                                        sum += intOf(v);
+                                    }
+                                    _ => { }
+                                }
+                            }
+                            _ => { }
+                        }
+                    }
+                }
+                _ => { }
+            }
+            Value.Int(sum)
+        }
+    );
+    try! vm.implement(
+        "ui",
+        "probe",
+        (caller, args) => {
+            seen.probes += 1;
+            match (args[0]) {
+                .Callback(cb) => Value.Str(described(try! caller.invoke(cb, []))),
+                _ => Value.Str("?"),
+            }
+        }
+    );
+    try! vm.implement(
+        "ui",
+        "nest",
+        (caller, args) => {
+            match (args[1]) {
+                .Callback(cb) => {
+                    match (try! caller.invoke(cb, [args[0]])) {
+                        .Ok(v) => v,
+                        .Panic(p) => {
+                            throw HostFailure { reason = f"{p.code}: {p.message}" };
+                        }
+                        _ => Value.Int(-1),
+                    }
+                }
+                _ => Value.Int(-1),
+            }
+        }
+    );
+    try! vm.implement(
+        "ui",
+        "keepIt",
+        (caller, args) => {
+            match (args[0]) {
+                .Callback(cb) => {
+                    try! caller.keep(cb);
+                    seen.kept = cb;
+                }
+                _ => { }
+            }
+            Value.Void
+        }
+    );
+    try! vm.implement(
+        "ui",
+        "lend",
+        (caller, args) => {
+            match (args[0]) {
+                .Callback(cb) => {
+                    seen.lent = cb;
+                }
+                _ => { }
+            }
+            seen.caller = caller;
+            Value.Void
+        }
+    );
+    try! vm.implement(
+        "ui",
+        "again",
+        (_, _args) => {
+            var said = "no instance";
+            if (let inst = seen.inst) {
+                said = "";
+                try {
+                    inst.call("one", [], Budget { });
+                } catch (e: InstanceMisuse) {
+                    said = e.message();
+                }
+                if (let kept = seen.kept) {
+                    try {
+                        inst.invoke(kept, [Value.Str("x")], Budget { });
+                    } catch (e: InstanceMisuse) {
+                        said = f"{said}; {e.message()}";
+                    }
+                }
+            }
+            Value.Str(said)
+        }
+    );
+    return vm;
+}
+
+fn ready(vm: Vm, source: string, allow: string[] = []): Instance {
+    let inst = try! vm.load("t.lyrs", source, allow);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn result(inst: Instance, name: string, args: Value[] = [], budget: Budget = Budget { }): Value {
+    return match (try! inst.call(name, args, budget)) {
+        .Ok(v) => v,
+        .Panic(p) => Value.Str(f"{p.code}: {p.message}"),
+        _ => Value.Str("no value"),
+    };
+}
+
+// the message of the host's mistake `run` makes; "taken" where it is none
+fn misuse(run: fn() -> void throws InstanceMisuse): string {
+    try {
+        run();
+    } catch (e: InstanceMisuse) {
+        return e.message();
+    }
+    return "taken";
+}
+
+fn hostCodes(source: string): string {
+    try {
+        vmOf().host("cb", source);
+    } catch (e: LoadError) {
+        let out = List<string>.new();
+        for (f in e.findings) {
+            if (f.error) {
+                out.push(f.code);
+            }
+        }
+        return if (out.length() == 0) e.message() else out.toArray().join(" ");
+    }
+    return "registered";
+}
+
+@Test
+fn aCallbackRunsInTheHostsFunction(): void {
+    let inst = ready(
+        uiVm(Seen { }),
+        "import host.ui { each }\nfn tenfold(x: int): int = x * 10\npub fn a(): int = each([1, 2, 3], tenfold)\npub fn b(k: int): int = each([1, 2], (x: int) => x + k)\n"
+    );
+    assertEq(intOf(result(inst, "a")), 60);
+    // a closure takes what it captured along
+    assertEq(intOf(result(inst, "b", [Value.Int(5)])), 13);
+}
+
+@Test
+fn aCallbackThrowsToTheHost(): void {
+    let inst = ready(
+        uiVm(Seen { }),
+        "import host.ui { probe }\nstruct Oops :: Error {\n    fn message(): string = \"oops\"\n}\nfn bad(): int throws Oops {\n    throw Oops { }\n}\npub fn a(): string = probe(bad)\n"
+    );
+    // the error is the callback's result; the host's function decides, and this one returns it
+    let got = strOf(result(inst, "a"));
+    assertTrue(got.startsWith("error ") && got.contains("Oops"), got);
+}
+
+@Test
+fn aCallbackThatWaitsIsAPanic(): void {
+    let seen = Seen { };
+    let inst = ready(
+        uiVm(seen),
+        "import host.ui { probe }\nvar hits = 0\nfn napper(): int {\n    sleep(Duration.ofMillis(5))\n    hits += 1\n    return 1\n}\nfn giver(): int {\n    yieldNow()\n    hits += 1\n    return 2\n}\nfn plain(): int = 3\npub fn a(): string = probe(napper)\npub fn b(): string = probe(giver)\npub fn c(): string = probe(plain)\npub fn d(): int {\n    sleep(Duration.ofMillis(20))\n    return hits\n}\n"
+    );
+    let why = "LYS-RT0901: a callback the host calls in its function must end there: it would wait";
+    assertEq(strOf(result(inst, "a")), why);
+    assertEq(strOf(result(inst, "b")), why);
+    // what waited never goes on: not after its sleep, not from the queue it gave way to
+    assertEq(intOf(result(inst, "d")), 0);
+    // the instance goes on
+    assertEq(strOf(result(inst, "c")), "ok 3");
+}
+
+@Test
+fn aCallbackThatWaitedTakesNothing(): void {
+    let inst = ready(
+        uiVm(Seen { }),
+        "import host.ui { probe }\nlet ch = Channel<int>.new(1)\nfn taker(): int = ch.recv() ?? -1\npub fn a(): string = probe(taker)\npub fn b(): int {\n    ch.send(7)\n    return ch.recv() ?? -1\n}\n"
+    );
+    assertEq(
+        strOf(result(inst, "a")),
+        "LYS-RT0901: a callback the host calls in its function must end there: it would wait"
+    );
+    // the callback waits on the channel no more: what is sent goes to whoever receives next
+    assertEq(intOf(result(inst, "b")), 7);
+}
+
+@Test
+fn theCallsBudgetHoldsACallback(): void {
+    let seen = Seen { };
+    let inst = ready(
+        uiVm(seen),
+        "import host.ui { probe }\nfn spin(): int {\n    var i = 0\n    while (i < 1000) {\n        i += 1\n    }\n    return i\n}\nfn pad(s: string): string = s\npub fn a(): string {\n    let s = probe(spin)\n    return pad(s)\n}\nfn quitter(): int {\n    exit(3)\n    return 0\n}\npub fn q(): string = probe(quitter)\n",
+        ["os"]
+    );
+    // the call's fuel ends in the callback: the callback ends, the call halts after the host's
+    // function, which runs once
+    match (try! inst.call("a", [], Budget { fuel = 50 })) {
+        .Suspended => { }
+        _ => assertTrue(false, "the call did not halt"),
+    }
+    match (try! inst.resume(Budget { })) {
+        .Ok(v) => assertEq(
+            strOf(v),
+            "LYS-RT0901: a callback the host calls in its function must end there: the call's budget ended in it"
+        ),
+        _ => assertTrue(false, "the call did not end"),
+    }
+    assertEq(seen.probes, 1);
+    // `exit` in a callback ends no instance
+    assertEq(
+        strOf(result(inst, "q")),
+        "LYS-RT0901: a callback the host calls in its function must end there: it called exit"
+    );
+    assertEq(seen.probes, 2);
+    assertEq(strOf(result(inst, "a")), "ok 1000");
+}
+
+@Test
+fn callbacksNestToADepth(): void {
+    let inst = ready(
+        uiVm(Seen { }),
+        "import host.ui { nest }\nfn down(n: int): int = if (n == 0) 0 else nest(n - 1, down) + 1\npub fn a(n: int): int = nest(n, down)\nfn boom(n: int): int = [1][n]\npub fn b(): int = nest(5, boom)\n"
+    );
+    assertEq(intOf(result(inst, "a", [Value.Int(10)])), 10);
+    let deep = strOf(result(inst, "a", [Value.Int(200)]));
+    assertTrue(deep.startsWith("LYS-RT0900: host.ui.nest failed: "), deep);
+    assertTrue(deep.contains("LYS-RT0006: stack overflow: callbacks nest in 64"), deep);
+    // a callback's panic is its result; the host's function decides
+    let boom = strOf(result(inst, "b"));
+    assertTrue(boom.startsWith("LYS-RT0900: host.ui.nest failed: LYS-RT"), boom);
+    assertEq(intOf(result(inst, "a", [Value.Int(3)])), 3);
+}
+
+@Test
+fn aKeptCallbackIsCalledLater(): void {
+    let seen = Seen { };
+    let inst = ready(
+        uiVm(seen),
+        "import host.ui { keepIt }\nvar calls = 0\nfn shout(s: string): string {\n    calls += 1\n    sleep(Duration.ofMillis(1))\n    var i = 0\n    while (i < 100) {\n        i += 1\n    }\n    return s + \"!\"\n}\npub fn a() {\n    keepIt(shout)\n}\npub fn count(): int = calls\n"
+    );
+    result(inst, "a");
+    if (let kept = seen.kept) {
+        // a call of its own: it may wait
+        assertEq(described(try! inst.invoke(kept, [Value.Str("hi")], Budget { })), "ok hi!");
+        // and the budget halts it for `resume`
+        assertEq(
+            described(try! inst.invoke(kept, [Value.Str("yo")], Budget { fuel = 10 })),
+            "suspended"
+        );
+        assertEq(described(try! inst.resume(Budget { })), "ok yo!");
+        assertEq(intOf(result(inst, "count")), 2);
+        assertEq(
+            misuse(
+                () => {
+                    try inst.invoke(kept, [Value.Int(1)], Budget { });
+                }
+            ),
+            "argument 1 of the callback is not a Boundary.Str"
+        );
+        try! inst.release(kept);
+        assertEq(
+            misuse(
+                () => {
+                    try inst.invoke(kept, [Value.Str("hi")], Budget { });
+                }
+            ),
+            "a callback the host did not keep, or released"
+        );
+        // another instance has its own callbacks
+        let other = ready(uiVm(Seen { }), "pub fn one(): int = 1\n");
+        assertEq(
+            misuse(
+                () => {
+                    try other.invoke(kept, [Value.Str("hi")], Budget { });
+                }
+            ),
+            "a callback of another instance"
+        );
+    } else {
+        assertTrue(false, "nothing kept");
+    }
+}
+
+@Test
+fn theHostsMistakesWithCallbacks(): void {
+    let seen = Seen { };
+    let inst = ready(
+        uiVm(seen),
+        "import host.ui { lend, keepIt, again }\nfn one(): int = 1\nfn same(s: string): string = s\npub fn a() {\n    lend(one)\n}\npub fn b(): string {\n    keepIt(same)\n    return again()\n}\n"
+    );
+    seen.inst = inst;
+    result(inst, "a");
+    // a lent callback goes with its function of the host, and the caller with it
+    if (let lent = seen.lent) {
+        assertEq(
+            misuse(
+                () => {
+                    try inst.invoke(lent, [], Budget { });
+                }
+            ),
+            "a callback the host did not keep, or released"
+        );
+    }
+    if (let caller = seen.caller) {
+        if (let lent = seen.lent) {
+            assertEq(
+                misuse(
+                    () => {
+                        try caller.invoke(lent, []);
+                    }
+                ),
+                "a caller whose function of the host returned"
+            );
+        }
+    }
+    // while a call runs, the instance takes no other call
+    assertEq(
+        strOf(result(inst, "b")),
+        "a call on an instance that is running a call; a callback's call on an instance that is running a call"
+    );
+}
+
+@Test
+fn aCallbackOfTheHostIsChecked(): void {
+    assertEq(hostCodes("fn f(): fn() -> int\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn f(gs: (fn() -> int)[]): int\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn f(g: fn(Map<(int, int), int>) -> int): int\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn f(g: fn() -> Map<(int, int), int>): int\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn f(g: fn(fn() -> int) -> int): int\n"), "LYS-SEM0907");
+    assertEq(hostCodes("struct S {\n    g: fn() -> int\n}\n"), "LYS-SEM0907");
+    assertEq(hostCodes("fn f(g: fn(int, string) -> bool, h: fn() -> void): int\n"), "registered");
+}
+
+@Test
+fn bytecodeKeepsTheCallbacks(): void {
+    let vm = uiVm(Seen { });
+    let bytes = try! vm.compile(
+        "t.lyrs",
+        "import host.ui { each }\npub fn a(): int = each([4, 5], (x: int) => x * x)\n"
+    );
+    let inst = try! vm.loadTrusted(bytes);
+    try! inst.init(Budget { });
+    assertEq(intOf(result(inst, "a")), 41);
+}

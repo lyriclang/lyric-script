@@ -200,9 +200,10 @@ fn toolchainAllows(toolchain: string, version: string): bool {
 
 /// The version a `toolchain` field names: its text after `>=`.
 fn toolchainVersion(toolchain: string): string {
-    return if (toolchain.startsWith(
-        ">="
-    )) toolchain[2..toolchain.length()].toString().trim().toString()
+    return if (toolchain.startsWith(">=")) toolchain[2..toolchain.length()]
+        .toString()
+        .trim()
+        .toString()
         else toolchain;
 }
 
@@ -726,7 +727,7 @@ class ManifestReader {
     mut fn offsetOf(line: int, column: int): int {
         var n = 1;
         var k = 0;
-        for (b in this.source.toBytes()) {
+        for (b in this.source.bytes()) {
             if (n == line) {
                 break;
             }
@@ -741,7 +742,7 @@ class ManifestReader {
     /// The offset where the line holding `start` ends.
     mut fn lineEnd(start: int): int {
         var k = 0;
-        for (b in this.source.toBytes()) {
+        for (b in this.source.bytes()) {
             if (k >= start && b == 10u8) {
                 return k;
             }

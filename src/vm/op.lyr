@@ -6,7 +6,7 @@
 /// One operation. The dispatch is a `match` over this enum, which the C compiler turns into a
 /// single jump table.
 @Layout(uint8)
-pub enum Op :: [Variants, Equatable] {
+pub enum Op :: Variants & Equatable {
     // Moves and constants.
     MoveS,
     MoveR,

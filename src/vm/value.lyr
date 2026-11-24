@@ -1,0 +1,536 @@
+//! What a host passes to a script and gets back (design/v1, 01 S11; 11 Emb; S8a3): the scalars,
+//! `string`, lists, the host's structs and maps by a scalar key, as values of the host's — a copy,
+//! never a reference into the instance (01 S9). The host's classes cross as handles (S8f).
+import std.collections { List, Map, Set };
+import std.hash { DefaultHasher, FixedHasher };
+import lyric_script.vm.heap {
+    HeapRef,
+    HostHandle,
+    nil,
+    ScriptArray,
+    ScriptIndex,
+    ScriptObject,
+    ScriptString,
+};
+import lyric_script.vm.module { Boundary, HostStruct, MapBoundary, Module };
+
+/// A value at a call's boundary.
+pub enum Value :: Equatable & Debug {
+    Void,
+    Int(int),
+    Float(float),
+    Bool(bool),
+    Char(char),
+    Str(string),
+    List(Value[]),
+    Handle(Handle),
+    Struct(StructValue),
+    /// A function value of the script a function of the host was given (S8f3c): the host calls it
+    /// through its `Caller` or the instance.
+    Callback(Callback),
+    /// A map of the script (S8g2): a copy, its entries in the order the map walks them.
+    Map(MapValue);
+
+    /// A value a function of the host's is given, read as the type of Lyric 5's it stands for (S8i;
+    /// `@ScriptApi`): each throws a `HostFailure` where the value is of another type, which the VM's
+    /// check of a call's arguments rules out.
+    pub fn asInt(): int throws HostFailure {
+        return match (this) {
+            .Int(i) => i,
+            _ => throw HostFailure { reason = f"{this:?} is no int" },
+        };
+    }
+
+    pub fn asFloat(): float throws HostFailure {
+        return match (this) {
+            .Float(f) => f,
+            _ => throw HostFailure { reason = f"{this:?} is no float" },
+        };
+    }
+
+    pub fn asBool(): bool throws HostFailure {
+        return match (this) {
+            .Bool(b) => b,
+            _ => throw HostFailure { reason = f"{this:?} is no bool" },
+        };
+    }
+
+    pub fn asChar(): char throws HostFailure {
+        return match (this) {
+            .Char(c) => c,
+            _ => throw HostFailure { reason = f"{this:?} is no char" },
+        };
+    }
+
+    pub fn asStr(): string throws HostFailure {
+        return match (this) {
+            .Str(s) => s,
+            _ => throw HostFailure { reason = f"{this:?} is no string" },
+        };
+    }
+
+    /// A list, each element read with `read`.
+    pub fn asList<T>(read: fn(Value) -> T throws HostFailure): T[] throws HostFailure {
+        return try listRead(this, read);
+    }
+
+    /// A map, each key read with `key` and each value with `value`.
+    pub fn asMap<K :: [Hashable], V>(
+        key: fn(Value) -> K throws HostFailure,
+        value: fn(Value) -> V throws HostFailure
+    ): Map<K, V> throws HostFailure {
+        return try mapRead(this, key, value);
+    }
+}
+
+// `Value.asList` and `Value.asMap`, outside the enum, whose variants `List` and `Map` hide the
+// collections' types within it
+fn listRead<T>(v: Value, read: fn(Value) -> T throws HostFailure): T[] throws HostFailure {
+    let xs = match (v) {
+        .List(xs) => xs,
+        _ => throw HostFailure { reason = f"{v:?} is no list" },
+    };
+    let out = List<T>.new();
+    for (x in xs) {
+        out.push(try read(x));
+    }
+    return out.toArray();
+}
+
+fn mapRead<K :: [Hashable], V>(
+    v: Value,
+    key: fn(Value) -> K throws HostFailure,
+    value: fn(Value) -> V throws HostFailure
+): Map<K, V> throws HostFailure {
+    let m = match (v) {
+        .Map(m) => m,
+        _ => throw HostFailure { reason = f"{v:?} is no map" },
+    };
+    let out = Map<K, V>.new();
+    var k = 0;
+    while (k < m.keys.length()) {
+        out[try key(m.keys[k])] = try value(m.values[k]);
+        k += 1;
+    }
+    return out;
+}
+
+/// A map at the boundary (S8g2): its keys and the value of each, in the map's order.
+pub struct MapValue :: Equatable & Debug {
+    pub keys: Value[],
+    pub values: Value[],
+}
+
+/// A function value of the script at the boundary (S8f3c): its instance's number and its own in that
+/// instance's table — no reference into the instance (01 S9).
+pub struct Callback :: Equatable & Debug {
+    pub instance: int,
+    pub id: int,
+}
+
+/// A struct of the host at the boundary (S8f3b): its name, `game.Pos`, and its fields' values in the
+/// order the struct declares them — a copy either way.
+pub struct StructValue :: Equatable & Debug {
+    pub type: string,
+    pub fields: Value[],
+}
+
+/// A handle of the host at the boundary (S8f3a): its class, `game.Sprite`, and the number the host
+/// gave it. The host keeps the table of what its numbers stand for; a script never makes one.
+pub struct Handle :: Equatable & Debug {
+    pub type: string,
+    pub id: int,
+}
+
+/// What a function of the host could not do (S8f2): a panic of the script, `LYS-RT0900`, its reason
+/// in the message.
+pub struct HostFailure :: [Error] {
+    pub reason: string,
+    /// An error of the host its function declares it throws (S8f3b): the script gets it thrown;
+    /// `null` for a failure, which is a panic.
+    pub error: ?Value = null,
+
+    pub fn message(): string {
+        return this.reason;
+    }
+}
+
+/// Whether `v` is a value of the type `b` — every element of a list and every field of a struct
+/// too; `m` names the host's structs.
+fn fits(v: Value, b: Boundary, m: Module): bool {
+    return match (v) {
+        .Void => b == Boundary.Void,
+        .Int(_) => b == Boundary.Int,
+        .Float(_) => b == Boundary.Float,
+        .Bool(_) => b == Boundary.Bool,
+        .Char(_) => b == Boundary.Char,
+        .Str(_) => b == Boundary.Str,
+        .Handle(h) => b == Boundary.Handle(h.type),
+        // a callback goes to the host only, and back as nothing (S8f3c)
+        .Callback(_) => false,
+        .Struct(sv) => {
+            if (b != Boundary.Struct(sv.type)) {
+                return false;
+            }
+            if (let e = hostStructOf(m, sv.type)) {
+                if (sv.fields.length() != e.bounds.length()) {
+                    return false;
+                }
+                var k = 0;
+                while (k < e.bounds.length()) {
+                    if (!fits(sv.fields[k], e.bounds[k], m)) {
+                        return false;
+                    }
+                    k += 1;
+                }
+                return true;
+            }
+            false
+        }
+        .List(xs) => match (b) {
+            .List(e) => {
+                for (x in xs) {
+                    if (!fits(x, e.value, m)) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => false,
+        },
+        .Map(mv) => match (b) {
+            .Map(mb) => mapFits(mv, mb, m),
+            _ => false,
+        },
+    };
+}
+
+// whether `mv` is a map of the type `mb` the module builds: as many values as keys, each of its
+// type, no key twice
+fn mapFits(mv: MapValue, mb: MapBoundary, m: Module): bool {
+    if (mapDescOf(m, mb) < 0 || mv.keys.length() != mv.values.length()) {
+        return false;
+    }
+    let seen = Set<string>.new();
+    var k = 0;
+    while (k < mv.keys.length()) {
+        if (!fits(mv.keys[k], mb.key.value, m) || !fits(mv.values[k], mb.value.value, m)) {
+            return false;
+        }
+        let shown = f"{mv.keys[k]:?}";
+        if (seen.contains(shown)) {
+            return false;
+        }
+        seen.insert(shown);
+        k += 1;
+    }
+    return true;
+}
+
+/// The descriptor of the instance of `Map` the module builds a map of the type `mb` as; -1 where
+/// the program names none.
+fn mapDescOf(m: Module, mb: MapBoundary): int {
+    for (e in m.maps) {
+        if (e.type == mb) {
+            return e.desc;
+        }
+    }
+    return -1;
+}
+
+/// The state `a` with the word `b` mixed in (S7d1): SipHash-1-3 under the process's key, or, where the
+/// instance has a seed, under the zero key with the seed first (01 S8; S8g1).
+fn mixWord(seed: ?int, a: uint64, b: uint64): uint64 {
+    if (let n = seed) {
+        var h = FixedHasher.new();
+        h.writeUint(n as uint64);
+        h.writeUint(a);
+        h.writeUint(b);
+        return h.finish();
+    }
+    var h = DefaultHasher.new();
+    h.writeUint(a);
+    h.writeUint(b);
+    return h.finish();
+}
+
+/// The state `a` with the bytes of `text` mixed in, under the key `mixWord` takes.
+fn mixText(seed: ?int, a: uint64, text: string): uint64 {
+    if (let n = seed) {
+        var h = FixedHasher.new();
+        h.writeUint(n as uint64);
+        h.writeUint(a);
+        text.hash(&h);
+        return h.finish();
+    }
+    var h = DefaultHasher.new();
+    h.writeUint(a);
+    text.hash(&h);
+    return h.finish();
+}
+
+/// The hash the script gives the key `v` (S8g2), as the prelude's `hash` of its type writes it into a
+/// new hasher: an `int` and a `char` as a word, a `bool` as its byte, a `string` as its text.
+fn keyHash(v: Value, seed: ?int): uint64 {
+    return match (v) {
+        .Int(i) => mixWord(seed, 0, i as uint64),
+        .Char(c) => mixWord(seed, 0, (c as uint32) as uint64),
+        .Bool(b) => mixWord(seed, 0, if (b) 1 else 0),
+        .Str(s) => mixText(seed, 0, s),
+        _ => 0,
+    };
+}
+
+/// The host's struct named `name` in `m`'s table.
+fn hostStructOf(m: Module, name: string): ?HostStruct {
+    for (e in m.hostStructs) {
+        if (e.name == name) {
+            return e;
+        }
+    }
+    return null;
+}
+
+/// The place of `name` among `names`; -1 where it is none.
+fn placeOf(names: string[], name: string): int {
+    var k = 0;
+    while (k < names.length()) {
+        if (names[k] == name) {
+            return k;
+        }
+        k += 1;
+    }
+    return -1;
+}
+
+/// Whether a value of the type `b` lies in a scalar register; else it is a reference.
+fn isScalarAt(b: Boundary): bool {
+    return match (b) {
+        .Int | .Float | .Bool | .Char => true,
+        _ => false,
+    };
+}
+
+/// The bits of a scalar value, as its register holds them.
+fn bitsOf(v: Value): uint64 {
+    return match (v) {
+        .Int(i) => i as uint64,
+        .Float(f) => f.toBits(),
+        .Bool(x) => if (x) 1 else 0,
+        .Char(c) => (c as uint32) as uint64,
+        _ => 0,
+    };
+}
+
+/// A new object of the instance for a value of reference type `b`: a string, a handle, a struct of
+/// the host (S8f3b), or a list whose elements are made the same way.
+fn refOf(v: Value, b: Boundary, m: Module, seed: ?int): HeapRef {
+    match (v) {
+        .Str(text) => {
+            return ScriptString { text = text };
+        }
+        .Handle(h) => {
+            return HostHandle { type = h.type, id = h.id };
+        }
+        .Struct(sv) => {
+            if (let e = hostStructOf(m, sv.type)) {
+                return structOf(sv, e, m, seed);
+            }
+        }
+        .Map(mv) => {
+            match (b) {
+                .Map(mb) => {
+                    return mapOf(mv, mb, m, seed);
+                }
+                _ => { }
+            }
+        }
+        _ => { }
+    }
+    let none: Value[] = [];
+    let xs = match (v) {
+        .List(xs) => xs,
+        _ => none,
+    };
+    let e = match (b) {
+        .List(e) => e.value,
+        _ => Boundary.Other,
+    };
+    return arrayOf(xs, e, m, seed);
+}
+
+// a list of the script of `xs`, its elements of the type `e`
+fn arrayOf(xs: Value[], e: Boundary, m: Module, seed: ?int): ScriptArray {
+    let scalar = isScalarAt(e);
+    let s = List<uint64>.new();
+    let r = List<HeapRef>.new();
+    for (x in xs) {
+        if (scalar) {
+            s.push(bitsOf(x));
+        } else {
+            r.push(refOf(x, e, m, seed));
+        }
+    }
+    return ScriptArray {
+        ns = if (scalar) 1 else 0,
+        nr = if (scalar) 0 else 1,
+        s = s,
+        r = r,
+        n = xs.length(),
+    };
+}
+
+// a map of the script of `mv` (S8g2), as the prelude's `Map` holds one: its keys, values, their
+// hashes — the script's own, under the instance's seed — and which are live in lists, and the index
+// of the places by hash
+fn mapOf(mv: MapValue, mb: MapBoundary, m: Module, seed: ?int): ScriptObject {
+    let d = m.types[mapDescOf(m, mb)];
+    let n = mv.keys.length();
+    let hashes = List<uint64>.new();
+    let live = List<uint64>.new();
+    let ix = ScriptIndex { table = Map<uint64, List<int>>.new() };
+    var k = 0;
+    while (k < n) {
+        let h = keyHash(mv.keys[k], seed);
+        hashes.push(h);
+        live.push(1);
+        if (let places = ix.table.get(h)) {
+            places.push(k);
+        } else {
+            let places = List<int>.new();
+            places.push(k);
+            ix.table.insert(h, places);
+        }
+        k += 1;
+    }
+    let s = List<uint64>.new();
+    for (name in d.scalarFields) {
+        s.push(if (name == "count") n as uint64 else 0);
+    }
+    let r = List<HeapRef>.new();
+    for (name in d.refFields) {
+        let none: HeapRef = nil;
+        r.push(
+            match (name) {
+                "ks" => arrayOf(mv.keys, mb.key.value, m, seed),
+                "vs" => arrayOf(mv.values, mb.value.value, m, seed),
+                "hs" => ScriptArray { ns = 1, nr = 0, s = hashes, r = List<HeapRef>.new(), n = n },
+                "live" => ScriptArray { ns = 1, nr = 0, s = live, r = List<HeapRef>.new(), n = n },
+                "ix" => ix,
+                _ => none,
+            }
+        );
+    }
+    return ScriptObject { typeDesc = d, scalars = s.toArray(), refs = r.toArray() };
+}
+
+/// The value of type `b` whose register holds `bits`.
+fn valueOfBits(b: Boundary, bits: uint64): Value {
+    return match (b) {
+        .Int => Value.Int(bits as int),
+        .Float => Value.Float(float.fromBits(bits)),
+        .Bool => Value.Bool(bits != 0),
+        .Char => Value.Char((bits as uint32) as char),
+        _ => Value.Void,
+    };
+}
+
+/// The object of the struct `sv` of the host, its fields where its descriptor places them.
+fn structOf(sv: StructValue, e: HostStruct, m: Module, seed: ?int): ScriptObject {
+    let d = m.types[e.desc];
+    let s = List<uint64>.new();
+    for (name in d.scalarFields) {
+        let k = placeOf(e.fields, name);
+        s.push(if (k >= 0) bitsOf(sv.fields[k]) else 0);
+    }
+    let r = List<HeapRef>.new();
+    for (name in d.refFields) {
+        let k = placeOf(e.fields, name);
+        r.push(refOf(sv.fields[k], e.bounds[k], m, seed));
+    }
+    return ScriptObject { typeDesc = d, scalars = s.toArray(), refs = r.toArray() };
+}
+
+// the entries of the map `o` that are live, in its order (S8g2)
+fn mapValueOf(o: ScriptObject, mb: MapBoundary, m: Module): Value {
+    let d = o.typeDesc;
+    let ks = o.refs[placeOf(d.refFields, "ks")];
+    let vs = o.refs[placeOf(d.refFields, "vs")];
+    let live = o.refs[placeOf(d.refFields, "live")];
+    let keys = List<Value>.new();
+    let values = List<Value>.new();
+    if (ks is ScriptArray && vs is ScriptArray && live is ScriptArray) {
+        var k = 0;
+        while (k < ks.n) {
+            if (live.s[k] != 0) {
+                keys.push(elementOf(ks, k, mb.key.value, m));
+                values.push(elementOf(vs, k, mb.value.value, m));
+            }
+            k += 1;
+        }
+    }
+    return Value.Map(MapValue { keys = keys.toArray(), values = values.toArray() });
+}
+
+// the element `k` of the list `a`, of the type `e`, copied out
+fn elementOf(a: ScriptArray, k: int, e: Boundary, m: Module): Value {
+    return if (isScalarAt(e)) valueOfBits(e, a.s[k]) else valueOfRef(e, a.r[k], m);
+}
+
+/// The value of type `b` the object `o` is, copied out of the instance.
+fn valueOfRef(b: Boundary, o: HeapRef, m: Module): Value {
+    match (b) {
+        .Str => {
+            if (o is ScriptString) {
+                return Value.Str(o.text);
+            }
+        }
+        .Handle(_) => {
+            if (o is HostHandle) {
+                return Value.Handle(Handle { type = o.type, id = o.id });
+            }
+        }
+        .Struct(name) => {
+            if (o is ScriptObject) {
+                if (let e = hostStructOf(m, name)) {
+                    let d = o.typeDesc;
+                    let out = List<Value>.new();
+                    var k = 0;
+                    while (k < e.fields.length()) {
+                        let f = e.bounds[k];
+                        out.push(
+                            if (isScalarAt(f)) valueOfBits(
+                                f,
+                                o.scalars[placeOf(d.scalarFields, e.fields[k])]
+                            )
+                                else valueOfRef(f, o.refs[placeOf(d.refFields, e.fields[k])], m)
+                        );
+                        k += 1;
+                    }
+                    return Value.Struct(StructValue { type = name, fields = out.toArray() });
+                }
+            }
+        }
+        .Map(mb) => {
+            if (o is ScriptObject) {
+                return mapValueOf(o, mb, m);
+            }
+        }
+        .List(e) => {
+            if (o is ScriptArray) {
+                let out = List<Value>.new();
+                var k = 0;
+                while (k < o.n) {
+                    out.push(
+                        if (isScalarAt(e.value)) valueOfBits(e.value, o.s[k])
+                            else valueOfRef(e.value, o.r[k], m)
+                    );
+                    k += 1;
+                }
+                return Value.List(out.toArray());
+            }
+        }
+        _ => { }
+    }
+    return Value.Void;
+}

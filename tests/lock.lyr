@@ -9,12 +9,12 @@ import lyric_script.lock { LockEntry, base64Of, contentHash, readLock, writeLock
 fn aContentHashIsTheRulesSha256InBase64(): void {
     // the lines sorted by path, whatever order the files come in
     let files = [
-        ("src/lib.lyrs", "fn f(): int = 1\n".toBytes()),
-        ("lyric-script.toml", "[package]\nname = \"geo\"\nversion = \"1.0.0\"\n".toBytes()),
-        ("README.md", "geo\n".toBytes()),
+        ("src/lib.lyrs", "fn f(): int = 1\n".bytes()),
+        ("lyric-script.toml", "[package]\nname = \"geo\"\nversion = \"1.0.0\"\n".bytes()),
+        ("README.md", "geo\n".bytes()),
     ];
     assertEq(contentHash(files), "h1:Z0vs880jeilq+lMCjVl38+vdkmB1AXfX5gFcy5MATIA=");
-    assertEq(base64Of(sha256("".toBytes()[..])), "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
+    assertEq(base64Of(sha256("".bytes()[..])), "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
 }
 
 @Test

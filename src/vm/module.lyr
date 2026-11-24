@@ -106,11 +106,88 @@ pub class Module :: [Identity] {
     errorCause: int = -1,
     /// The rights its imports ask for, each with where (01 S1, S5e): checked when it is loaded.
     var rights: RightUse[] = [],
+    /// The functions a host may call, with the types at their boundary (S8a3).
+    var exports: Callable[] = [],
+    /// The functions of the host's modules, in the order `call.n host` numbers them (S8f2).
+    var hosts: HostDecl[] = [],
+    /// The structs of the host's modules the program names, for the boundary (S8f3b).
+    var hostStructs: HostStruct[] = [],
+    /// The types of map the program names, for the boundary (S8g2).
+    var maps: MapDesc[] = [],
+}
+
+/// A function of a module of the host (S8f2; 11 Hst): its module's name after `host.`, its own,
+/// the types at its boundary. The host gives its implementation when the module is loaded.
+pub struct HostDecl :: [Debug] {
+    pub module: string,
+    pub name: string,
+    pub params: Boundary[],
+    pub result: Boundary,
+    /// The errors of the host it declares it throws (S8f3b; P14).
+    pub throws: Boundary[],
+}
+
+/// A type at a call's boundary between host and script (S8a3): the scalars, `string`, a handle
+/// of the host by its module and class, `game.Sprite` (S8f3a), and lists of them; `Other` for any
+/// other type, which a host does not call with.
+pub enum Boundary :: Equatable & Debug {
+    Void,
+    Int,
+    Float,
+    Bool,
+    Char,
+    Str,
+    List(Box<Boundary>),
+    Handle(string),
+    Struct(string),
+    /// A function value of the script, as a parameter of a function of the host (S8f3c).
+    Fn(FnBoundary),
+    /// A map of the script, as a copy (S8g2).
+    Map(MapBoundary),
+    Other,
+}
+
+/// A map at the boundary (S8g2): its keys' type — `int`, `char`, `bool` or `string` — and its
+/// values'.
+pub struct MapBoundary :: Equatable & Debug {
+    pub key: Box<Boundary>,
+    pub value: Box<Boundary>,
+}
+
+/// A type of map the program names at its boundary (S8g2): its keys' and values' types and the
+/// descriptor of its instance of `Map`, which a map the host gives is built as.
+pub struct MapDesc :: [Debug] {
+    pub type: MapBoundary,
+    pub desc: int,
+}
+
+/// A function type at the boundary (S8f3c): its parameters' types and its result's.
+pub struct FnBoundary :: Equatable & Debug {
+    pub params: Boundary[],
+    pub result: Box<Boundary>,
+}
+
+/// A struct of the host's modules (S8f3b): its name, `game.Pos`; its descriptor among the module's
+/// types; its fields' names and types in the order they are declared.
+pub struct HostStruct :: [Debug] {
+    pub name: string,
+    pub desc: int,
+    pub fields: string[],
+    pub bounds: Boundary[],
+}
+
+/// A function of the entry module a host may call (S8a3): a public one of the top level, not
+/// generic — its place among the module's functions, its parameters' types and its result's.
+pub struct Callable :: [Debug] {
+    pub name: string,
+    pub function: int,
+    pub params: Boundary[],
+    pub result: Boundary,
 }
 
 /// A right a module's import asks for: its class — `file`, `net`, `process`, `os`, `native` —,
 /// the module imported, and the file and line of the import.
-pub struct RightUse :: [Equatable, Debug] {
+pub struct RightUse :: Equatable & Debug {
     pub right: string,
     pub module: string,
     pub path: string,

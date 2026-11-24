@@ -23,13 +23,14 @@ import std.fs {
 import std.os { pid };
 import std.process { Command };
 import std.path { fileName, join, normalize, parent, stem };
-import lyric_script { version };
+import lyric_script.toolchain { version };
+import lyric_script.compiler.ast { ImportDecl };
 import lyric_script.compiler.diagnostic { Diagnostic };
 import lyric_script.compiler.parser { Parsed, parse };
 import lyric_script.cache { cacheRoot };
 import lyric_script.lock { LockEntry, contentHash, lockName, readLock, writeLock };
-import lyric_script.rights { classOf };
-import lyric_script.stdsrc { numbersText, stdBelow, stdPackage, stdSource };
+import lyric_script.rights { classOf, rightNamed };
+import lyric_script.stdsrc { hostPackage, numbersText, stdBelow, stdPackage, stdSource };
 import lyric_script.vm.module { RightUse };
 import lyric_script.package {
     Dep,
@@ -141,6 +142,8 @@ struct LoadOptions {
     only: string[] = [],
     // `lyric-script lock`: a script's lock written beside it (S5d)
     lockFile: bool = false,
+    // the modules a host registered (S8f2): each name after `host.`, and its source
+    hosts: (string, string)[] = [],
 }
 
 /// Reads the program whose entry is `path`, its text `text`.
@@ -190,7 +193,7 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
     let edgeAt = List<List<Diagnostic>>.new();
     var i = 0;
     while (i < l.paths.length()) {
-        let parsed = parse(l.texts[i], i);
+        let parsed = parse(l.texts[i], i, l.pkgOf[i] == hostPackage);
         l.parses.push(parsed);
         let deps = List<int>.new();
         let at = List<Diagnostic>.new();
@@ -205,7 +208,7 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
             // a module of a class of rights asks for it, here (01 S1); one module of the standard
             // library importing another asks for nothing: the table names each one's class (S7h3)
             let right = classOf(name);
-            if (right != null && !l.names[i].startsWith("std.")) {
+            if (right != null && !l.names[i].startsWith("std.") && l.pkgOf[i] != hostPackage) {
                 l.rights.push(
                     RightUse {
                         right = right,
@@ -231,6 +234,24 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
             if (name == "std.collections") {
                 l.collections = true;
                 continue;
+            }
+            // a module the host registered (S8f2; 11 Hst): the command line registers none
+            if (j < 0 && im.path[0] == "host") {
+                let text = hostSource(l.how.hosts, name);
+                if (text == null) {
+                    l.errors.push(
+                        where with {
+                            message = f"no module '{name}': the host registered none of that name",
+                        }
+                    );
+                    continue;
+                }
+                j = l.paths.length();
+                l.paths.push(f"<{name}>");
+                l.texts.push(text);
+                l.names.push(name);
+                l.pkgOf.push(hostPackage);
+                l.subs.push([]);
             }
             if (j < 0 && (im.path[0] == "std" || l.pkgOf[i] == stdPackage)) {
                 // the standard library's modules come with the toolchain (S7a): `std` names no
@@ -330,6 +351,7 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
         edgeAt.push(at);
         i += 1;
     }
+    hostRights(l);
     let state = List<int>.new();
     for (_ in l.paths) {
         state.push(0);
@@ -339,6 +361,89 @@ fn loadProgram(path: string, text: string, how: LoadOptions = LoadOptions { }): 
     l.numbers = namesNumbers(l);
     l.bytes = namesBytes(l);
     return l;
+}
+
+/// The source of the module `host.<…>` named `name` among those a host registered; `null` for none.
+fn hostSource(hosts: (string, string)[], name: string): ?string {
+    for (h in hosts) {
+        let (short, text) = h;
+        if (f"host.{short}" == name) {
+            return text;
+        }
+    }
+    return null;
+}
+
+/// The rights the imports of the host's modules ask for (S8f2; 01 S2): each right `@Requires`
+/// names on what a selective import names, on every function where the module is imported whole;
+/// once per import.
+fn hostRights(l: Loaded): void {
+    var i = 0;
+    while (i < l.parses.length()) {
+        if (l.pkgOf[i] != hostPackage && l.pkgOf[i] != stdPackage) {
+            for (item in l.parses[i].module.items) {
+                let im = match (item) {
+                    .Decl(.Import(im)) => im,
+                    _ => {
+                        continue;
+                    }
+                };
+                let name = im.path.join(".");
+                let j = indexOf(l.names, name);
+                if (im.path[0] != "host" || j < 0) {
+                    continue;
+                }
+                for (right in rightsNamed(l.parses[j], im)) {
+                    l.rights.push(
+                        RightUse {
+                            right = right,
+                            module = name,
+                            path = l.paths[i],
+                            line = im.span.line,
+                        }
+                    );
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+/// The rights the functions of the host's module `host` that `im` imports ask for, each once.
+fn rightsNamed(host: Parsed, im: ImportDecl): string[] {
+    let out = List<string>.new();
+    for (item in host.module.items) {
+        // a function, or a handle with its methods (S8f3a): what the import names asks for the
+        // rights of each
+        let (name, fns) = match (item) {
+            .Decl(.Fn(f)) => (f.name, [f]),
+            .Decl(.Type(t)) => (t.name, t.methods),
+            _ => {
+                continue;
+            }
+        };
+        var named = !im.selective;
+        for (n in im.items) {
+            if (n.name == name) {
+                named = true;
+            }
+        }
+        if (!named) {
+            continue;
+        }
+        for (f in fns) {
+            for (a in f.attributes) {
+                if (a.name == "Requires" && a.args.length() == 1) {
+                    if (let right = rightNamed(a.args[0])) {
+                        if (indexOf(out, right) < 0) {
+                            out.push(right);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return out.toArray();
 }
 
 /// Whether a module loaded names one of std.collections' types or its iterators' members as a
@@ -493,9 +598,9 @@ fn wholeModules(text: string): string[] {
             code.push(line.toString());
         }
     }
-    let rest = code.toArray()[..].join("\n").toBytes();
+    let rest = code.toArray()[..].join("\n").bytes();
     for (word in imported) {
-        if (onlyBeforeADot(rest, word.toBytes())) {
+        if (onlyBeforeADot(rest, word.bytes())) {
             out.push(word);
         }
     }
@@ -517,8 +622,8 @@ fn onlyBeforeADot(b: uint8[], w: uint8[]): bool {
 
 /// Whether `text` holds the member `name` after a receiver that is none of `modules`.
 fn holdsBeyond(text: string, name: string, modules: string[]): bool {
-    let b = text.toBytes();
-    let w = name.toBytes();
+    let b = text.bytes();
+    let w = name.bytes();
     var from = nameAt(b, w, 0);
     while (from >= 0) {
         var start = from;
@@ -566,7 +671,7 @@ fn holdsName(text: string, name: string): bool {
     if (!text.contains(name)) {
         return false;
     }
-    return nameAt(text.toBytes(), name.toBytes(), 0) >= 0;
+    return nameAt(text.bytes(), name.bytes(), 0) >= 0;
 }
 
 /// Whether a module loaded names `Bytes` (S7f5): the type, its error, a string's way there and
@@ -580,7 +685,7 @@ fn namesBytes(l: Loaded): bool {
         }
         if (text.contains("b\"")) {
             var from = 0;
-            let b = text.toBytes();
+            let b = text.bytes();
             while (from + 1 < b.length()) {
                 if (b[from] == 98 && b[from + 1] == 34 && (from == 0 || !wordByte(b[from - 1]))) {
                     return true;
@@ -634,7 +739,7 @@ fn scriptPackages(path: string, text: string, l: Loaded): void {
     let cached = join(
         cacheRoot() ?? parent(path),
         "scripts",
-        hexOf(sha256(toml.toBytes()[..]))[0..32].toString() + ".lock"
+        hexOf(sha256(toml.bytes()[..]))[0..32].toString() + ".lock"
     );
     // the lock beside the script, where there is one or `lock` asks for it; else the cache's
     let lockPath = if (exists(beside) || l.how.lockFile) beside else cached;
@@ -1223,7 +1328,7 @@ fn gitPackage(l: Loaded, w: Wanted): ?Fetched {
         l.exit = 2;
         return null;
     }
-    let key = hexOf(sha256(dep.git.toBytes()[..]))[0..16].toString();
+    let key = hexOf(sha256(dep.git.bytes()[..]))[0..16].toString();
     let repo = join(cache, "git", key);
     var fetched = false;
     if (!exists(repo)) {
@@ -1670,7 +1775,7 @@ fn docError(l: Loaded, doc: int, line: int, code: string, message: string): void
     var start = 0;
     var n = 1;
     var k = 0;
-    for (b in text.toBytes()) {
+    for (b in text.bytes()) {
         if (n == line) {
             break;
         }
@@ -1681,7 +1786,7 @@ fn docError(l: Loaded, doc: int, line: int, code: string, message: string): void
         k += 1;
     }
     var end = start;
-    let bytes = text.toBytes();
+    let bytes = text.bytes();
     while (end < bytes.length() && bytes[end] != 10u8) {
         end += 1;
     }

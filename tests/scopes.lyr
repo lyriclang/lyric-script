@@ -1,0 +1,116 @@
+// Scopes on rights (S8e; Script 01 S1, S3): a grant may name a scope — `file=./data` —, and then
+// the script's file calls reach what lies at or below it, `..` and links resolved; what lies
+// outside is refused as the system refuses, `PermissionDenied`, in the scopes' words.
+import std.fs { createDir, exists, removeAll, tempDir };
+import std.process { Command };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { vmOf };
+import lyric_script.rights { allowed, scopesOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance };
+import lyric_script.vm.value { Value };
+
+let source: string = "import std.fs { readText, tempDir, writeText }\nfn put(p: string): string {\n    try {\n        writeText(p, \"x\")\n        return \"written\"\n    } catch (e: IoError) {\n        return e.message()\n    }\n}\nfn get(p: string): string {\n    try {\n        return readText(p)\n    } catch (e: IoError) {\n        return e.message()\n    }\n}\nfn temp(): string {\n    try {\n        tempDir()\n        return \"made\"\n    } catch (e: IoError) {\n        return e.message()\n    }\n}\n";
+
+fn scoped(scope: string): Instance {
+    let inst = try! vmOf().load("t.lyrs", source, [f"file={scope}"]);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn text(r: CallResult): string {
+    return match (r) {
+        .Ok(.Str(t)) => t,
+        _ => "not ok",
+    };
+}
+
+fn put(inst: Instance, path: string): string {
+    return text(try! inst.call("put", [Value.Str(path)], Budget { }));
+}
+
+@Test
+fn aGrantNamesAScopeForFilesAndTheNetwork(): void {
+    assertEq(
+        allowed("file=./data,net=example.com:443,os") ?? [],
+        ["file=./data", "net=example.com:443", "os"]
+    );
+    assertTrue(allowed("os=x") == null, "a scope on os");
+    assertTrue(allowed("file=") == null, "an empty scope");
+    assertEq(scopesOf(["file=a", "os", "file=b"], false, "file") ?? ["whole"], ["a", "b"]);
+    assertTrue(scopesOf(["file=a", "file"], false, "file") == null, "a whole class beside a scope");
+    assertTrue(scopesOf(["file=a"], true, "file") == null, "every right");
+}
+
+@Test
+fn aFileWithinTheScopeIsReached(): void {
+    let dir = try! tempDir();
+    try! createDir(f"{dir}/in");
+    let inst = scoped(f"{dir}/in");
+    assertEq(put(inst, f"{dir}/in/a.txt"), "written");
+    assertEq(text(try! inst.call("get", [Value.Str(f"{dir}/in/a.txt")], Budget { })), "x");
+    try? removeAll(dir);
+}
+
+@Test
+fn aFileOutsideTheScopeIsRefused(): void {
+    let dir = try! tempDir();
+    try! createDir(f"{dir}/in");
+    let inst = scoped(f"{dir}/in");
+    let said = put(inst, f"{dir}/out.txt");
+    assertTrue(said.contains("outside the scopes this run was given"), said);
+    assertTrue(said.startsWith("permission denied"), said);
+    assertTrue(!exists(f"{dir}/out.txt"), "the refused file was written");
+    try? removeAll(dir);
+}
+
+@Test
+fn aDotDotDoesNotLeaveTheScope(): void {
+    let dir = try! tempDir();
+    try! createDir(f"{dir}/in");
+    let inst = scoped(f"{dir}/in");
+    let said = put(inst, f"{dir}/in/../escape.txt");
+    assertTrue(said.contains("outside the scopes"), said);
+    assertTrue(!exists(f"{dir}/escape.txt"), "a .. left the scope");
+    // a name that only begins as the scope does is not in it
+    let near = put(inst, f"{dir}/in2.txt");
+    assertTrue(near.contains("outside the scopes"), near);
+    try? removeAll(dir);
+}
+
+@Test
+fn underScopesThereIsNoTemporaryDirectory(): void {
+    let dir = try! tempDir();
+    let inst = scoped(dir);
+    let said = text(try! inst.call("temp", [], Budget { }));
+    assertTrue(said.contains("outside the scopes"), said);
+    try? removeAll(dir);
+}
+
+// a link inside the scope that points outside it does not open the outside: the path is resolved
+// before it is compared (needs `ln -s`; where there is none, the test has nothing to show — and
+// where `ln` copies, as MSYS's on Windows does, it has made no link: a directory made in `out`
+// afterwards does not show through it)
+@Test
+fn aLinkDoesNotLeaveTheScope(): void {
+    let dir = try! tempDir();
+    try! createDir(f"{dir}/in");
+    try! createDir(f"{dir}/out");
+    let made = try? Command {
+        program = "ln",
+        args = ["-s", f"{dir}/out", f"{dir}/in/link"],
+    }.status();
+    if (made == null || !made.success()) {
+        try? removeAll(dir);
+        return;
+    }
+    try! createDir(f"{dir}/out/after");
+    if (!exists(f"{dir}/in/link/after")) {
+        try? removeAll(dir);
+        return;
+    }
+    let inst = scoped(f"{dir}/in");
+    let said = put(inst, f"{dir}/in/link/x.txt");
+    assertTrue(said.contains("outside the scopes"), said);
+    assertTrue(!exists(f"{dir}/out/x.txt"), "a link left the scope");
+    try? removeAll(dir);
+}

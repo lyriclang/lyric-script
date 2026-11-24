@@ -5,6 +5,18 @@
 import std.collections { List, Map };
 import lyric_script.vm.module { Module, TypeDesc, fnKind, optionalKind, tupleKind };
 
+/// Numbers `module`'s descriptors by their place, once: a module its VM shares among instances
+/// (Messpunkt 4) is numbered before the first of them, which then only read the numbers.
+pub fn numberTypes(module: Module): void {
+    var k = 0;
+    for (t in module.types) {
+        if (t.id != k) {
+            t.id = k;
+        }
+        k += 1;
+    }
+}
+
 /// The descriptors of a run, by template and arguments.
 pub class Interning {
     table: Map<string, TypeDesc>,
@@ -14,12 +26,8 @@ pub class Interning {
     /// them known by their key.
     pub static fn of(module: Module): Interning {
         let it = Interning { table = Map<string, TypeDesc>.new() };
-        var k = 0;
-        for (t in module.types) {
-            t.id = k;
-            k += 1;
-        }
-        it.next = k;
+        numberTypes(module);
+        it.next = module.types.length();
         for (t in module.types) {
             if (t.template != -1) {
                 let key = keyOf(t.template, t.args);

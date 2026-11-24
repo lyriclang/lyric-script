@@ -4,7 +4,21 @@
 //! no file of this toolchain, and the reader says so rather than guessing (01 S10).
 import std.collections { List };
 import std.core { variants };
-import lyric_script.vm.module { Function, Handler, Module, RightUse, ReturnKind, TypeDesc };
+import lyric_script.vm.module {
+    Boundary,
+    Callable,
+    FnBoundary,
+    MapBoundary,
+    MapDesc,
+    Function,
+    Handler,
+    HostDecl,
+    HostStruct,
+    Module,
+    RightUse,
+    ReturnKind,
+    TypeDesc,
+};
 import lyric_script.vm.op { Instr, Op };
 
 /// The first bytes of every file: `LYSB`.
@@ -120,11 +134,158 @@ fn encode(module: Module, format: int, version: string, sourceHash: string): uin
         }
         w.text(f.file);
     }
+    // the functions a host may call, with the types at their boundary (S8a3)
+    w.word(module.exports.length());
+    for (x in module.exports) {
+        w.text(x.name);
+        w.word(x.function);
+        w.word(x.params.length());
+        for (b in x.params) {
+            writeBoundary(w, b);
+        }
+        writeBoundary(w, x.result);
+    }
+    // the functions of the host's modules (S8f2)
+    w.word(module.hosts.length());
+    for (h in module.hosts) {
+        w.text(h.module);
+        w.text(h.name);
+        w.word(h.params.length());
+        for (b in h.params) {
+            writeBoundary(w, b);
+        }
+        writeBoundary(w, h.result);
+        w.word(h.throws.length());
+        for (b in h.throws) {
+            writeBoundary(w, b);
+        }
+    }
+    // the structs of the host's modules (S8f3b)
+    w.word(module.hostStructs.length());
+    for (e in module.hostStructs) {
+        w.text(e.name);
+        w.word(e.desc);
+        w.texts(e.fields);
+        for (b in e.bounds) {
+            writeBoundary(w, b);
+        }
+    }
+    // the types of map at the boundary (S8g2)
+    w.word(module.maps.length());
+    for (e in module.maps) {
+        writeBoundary(w, Boundary.Map(e.type));
+        w.word(e.desc);
+    }
     return w.out.toArray();
 }
 
-/// The module in `bytes`, when their head names this format, version and source.
-fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Module throws NotOurs {
+/// A type at the boundary as its tag, a list's element after it (S8a3).
+fn writeBoundary(w: Writer, b: Boundary): void {
+    match (b) {
+        .Void => w.byte(0),
+        .Int => w.byte(1),
+        .Float => w.byte(2),
+        .Bool => w.byte(3),
+        .Char => w.byte(4),
+        .Str => w.byte(5),
+        .List(e) => {
+            w.byte(6);
+            writeBoundary(w, e.value);
+        }
+        .Other => w.byte(7),
+        .Handle(name) => {
+            w.byte(8);
+            w.text(name);
+        }
+        .Struct(name) => {
+            w.byte(9);
+            w.text(name);
+        }
+        .Fn(f) => {
+            w.byte(10);
+            w.half(f.params.length());
+            for (p in f.params) {
+                writeBoundary(w, p);
+            }
+            writeBoundary(w, f.result.value);
+        }
+        .Map(mb) => {
+            w.byte(11);
+            writeBoundary(w, mb.key.value);
+            writeBoundary(w, mb.value.value);
+        }
+    }
+}
+
+/// A type at the boundary as `writeBoundary` wrote it.
+fn readBoundary(r: Reader): Boundary throws NotOurs {
+    return match (try r.byte()) {
+        0 => Boundary.Void,
+        1 => Boundary.Int,
+        2 => Boundary.Float,
+        3 => Boundary.Bool,
+        4 => Boundary.Char,
+        5 => Boundary.Str,
+        6 => Boundary.List(Box<Boundary> { value = try readBoundary(r) }),
+        7 => Boundary.Other,
+        8 => Boundary.Handle(try r.text()),
+        9 => Boundary.Struct(try r.text()),
+        10 => {
+            let n = try r.half();
+            let params = List<Boundary>.new();
+            var k = 0;
+            while (k < n) {
+                params.push(try readBoundary(r));
+                k += 1;
+            }
+            Boundary.Fn(
+                FnBoundary {
+                    params = params.toArray(),
+                    result = Box<Boundary> { value = try readBoundary(r) },
+                }
+            )
+        }
+        11 => {
+            let key = try readBoundary(r);
+            Boundary.Map(
+                MapBoundary {
+                    key = Box<Boundary> { value = key },
+                    value = Box<Boundary> { value = try readBoundary(r) },
+                }
+            )
+        }
+        _ => throw NotOurs { reason = "a type at the boundary that is none" },
+    };
+}
+
+/// The source's hash the head of `bytes` names, where they are bytecode of this format and version;
+/// `null` where they are not. It reads the head alone (S8, Messpunkt 4): a VM keeps the module of
+/// bytecode it decoded by it.
+pub fn headKey(bytes: uint8[], format: int, version: string): ?string {
+    let r = Reader { bytes = bytes };
+    try {
+        for (b in magic) {
+            if (r.byte() != b) {
+                return null;
+            }
+        }
+        if (r.word() != format || r.text() != version) {
+            return null;
+        }
+        return r.text();
+    } catch (_: NotOurs) {
+        return null;
+    }
+}
+
+/// The module in `bytes`, when their head names this format, version and source; `sourceHash`
+/// `null` takes the bytecode of any source, as `loadTrusted` does (01 S10; S8a2).
+fn decode(
+    bytes: uint8[],
+    format: int,
+    version: string,
+    sourceHash: ?string
+): Module throws NotOurs {
     let r = Reader { bytes = bytes };
     for (b in magic) {
         if (try r.byte() != b) {
@@ -137,7 +298,8 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
     if (try r.text() != version) {
         throw NotOurs { reason = "another compiler's bytecode" };
     }
-    if (try r.text() != sourceHash) {
+    let hash = try r.text();
+    if (sourceHash != null && hash != sourceHash) {
         throw NotOurs { reason = "the bytecode of another source" };
     }
     let name = try r.text();
@@ -304,6 +466,83 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         );
         n -= 1;
     }
+    let exports = List<Callable>.new();
+    var nx = try r.word();
+    while (nx > 0) {
+        let xname = try r.text();
+        let function = try r.word();
+        let params = List<Boundary>.new();
+        var np = try r.word();
+        while (np > 0) {
+            params.push(try readBoundary(r));
+            np -= 1;
+        }
+        let result = try readBoundary(r);
+        exports.push(
+            Callable {
+                name = xname,
+                function = function,
+                params = params.toArray(),
+                result = result,
+            }
+        );
+        nx -= 1;
+    }
+    let hosts = List<HostDecl>.new();
+    var nh = try r.word();
+    while (nh > 0) {
+        let hmodule = try r.text();
+        let hname = try r.text();
+        let params = List<Boundary>.new();
+        var np = try r.word();
+        while (np > 0) {
+            params.push(try readBoundary(r));
+            np -= 1;
+        }
+        let result = try readBoundary(r);
+        let throws = List<Boundary>.new();
+        var nt = try r.word();
+        while (nt > 0) {
+            throws.push(try readBoundary(r));
+            nt -= 1;
+        }
+        hosts.push(
+            HostDecl {
+                module = hmodule,
+                name = hname,
+                params = params.toArray(),
+                result = result,
+                throws = throws.toArray(),
+            }
+        );
+        nh -= 1;
+    }
+    let hostStructs = List<HostStruct>.new();
+    var ns = try r.word();
+    while (ns > 0) {
+        let sname = try r.text();
+        let desc = try r.word();
+        let fields = try r.texts();
+        let bounds = List<Boundary>.new();
+        for (_ in fields) {
+            bounds.push(try readBoundary(r));
+        }
+        hostStructs.push(
+            HostStruct { name = sname, desc = desc, fields = fields, bounds = bounds.toArray() }
+        );
+        ns -= 1;
+    }
+    let maps = List<MapDesc>.new();
+    var nm = try r.word();
+    while (nm > 0) {
+        match (try readBoundary(r)) {
+            .Map(mb) => {
+                maps.push(MapDesc { type = mb, desc = try r.word() });
+            }
+            _ => throw NotOurs { reason = "a type of map that is none" },
+        }
+        nm -= 1;
+    }
     if (!r.atEnd()) {
         throw NotOurs { reason = "bytes after the module" };
     }
@@ -318,6 +557,10 @@ fn decode(bytes: uint8[], format: int, version: string, sourceHash: string): Mod
         cancelledType = cancelledType,
         channelClosedType = channelClosedType,
         rights = rights.toArray(),
+        exports = exports.toArray(),
+        hosts = hosts.toArray(),
+        hostStructs = hostStructs.toArray(),
+        maps = maps.toArray(),
     };
 }
 
@@ -360,7 +603,7 @@ class Writer {
     }
 
     mut fn text(s: string): void {
-        let bytes = s.toBytes();
+        let bytes = s.bytes();
         this.word(bytes.length());
         for (b in bytes) {
             this.out.push(b);

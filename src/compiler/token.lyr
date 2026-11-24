@@ -2,7 +2,7 @@
 //! as a token of its own, and the frontmatter of a single script.
 
 /// What a token is.
-enum TokenKind :: [Equatable, Debug] {
+enum TokenKind :: Equatable & Debug {
     // Words and literals.
     Ident,
     Keyword,

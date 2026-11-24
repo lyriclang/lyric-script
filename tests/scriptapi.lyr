@@ -1,0 +1,121 @@
+// The helpers of the code `@ScriptApi` makes (S8i): a value read as Lyric 5's type, a value made
+// from it, and a function's error as its failure. The macro itself runs in the example host
+// `examples/hosts/lyric5`, which the CI runs: `lyric5 test` expands no macro (lyric#745).
+import std.collections { Map };
+import std.test { assertEq };
+import lyric_script.embed { vmOf };
+import lyric_script.vm.interp { Budget, Caller };
+import lyric_script.vm.value { HostFailure, MapValue, Value };
+
+struct Oops :: [Error] {
+    pub fn message(): string {
+        return "the pot boiled over";
+    }
+}
+
+fn failure(body: fn() -> void throws HostFailure): string {
+    try {
+        body();
+    } catch (e: HostFailure) {
+        return e.reason;
+    }
+    return "none";
+}
+
+@Test
+fn aValueIsReadAsItsType(): void {
+    assertEq(try! Value.Int(4).asInt(), 4);
+    assertEq(try! Value.Float(2.5).asFloat(), 2.5);
+    assertEq(try! Value.Bool(true).asBool(), true);
+    assertEq(try! Value.Char('é').asChar(), 'é');
+    assertEq(try! Value.Str("x").asStr(), "x");
+    let xs = Value.List([Value.List([Value.Int(1)]), Value.List([])]);
+    let read = try! xs.asList((v) => try v.asList((w) => try w.asInt()));
+    assertEq(read.length(), 2);
+    assertEq(read[0][0], 1);
+    let m = Value.Map(
+        MapValue { keys = [Value.Str("a"), Value.Str("b")], values = [Value.Int(1), Value.Int(2)] }
+    );
+    let mm = try! m.asMap((k) => try k.asStr(), (v) => try v.asInt());
+    assertEq(mm["b"] ?? -1, 2);
+    assertEq(
+        failure(
+            () => {
+                try Value.Str("x").asInt();
+            }
+        ),
+        "Value.Str(\"x\") is no int"
+    );
+}
+
+// a caller of a function of the host's, to make values with
+fn aCaller(): Caller {
+    let vm = vmOf();
+    try! vm.host("t", "fn f(): int\n");
+    let box = CallerBox { };
+    try! vm.implement(
+        "t",
+        "f",
+        (caller, _args) => {
+            box.caller = caller;
+            return Value.Int(0);
+        }
+    );
+    let inst = try! vm.load("t.lyrs", "import host.t { f }\npub fn g(): int = f()\n");
+    try! inst.init(Budget { });
+    try! inst.call("g", [], Budget { });
+    return box.caller ?? panic("no caller");
+}
+
+class CallerBox {
+    var caller: ?Caller = null,
+}
+
+@Test
+fn aValueIsMadeFromItsType(): void {
+    let c = aCaller();
+    assertEq(c.ofInt(3), Value.Int(3));
+    assertEq(c.ofStr("s"), Value.Str("s"));
+    assertEq(c.nothing(), Value.Void);
+    let lists: int[][] = [[1], []];
+    assertEq(
+        c.ofList(lists, (xs) => c.ofList(xs, (x) => c.ofInt(x))),
+        Value.List([Value.List([Value.Int(1)]), Value.List([])])
+    );
+    let m = Map<string, bool>.new();
+    m["k"] = true;
+    assertEq(
+        c.ofMap(m, (k) => c.ofStr(k), (v) => c.ofBool(v)),
+        Value.Map(MapValue { keys = [Value.Str("k")], values = [Value.Bool(true)] })
+    );
+}
+
+@Test
+fn anErrorIsTheFunctionsFailure(): void {
+    let c = aCaller();
+    assertEq(
+        failure(
+            () => {
+                try c.attempt(
+                    () => {
+                        throw Oops { };
+                    }
+                );
+            }
+        ),
+        "the pot boiled over"
+    );
+    // a failure of the function's own stays as it is
+    assertEq(
+        failure(
+            () => {
+                try c.attempt(
+                    () => {
+                        throw HostFailure { reason = "kept" };
+                    }
+                );
+            }
+        ),
+        "kept"
+    );
+}

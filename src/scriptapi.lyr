@@ -1,0 +1,299 @@
+//! `@ScriptApi` (design/v1, 11 Hst; S8i): a host of Lyric 5's writes the functions it gives its
+//! scripts once, as static methods of a struct, and the macro makes the rest — the `.lyrs` file of
+//! the module `host.<name>` and the registration with a VM.
+//!
+//! ```lyric
+//! import std.io { print };
+//! import lyric_script.embed { vmOf };
+//! import lyric_script.scriptapi { ScriptApi };
+//!
+//! @ScriptApi("calc")
+//! struct Calc {
+//!     static fn twice(n: int): int {
+//!         return n * 2;
+//!     }
+//! }
+//!
+//! fn main(): void throws Error {
+//!     try Calc.register(vmOf());
+//!     print(Calc.scriptSource());
+//! }
+//! ```
+//!
+//! ```output
+//! fn twice(n: int): int
+//! ```
+//!
+//! A script then imports `host.calc { twice }`. The registration takes the VM's type from
+//! `lyric_script.embed`, which a host that has a VM imports.
+//!
+//! The types it takes: `int`, `float`, `bool`, `char`, `string`, `void`, and lists and maps of
+//! them. An error a method throws is the function's failure, a panic of the script with its
+//! message. Structs, handles, callbacks and errors of the host's are written in a `.lyrs` file by
+//! hand (S8f).
+import std.collections { List };
+import std.core { OnMethod };
+import std.string { StringBuilder };
+import std.syntax {
+    Attribute,
+    Decl,
+    FnDecl,
+    Literal,
+    Span,
+    StructDecl,
+    Type,
+    Visibility,
+    error,
+    parseDecls,
+};
+
+/// The right a method of a `@ScriptApi` struct asks for (01 S2; S8f2): its function carries
+/// `@Requires("…")` in the module's file, and a script that imports it needs that right.
+pub struct Requires :: [OnMethod] {
+    pub right: string,
+}
+
+/// Keeps the struct `target` and adds `scriptSource()`, the `.lyrs` file of the module
+/// `host.<module>` with a function for each static method, and `register(vm)`, which registers
+/// that module with `vm` and each method as its function's implementation.
+pub macro ScriptApi(target: StructDecl, module: Literal): Decl[] {
+    let name = match (module) {
+        .Str(s) => s,
+        _ => error(target.name.span, "@ScriptApi takes the module's name, as \"game\""),
+    };
+    let owner = target.name.name;
+    let file = StringBuilder.new();
+    let registrations = StringBuilder.new();
+    for (m in target.members) {
+        match (m) {
+            .Fn(f) => {
+                if (!f.isStatic) {
+                    error(f.name.span, "@ScriptApi gives a script static methods only");
+                }
+                file.append(declarationOf(f));
+                registrations.append(registrationOf(owner, name, f));
+            }
+            _ => { }
+        }
+    }
+    let text = file.toString();
+    let vis = if (target.visibility == Visibility.Pub) "pub " else "";
+    let generated = parseDecls(
+        f"extend {owner} {{\n"
+            + f"    {vis}static fn scriptSource(): string {{\n"
+            + f"        return {quoted(text)};\n"
+            + "    }\n"
+            + f"    {vis}static fn register(vm: Vm): void throws Error {{\n"
+            + f"        try vm.host({quoted(name)}, {quoted(text)});\n"
+            + registrations.toString()
+            + "    }\n"
+            + "}\n"
+    );
+    return [Decl.Struct(target), withVm(generated[0])];
+}
+
+// the generated `extend` with the parameter of `register` of the type `Vm` of lyric_script.embed,
+// which the site does not import
+fn withVm(d: Decl): Decl {
+    let vm = Type.Named(["Vm"], [], [], "lyric_script.embed", Span.none());
+    return match (d) {
+        .Extend(e) => {
+            let methods = List<FnDecl>.new();
+            for (f in e.methods) {
+                if (f.name.name == "register") {
+                    let p = f.params[0];
+                    methods.push(f with { params = [p with { type = vm }] });
+                } else {
+                    methods.push(f);
+                }
+            }
+            return Decl.Extend(e with { methods = methods.toArray() });
+        }
+        _ => d,
+    };
+}
+
+// the declaration of the function `f` gives a script, its `@Requires` before it
+fn declarationOf(f: FnDecl): string {
+    let out = StringBuilder.new();
+    for (a in f.attributes) {
+        if (a.path.length() == 1 && a.path[0] == "Requires") {
+            out.append(f"@Requires({quoted(requiredBy(a))})\n");
+        }
+    }
+    let params = List<string>.new();
+    for (p in f.params) {
+        params.push(f"{p.name.name}: {scriptType(p.type)}");
+    }
+    out.append(f"fn {f.name.name}({params.toArray().join(", ")})");
+    if (let r = f.ret) {
+        out.append(f": {scriptType(r)}");
+    }
+    out.append("\n");
+    return out.toString();
+}
+
+// the right an `@Requires("…")` names
+fn requiredBy(a: Attribute): string {
+    for (field in a.fields) {
+        match (field.value) {
+            .Literal(.Str(s), _) => {
+                return s;
+            }
+            _ => { }
+        }
+    }
+    return error(a.span, "@Requires names its right, as @Requires(\"saves\")");
+}
+
+// a type a script has, as written; one the macro does not take is its error
+fn scriptType(t: Type): string {
+    match (t) {
+        .Named(path, args, _, _, span) => {
+            if (path.length() == 1) {
+                let n = path[0];
+                if (args.length() == 0
+                    && (n == "int"
+                        || n == "float"
+                        || n == "bool"
+                        || n == "char"
+                        || n == "string"
+                        || n == "void")) {
+                    return n;
+                }
+                if (n == "Map" && args.length() == 2) {
+                    return f"Map<{keyType(args[0])}, {scriptType(args[1])}>";
+                }
+            }
+            return error(
+                span,
+                f"@ScriptApi takes int, float, bool, char, string, void, lists and maps of them; not '{t.toSource()}'"
+            );
+        }
+        .Array(element, _, _) => {
+            return f"{scriptType(element.value)}[]";
+        }
+        _ => {
+            return error(
+                spanOf(t),
+                f"@ScriptApi takes int, float, bool, char, string, void, lists and maps of them; not '{t.toSource()}'"
+            );
+        }
+    }
+}
+
+// a map's key: int, char, bool or string (S8g2)
+fn keyType(t: Type): string {
+    let s = scriptType(t);
+    if (s == "int" || s == "char" || s == "bool" || s == "string") {
+        return s;
+    }
+    return error(
+        spanOf(t),
+        f"a map at the boundary has keys of int, char, bool or string; not '{s}'"
+    );
+}
+
+fn spanOf(t: Type): Span {
+    return match (t) {
+        .Named(_, _, _, _, span) => span,
+        .Optional(_, span) => span,
+        .Array(_, _, span) => span,
+        .Tuple(_, _, span) => span,
+        .Fn(_, _, _, _, span) => span,
+        .Throwing(_, _, span) => span,
+        _ => Span.none(),
+    };
+}
+
+// the statement that registers the method `f` of `owner` as the function of `host.<module>`
+fn registrationOf(owner: string, module: string, f: FnDecl): string {
+    let args = List<string>.new();
+    var k = 0;
+    while (k < f.params.length()) {
+        args.push(readOf(f"args[{k}]", f.params[k].type, 0));
+        k += 1;
+    }
+    let call = f"{owner}.{f.name.name}({args.toArray().join(", ")})";
+    // a value read, or a method that throws, needs a 'try'
+    let mark = if (f.params.length() > 0 || f.throws != null) "try " else "";
+    let isVoid = match (f.ret) {
+        null => true,
+        .Named(path, _, _, _, _) => path.length() == 1 && path[0] == "void",
+        _ => false,
+    };
+    let body = if (isVoid) f"() => {{\n            {mark}{call};\n            return caller.nothing();\n        }}"
+        else f"() => {mark}{makeOf(call, f.ret!, 0)}";
+    return f"        try vm.implement({quoted(module)}, {quoted(f.name.name)}, (caller, args) => try caller.attempt({body}));\n";
+}
+
+// the expression that reads the value `e` as the type `t`; `depth` names the lambdas' parameters
+fn readOf(e: string, t: Type, depth: int): string {
+    let s = scriptType(t);
+    match (t) {
+        .Array(element, _, _) => {
+            let v = f"v{depth}";
+            return f"{e}.asList(({v}) => try {readOf(v, element.value, depth + 1)})";
+        }
+        .Named(path, args, _, _, _) => {
+            if (path[0] == "Map") {
+                let k = f"k{depth}";
+                let v = f"v{depth}";
+                return f"{e}.asMap(({k}) => try {readOf(k, args[0], depth + 1)}, ({v}) => try {readOf(v, args[1], depth + 1)})";
+            }
+        }
+        _ => { }
+    }
+    return match (s) {
+        "int" => f"{e}.asInt()",
+        "float" => f"{e}.asFloat()",
+        "bool" => f"{e}.asBool()",
+        "char" => f"{e}.asChar()",
+        _ => f"{e}.asStr()",
+    };
+}
+
+// the expression that makes the value of `e`, of the type `t`, for the script
+fn makeOf(e: string, t: Type, depth: int): string {
+    let s = scriptType(t);
+    match (t) {
+        .Array(element, _, _) => {
+            let x = f"x{depth}";
+            return f"caller.ofList({e}, ({x}) => {makeOf(x, element.value, depth + 1)})";
+        }
+        .Named(path, args, _, _, _) => {
+            if (path[0] == "Map") {
+                let k = f"k{depth}";
+                let v = f"v{depth}";
+                return f"caller.ofMap({e}, ({k}) => {makeOf(k, args[0], depth + 1)}, ({v}) => {makeOf(v, args[1], depth + 1)})";
+            }
+        }
+        _ => { }
+    }
+    return match (s) {
+        "int" => f"caller.ofInt({e})",
+        "float" => f"caller.ofFloat({e})",
+        "bool" => f"caller.ofBool({e})",
+        "char" => f"caller.ofChar({e})",
+        _ => f"caller.ofStr({e})",
+    };
+}
+
+// `s` as a string literal of Lyric 5's
+fn quoted(s: string): string {
+    let out = StringBuilder.new();
+    out.append("\"");
+    for (c in s.chars()) {
+        if (c == '\\') {
+            out.append("\\\\");
+        } else if (c == '"') {
+            out.append("\\\"");
+        } else if (c == '\n') {
+            out.append("\\n");
+        } else {
+            out.append(c);
+        }
+    }
+    out.append("\"");
+    return out.toString();
+}

@@ -1,0 +1,139 @@
+//! A host of Lyric 5's (design/v1, 11 Emb a, Hst; S8i): a game that gives its mods the module
+//! `host.game`, written once as the static methods of a struct — `@ScriptApi` makes the `.lyrs`
+//! file and the registration. A mod runs under a budget: one that loops forever is halted, and the
+//! game goes on; one that asks for a right the game does not give does not load.
+import std.collections { Map };
+import std.io { println };
+import lyric_script.embed { LoadError, vmOf };
+import lyric_script.scriptapi { Requires, ScriptApi };
+import lyric_script.vm.interp { Budget, CallResult, Instance };
+import lyric_script.vm.value { Value };
+
+/// What the game knows of its world.
+class World {
+    var score: int = 0,
+}
+
+let world: World = World { };
+
+@ScriptApi("game")
+struct Game {
+    /// Says `text` in the game's log.
+    static fn say(text: string) {
+        println(f"mod: {text}");
+    }
+
+    static fn score(): int {
+        return world.score;
+    }
+
+    static fn add(points: int): int {
+        world.score += points;
+        return world.score;
+    }
+
+    static fn tally(words: string[]): Map<string, int> {
+        let m = Map<string, int>.new();
+        for (w in words) {
+            m[w] = (m[w] ?? 0) + 1;
+        }
+        return m;
+    }
+
+    static fn ranks(scores: int[]): int[] {
+        let out = [0] * scores.length();
+        var k = 0;
+        while (k < scores.length()) {
+            out[k] = scores[k] / 10;
+            k += 1;
+        }
+        return out;
+    }
+
+    @Requires("cheats")
+    static fn setScore(n: int) {
+        world.score = n;
+    }
+
+    static fn crash(): int throws GameError {
+        throw GameError { };
+    }
+}
+
+pub struct GameError :: [Error] {
+    pub fn message(): string {
+        return "the level is gone";
+    }
+}
+
+let mod: string = """
+import host.game { add, crash, ranks, say, score, tally }
+pub fn onTick(n: int): int {
+    say(f"tick {n}")
+    return add(n * 10)
+}
+pub fn words(): int = tally(["a", "b", "a"])["a"] ?? 0
+pub fn top(): int[] = ranks([score(), 15])
+pub fn spin(): int {
+    var i = 0
+    while (true) {
+        i += 1
+    }
+    return i
+}
+pub fn broken(): int = crash()
+""";
+
+let cheat: string = """
+import host.game { setScore }
+pub fn win() {
+    setScore(1000000)
+}
+""";
+
+// what a call gave, as the game shows it
+fn shown(r: CallResult): string {
+    return match (r) {
+        .Ok(v) => f"{v:?}",
+        .Panic(p) => f"panic {p.code}: {p.message}",
+        .Suspended => "halted by its budget",
+        .Aborted => "aborted",
+        _ => "something else",
+    };
+}
+
+fn call(inst: Instance, name: string, args: Value[], budget: Budget): string {
+    try {
+        return shown(inst.call(name, args, budget));
+    } catch (e: Error) {
+        return f"the host's mistake: {e.message()}";
+    }
+}
+
+fn main(): void {
+    let vm = vmOf();
+    try! Game.register(vm);
+    println("host.game:");
+    println(Game.scriptSource());
+    let inst = try! vm.load("mod.lyrs", mod);
+    try! inst.init(Budget { });
+    var n = 1;
+    while (n <= 3) {
+        println(f"onTick({n}) = {call(inst, "onTick", [Value.Int(n)], Budget { fuel = 1000 })}");
+        n += 1;
+    }
+    println(f"words() = {call(inst, "words", [], Budget { fuel = 1000 })}");
+    println(f"top() = {call(inst, "top", [], Budget { fuel = 1000 })}");
+    println(f"spin() = {call(inst, "spin", [], Budget { fuel = 100000 })}");
+    println(f"abort: {shown(try! inst.abort())}");
+    let again = try! vm.load("mod.lyrs", mod);
+    try! again.init(Budget { });
+    println(f"broken() = {call(again, "broken", [], Budget { })}");
+    try {
+        vm.load("cheat.lyrs", cheat);
+        println("the cheat loaded");
+    } catch (e: LoadError) {
+        println(f"the cheat: {e.message()}");
+    }
+    println(f"score = {world.score}");
+}

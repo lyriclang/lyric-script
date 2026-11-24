@@ -2,7 +2,7 @@
 // statements and declarations, line ends as statement ends, initializers by a capital name, and a
 // fault that gives up one statement and not the file.
 import std.collections { List };
-import std.core { StringBuilder, repeatText };
+import std.core { StringBuilder };
 import std.test { assertEq };
 import lyric_script.compiler.parser { parse };
 import lyric_script.compiler.sexpr { showModule };
@@ -231,7 +231,7 @@ fn nested(n: int): string {
 fn nestingHasABound(): void {
     assertEq(errs(nested(60)), []);
     assertEq(errs(nested(300)), ["LYS-PAR0045"]);
-    assertEq(errs("let x = " + repeatText("!", 300) + "true"), ["LYS-PAR0045"]);
+    assertEq(errs("let x = " + "!".repeat(300) + "true"), ["LYS-PAR0045"]);
 }
 
 @Test

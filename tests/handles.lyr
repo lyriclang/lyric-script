@@ -1,0 +1,248 @@
+// The host's handles (S8f3a; 11 Hst, 11 V3): a class of a module of the host without fields, its
+// methods the host's; its value at the boundary is the host's number, whose meaning the host holds.
+import std.collections { List };
+import std.test { assertEq, assertTrue };
+import lyric_script.embed { HostMisuse, LoadError, Vm, vmOf };
+import lyric_script.vm.interp { Budget, CallResult, Instance };
+import lyric_script.vm.value { Handle, Value };
+
+let gameSource: string = "class Sprite {\n    fn x(): float\n    fn moveBy(dx: float): void\n    @Requires(\"draws\")\n    fn draw(): void\n    static fn spawn(x: float): Sprite\n}\nfn sprites(): Sprite[]\nfn named(s: Sprite): string\nfn stranger(): Sprite\n";
+
+fn floatOf(v: Value): float {
+    return match (v) {
+        .Float(f) => f,
+        _ => -1.0,
+    };
+}
+
+fn idOf(v: Value): int {
+    return match (v) {
+        .Handle(h) => h.id,
+        _ => -1,
+    };
+}
+
+fn sprite(id: int): Value {
+    return Value.Handle(Handle { type = "game.Sprite", id = id });
+}
+
+// a VM with `host.game`, whose sprites are places in a list of the host's
+fn gameVm(): Vm {
+    let vm = vmOf();
+    try! vm.host("game", gameSource);
+    let xs = List<float>.new();
+    try! vm.implement(
+        "game",
+        "Sprite.spawn",
+        (_, args) => {
+            xs.push(floatOf(args[0]));
+            sprite(xs.length() - 1)
+        }
+    );
+    try! vm.implement("game", "Sprite.x", (_, args) => Value.Float(xs[idOf(args[0])]));
+    try! vm.implement(
+        "game",
+        "Sprite.moveBy",
+        (_, args) => {
+            let k = idOf(args[0]);
+            xs[k] = xs[k] + floatOf(args[1]);
+            Value.Void
+        }
+    );
+    try! vm.implement("game", "Sprite.draw", (_, _args) => Value.Void);
+    try! vm.implement(
+        "game",
+        "sprites",
+        (_, _args) => {
+            let out = List<Value>.new();
+            var k = 0;
+            while (k < xs.length()) {
+                out.push(sprite(k));
+                k += 1;
+            }
+            Value.List(out.toArray())
+        }
+    );
+    try! vm.implement("game", "named", (_, args) => Value.Str(f"sprite {idOf(args[0])}"));
+    try! vm.implement(
+        "game",
+        "stranger",
+        (_, _args) => Value.Handle(Handle { type = "game.Other", id = 0 })
+    );
+    return vm;
+}
+
+fn ready(vm: Vm, source: string, allow: string[] = []): Instance {
+    let inst = try! vm.load("t.lyrs", source, allow);
+    try! inst.init(Budget { });
+    return inst;
+}
+
+fn result(inst: Instance, name: string, args: Value[] = []): Value {
+    return match (try! inst.call(name, args, Budget { })) {
+        .Ok(v) => v,
+        .Panic(p) => Value.Str(f"{p.code}: {p.message}"),
+        _ => Value.Str("no value"),
+    };
+}
+
+fn loadError(vm: Vm, source: string, allow: string[] = []): ?LoadError {
+    try {
+        vm.load("t.lyrs", source, allow);
+    } catch (e: LoadError) {
+        return e;
+    }
+    return null;
+}
+
+// the codes of a load error's error findings, joined; "loaded" where it loaded
+fn codesOf(e: ?LoadError): string {
+    if (let found = e) {
+        let out = List<string>.new();
+        for (f in found.findings) {
+            if (f.error) {
+                out.push(f.code);
+            }
+        }
+        return if (out.length() == 0) found.message() else out.toArray().join(" ");
+    }
+    return "loaded";
+}
+
+fn hostCodes(name: string, source: string): string {
+    try {
+        vmOf().host(name, source);
+    } catch (e: LoadError) {
+        return codesOf(e);
+    }
+    return "registered";
+}
+
+@Test
+fn aHandleCarriesTheHostsState(): void {
+    let inst = ready(
+        gameVm(),
+        "import host.game { Sprite }\npub fn a(): float {\n    let s = Sprite.spawn(1.5)\n    s.moveBy(2.0)\n    return s.x()\n}\n",
+        ["draws"]
+    );
+    assertEq(floatOf(result(inst, "a")), 3.5);
+    // the host's state lives on between calls
+    assertEq(floatOf(result(inst, "a")), 3.5);
+}
+
+@Test
+fn aHandleCrossesTheBoundary(): void {
+    let inst = ready(
+        gameVm(),
+        "import host.game { Sprite, sprites, named }\npub fn make(x: float): Sprite = Sprite.spawn(x)\npub fn where(s: Sprite): float = s.x()\npub fn count(): int = sprites().length()\npub fn name(s: Sprite): string = named(s)\n",
+        ["draws"]
+    );
+    let made = result(inst, "make", [Value.Float(4.0)]);
+    assertTrue(made == sprite(0), "the host's own number comes back");
+    result(inst, "make", [Value.Float(7.0)]);
+    assertEq(floatOf(result(inst, "where", [sprite(1)])), 7.0);
+    assertEq(result(inst, "count"), Value.Int(2));
+    assertEq(result(inst, "name", [made]), Value.Str("sprite 0"));
+}
+
+@Test
+fn aHandleOfAnotherClassIsRefused(): void {
+    let vm = gameVm();
+    let inst = ready(
+        vm,
+        "import host.game { stranger, Sprite }\npub fn a(): int {\n    stranger()\n    return 1\n}\npub fn where(s: Sprite): int = 1\n",
+        ["draws"]
+    );
+    assertEq(
+        result(inst, "a"),
+        Value.Str("LYS-RT0900: host.game.stranger gave a value of another type than it declares")
+    );
+    var refused = false;
+    try {
+        inst.call("where", [Value.Handle(Handle { type = "game.Other", id = 0 })], Budget { });
+    } catch (_: Error) {
+        refused = true;
+    }
+    assertTrue(refused, "a handle of another class is no argument");
+}
+
+@Test
+fn aScriptMakesNoHandle(): void {
+    let vm = gameVm();
+    assertEq(
+        codesOf(
+            loadError(
+                vm,
+                "import host.game { named, Sprite }\npub fn a(): string = named(Sprite { })\n",
+                ["draws"]
+            )
+        ),
+        "LYS-SEM0909"
+    );
+    // a handle has no `==`: what makes two the same is the host's to say
+    assertEq(
+        codesOf(
+            loadError(
+                vm,
+                "import host.game { sprites }\npub fn a(): bool = sprites()[0] == sprites()[1]\n"
+            )
+        ),
+        "LYS-SEM0059"
+    );
+}
+
+@Test
+fn aHandleIsChecked(): void {
+    assertEq(hostCodes("a", "class C {\n    x: int\n}\n"), "LYS-SEM0907");
+    assertEq(hostCodes("b", "class C<T> {\n    fn f(): int\n}\n"), "LYS-SEM0907");
+    // the conformance is refused; that it stays unmet follows (SEM0020)
+    assertEq(
+        hostCodes("c", "class C :: [Display] {\n    fn toString(): string\n}\n"),
+        "LYS-SEM0907 LYS-SEM0020"
+    );
+    assertEq(
+        hostCodes("d", "class C {\n    fn f(): int {\n        return 1\n    }\n}\n"),
+        "LYS-SEM0907"
+    );
+    assertEq(
+        hostCodes("e", "class C {\n    fn f(m: Map<(int, int), int>): int\n}\n"),
+        "LYS-SEM0907"
+    );
+    assertEq(hostCodes("f", "class C {\n    fn f(): int\n}\nfn g(c: C): C\n"), "registered");
+}
+
+@Test
+fn aMethodAsksForItsRight(): void {
+    let vm = gameVm();
+    // naming the handle asks for the rights of its methods; a function alone asks for its own
+    let e = loadError(vm, "import host.game { Sprite }\npub fn a(): int = 1\n");
+    assertEq(codesOf(e), "the script asks for rights it was not given: draws");
+    assertEq(codesOf(loadError(vm, "import host.game { named }\npub fn a(): int = 1\n")), "loaded");
+}
+
+@Test
+fn aMethodsImplementationIsNamedByItsClass(): void {
+    let vm = vmOf();
+    try! vm.host("w", "class C {\n    fn f(): int\n}\n");
+    try {
+        vm.implement("w", "f", (_, _args) => Value.Int(1));
+        assertTrue(false, "a method by its own name alone");
+    } catch (e: HostMisuse) {
+        assertEq(e.message(), "'host.w' declares no function 'f'");
+    }
+    try! vm.implement("w", "C.f", (_, _args) => Value.Int(1));
+}
+
+@Test
+fn anAttributeStandsBeforeAMethod(): void {
+    let vm = vmOf();
+    assertEq(
+        codesOf(loadError(vm, "class C {\n    @Bogus\n    fn f(): int = 1\n}\n")),
+        "LYS-SEM0011"
+    );
+    assertEq(
+        codesOf(loadError(vm, "class C {\n    @Requires(\"x\")\n    fn f(): int = 1\n}\n")),
+        "LYS-SEM0065"
+    );
+    assertEq(codesOf(loadError(vm, "struct S {\n    @Bogus\n    x: int\n}\n")), "LYS-PAR0042");
+}

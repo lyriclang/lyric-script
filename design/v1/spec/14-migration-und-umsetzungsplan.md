@@ -89,7 +89,7 @@ Spec (Widersprüche zwischen Spec und Compiler bleiben unsichtbar).
 |---|---|---|---|
 | **S11 Werkzeuge I** | `fmt`, `check`, `test` mit Doc-Tests, Diagnosekatalog + `explain` + NDJSON, Lints, `fix --from-lyric5`, `fix --from-4` (Kette), `doc`, `api` (12, 14) | Werkzeuge in der CI; Katalog geprüft | L |
 | **S12 Werkzeuge II** | LSP, DAP, REPL (inkrementell), Editor-Erweiterungen mit zwei Sprachservern, `tree-sitter-lyric-script` (12) | Editor mit Diagnosen, Hover, Debugger; REPL | XL |
-| **S13 Distribution** | `pack` mit vorgebauten Runtimes, `pack --native`, Archive je Tier-1, Kanäle stable/`dev`, minisign, `toolchain` (12) | `dev`-Build zum Herunterladen; `pack`-Binary auf allen Tier-1-Zielen | M |
+| **S13 Distribution** | `pack` mit vorgebauten Runtimes, `pack --native`, Archive je Tier-1 mit dem Kurznamen `lys`, Kanäle stable/`dev`, minisign, `toolchain` (12; `lys` unten) | `dev`-Build zum Herunterladen; `pack`-Binary auf allen Tier-1-Zielen | M |
 
 #### Phase 5 — Release
 
@@ -2938,6 +2938,836 @@ Lehren:
 
 382 Tests, 865 Fälle; Bytecode-Format 47.
 
+## S8 — Slices (Plan, Entwurf 2026-11-09)
+
+Ziel aus der Meilensteintabelle: **Sicherheit und Einbettung** — eine VM, die ein Host hält, mit
+Instanzen, die er unter Rechten und Budget aufruft, aus Lyric 5 und über die C-ABI. Quellen: 01 S1–S6,
+S8–S11 (S7 ist S9); 07 Wait, N6, N8; 11 Co, Thr, Emb, Hst, Perf, std; 06 für `PermissionError` und
+die Ergebnisform; 09 At für `@Requires`. Mit Uhr aus früheren Meilensteinen hierher:
+- Fortsetzen nach `.Suspended` (S1f)
+- `.Error` an der Grenze (S4, E6)
+- Bereiche auf Rechten und Rechte von Host-Modulen (S5)
+- das eingebettete Warten, das Anhalten der Instanz samt Tasks über das Budget, Callbacks aus Natives
+  (S6)
+- die Kostenregeln der älteren Natives (P33) und die Frage, ob Zuteilungen sich addieren (P34)
+- die Fehlermenge einer Host-Implementierung (P14)
+- das Feld `owner` im Objektkopf (S1e)
+
+**Bestand (vor dem Plan gelesen):**
+- Gebaut sind die groben Rechte mit Abfrage, `--allow` und `-A` (17 Regel 1), Fuel, das einen Lauf anhält
+  (S1f), und `charge` für die Natives von S7f–S7h.
+- Es fehlen ganz:
+  - Instanz, `resume`, `abort`, Deadline
+  - Allokationsbudget, Instanz-Seed, Eigentum und tiefe Kopie
+  - Bereiche, Host-Rechte, Host-API
+  - `call`/`start`/`step`, eine Lyric-5-API, eine C-ABI über `lyrs_abi_version` hinaus
+  - Beispiel-Hosts
+
+Der CLI-Lauf ruft heute `run(module, entry, args, fuel, argv)` direkt.
+
+| Slice | Inhalt | Prüfung |
+|---|---|---|
+| **S8a Instanz und Ergebnis** | Paket `lyric_script` als Bibliothek: `Vm` (geteilter, unveränderlicher Code, Cache-Verzeichnis vom Host) und `Instance` (Globals, Scheduler, Ressourcen-Register); `vm.load(source)` übersetzt mit Cache (01 S10) und führt den Top-Level-Code aus; `vm.loadTrusted(bytes)`; `inst.call(name, args)` → `CallResult` `.Ok(v)` · `.Error(e)` (Typname, Meldung, Ursachen, Backtrace) · `.Panic(p)` · `.Suspended` · `.Aborted` · `.Stale` (01 S11); **nach einer Panik bleibt die Instanz benutzbar** (Frames weg, Globals bleiben); Werte an der Grenze: Skalare, `string`, Listen und Maps davon (der Rest über Handles, S8f); der CLI-Lauf geht über dieselbe API | Lyric-5-Tests der API; Konformanz unverändert grün |
+| **S8b Budget** | Fuel **und/oder** Deadline je Aufruf (01 S5a), an denselben Prüfstellen; `.Suspended` hebt Frame-Stack und Tasks auf, `inst.resume(budget)` setzt fort, `inst.abort()` wirkt immer, auch auf geparkte Tasks, ohne `defer`, und schließt die Ressourcen der Instanz (01 S5b, 07 N8); eine angehaltene Instanz nimmt nur `resume`/`abort` an; P34 entscheiden (Zuteilungen addieren sich, oder das Ergebnis sagt, was der nächste Schritt braucht); die Deadline in langen Schleifen der Natives; **P33**: `sort`, `repeat`, `replace`, `split`, `+`, `*` rechnen ab | Fuel-Fälle bis auf die Einheit; Kostenregel je Native mit Test; Anhalten mitten in einem Native nie |
+| **S8c Speicher** | Allokationsbudget je Aufruf (`alloc`, deterministisch, Zähler im Allokationspfad der VM und der Natives; Erschöpfung wie Fuel: `.Suspended` mit Grund) und die Prozessgrenze über Lyric 5s `heap_limit` (01 S6) | Zähler je Allokationsart; Fall über der Grenze |
+| **S8d Warten eingebettet** | `inst.start(f, …)` liefert ein Handle, der Host pumpt mit `inst.step()`; `call` pumpt synchron (07 Wait); dieselbe Mechanik wie `.Suspended`; ein Skript-Callback, den ein Native ruft, darf nicht warten (11 Co: Fehler mit eigenem Code) | Host-Test mit einem wartenden Task; `step` blockiert nie |
+| **S8e Rechte fein** | Bereiche `--allow file=./data`, `net=host:port` (01 S1), geprüft beim Aufruf mit `PermissionError` (06), Pfade normalisiert (Symlinks, `..`, Groß-/Kleinschreibung nach Plattform); dieselben Bereiche über die API | Konformanz in 17 mit Dateien im Fallordner; die bekannten Pfadfallen je ein Fall |
+| **S8f Host-API** | Attribute in Script, nur die Syntax und Art 2 (09 At; aus P43 vorgezogen, `@Test` und Art 1 bleiben bei S11/S10), mit **`@Requires`**; ein Host-Modul als `.lyrs` mit Deklarationen ohne Rumpf (Typen, Handle-Klassen; 11 Hst), `import host.<m>`; Implementierungen nach Namen registriert, beim Laden geprüft (jede Deklaration hat eine); host-definierte Rechte-Tags im selben Mechanismus wie `std` (01 S2); die Fehlermenge einer Host-Implementierung aus ihrer Deklaration (P14); Callbacks des Hosts in Script | Konformanz mit einem Test-Host; fehlende Implementierung = Ladefehler |
+| **S8g Isolation, Determinismus, Threads** | jedes Objekt gehört einer Instanz (`owner`), über die Grenze nur tiefe Kopie oder `string` (01 S9; welche Typen kopierbar sind, Handles nicht — Fehler); der Instanz-Seed setzt den Hasher-Schlüssel (01 S8); eine Instanz wechselt den Thread nur, wenn sie ruht, mehrere Instanzen laufen parallel (11 Thr) | Kopie-Tests; zwei Instanzen auf zwei Threads; gleicher Seed = gleiche Reihenfolge der Hashes |
+| **S8h C-ABI** | `liblyricscript` über `@Export` (11 Emb b): VM und Instanz anlegen und freigeben, laden, aufrufen mit Werten, Ergebnis lesen, Budget, `resume`/`abort`, Rechte, Host-Funktionen als C-Callbacks; Header; die Fehlerform an der C-Grenze | ein C-Test gegen die Bibliothek in CI auf allen Zielen |
+| **S8i `@ScriptApi`** | Makro für Lyric-5-Hosts (Lyric 5 M9b): aus einem annotierten Lyric-5-Modul die `.lyrs`-Datei und die Registrierung (11 Hst) | ein Lyric-5-Host mit generierter API |
+| **Abschluss** | Beispiel-Hosts in C und in Lyric 5 mit einem Mod unter Budget, in CI auf allen Tier-1-Zielen; **Messpunkt 4**: eingebettet VM + kleine Instanz ≤ 5 ms, leere Instanz ≤ 100 KiB, Erwartung vorab; STATUS, PR, CI, Merge, Tag `s8-complete`; Bereichszeilen gegen den Code | Beispiel-Hosts in CI; Bericht Messpunkt 4 |
+
+Reihenfolge: a vor allem (die Instanz trägt alles Weitere); b vor c und d (dieselbe Anhalte-Mechanik);
+e vor f (ein Rechte-Mechanismus); g nach a; h nach a–f; i nach f und h. **Spec**: 13 und 17 wachsen je
+Slice; `PermissionError` und die Ergebnisform gehen nach 06; Attribute nach 02 und 11.
+Austrittskriterium: die Beispiel-Hosts laufen in CI, Messpunkt 4 gemessen.
+
+Offen, vor dem Bau des jeweiligen Slices nach Empfehlung zu entscheiden:
+- die Werte an der Grenze (a)
+- P34 (b)
+- der Grund bei Erschöpfung des Allokationsbudgets (c)
+- welche Typen kopierbar sind (g)
+- die Form des Callbacks in der C-ABI (h)
+
+Größe: L laut Tabelle. Mit neun Slices liegt sie eher an XL; das wird in S8a geprüft, bevor gebaut wird.
+
+**S8a, geteilt (2026-11-12).** Gelesen gegen den Code: Heute lebt der Zustand eines Laufs (`RunShared`:
+Globals, Tasks, Timer, Budget, Deskriptoren) nur während `run`. Eine Funktion im Modul kennt nur die Zahl
+ihrer Slots, nicht ihre Typen. Drei Teile:
+- **S8a1 Instanz:** `Instance` hält ein `RunShared` über Aufrufe hinweg. `inst.init(fuel)` führt den
+  Top-Level-Code aus (07 Top), `inst.call(name, args, fuel)` danach eine Funktion des Einstiegsmoduls als
+  ersten Task dieses Aufrufs. Tasks, die er losgelöst startet, bleiben in der Instanz und laufen beim
+  nächsten Aufruf weiter. **Nach einer Panik bleibt die Instanz benutzbar** (01 S11): Der Aufruf und seine
+  Frames sind weg, Globals und andere Tasks bleiben. Ein `call` vor dem Ende von `init` ist ein Fehler des
+  Hosts (eine Lyric-5-Ausnahme, kein Ergebnis). Der CLI-Lauf geht über die Instanz, damit Konformanz und
+  Tests die API mitprüfen.
+- **S8a2 Laden:** `Vm` mit dem Cache-Verzeichnis des Hosts. `vm.load(name, source, rights)` übersetzt mit
+  Cache (01 S10) und prüft die Rechte gegen die Freigabe des Hosts. Ein Fehler wirft `LoadError` mit den
+  Diagnosen als Werten. `vm.loadTrusted(bytes, rights)` lädt ohne Übersetzen.
+- **S8a3 Werte an der Grenze:** Das Modul trägt eine Tabelle der Exporte, also der öffentlichen
+  Top-Level-Funktionen mit den Typen ihrer Parameter und ihres Ergebnisses. Das ändert das Format.
+  `Value` ist `Void`, `Int`, `Float`, `Bool`, `Char`, `Str` oder `List` davon. Das `CallResult`
+  ist `.Ok(Value)`, `.Error` (Typname, Meldung, Ursachen, Backtrace), `.Panic`, `.Suspended`,
+  `.Aborted` oder `.Stale` (01 S11). Eine Funktion mit einem anderen Typ an der Grenze weist der Aufruf
+  mit einem Fehler des Hosts ab. Maps und Objekte folgen als Handles mit S8g.
+
+Entschieden nach Empfehlung, mit den Alternativen:
+- Der Top-Level-Code läuft über ein **ausdrückliches `init`**, nicht beim Laden: Er kann wie jeder Aufruf
+  anhalten (`.Suspended`) und braucht deshalb dieselbe Ergebnisform. Verworfen: `load` führt ihn aus und
+  wirft bei einer Panik (zwei Formen für ein Ergebnis), oder der erste `call` führt ihn implizit aus (der
+  Host sieht nicht, wessen Budget er zahlt).
+- **Losgelöste Tasks gehören der Instanz**, nicht dem Aufruf. Verworfen: sie am Ende des Aufrufs
+  abzubrechen; ein Mod, der einen Timer startet, braucht sie über den Aufruf hinaus.
+
+**S8a, Ergebnis (2026-11-12).**
+- **S8a1:** `Instance` über einem dauerhaften `RunShared`. `runOn` zerfällt in `newShared`, `callIn` und
+  `schedule`. Zwischen zwei Aufrufen werden beendete Tasks und abgearbeitete Einträge der Warteschlange
+  vergessen, damit eine langlebige Instanz nicht mit ihren Aufrufen wächst. Die CLI läuft über
+  `instanceOf(…).initOutcome`.
+- **S8a2:** `Vm` (`src/embed.lyr`) mit `load`, `compile` und `loadTrusted`. Die Übersetzung mit Diagnosen
+  als Werten (`compileLoaded`) teilen sich die CLI und der Host; die CLI sagt sie nur noch an. Der Cache nimmt
+  einen Ort vom Host (`loadIn`, `storeIn`), und `decode` nimmt mit `null` die Bytes jeder Quelle.
+- **S8a3:** Das Modul trägt die Funktionen, die ein Host rufen darf (`Callable`, Format 48): öffentliche
+  Funktionen der obersten Ebene des Einstiegs, nicht generisch, nicht die oberste Ebene selbst, mit ihren
+  Typen an der Grenze (`Boundary`). `Value` und `CallResult` sind die Formen des Hosts. `init` und `call`
+  sind typisiert; ein Aufruf, den die Exporte nicht tragen, wirft `InstanceMisuse`.
+
+Entschieden nach Empfehlung:
+- **`exit` im eingebetteten Aufruf** ist ein eigenes Ergebnis `.Exit(code)` und beendet die Instanz.
+  Verworfen: als `.Panic` (es ist kein Fehler des Skripts) oder `.Aborted` (das ist die Entscheidung des
+  Hosts).
+- **Der Name `Callable`**, weil `Export` das Attribut der Prelude verdeckt.
+
+Prüfung:
+- 20 neue Tests; insgesamt 402 Tests und 865 Fälle.
+- Spec 13 Regeln 1–3, ohne neue Fälle: Die Einbettung erreicht die CLI nicht und wird von den Unit-Tests
+  geprüft.
+- Zwölf Mutanten: zehn getötet wie vorhergesagt, einer (B4, der Cache wird nie gelesen) überlebt wie
+  vorhergesagt als äquivalent. Einer (C3, eine Liste des Hosts mit falscher Slot-Form) überlebte gegen die
+  Vorhersage: `for` und `length()` lesen eine Liste ohne `ns`/`nr`. Ein Test, der an eine Liste des Hosts
+  anhängt, tötet ihn jetzt.
+
+**S8b, geteilt (2026-11-12).** Gelesen gegen den Code: `runTask` gibt `.Suspended` an sieben Stellen
+zurück (Rücksprünge, Aufrufe, ein Native, das sein Budget nicht bekommt), sichert dort aber den Zustand des
+Tasks nicht, wie es ein Taskwechsel tut. Ein Native, das sein Budget nicht bekommt, setzt den Rest auf -2,
+und der Rest geht verloren (P34). Vier Teile:
+- **S8b1 Fortsetzen:** An jeder Stelle, an der `runTask` anhält, sichert es den Zustand wie beim
+  Taskwechsel, über eine Funktion statt Code in jedem Arm. Der Scheduler stellt den Task an den Kopf der
+  Warteschlange zurück. `inst.resume(budget)` plant weiter. Das Budget wird ein `Budget` statt einer Zahl,
+  damit S8b2 die Deadline anfügen kann, ohne die API zu brechen. **P34: Zuteilungen addieren sich.** Was beim
+  Anhalten übrig war, bleibt und kommt zu dem dazu, was `resume` gibt. Ein Native, das teurer ist als eine
+  Zuteilung, kommt also nach einigen `resume` durch, deterministisch. Verworfen: dem Host sagen, was der
+  nächste Schritt braucht (eine zweite Größe an der Grenze, die er ausrechnen muss). Gemessen wird mit der
+  `.lyrsasm`-Kontrolle (P47).
+- **S8b2 Deadline:** `Budget { fuel, deadline }`. Mit einer Deadline gibt der Scheduler `runTask` das
+  Budget in Scheiben und prüft die Uhr zwischen ihnen und vor jedem Native, das abrechnet. `runTask` bleibt
+  dabei unverändert, und die Uhr wird nicht an jedem Rücksprung gelesen. Die Deadline ist nicht
+  deterministisch (01 S5a). Ein Native prüft sie vor seinem Start, und seine Kostenregel begrenzt, wie weit
+  es darüber hinaus läuft.
+- **S8b3 Abbruch:** `inst.abort()` nimmt einer Instanz, die ruht oder angehalten ist, alle Tasks. Auch
+  geparkte gehen, ohne `defer`. Danach schließt sie die Ressourcen der Instanz: offene Dateien,
+  Verzeichnisse, Kindprozesse, Abonnements. Dafür kommt ein Register je Instanz. Die Instanz endet mit
+  `.Aborted`. Verworfen: Sie bleibt danach benutzbar. Ihre Ressourcen sind dann geschlossen, und Globals,
+  die sie halten, zeigen auf geschlossene Griffe.
+- **S8b4 Kostenregeln (P33):** `sort`, `repeat`, `+` und `*` auf Listen und alle anderen schweren Natives
+  rechnen vor dem Start ab, je mit Test. `replace` und `split` sind Script-Code (std source-first) und
+  zahlen ihr Fuel ohnehin.
+
+**S8b1, Ergebnis (2026-11-13).** Gebaut wie geschnitten: `suspendAt`, das Zurückstellen im Scheduler,
+`carry` und `Budget`. Vier neue Tests; die Tests von S8a nehmen `Budget` statt einer Zahl. Vier Mutanten,
+alle getötet wie vorhergesagt. 406 Tests, 865 Fälle.
+
+Die `.lyrsasm`-Kontrolle (P47), Release gegen S7k1g:
+
+| Programm | Änderung | erwartet |
+|---|---:|---|
+| `fib` | −2,3 % | innerhalb ±1 % |
+| `loop` | −1,4 % | innerhalb ±1 % |
+| `objects` | +2,4 % | innerhalb ±1 % |
+
+Die Vorhersage ist verfehlt: Neun kalte Aufrufe in heißen Armen verschieben die Zuteilung erneut, in beide
+Richtungen; im geometrischen Mittel sind es etwa −0,4 %. Die Funktion ist nötig, das Ergebnis wird
+angenommen und geht als Datenpunkt in P47 ein.
+
+**S8b2–S8b4, Ergebnis (2026-11-13).**
+- **S8b2:** Unter einer Deadline gibt der Scheduler das Fuel in Scheiben zu 10 000 Einheiten
+  (`startBudget`, `refill`). Am Ende einer Scheibe liest er die Uhr. `charge` prüft die Deadline vor jedem
+  Native, das abrechnet, und merkt sich, was es braucht. Eine Scheibe gibt mindestens das. Ein Warten auf
+  Timer oder Natives endet an der Deadline, die Tasks warten weiter. `runTask` bleibt unverändert. Drei
+  Mutanten, alle wie vorhergesagt. Ein vierter, ohne jede Deadline, wurde nicht gefahren: Er lässt einen
+  Test hängen, statt ihn rot zu machen.
+- **S8b3:** `abort` mit einem Register der Dateien, Verzeichnisse und Kinder je Instanz. Was das Skript
+  selbst schließt, wird markiert und zwischen zwei Aufrufen vergessen, sonst wüchse das Register mit jedem
+  geöffneten File. Kinder bleiben bis zum Ende der Instanz im Register. Drei Mutanten: zwei getötet, einer
+  (die Warteschlange bleibt) überlebt wie vorhergesagt als äquivalent, denn die Instanz endet ohnehin.
+- **S8b4 (P33):** `costOf` am Anfang von `callNative` rechnet für Text und Sortieren nach Spec 12
+  Regel 37 ab. Ein Native, das nicht zahlen kann, tut nichts, und `call.n` hält wie bisher an. Drei
+  Mutanten wie vorhergesagt. Die `.lyrsasm`-Kontrolle ist auf 10⁻⁶ gleich mit S8b1:
+  Die Abrechnung außerhalb von `runTask` bewegt die Zuteilung nicht.
+
+Spec: 12 Regel 37, 17 Regeln 2–3. 416 Tests, 865 Fälle. **S8b fertig**; P33 und P34 gebaut.
+
+**S8c, Schnitt (2026-11-13).** Gelesen gegen Lyric 5: Die Laufzeit zählt die Allokationen und Bytes je
+Thread (`lyr_gc_thread_allocated_bytes`) und setzt eine Prozessgrenze (`lyr_gc_set_heap_limit`, der Weg
+von `LyrConfig.heap_limit`).
+
+Entschieden nach Empfehlung:
+- **Das Allokationsbudget liest den Zähler der Laufzeit.** `Budget { alloc }` in Bytes. Wie bei der
+  Deadline gibt der Scheduler Scheiben, liest den Zähler am Ende jeder Scheibe und vor jedem Native, das
+  abrechnet, und hält bei Überschreitung an. `runTask` bleibt unverändert. Ein Aufruf überschreitet
+  höchstens um das, was eine Scheibe oder ein einzelnes Native alloziert.
+  - **Abweichung von 01 S6** („deterministisch, Zähler im Allokationspfad der VM und der Natives"):
+    Gleich ist das Ergebnis, solange der Aufruf nicht auf I/O wartet. Während eines Wartens kann ein
+    Task der Laufzeit auf demselben Thread allozieren.
+  - Verworfen: ein Zähler an jeder Allokationsstelle der VM. Das wäre Code in den heißen Armen (P47), und
+    was ein Native in Lyric 5 alloziert, sähe er trotzdem nicht.
+- **Erschöpfung hält an** wie Fuel und Deadline (`.Suspended`). Der Host fragt `inst.haltedBy()` →
+  `Halt.Fuel`, `.Deadline` oder `.Memory` und entscheidet dann, ob er mit mehr Budget fortsetzt oder
+  abbricht. Verworfen: ein Fehler im Skript (`OutOfMemory`). Das Budget ist eine Grenze des Hosts, nicht
+  des Skripts, und dieselbe Form für alle drei Grenzen hält die API klein.
+- **Die Prozessgrenze:** `setHeapLimit(bytes)` in `lyric_script.embed`, 0 für keine. Sie gilt für den
+  ganzen Prozess, wie in Lyric 5.
+
+**S8c, Ergebnis (2026-11-18).** Gebaut wie geschnitten, mit dem Zähler der Laufzeit, `Halt` und
+`setHeapLimit`.
+- **Fehler, den der eigene Test fand:** Der erste Treffer setzte den Rest auf 0 zurück. Das nächste Lesen,
+  in `refill` gleich nach dem abgewiesenen Native, sah keinen Zuwachs, und der Aufruf lief bis zum Ende
+  weiter. Gefunden mit einer Probe am Aufruf; dieselbe Probe bestätigte, dass der Zähler im Haupt- und in
+  einem gespawnten Task zählt. Seither führt ein eigenes Flag, ob es eine Grenze gibt, und der Rest bleibt
+  negativ, bis `resume` ein neues Budget gibt.
+- Vier Tests, vier Mutanten, alle getötet.
+- Spec 17 Regel 4. 420 Tests, 865 Fälle.
+
+**S8d, Ergebnis (2026-11-18).**
+- **API:** `inst.start(name, args, budget)` und `inst.step(budget?)` geben ein `Step`, `Waiting` oder
+  `Done(CallResult)`. Neue Phase `Started`: Sie nimmt nur `step` und `abort`.
+- **Umsetzung:** Der Scheduler bekommt eine Weiche `pumping`. Ohne sie kehrt er dort zurück, wo `call`
+  warten würde. `runTask` bleibt unberührt.
+- **Entschieden nach Empfehlung:** Ein gestarteter Aufruf, den das Budget anhält, läuft mit
+  `step(Budget)` weiter, sodass ein Host, der nie blockieren darf, auch kein `resume` braucht. Verworfen:
+  ein eigenes `resumeStep` (eine dritte Form für dasselbe).
+- **Callbacks aus Natives** (11 Co, „darf nicht warten") kommen mit der Host-API in S8f: Vorher ruft
+  kein Native ein Skript.
+- **Prüfung:** Fünf Tests, drei Mutanten, alle getötet. Spec 13 Regel 4. 425 Tests, 865 Fälle.
+
+**S8f, geteilt (2026-11-18).** Gelesen gegen den Code: Der Lexer kennt `@` schon als Token, der Parser
+keine Attribute. Es gibt kein Modul des Hosts, keine Funktion ohne Rumpf außerhalb von Interfaces und
+keinen Aufruf, der aus der VM in Lyric 5 zurückführt, außer über die feste Tabelle der Natives. Drei
+Teile:
+- **S8f1 Attribute (Art 2):** `@Name` und `@Name(args)` vor jeder Deklaration, die Argumente als
+  Konstantenausdrücke (09 At). Das AST trägt sie. Der Checker kennt die geschlossene Liste. In S8 ist
+  ihr erstes Glied `@Requires(...)`, die anderen der Liste (P43) kommen mit S11. Ein Name, der nicht
+  auf der Liste steht, ist ein Fehler. Die Daten-Attribute (Art 1) mit ihrer Reflexion kommen mit S10.
+- **S8f2 Module des Hosts:** `vm.host(name, declarations)` meldet ein Modul an, `import host.<name>`
+  löst darauf auf. Ein Modul des Hosts besteht aus Deklarationen ohne Rumpf: Funktionen, Structs und
+  Griffe (`class` ohne Felder, die der Host hält). `@Requires(.custom("saves"))` an einer Funktion oder
+  am Modul gibt ein Recht des Hosts, das wie `std` beim Laden geprüft wird (01 S2). Der Host gibt es mit
+  seinem Namen frei. Die Fehlermenge einer Funktion des Hosts ist ihre Deklaration (P14).
+- **S8f3 Implementierungen:** `vm.implement(module, name, fn(Value[]) -> Value)` registriert nach Namen.
+  Beim Laden muss jede Deklaration, die das Skript importiert, eine Implementierung haben. Der Aufruf
+  aus der VM geht über einen neuen Befehl `call.h` mit der Nummer der Implementierung. Er rechnet wie ein
+  Native ab, und `runTask` wird dabei mit der `.lyrsasm`-Kontrolle gemessen (P47). Ein Callback, also
+  ein Funktionswert des Skripts, den der Host aufruft, läuft als eigener Aufruf der Instanz. Ein solcher
+  Aufruf, den eine Implementierung des Hosts macht, darf nicht warten (11 Co): Er läuft mit `pumping`
+  aus, und ein Warten darin ist ein Fehler mit eigenem Code.
+
+**S8e, Ergebnis (2026-11-18).**
+- **Gebaut:** Bereiche für `file` und `net` in einer Freigabe (`allowed`, `splitGrant`, `scopesOf`). Die
+  Wurzeln der Bereiche von `file` gehen aufgelöst in die Instanz (`fileScopes`). Jede Datei-Native prüft
+  ihre Pfade in ihrem Job, bevor sie handelt (`within`): Der Pfad wird aufgelöst (absolut, Links verfolgt,
+  ein Pfad, der noch nicht existiert, über seinen nächsten vorhandenen Elternpfad) und Teil für Teil
+  verglichen, unter Windows und macOS ohne Groß- und Kleinschreibung. Eine Ablehnung ist `PermissionDenied`
+  mit einem eigenen Code, den die Prelude als „outside the scopes this run was given" ausgibt.
+- **Entschieden nach Empfehlung:**
+  - Eine Ablehnung ist ein `IoError` und kein eigenes `PermissionError`. 01 nennt den Namen, aber 12
+    entscheidet einen einzigen Fehler für I/O, und eine Ablehnung des Bereichs ist dasselbe Scheitern wie die
+    des Systems. Verworfen: ein zweiter Fehlertyp für dieselbe Lage (Regel 2).
+  - Unter Bereichen gibt es keine temporären Dateien oder Verzeichnisse, weil sie außerhalb jedes Bereichs
+    liegen.
+  - Bereiche binden die Aufrufe des Skripts, nicht die Programme, die es startet (`process`).
+- **Die Bereiche von `net`** werden angenommen und gespeichert. Geprüft werden sie mit den Netz-Natives:
+  **Uhr S10**.
+- **Prüfung:**
+  - Sechs Unit-Tests und fünf Konformanzfälle; auf S7 sind vier der fünf Fälle rot, wie vorhergesagt.
+  - Vier Mutanten: drei getötet. J2 (ohne `canonicalize`) überlebte gegen die Vorhersage, weil `absolute`
+    `..` schon lexikalisch auflöst und nur das Verfolgen von Links ungeprüft war. Ein Test mit einem Link
+    nach außen (`ln -s`; wo es das nicht gibt, hat er nichts zu zeigen) tötet ihn jetzt.
+  - Spec 17 Regel 5. 431 Tests, 870 Fälle.
+
+**S8f1, Ergebnis (2026-11-19).**
+- **Gebaut:** Der Parser liest `@Name` und `@Name(args)` vor einer Deklaration, auf eigener Zeile oder
+  davor auf derselben, und hängt sie an Funktion, Typ, Enum oder Interface. Vor allem anderen ist es
+  `LYS-PAR0042`. Der Checker prüft die geschlossene Liste vor dem Deklarieren: ein Name zweimal
+  (`SEM0068`), ein Argument, das kein Literal und keine Variante ohne Nutzlast ist (`SEM0066`),
+  `@Requires` außerhalb eines Moduls des Hosts (`SEM0065`, bis S8f2 also immer), jeder andere Name
+  (`SEM0011`).
+- **Entschieden nach Empfehlung:** Ein Attribut, das nicht auf der Liste steht, ist ein Fehler und keine
+  Warnung, weil eine geschlossene Liste, die Unbekanntes duldet, keine ist (09 At). Verworfen: ignorieren
+  wie Python-Dekoratoren ohne Wirkung.
+- **Prüfung:** Fünf Konformanzfälle (Spec 11 Regel 1), auf S7 alle fünf rot. Drei Mutanten, alle getötet,
+  aber nur durch die Konformanz, die Unit-Tests sehen keinen. 431 Tests, 875 Fälle.
+
+**S8f2, Zuschnitt (2026-11-19).** Gelesen gegen den Code. Ein Aufruf des Hosts braucht keinen eigenen
+Befehl, er geht über `call.n` mit einem neuen Native `host`. Jede Funktion des Hosts wird im Modul eine
+Funktion aus drei Befehlen: Nummer laden, `call.n host`, zurückgeben. Die Nummer steht im Slot hinter den
+Parametern. Damit bleibt `runTask` unberührt, und die Kontrolle nach P47 betrifft nur `callNative`, wie in
+S8b4. Neu geteilt:
+- **S8f2 Funktionen des Hosts:**
+  - `vm.host(name, source)` meldet ein Modul an. Es wird beim Anmelden geprüft, und ein Fehler darin ist
+    ein `LoadError` des Hosts. `import host.<name>` löst darauf auf, und ohne Anmeldung ist es
+    `LYS-RES0003`. Die Kommandozeile meldet keines an.
+  - Ein Modul des Hosts hält nur Funktionen ohne Rumpf, deren Parameter und Ergebnis Werte der Grenze
+    sind (S8a3), und `@Requires("recht")` an ihnen (`LYS-SEM0907`, `LYS-SEM0908`).
+  - Ein Import verlangt die Rechte dessen, was er nennt. Ein Import des ganzen Moduls verlangt alle.
+    Geprüft wird beim Laden wie bei `std` (01 S2). Der Name eines Rechts ist frei. Heißt er wie eine Klasse
+    von `std`, ist er diese Klasse (ein Mechanismus).
+  - `vm.implement(module, name, fn(Value[]) -> Value throws HostFailure)` registriert eine
+    Implementierung. Beim Laden muss jede Funktion des Hosts, die das Programm erreicht, eine haben, sonst
+    ist es ein `LoadError`.
+  - Ein `HostFailure` ist für das Skript eine Panik mit eigenem Code (`LYS-RT0900`). Was ein Host
+    deklariert werfen lässt, kommt mit S8f3.
+- **S8f3 Griffe, Fehler, Callbacks:**
+  - Griffe sind `class` ohne Felder, ihre Methoden ohne Rumpf, und an der Grenze `Value.Handle`.
+  - Die Fehlermenge einer Funktion des Hosts ist ihre Deklaration (P14). Ein `HostFailure` mit einem
+    deklarierten Typ wird geworfen.
+  - Callbacks dürfen nicht warten (11 Co).
+- **Structs an der Grenze** kommen mit der tiefen Kopie (S8g).
+- **Entschieden nach Empfehlung:**
+  - Das Recht steht als String: `@Requires("saves")` statt `.custom("saves")` aus 01 S2. Die
+    Argumentregel von 09 nimmt nur Literale und Varianten ohne Nutzlast, und eine eigene Variante mit
+    Nutzlast nur für `@Requires` wäre ein zweiter Begriff von Konstante.
+  - Ein Recht steht an der einzelnen Deklaration. „Ein ganzes Modul" heißt: jede Deklaration trägt es.
+    Verworfen: eine Form am Modul. Sie wäre eine zweite Schreibweise derselben Sache, und Script hat keine
+    Modul-Attribute.
+  - Rechte gelten je Import und nicht je Aufruf, wie bei `std`.
+
+**S8f2, Ergebnis (2026-11-19).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - `vm.host` übersetzt beim Anmelden ein Probeprogramm `import host.<name>`. Ein Fehler darin ist ein
+    `LoadError` mit den Befunden, und der Name bleibt frei.
+  - Der Loader führt die Module des Hosts als eigenes Paket (`hostPackage`). Der Parser nimmt dort
+    Funktionen ohne Rumpf.
+  - Die Rechte eines Imports zählt der Loader aus den `@Requires` der genannten Funktionen.
+  - Jede Funktion des Hosts wird ein Stummel aus drei Befehlen über das Native `host` (Nummer 156).
+    `callNative` hat dafür einen Arm mehr, `runTask` ist unberührt.
+  - Das Modul trägt die Tabelle seiner Funktionen des Hosts (Format 49). `loadTrusted` prüft sie gegen
+    die Implementierungen wie `load`.
+- **Prüfung:**
+  - Zehn Unit-Tests und ein Konformanzfall (Spec 13 Regel 5: Die Kommandozeile meldet kein Modul an). Der
+    Fall ist auf S7 rot, über seinen Text.
+  - Fünf Mutanten, alle getötet, aber nur durch die Unit-Tests: Die Kommandozeile hat keinen Host. L2 (jeder
+    Import verlangt jedes Recht) tötete fünf Tests statt des einen vorhergesagten.
+  - Kontrolle nach P47: Die Befehlszahlen von `fib`, `loop` und `objects` im Release-Build weichen
+    höchstens um 5e-6 von S8b4 ab. Der neue Arm von `callNative` verschiebt `runTask` nicht.
+  - 441 Tests, 876 Fälle.
+
+**S8f3, Zuschnitt (2026-11-19).** Gelesen gegen den Code. Die std hält Objekte des Systems als Klasse mit
+einem Feld `handle: Any` (`File` über `ScriptFile`). Typen, deren Werte die VM ohne Deskriptor hält
+(`vmHeld`: `Task`, `Channel` …), gibt es schon, und ihre Methoden sind gewöhnliche Funktionen. Drei Teile:
+- **S8f3a Griffe:**
+  - Ein Modul des Hosts darf `class Name { … }` deklarieren: ohne Felder, Typparameter, Konformanzen und
+    Konstanten, mit Methoden ohne Rumpf, auch `static`. Die Klasse ist `vmHeld`, ihr Wert ein Objekt
+    `HostHandle` der VM mit dem Namen der Klasse und einer Nummer.
+  - An der Grenze ist sie `Boundary.Handle("game.Sprite")` und `Value.Handle(Handle { type, id })` (Format
+    50). Die Nummer gehört dem Host, der die Tabelle seiner Objekte führt. Eine Methode heißt beim
+    Implementieren `"Sprite.move"`, und ihr Empfänger ist das erste Argument.
+  - Das Skript baut keinen Griff: `Sprite { }` ist `LYS-SEM0909`. `==` auf Griffen ist `LYS-SEM0059` wie
+    bei jeder Klasse ohne `Identity` und `Equatable`.
+  - **Attribute vor Methoden.** S8f1 las Attribute nur vor Deklarationen der obersten Ebene. Vor einer
+    Methode war ein `@` ein Syntaxfehler, obwohl 09 At Attribute an allen Deklarationen erlaubt. Der Parser
+    nimmt sie jetzt vor jeder Methode und jedem Interface-Mitglied, und vor einem Feld sind sie
+    `LYS-PAR0042`. `@Requires` an einer Methode eines Griffs gibt ein Recht. Ein Import, der den Griff
+    nennt, verlangt die Rechte seiner Methoden.
+- **S8f3b Structs und Fehler:**
+  - Ein Modul des Hosts darf Structs mit Feldern der Grenze deklarieren. Sie gehen als Kopie über die
+    Grenze (`Value.Struct`).
+  - Ein Fehler des Hosts ist ein solcher Struct mit `:: [Error]`. Eine Funktion des Hosts darf mit ihnen
+    `throws` schreiben, und ihre Menge ist die Deklaration (P14). Ein `HostFailure`, der einen solchen Wert
+    trägt, wird im Skript geworfen.
+  - Woher `message()` eines solchen Structs kommt, entscheidet sein Zuschnitt.
+- **S8f3c Callbacks:**
+  - Ein Funktionstyp darf Parameter einer Funktion des Hosts sein. Der Host bekommt einen Wert, den er
+    über die Instanz aufruft: während seine Implementierung läuft, oder später als eigenen Aufruf.
+  - Ein Callback darf nicht warten (11 Co). Er läuft mit `pumping` aus, und ein Warten darin ist ein Fehler
+    mit eigenem Code. Nach einem Reload ist er `.Stale` (01 S7c).
+- **Entschieden nach Empfehlung:**
+  - Ein Griff ist eine Nummer des Hosts und kein Lyric-5-Objekt in `Value`. Lyric 5 hat keinen gemeinsamen
+    Typ für die Objekte eines Hosts, und über die C-ABI (S8h) geht ohnehin nur eine Zahl, wie Luas light
+    userdata. Verworfen: ein Interface `HostObject`, das jeder Typ des Hosts erfüllen müsste.
+  - Ein Griff hat kein `==`. Was zwei Griffe gleich macht, weiß der Host, und er kann es als Methode
+    geben. Verworfen wurden zwei Wege. Griffe je Nummer in der Instanz zu internieren, hielte jeden Griff
+    bis zum Ende der Instanz. Ein Vergleich nach Nummer wäre ein zweiter Begriff von Gleichheit neben
+    `Identity` und `Equatable`.
+  - Ein Griff sagt dem Host nicht, wann das Skript ihn fallen lässt, denn Script hat keine Finalizer. Der
+    Host räumt seine Tabelle selbst, etwa je Instanz.
+  - Structs an der Grenze kommen mit den Fehlern in S8f3b und nicht erst in S8g, weil ein Fehler des Hosts
+    ohne sie nichts tragen kann. S8g behält die Isolation zwischen Instanzen.
+
+**S8f3a, Ergebnis (2026-11-23).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - Eine Klasse eines Moduls des Hosts ist beim Deklarieren `vmHeld` und trägt den Namen ihres Moduls.
+    Ihre Methoden werden Stummel wie die Funktionen des Hosts, mit dem Empfänger als erstem Parameter
+    der Tabelle.
+  - Die VM hält einen Griff als `HostHandle`. `refOf` und `valueOfRef` kopieren ihn über die Grenze
+    wie einen String.
+  - Der Loader zählt die `@Requires` der Methoden, wenn ein Import die Klasse nennt.
+- **Lyric-5-Fehler:** Ein `if` mit einem bloßen `null`-Zweig als Wert eines Match-Arms unter einem
+  optionalen `let` ließ den Compiler abstürzen (`LYR-ICE0001`, lyric#740). Umgangen in
+  `Checker.hostItem`, indem der Arm früh verlassen wird.
+- **Prüfung:**
+  - Acht Unit-Tests und zwei Konformanzfälle (Spec 11 Regel 1, Spec 13 Regel 6). Beide Fälle sind auf
+    S8f2 rot.
+  - Sechs Mutanten, alle getötet, M5 (Methoden verlieren ihre Attribute) auch durch einen Fall. Gegen die
+    Vorhersage tötete M1 (`boundaryOf` vergisst Griffe) den Test der fremden Klasse nicht. Mit `Other`
+    scheitert auch die richtige Klasse an `fits`, und die Meldung lautet gleich.
+  - 449 Tests, 878 Fälle; Format 50.
+
+**S8f3b, Ergebnis (2026-11-23).** Gebaut wie geschnitten. Den offenen Punkt des Zuschnitts, woher
+`message()` kommt, entscheidet die Regel der Griffe.
+- **Gebaut:**
+  - Ein Struct eines Moduls des Hosts trägt den Namen seines Moduls. Seine Felder müssen Werte der Grenze
+    sein, ohne Vorgaben, und `Error` ist seine einzige mögliche Konformanz (`LYS-SEM0907`).
+  - An der Grenze ist er `Boundary.Struct("store.Pos")` und `Value.Struct(StructValue { type, fields })`,
+    die Felder in der Reihenfolge der Deklaration. Das Modul trägt eine Tabelle dieser Structs mit
+    Deskriptor und Feldern (Format 51). Die Umwandlungen legen jedes Feld dorthin, wo der Deskriptor es
+    nach Namen führt.
+  - Eine Funktion des Hosts darf `throws` mit Fehlern des Hosts schreiben. Jede andere Menge, auch die
+    nackte Form, ist `LYS-SEM0907`.
+  - `HostFailure` trägt optional einen Fehler. Passt er zu einem deklarierten Typ, legt das Native ihn
+    in das Register eines Referenzergebnisses und setzt ein Flag hinter der Nummer. Der Stummel prüft das
+    Flag mit `jump.if.not` und wirft mit dem vorhandenen `throw`. Ein undeklarierter Fehler ist
+    `LYS-RT0900`. `runTask` ist unberührt, `callNative` unverändert.
+- **Entschieden nach Empfehlung:**
+  - Jede Methode eines Typs des Hosts ist die des Hosts, auch `message()` eines Fehlers. Der Host
+    implementiert `"SaveError.message"` und bekommt den Fehler als Kopie. Verworfen wurden drei Wege.
+    Rümpfe in Modulen des Hosts brächen die Regel „nur Deklarationen". Eine Nachricht aus einem Feld
+    mit festem Namen wäre stille Magie. Ein eigenes Feld in `HostFailure` trennte die Nachricht vom Wert,
+    den das Skript fängt.
+  - Felder haben keine Vorgaben. Eine Vorgabe ist ein Ausdruck, und ein Modul des Hosts hält keinen
+    Code. Ein Skript, das einen solchen Struct baut, nennt jedes Feld.
+  - Die Felder an der Grenze stehen in der Reihenfolge der Deklaration, nicht nach Namen. So liest es
+    sich wie ein Tupel, und die C-ABI (S8h) gibt sie ebenso.
+- **Prüfung:**
+  - Fünf Unit-Tests: Kopie hin und zurück, geworfen und gefangen, nicht gefangen als `.Error` beim Host,
+    undeklariert als Panik, über Bytecode.
+  - Ein Test aus S8f2 erwartete `SEM0907` für einen Struct. Die Regel fiel mit diesem Slice, der Test
+    prüft jetzt ein Enum.
+  - Kein Konformanzfall, weil die Kommandozeile keinen Host hat. 454 Tests, 878 Fälle.
+  - Sieben Mutanten, alle getötet: Fehler als Panik, Stummel ohne Wurf, Felder vertauscht, Felder
+    ungeprüft, jede `throws`-Menge erlaubt, jede Konformanz erlaubt, Bytecode ohne `throws`. Die
+    Kontrolle aus S8f3a tötet nur ihren Test.
+
+**S8f3c, Zuschnitt (2026-11-23).** Gelesen gegen den Code. Eine Implementierung des Hosts ist
+`fn(Value[]) -> Value` und hängt an der `Vm`, die viele Instanzen teilen. Sie weiß nicht, welche Instanz
+sie ruft. Ein Funktionswert des Skripts ist ein `ScriptObject` mit der Nummer seiner Funktion in
+`scalars[0]`, und ein Aufruf über ihn legt das Objekt nach `r[0]` des Gerufenen. `hostCall` läuft im
+Lyric-5-Task der VM, mitten in `runTask`, auf 256 KiB Stack. Während eines Aufrufs bleibt die Instanz in
+`Ready`, und ein `call` aus einer Implementierung heraus würde die laufende Warteschlange zerlegen.
+- **Gebaut wird:**
+  - Ein Funktionstyp, dessen Parameter und Ergebnis Werte der Grenze sind, darf Parameter einer Funktion
+    des Hosts sein. Das gilt nur dort und nur auf oberster Ebene. Als Ergebnis, in einer Liste, in einem
+    Feld oder an einer Funktion, die der Host ruft, ist er `LYS-SEM0907`. An der Grenze ist er
+    `Boundary.Fn(params, result)`. Der Wert für den Host ist `Value.Callback(Callback { instance, id })`,
+    ein Eintrag in einer Tabelle der Instanz und kein Verweis in ihren Heap (01 S9).
+  - Eine Implementierung bekommt als erstes Argument ihren **`Caller`**, den Aufruf der Instanz, der sie
+    ruft. `vm.implement(module, name, fn(Caller, Value[]) -> Value throws HostFailure)`.
+  - **Während die Implementierung läuft:** `caller.invoke(cb, args)` ruft den Callback als eigenen Task
+    auf einem eigenen Lyric-5-Task bis zu seinem Ende. Sonst läuft nichts in der Instanz. Er zahlt aus
+    dem Budget des Aufrufs, in dem er steht. Wartet er, hält ihn das Budget an oder ruft er `exit`, ist
+    sein Ergebnis eine Panik `LYS-RT0901`, und die Instanz bleibt bedienbar. Callbacks, die sich über
+    Funktionen des Hosts gegenseitig rufen, enden bei 64 Ebenen mit `LYS-RT0006`.
+  - **Danach:** Ein Callback gilt, solange die Implementierung läuft, der er übergeben wurde.
+    `caller.keep(cb)` behält ihn, bis `inst.release(cb)` ihn freigibt oder die Instanz endet.
+    `inst.invoke(cb, args, budget)` ruft einen behaltenen Callback wie `call`: Er darf warten, und das
+    Budget hält ihn an, mit `resume`. Ein nicht behaltener, freigegebener oder fremder Callback und ein
+    `Caller` nach dem Ende seiner Implementierung sind ein `InstanceMisuse`.
+  - Eine neue Phase **`Running`** gilt, solange ein Aufruf der Instanz läuft. `call`, `start`, `init`,
+    `resume` und `inst.invoke` aus einer Implementierung heraus sind darin ein `InstanceMisuse`.
+  - Format 52 für `Boundary.Fn`.
+- **Entschieden nach Empfehlung:**
+  - **Der `Caller` als Argument.** Der Host muss wissen, welche Instanz ihn ruft, um in sie
+    zurückzurufen. Verworfen wurden drei Wege. Eine „aktuelle Instanz" je Thread wäre stille Magie. Ein
+    Verweis auf die Instanz im `Value` bräche die Regel „eine Kopie, nie ein Verweis" (01 S9). Eine
+    zweite Form von `implement` mit Kontext wäre ein zweiter Mechanismus für dasselbe.
+  - **Geliehen, behalten mit `keep`** (JNIs lokale und globale Referenzen). Der häufige Fall, ein
+    Vergleicher oder ein `forEach`, räumt sich selbst. Verworfen: jeden Callback zu behalten, bis der
+    Host ihn freigibt (Luas `luaL_ref`). Ein vergessenes `release` je Bild eines Spiels wüchse ohne Ende.
+  - **Das Budget des Aufrufs** gilt für einen Callback während der Implementierung. Sonst entkäme eine
+    Schleife über einen Callback dem Budget des Sandkastens. Verworfen: ein eigenes Budget je
+    verschachteltem Aufruf. Halten könnte es nicht, denn unter dem Callback steht die Implementierung
+    auf dem Stack. Ein Callback danach ist ein eigener Aufruf mit eigenem Budget, wie `call`
+    (11 „Budget je Aufruf").
+  - **Kein `.Stale` hier.** `.Stale` hängt am Reload, und der kommt mit S9 (Plan-Zeile S9: `Stale`).
+    Die Tabelle der Instanz ist die Stelle, an der S9 alte Callbacks verwirft.
+  - **Ein nicht wartender Start eines Callbacks** (`start` für einen Callback, für das `onTick` eines
+    Spiels) kommt nicht mit diesem Slice. **Uhr:** der Beispiel-Host des Spiels im Abschluss von S8.
+- **Prüfung:** Unit-Tests für Aufruf während und nach der Implementierung, `keep` und `release`,
+  Warten, Budget und `exit` im Callback (`RT0901`), Tiefe (`RT0006`), Fehler und Panik des Callbacks
+  als Ergebnis, fremde Instanz, `Running`, Checker-Regeln und Bytecode. Mutanten mit Vorhersage. P47:
+  `runTask` und `callNative` bleiben unberührt, deshalb keine `.lyrsasm`-Kontrolle, es sei denn, der Diff
+  berührt sie doch.
+
+**S8f3c, Ergebnis (2026-11-23).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - `Boundary.Fn(FnBoundary { params, result })` steht nur an Parametern einer Funktion des Hosts
+    (Format 52). Der Checker nimmt einen Funktionstyp dort, wenn seine Parameter und sein Ergebnis die
+    Grenze kreuzen; sonst bleibt er `LYS-SEM0907`.
+  - `hostCall` trägt jeden Callback als geliehenen Eintrag in die Tabelle der Instanz ein und übergibt
+    `Value.Callback { instance, id }`. Die Nummer der Instanz zählt je Prozess hoch, damit ein Callback
+    einer anderen Instanz nie passt. Am Ende der Implementierung, ob sie wirft oder nicht, endet der
+    `Caller`, und die nicht behaltenen Einträge gehen.
+  - `caller.invoke` baut den Task wie ein Aufruf über einen Funktionswert (Objekt in `r[0]`) und lässt
+    ihn auf einem eigenen Lyric-5-Task laufen. Ein Task, der warten würde, wird aus jedem Warteort
+    genommen (`unpark`, jetzt auch von `cancelTask` benutzt) und als Waise markiert; der Scheduler
+    überspringt Waisen. Hält das Budget an, wird es auf 0 gesetzt, nicht auf −2: sonst wiederholte das
+    `resume` die Funktion des Hosts (P34). Nach `exit` gilt das Budget von vorher wieder.
+  - `inst.invoke` und `inst.release` an der Instanz, die Phase `Running` in `resume`, `step` und dem
+    Eintritt eines Aufrufs.
+  - Fehler eines Callbacks sind sein Ergebnis `.Error`, eine Panik `.Panic`; die Implementierung
+    entscheidet, was sie daraus macht.
+- **Prüfung:**
+  - Zehn Unit-Tests in `tests/callbacks.lyr`. Kein Konformanzfall, weil die Kommandozeile keinen Host
+    hat. 464 Tests, 878 Fälle.
+  - Zwölf Mutanten mit Vorhersage, alle getötet, jeder vom vorhergesagten Test: ohne Waisen-Sprung, ohne
+    `unpark`, Budget bleibt −2, Budget nach `exit` nicht zurück, ohne Tiefengrenze, geliehene bleiben,
+    `Caller` bleibt aktiv, ohne `Running`, ohne Instanzprüfung, jeder Funktionstyp erlaubt, Bytecode ohne
+    Ergebnis, falsche Instanznummer. Die Kontrolle aus S8f3a tötet nur ihren Test.
+  - Der Mutant ohne `unpark` überlebte den ersten Testsatz: nur ein Timer blieb liegen. Der Test mit
+    einem Kanal kam deshalb dazu.
+  - Lyric-5-Fehler lyric#744: `(_, _) =>` ist ein ICE; die Tests schreiben `(_, _args)`.
+- **Uhr bleibt:** der nicht wartende Start eines Callbacks, im Beispiel-Host des Spiels beim Abschluss
+  von S8.
+
+**S8g, Zuschnitt (2026-11-23).** Gelesen gegen den Code.
+- Kein Wert der API hält einen Verweis in den Heap einer Instanz. `Value` ist eine Kopie, ein Griff ist
+  eine Nummer des Hosts, und ein Callback trägt die Nummer seiner Instanz, die geprüft wird. Das Eigentum
+  je Instanz (01 S9) folgt also aus den Typen der API. Das Feld `owner` an jedem Objekt wurde nie gesetzt.
+- Die Maps von Script hashen über `DefaultHasher`, unter dem Schlüssel des Prozesses (`hash.mixInt`,
+  `hash.mixStr`). Lyric 5 hat daneben nur `FixedHasher`, unter dem Nullschlüssel. Zeit und Zufall aus
+  dem System gehören schon zum Recht `os`.
+- S8a3 hat Maps an der Grenze auf S8g verschoben, „als Handles". S8f3 hat Griffe danach als Nummern des
+  Hosts entschieden. Für die Maps fehlt also eine Entscheidung, und die Zeile S8a nennt sie.
+- Gemeinsamer veränderlicher Zustand über Instanzen hinweg:
+  - der Zähler `serials`, ein gewöhnliches Feld;
+  - `vm.impls`, das `implement` auch nach dem ersten `load` ändert;
+  - die Teildatei des Caches, `<pfad>.<pid>.tmp`, in die zwei Threads eines Prozesses gleichzeitig
+    schreiben würden.
+- Eine Instanz mit einem wartenden Native hält einen Lyric-5-Task auf dem Thread, der ihn startete.
+  Lyric 5 bewegt keinen Task zwischen Threads und gibt keine Kennung des Threads heraus.
+
+Drei Teile:
+- **S8g1 Seed und Eigentum:**
+  - `vm.load(…, seed: ?int = null)` und ebenso `loadTrusted`. Mit einem Seed mischt die Instanz jeden
+    Hash unter `FixedHasher`, mit dem Seed als erstem Wort. Ohne Seed bleibt es beim Schlüssel des
+    Prozesses.
+  - `owner` fällt weg. Spec 13 sagt in einer Regel, was zwischen Instanzen geht: Werte der API, also
+    Kopien, Griffe des Hosts und Callbacks nur in ihrer eigenen Instanz.
+  - Prüfung: gleicher Seed in zwei Instanzen gibt dieselben Hashes; ein anderer Seed andere. Ein Wert,
+    den eine Instanz gibt und eine andere bekommt, ist eine Kopie: Eine Änderung in der zweiten sieht die
+    erste nicht.
+- **S8g2 Maps an der Grenze:**
+  - `Map<K, V>` mit Schlüsseln aus `int`, `char`, `bool` und `string` und Werten der Grenze geht als
+    tiefe Kopie über die Grenze: `Boundary.Map`, `Value.Map(MapValue { keys, values })`, in der
+    Reihenfolge der Map (Format 53).
+  - Der Host baut sie mit den Hashes, die das Skript selbst rechnen würde, unter dem Schlüssel der
+    Instanz. Ein Schlüssel, der zweimal vorkommt, ist ein `InstanceMisuse`.
+  - `Set` und andere Klassen des Skripts gehen nicht über die Grenze.
+  - Prüfung: hin und zurück, Nachschlagen im Skript nach dem Bau durch den Host (mit und ohne Seed),
+    Reihenfolge mit einem Dutzend Schlüsseln, doppelter Schlüssel, Bytecode.
+- **S8g3 Threads:**
+  - `serials` wird ein `Atomic<int>`.
+  - Jede Instanz trägt eine Sperre aus einem `Atomic<int>`. Jeder Eintritt nimmt sie mit
+    `compareAndSet`: `init`, `call`, `start`, `step`, `resume`, `invoke`, `abort` und `release`. Findet
+    ein Eintritt sie genommen, ist das ein `InstanceMisuse` („the instance is running a call"), ob vom
+    selben Thread aus einer Implementierung oder von einem anderen.
+  - `inst.resting()` ist wahr, wenn kein Aufruf läuft und kein Native wartet. Nur dann darf der Host die
+    Instanz auf einen anderen Thread geben (11 Thr).
+  - Die `Vm` ist nach dem ersten `load` versiegelt: `host` und `implement` sind danach ein
+    `HostMisuse`. So teilen Threads sie nur lesend.
+  - Die Teildatei des Caches trägt neben der pid eine Nummer aus einem `Atomic`.
+  - Prüfung:
+    - zwei Instanzen auf zwei Threads (`Thread.spawn`) gleichzeitig, mit richtigem Ergebnis;
+    - eine ruhende Instanz, die nacheinander auf zwei Threads gerufen wird;
+    - ein zweiter Eintritt, während eine Implementierung des Hosts auf einen Kanal wartet: Misuse,
+      danach geht die Instanz weiter;
+    - `implement` nach `load`;
+    - zwei Threads, die dieselbe Quelle mit Cache laden.
+- **Entschieden nach Empfehlung:**
+  - **Eigentum aus den Typen, kein Feld.** Verworfen: `owner` setzen und an der Grenze prüfen. Kein
+    Verweis kreuzt die Grenze, also gäbe es nichts zu prüfen, und jedes Objekt zahlte 8 Byte
+    (Messpunkt 4). Erlang trennt Prozesse ebenso über Kopien, ohne Etikett am Objekt.
+  - **Der Seed als Präfix unter `FixedHasher`.** Ein geheimer Seed macht den Zustand nach dem ersten
+    Wort geheim, also bleibt der Schutz vor HashDoS. Verworfen: ein Hasher mit freiem Schlüssel in
+    Lyric 5s std.hash, denn das wäre eine Änderung an Lyric 5 und hielte S8 an. Bietet Lyric 5 ihn
+    später, ist der Tausch lokal.
+  - **Der Seed beim Laden, nicht an der Instanz.** `init` hasht schon, also muss er vor dem
+    Top-Level-Code feststehen. Ein Parameter wie `allow` kann nicht zu spät kommen. Verworfen:
+    `inst.seed(n)` vor `init`, eine Phase mehr für eine Zahl.
+  - **Maps als Kopie mit den Hashes des Skripts.** Verworfen: Maps als Griffe. Ein Griff ist seit S8f3
+    eine Nummer des Hosts, und ein Verweis in den Heap bräche 01 S9. Ebenfalls verworfen: den Index
+    beim ersten Zugriff im Skript bauen. Dann prüfte jeder Zugriff jeder Map ein Flag. Die Formeln der
+    vier Schlüsseltypen nachzubilden ist klein, und das Nachschlagen nach dem Bau prüft sie.
+  - **Eine Sperre je Instanz, die Bewegung über `resting`.** Lyric 5 gibt keine Kennung des Threads
+    heraus. Prüfen lässt sich deshalb der gleichzeitige Eintritt, nicht der Wechsel mit wartendem
+    Native. V8 trennt dasselbe: ein `Locker` für den Eintritt, und ein Isolate wechselt den Thread nur
+    ohne laufende Arbeit. Verworfen: jede Instanz threadsicher machen (11 Thr C). Das hieße Locks in
+    jedem Befehl, gegen 07.
+  - **Die `Vm` versiegelt.** Verworfen: ein Lock um `impls`. Eine Implementierung, die nach dem Laden
+    käme, würde ohnehin nicht geprüft, denn `load` prüft jede Funktion gegen die Implementierungen.
+  - **Objekte des Skripts beim Host:** Neben den behaltenen Callbacks gibt es in 1.0 keine. Die
+    „Host-Referenzen" in 01 S7a sind damit die Callbacks, und die werden beim Reload `.Stale`.
+
+**S8g1, Ergebnis (2026-11-23).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - `seed` an `load` und `loadTrusted` steht im `RunShared` der Instanz. `hash.mixInt` und `hash.mixStr`
+    gehen über `mixWord` und `mixText`, die mit einem Seed unter `FixedHasher` mischen, den Seed als
+    erstes Wort, und ohne Seed unter `DefaultHasher`.
+  - `owner` ist weg. Spec 13 Regel 9 sagt, was zwischen Instanzen geht.
+- **Nicht versprochen:** Die Spec verspricht nur die Hashes mit Seed, nicht den Determinismus eines Laufs
+  ohne Rechte. `sleep` steht ohne Recht im Prelude und hängt an der Wanduhr (P50, Uhr: Abschluss von S8).
+- **Prüfung:**
+  - Drei Unit-Tests in `tests/isolation.lyr`. Der erwartete Hash wird im Test mit Lyric 5s `FixedHasher`
+    nachgerechnet, nicht nur zwischen zwei Instanzen verglichen. 467 Tests.
+  - Drei Mutanten, alle vom vorhergesagten Test getötet: Seed nicht gesetzt, Seed nicht gemischt,
+    `loadTrusted` ohne Seed. Die Kontrolle aus S8f3a tötet nur ihren Test.
+
+**S8g2, Ergebnis (2026-11-23).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - Der Checker lässt `Map<K, V>` an die Grenze, wenn `K` aus `int`, `char`, `bool`, `string` ist und `V`
+    selbst die Grenze kreuzt. Der Codegen schreibt je solcher Instanz eine Zeile `MapDesc` (Grenze und
+    Typbeschreibung) in die neue Tabelle `maps` des Moduls; Format 53.
+  - `refOf` baut eine Map des Hosts als Objekt der Klasse `Map` aus std.collections: Schlüssel, Werte,
+    Hashes, Lebend-Bits und den Index, die Hashes über dieselben `mixWord`/`mixText` wie das Skript und
+    unter dem Seed der Instanz. `valueOfRef` gibt nur die lebenden Einträge in ihrer Reihenfolge zurück.
+  - `fits` prüft eine Map des Hosts: gleich viele Schlüssel und Werte, passende Typen, kein Schlüssel
+    zweimal; sonst `InstanceMisuse` wie bei jedem anderen Argument.
+- **Eine Regel fiel:** Drei alte Pins nahmen `Map<int, int>` als Typ, der die Grenze nicht kreuzt. Sie
+  stehen jetzt auf `Map<(int, int), int>`, das weiter nicht kreuzt.
+- **Prüfung:**
+  - Fünf Unit-Tests in `tests/boundarymaps.lyr`, darunter ein Fund jedes Schlüssels einer Map des Hosts
+    mit und ohne Seed, und eine Map, die das Skript weiterbaut. 472 Tests, 878 Konformanzfälle.
+  - Acht Mutanten, alle getötet. Drei töteten mehr als vorhergesagt, weil die Vorhersage nur den
+    gemeinten Test las, nicht jeden, der die Funktion ruft.
+
+**S8g3, Ergebnis (2026-11-23).** Gebaut wie geschnitten, mit drei Abweichungen.
+- **Gebaut:**
+  - `Instance` trägt `busy: Atomic<bool>`. `init`, `call`, `start`, `step`, `resume`, `invoke`,
+    `release` und `abort` nehmen es mit `compareAndSet` und geben es mit einem `defer` zurück.
+  - `inst.resting()` ist wahr, wenn kein Eintritt läuft, kein Native wartet und kein Abo auf Signale
+    offen ist.
+  - `serials` ist ein `Atomic<int>`. Die Teildatei des Caches heißt `<pfad>.<pid>.<n>.tmp`, `n` aus einem
+    `Atomic` des Prozesses.
+  - Die `Vm` trägt `sealed: Atomic<bool>`. `load`, `loadTrusted` und `compile` setzen es.
+- **Abweichungen vom Zuschnitt:**
+  - Die Meldung einer zweiten Entry hat die Form der Phasenmeldungen („a call on an instance that is
+    running a call"), nicht „the instance is running a call". So bleiben die Pins aus S8f3c gültig, und
+    der Host liest eine Form.
+  - `host` nach dem Siegel ist ein `LoadError` mit Grund, nicht ein `HostMisuse`: `host` wirft schon
+    heute `LoadError` für jeden Fehler des Hosts (auch „registered already"), und eine zweite Fehlerart
+    bräche jeden Aufrufer.
+  - Auch `compile` und ein gescheiterter `load` siegeln. Jeder Load liest, was registriert ist; ein
+    Siegel, das am Ergebnis hängt, wäre eine zweite Regel. Ein alter Test implementierte nach einem
+    gescheiterten Load, er nimmt jetzt eine frische `Vm`.
+- **Prüfung:**
+  - Sechs Unit-Tests in `tests/threads.lyr`. 478 Tests, 878 Konformanzfälle.
+  - Sieben Mutanten. Ohne Sperre (T1) fällt neben `aSecondEntryWaits` auch der Renntest
+    `entriesFromTwoThreadsTakeTurns`: zwei Threads rufen je 300 Mal, ein genommener Aufruf ging verloren.
+    Das ist ein Lauf, kein Beweis, dass er das Rennen immer fängt.
+  - Zwei Mutanten überleben, wie vorhergesagt: die Teildatei des Caches ohne eigene Nummer (vier Threads
+    laden dieselbe Quelle, und das Rennen traf nicht) und die Seriennummer ohne atomares Inkrement. Beide
+    Rennen sind ungetestet.
+
+**S8h, Zuschnitt (2026-11-23).** Gelesen gegen Lyric 5s `@Export` (Spec 13 ABI am Pin, `TypeChecker`
+`CheckExport`, `std.ffi`, `examples/embedded-host`):
+- Ein Export nimmt und gibt nur Skalare, `bool`, `char`, `Ptr<T>`, `CStr`, `@Layout(C)`-Structs und
+  -Enums und C-Funktionszeiger. Kein `string`, keine Klasse, kein Array, kein Lyric-`fn`.
+- Ein Export mit `throws` gibt `LyrStatus` und schreibt sein Ergebnis in einen Zeiger; der Fehler (Typ,
+  Meldung, Ursache) liegt je Thread für `lyr_take_error`. Eine Panik in einem Export **ohne** `throws`
+  beendet den Prozess.
+- Ein Objekt lebt über Aufrufe aus C nur als `GcHandle<T>` einer Klasse; der GC bewegt nicht.
+- Die Probe (Paket außerhalb des Repos) bestätigt: `Ptr<CStr>` wird `const char **`, ein
+  `@Layout(C)`-Struct geht als Wert, ein Parameter `extern "C" fn(...)` wird ein typisierter
+  Funktionszeiger, den Lyric aufruft, und ein geworfener Fehler kommt als `LYR_ERROR` mit Typ und
+  Meldung an.
+- `lyr_init` muss vor dem ersten Export laufen. Fremde Threads hängen sich beim ersten Export an.
+- `lyric5 build --lib` baut `liblyric_script.a` (oder mit `--shared` die geteilte Bibliothek) und den
+  Header `lyric_script.h` mit `lyric.h` darin.
+
+Zwei Teile:
+- **S8h1 Kern:**
+  - VM: `lyrs_vm_new` (Cache-Verzeichnis oder NULL), `lyrs_vm_host`, `lyrs_vm_load` (Name, Quelle,
+    Rechte als Array von `const char *`, `all`, Seed mit eigenem Schalter).
+  - Instanz: `init`, `call`, `start`, `step`, `resume`, `abort`, `resting`, `phase`. Das Budget ist ein
+    `@Layout(C)`-Struct `lyrs_budget { fuel, deadline_ns, alloc }`, `-1` für „keine Grenze".
+  - Werte: Konstruktoren für `void`, `int`, `float`, `bool`, `char`, Text (Zeiger und Länge), Liste und
+    Map (aus Arrays von Werten) und Struct (Typname und Felder); Leser für Art, Skalar, Länge, Element,
+    Schlüssel, Wert, Typname. Ein Ergebnis liest Art, Wert, Code und Meldung, den Exit-Code.
+  - Text nach C kopiert der Host in einen eigenen Puffer (`uint8_t *`, NULL zum Messen):
+    `lyrs_*_text(h, buf, cap, &n)` gibt die volle Länge zurück, wie `snprintf`.
+  - `lyrs_release` gibt jeden Griff frei.
+  - Prüfung: ein C-Test (`tests/c/abi.c`) gegen die statische Bibliothek, in der CI auf allen vier
+    Zielen; Spec 13 Regel 11.
+- **S8h2 Host-Funktionen aus C:**
+  - `lyrs_vm_implement(vm, module, name, fn, userdata)` mit
+    `void *(*)(void *userdata, void *caller, void *const *args, int64_t n)`. Ein Ergebnis NULL ist ein
+    Scheitern, mit dem Grund aus `lyrs_caller_fail`.
+  - Callbacks (`lyrs_caller_invoke`, `lyrs_caller_keep`, `lyrs_instance_invoke`, `lyrs_instance_release`).
+  - Griffe des Hosts als Werte, `lyrs_vm_compile` und `lyrs_vm_load_trusted`, `lyrs_set_heap_limit`.
+  - Prüfung: derselbe C-Test, erweitert.
+- **Entschieden nach Empfehlung:**
+  - **Werte als Griffe, je Wert einer** (wie JNI, Pythons C-API). Verworfen:
+    - ein Stapel je Instanz wie bei Lua (`lua_push*`/`lua_to*`): weniger Freigaben, aber impliziter
+      Zustand, und ein Fehler in der Stapeldisziplin ist still;
+    - ein Format für Werte (JSON, MessagePack): eine Funktion statt vieler, aber `int`, `float` und
+      `char` verlieren ihre Grenze, und jeder Aufruf kodiert;
+    - ein `@Layout(C)`-Wert mit Skalaren inline (wasmtime): spart die Allokation je Skalar, aber zwei
+      Formen für einen Wert; der Aufruf aus C ist nicht der heiße Pfad (Messpunkt 4 misst den Start).
+  - **Griffe sind Nummern** (`int64_t`, 0 nie gültig) in einer Tabelle des Prozesses unter einer
+    Sperre; ein Eintrag hält VM, Instanz, Wert oder Ergebnis. `lyrs_release` nimmt jeden. Ein Griff der
+    falschen Art, ein freigegebener oder ein erfundener ist ein Fehler des Hosts mit Status. Verworfen:
+    `GcHandle<T>.asPtr()` als `void *` — eine Probe (2026-11-23) zeigt, dass die zweite Freigabe
+    desselben Zeigers den Prozess mit einem Segfault beendet; Lyric 5 sagt das so (ein freigegebener
+    Root ist mit seinem Speicher weg, `from` ist das Wort des `unsafe`-Blocks). Ein Fehler des Hosts
+    soll ein Status sein, kein Absturz. Die Tabelle kostet einen Map-Zugriff je Export.
+  - **Jeder Export wirft:** so kommt jeder Fehler als Status an und keiner beendet den Prozess. Die
+    eigenen Fehler (`LoadError`, `InstanceMisuse`, `HostMisuse`) gehen über Lyric 5s `lyr_take_error`;
+    keine eigene Fehlerform. Die Funde eines `LoadError` außer dem ersten bleiben in S8h1 außen vor.
+  - **Text hinein mit Länge, Namen und Quellen als `const char *`.** Ein Wert darf ein NUL enthalten,
+    ein Name nicht.
+  - **Die Form des Callbacks (offen seit dem Plan):** ein Funktionszeiger mit `userdata` und einem
+    Ergebnisgriff, NULL für ein Scheitern. Verworfen: ein Statuscode mit Ergebnis im Zeiger — ein Zeiger
+    mehr für dasselbe; eine Signatur je Stelligkeit — nicht über C-Funktionszeiger zu prüfen.
+
+**S8h1, Ergebnis (2026-11-24).** Gebaut wie geschnitten.
+- **Gebaut:**
+  - `src/abi.lyr` mit 35 Exporten, 36 mit `lyrs_abi_version` (`lyrs_vm_*`, `lyrs_instance_*`, Werte, Ergebnisse, `lyrs_release`).
+    Die Nummern liegen in einer `Map<int, Held>` unter einem `Mutex`, die Zählung in einem `Atomic`.
+  - Das Budget heißt im Header `lyric_script_abi_Budget`: Lyric 5 setzt den Modulpfad vor den Namen.
+  - `version` zog in ein Blattmodul `lyric_script.toolchain`. `lib.lyr` importiert `abi`, und `abi`
+    importiert `embed`, das `version` las — ein Zyklus über die Wurzel der Bibliothek.
+  - `lyrs_abi_version` bleibt 1: neue Exporte sind kompatibel.
+- **Prüfung:**
+  - `tests/c/abi.c`, 62 Prüfungen: Skalare, Text mit NUL und zu kurzem Puffer, Liste, Map in ihrer
+    Reihenfolge, Panik, Anhalten und `resume`, ein gestarteter Aufruf bis zum Ende, Fehler des Hosts
+    (falsche Art, doppelte Freigabe, erfundene Nummer, 0), `abort`.
+  - Lokal unter Linux und für Windows quer gebaut (`build --lib --target x86_64-windows-gnu`, über
+    WSL ausgeführt), je 62 von 62. Die CI baut und führt ihn auf allen vier Zielen aus.
+  - Drei Mutanten in `abi.lyr`, je mit dem C-Test, alle wie vorhergesagt getötet: `lyrs_release`
+    behält den Eintrag (2 Prüfungen), die Werte ab dem zweiten gelesen (24), die Art einer Map falsch (1).
+- **Offen, klein:** Der Bibliotheksbau warnt viermal über Funktionen, die nur die Kommandozeile ruft
+  (`cache.load`, `store`, `clean`, `rights.allowed`). Der Binärbau bleibt ohne Warnung.
+
+**S8h2, Ergebnis (2026-11-24).** Gebaut wie geschnitten, mit zwei Abweichungen.
+- **Gebaut:**
+  - `lyrs_vm_implement(vm, module, name, run, userdata)`. `run` ist
+    `int64_t (*)(void *userdata, int64_t call, int64_t *args, int64_t count)` und antwortet die Nummer
+    seines Werts oder 0.
+  - Über die Nummer des Aufrufs: `lyrs_call_fail` (Grund), `lyrs_call_throw` (ein Fehler, den die
+    Deklaration nennt), `lyrs_call_invoke` und `lyrs_call_keep`.
+  - `lyrs_instance_invoke` und `lyrs_instance_release` für behaltene Callbacks; `lyrs_handle` und
+    `lyrs_value_handle` für Griffe; `lyrs_vm_compile`, `lyrs_bytes` und `lyrs_vm_load_trusted`;
+    `lyrs_set_heap_limit`. 49 Exporte.
+- **Abweichungen vom Zuschnitt:**
+  - Der Funktionszeiger nimmt und gibt Nummern, nicht `void *`: die Entscheidung für Nummern aus S8h1
+    gilt auch hier.
+  - `lyrs_call_keep` gibt eine neue Nummer des Hosts für den Callback. Die Nummern der Argumente gehen
+    mit dem Aufruf; ein behaltener Callback brauchte sonst eine Nummer, die verfällt.
+- **Prüfung:**
+  - Der C-Test wächst um ein Host-Modul mit Fehler-Struct, Griffklasse, Callback und Behalten, geladen
+    über Bytecode: 99 Prüfungen, unter Linux und quer für Windows je alle grün.
+  - Drei Mutanten. Getötet: der Status 0 ungeprüft (der Grund des Hosts fehlt), der Fehler nicht gesetzt.
+    Überlebt, wie vorhergesagt: die Nummern der Argumente nicht vergessen. Das ist ein Leck, das kein
+    Test sieht, weil die Tabelle nach außen keine Größe hat.
+
+**S8i, Zuschnitt (2026-11-24).** Gelesen gegen Lyric 5s Makros (Spec 11 §5 am Pin, `MacroExpander`,
+`examples/macros`):
+- Ein Attributmakro sitzt auf **einer** Top-Level-Deklaration, sieht nur sie, als Syntax ohne
+  aufgelöste Typen, und gibt Deklarationen zurück, die an ihrer Stelle stehen. Auf einem Modul oder
+  einem Member sitzt keins.
+- Ein freier Name aus `parseDecls` löst sich an der Einsatzstelle auf. Ein Name mit gesetztem `from`
+  löst sich im Modul des Makros auf.
+- Ein Makro läuft in den Modulen, die es importieren, nie im eigenen.
+
+Ein Teil, **S8i**:
+- `@ScriptApi("game")` auf einem Struct mit statischen Methoden. Das Makro gibt das Struct zurück und
+  ein `extend` mit `scriptSource(): string` (die `.lyrs`-Datei) und `register(vm: Vm)`, das `host` und
+  je Methode `implement` ruft.
+- Die Typen: `int`, `float`, `bool`, `char`, `string`, `void` und Listen und Maps davon, geschachtelt.
+  `@Requires` einer Methode geht in die Datei mit. Ein anderer Typ oder eine Methode, die nicht
+  statisch ist, ist ein Fehler des Makros an ihrer Stelle.
+- Ein Fehler, den eine Methode wirft, ist ein Scheitern des Hosts (`LYS-RT0900`) mit seiner Meldung.
+- Prüfung: ein Unit-Test mit einem annotierten Struct — die erzeugte Datei wörtlich, jede Methode aus
+  einem Skript gerufen, ein Recht, das fehlt, und ein Fehler.
+- **Entschieden nach Empfehlung:**
+  - **Der erzeugte Code braucht an der Einsatzstelle keinen Import außer dem Makro.** Er liest über
+    Methoden an `Value` (`args[0].asInt()`), baut über Methoden an `Caller` (`caller.int(n)`) und fängt
+    Fehler mit `caller.attempt(…)`; nur der Typ `Vm` in `register` trägt `from`. Verworfen:
+    - der Host importiert `Value`, `Vm` und die Helfer selbst — ein Makro, das Importe verlangt, die
+      der Host nicht schreibt, scheitert mit einer Meldung im erzeugten Code;
+    - jeder Name mit `from` über die Konstruktoren von std.syntax — richtig, aber der Baum für eine
+      Closure ist zehnmal so lang wie ihr Text.
+  - **Ein Struct mit statischen Methoden als Träger.** Verworfen: das Makro auf jeder Funktion — jede
+    gäbe ihre eigene Registrierung, und die Datei des Moduls entstünde nirgends; auf dem Modul — das
+    erlaubt Lyric 5 nicht.
+  - **Structs, Griffe, Callbacks und Fehler des Hosts nicht über das Makro.** Wer sie braucht, schreibt
+    die `.lyrs`-Datei selbst (S8f). Das Makro deckt die Funktionen über Werte ab, den häufigsten Fall.
+
+**S8i, Ergebnis (2026-11-24).** Gebaut wie geschnitten; die Prüfung liegt woanders als geplant.
+- **Gebaut:**
+  - `src/scriptapi.lyr` mit `macro ScriptApi` und dem Attribut `Requires :: [OnMethod]`. Lyric 5 kennt
+    ein Attribut nur als Struct mit Marker; der Host importiert es neben dem Makro.
+  - Die Lese-Methoden stehen im Rumpf von `enum Value`, nicht in einem `extend`: die Methoden eines
+    `extend` sieht die Einsatzstelle nur, wo ihr Modul importiert ist. Im Enum verdecken die Varianten
+    `List` und `Map` die gleichnamigen Typen, darum delegieren `asList` und `asMap` an Modulfunktionen.
+  - Die Bau-Methoden und `attempt` stehen an `Caller`.
+- **Prüfung woanders:** `lyric5 test` expandiert kein Makro, weder in `tests/` noch in `src/`; `run` und
+  `expand` tun es (lyric#745, Probe in einem eigenen Paket). Darum:
+  - Der Beispiel-Host `examples/hosts/lyric5` benutzt `@ScriptApi` mit allen Typen, einem Recht, einem
+    Fehler und einem Mod unter Budget. Die CI führt ihn aus und vergleicht mit `expected.txt`. Er ist
+    zugleich der Lyric-5-Host des S8-Abschlusses.
+  - Der Doctest im Moduldoc expandiert das Makro und prüft die erzeugte Datei.
+  - `tests/scriptapi.lyr` prüft die Helfer ohne Makro (drei Tests). 482 Tests, 878 Konformanzfälle.
+  - Drei Mutanten, alle getötet: `@Requires` nicht in der Datei (die Ausgabe des Hosts weicht ab),
+    `asInt` falsch, `ofMap` ohne Werte.
+- **Nebenbefund S8h:** Die CI unter Windows scheiterte am Archivieren der Bibliothek — alle Objekte auf
+  einer Kommandozeile (lyric#746). Windows baut jetzt die DLL, gelinkt über eine Response-Datei, und
+  der C-Test linkt ihre Importbibliothek; quer gebaut geprüft.
+
+**S8, Abschluss (2026-11-24).**
+- **Beispiel-Hosts:**
+  - `examples/hosts/lyric5` (S8i) mit `@ScriptApi`.
+  - `examples/hosts/c/host.c` über die C-ABI: dasselbe Spiel, ein Mod unter Budget, ein Recht, das
+    fehlt.
+  - Die CI führt beide auf allen vier Zielen aus und vergleicht mit `expected.txt`.
+- **Messpunkt 4** (`bench/README.md`, Erwartung vorab):
+  - Die erste Messung verfehlte den Speicher um das Achtfache: 807 KiB je leerer Instanz, 357 KiB
+    davon lebend schon vor `init`. Jede Instanz trug ihr eigenes Modul.
+  - Nach der Änderung hält eine leere Instanz 17,7 KiB lebend. Die erste Instanz aus Bytecode in einem
+    frischen Prozess braucht in Release 1,55 ms.
+  - Beide Ziele halten. Nicht gehalten: die erste Instanz aus Quelltext, 270 ms in Debug; Release
+    scheitert dort am Stack (P48).
+  - Die Regel aus 11 Perf, „verfehlt um mehr als 2× → neu schneiden“, griff nicht: die Ursache war eine
+    Abweichung vom Entwurf (01 S9, 11 Thr), kein Ziel, das der Entwurf nicht hält.
+- **Geteilter Code:**
+  - Die `Vm` hält jedes Modul, das sie übersetzt oder dekodiert, unter seinem Schlüssel; ihre
+    Instanzen teilen es.
+  - Bytecode wird unter dem Hash der Quelle aus seinem Kopf und seiner Länge gehalten, ein Treffer nur
+    bei gleichen Bytes. Verworfen: SHA-256 über alle Bytes, in Debug dreimal so teuer wie das
+    Dekodieren.
+  - Die Typen werden einmal nummeriert, bevor eine Instanz sie liest.
+  - Prüfung: zwei Unit-Tests (geteilter Code, eigene Globals; ein geändertes Byte im Rumpf wird neu
+    dekodiert), zwei Mutanten.
+- **P50 entschieden**, das engere Versprechen: deterministisch sind die Werte und, mit Seed, die
+  Hashes; das Verschränken um ein `sleep` und eine Deadline folgen der Wanduhr (Spec 13 Regel 9, 01 S8).
+- **Bereichszeilen gegen den Code** (01 S1–S11; 11 Thr, Emb, Hst, Perf):
+  - Gebaut: S1–S6, S8, S11, Thr, Emb a und b, Hst, Perf.
+  - S9 war es erst mit dem geteilten Code.
+  - Offen: S10s „Strukturprüfung nur in Tests und Debug“ — der Compiler prüft jede Ausgabe (P51).
+  - S7a–d (Hot-Reload) gehören zu S9.
+- **Lyric 5:** lyric#745 (`lyric5 test` expandiert keine Makros), lyric#746 (das Archiv der Bibliothek
+  unter Windows), lyric#747 (`Mutex<Map<…>>` als Feld).
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:
@@ -2948,3 +3778,24 @@ Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:
 
 Jeder Meilenstein schneidet sie in seine Slices, wenn er geplant wird; die Prüfung je Punkt sind
 Konformanzfälle und, für C1 und C3, Fälle der Kommandozeile.
+
+## Kurzname `lys` (2026-11-24)
+
+Der Maintainer schreibt `lyric-script …` zu oft; das Binary bekommt einen zweiten Namen.
+
+| Frage | Entscheidung |
+|---|---|
+| Name | **`lys`**, passend zum Präfix der Diagnosen (`LYS-…`); kein verbreitetes Kommando dieses Namens bekannt — vor dem Bau gegen Homebrew, Debian und winget geprüft. |
+| Mechanismus | **Ein Binary, zwei Namen**; das Programm liest `argv[0]` nicht. Linux und macOS: `lys` im Archiv als Link auf `lyric-script`. Windows: `lys.exe` als Kopie im Archiv, als Hardlink, wo `toolchain` installiert. |
+| Kanonisch | **`lyric-script`** bleibt der Name in Hilfe, Meldungen, Doku und Shebangs veröffentlichter Skripte; `lys` steht in einer Zeile des README und im Guide-Kapitel zur Installation. |
+| Uhr | **S13** (Archive je Tier-1, `toolchain`); die Prüfung: `lys --version` gleich `lyric-script --version` auf jedem Ziel in der CI. |
+| Manifest | **Nur der Befehl bekommt den Kurznamen.** Das Manifest bleibt `lyric-script.toml` (07 Man), der Lock `lyric-script.lock`; kein `lys.toml`. Der Kurzname spart Tipparbeit, und ein Manifest tippt man nicht: `init` legt es an, die Werkzeuge suchen es. |
+
+Verworfen: `lyrs` (liest sich als Dateityp, gleich der Endung); `lyric script …` als Unterbefehl
+nach dem Muster von git und cargo (länger als heute, braucht ein Feature in Lyric 5); `lsc`
+(LiveScript, zu nah an `ls`); ein `lys.cmd`-Shim unter Windows (Ctrl-C fragt „Batchvorgang
+abbrechen?“). `lys.toml` als zweiter Manifestname: jedes Werkzeug (Suche nach oben, Editor, LSP,
+CI-Vorlagen) müsste beide kennen, und ein Verzeichnis mit beiden bräuchte eine eigene
+Fehlerregel — Denos `deno.json`/`deno.jsonc` zeigt die Reibung; Cargo, npm und Lyric 5 kennen je
+einen Namen. `lys.toml` als einziger Name: dann stünde der Kurzname im Dateisystem, während Hilfe
+und Doku `lyric-script` sagen, und neben `lyric.toml` sagt `lyric-script.toml`, wozu es gehört.

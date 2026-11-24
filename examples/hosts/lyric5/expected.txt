@@ -1,0 +1,23 @@
+host.game:
+fn say(text: string)
+fn score(): int
+fn add(points: int): int
+fn tally(words: string[]): Map<string, int>
+fn ranks(scores: int[]): int[]
+@Requires("cheats")
+fn setScore(n: int)
+fn crash(): int
+
+mod: tick 1
+onTick(1) = Value.Int(10)
+mod: tick 2
+onTick(2) = Value.Int(30)
+mod: tick 3
+onTick(3) = Value.Int(60)
+words() = Value.Int(2)
+top() = Value.List([Value.Int(6), Value.Int(1)])
+spin() = halted by its budget
+abort: aborted
+broken() = panic LYS-RT0900: host.game.crash failed: the level is gone
+the cheat: the script asks for rights it was not given: cheats
+score = 60

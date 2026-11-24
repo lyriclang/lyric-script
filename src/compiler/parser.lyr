@@ -11,6 +11,7 @@ import lyric_script.compiler.ast {
     AliasDecl,
     Arg,
     AssocDecl,
+    Attribute,
     FixedAnswer,
     BinaryOp,
     Block,
@@ -76,10 +77,11 @@ let maxNesting: int = 64;
 
 /// Reads `source`, the program's file `file`, into its syntax tree: its spans and its diagnostics
 /// name the file (S5a) — 0 the entry, -1 the prelude.
-fn parse(source: string, file: int = 0): Parsed {
+fn parse(source: string, file: int = 0, host: bool = false): Parsed {
     let lexed = lex(source);
     let p = Parser.new(source, lexed.tokens);
     p.file = file;
+    p.host = host;
     let module = p.parseModule();
     let errors = List<Diagnostic>.new();
     for (d in lexed.errors) {
@@ -119,6 +121,8 @@ class Parser {
     var inGuard: bool = false,
     // in an interface's body, where a member without a body is abstract
     var inInterface: bool = false,
+    // in a module of the host (S8f2), whose functions have no body: the host implements them
+    var host: bool = false,
     // the program's file this one is (S5a)
     var file: int = 0,
     // the labels of the loops around, "" for one without (07 §1 rule 3), and the label written
@@ -369,6 +373,83 @@ class Parser {
     }
 
     mut fn parseItem(): Item throws SyntaxError {
+        let at = this.current();
+        let attrs = try this.parseAttributes();
+        let item = try this.parseBareItem();
+        if (attrs.length() == 0) {
+            return item;
+        }
+        // an attribute describes the declaration after it (09 At; S8f1)
+        match (item) {
+            .Decl(.Fn(f)) => {
+                return Item.Decl(Decl.Fn(f with { attributes = attrs }));
+            }
+            .Decl(.Type(t)) => {
+                return Item.Decl(Decl.Type(t with { attributes = attrs }));
+            }
+            .Decl(.Enum(e)) => {
+                return Item.Decl(Decl.Enum(e with { attributes = attrs }));
+            }
+            .Decl(.Interface(i)) => {
+                return Item.Decl(Decl.Interface(i with { attributes = attrs }));
+            }
+            _ => { }
+        }
+        this.report(
+            "LYS-PAR0042",
+            "an attribute with no declaration to carry it: it stands before a function, a type, an enum or an interface",
+            at
+        );
+        return item;
+    }
+
+    /// Whether a method begins here: `fn`, after a visibility and `static`.
+    mut fn atMethod(): bool {
+        var k = 0;
+        for (word in ["pub", "internal", "private"]) {
+            if (this.isWord(this.peek(k), word)) {
+                k += 1;
+                break;
+            }
+        }
+        if (this.isWord(this.peek(k), "static")) {
+            k += 1;
+        }
+        return this.isWord(this.peek(k), "fn");
+    }
+
+    /// `@Name` and `@Name(args)` before a declaration (09 At; S8f1), on its own line or before the
+    /// declaration on the same; the arguments are expressions, which the checker holds to
+    /// compile-time values.
+    mut fn parseAttributes(): Attribute[] throws SyntaxError {
+        let out = List<Attribute>.new();
+        while (this.at(.At)) {
+            let at = this.advance();
+            let name = try this.expect(.Ident, "LYS-PAR0026", "an attribute's name");
+            let args = List<Expr>.new();
+            if (this.at(.LParen)) {
+                this.advance();
+                this.skipNewlines();
+                while (!this.at(.RParen)) {
+                    args.push(try this.parseExpr());
+                    this.skipNewlines();
+                    if (!this.at(.Comma)) {
+                        break;
+                    }
+                    this.advance();
+                    this.skipNewlines();
+                }
+                try this.expect(.RParen, "LYS-PAR0008", "')' after an attribute's arguments");
+            }
+            out.push(
+                Attribute { name = this.text(name), args = args.toArray(), span = this.spanOf(at) }
+            );
+            this.skipTerminators();
+        }
+        return out.toArray();
+    }
+
+    mut fn parseBareItem(): Item throws SyntaxError {
         let first = this.current();
         // visible beyond its file unless `private` (02 V); `pub` and `internal` are taken
         var isPub = true;
@@ -508,7 +589,7 @@ class Parser {
         let body = if (this.at(.Assign)) {
             this.advance();
             FnBody.Expr(try this.parseExpr())
-        } else if (this.inInterface && !this.at(.LBrace)) {
+        } else if ((this.inInterface || this.host) && !this.at(.LBrace)) {
             FnBody.None
         } else {
             this.skipNewlines();
@@ -651,6 +732,15 @@ class Parser {
         statics: List<StaticLet>
     ): void throws SyntaxError {
         let first = this.current();
+        // an attribute describes the method after it (09 At: at every declaration; S8f3a)
+        let attrs = try this.parseAttributes();
+        if (attrs.length() > 0 && !this.atMethod()) {
+            this.report(
+                "LYS-PAR0042",
+                "an attribute with no declaration to carry it: in a type's body it stands before a method",
+                first
+            );
+        }
         // `type Item = int`: the answer to an associated type (Lyric 5 05 §8 rule 3)
         if (this.atWord("type") && this.peek(1).kind == .Ident) {
             this.advance();
@@ -677,7 +767,7 @@ class Parser {
         }
         if (this.atWord("fn")) {
             let f = try this.parseFn(isPub, isStatic, first);
-            methods.push(f with { isInternal = inPackage });
+            methods.push(f with { isInternal = inPackage, attributes = attrs });
             return;
         }
         // `static let zero: int = 0`: a constant of the type (05 §7 rule 2)
@@ -972,6 +1062,14 @@ class Parser {
             }
             try {
                 let at = this.current();
+                let attrs = this.parseAttributes();
+                if (attrs.length() > 0 && !this.atMethod()) {
+                    this.report(
+                        "LYS-PAR0042",
+                        "an attribute with no declaration to carry it: in an interface it stands before a method",
+                        at
+                    );
+                }
                 // `type Item`, `type Item = T`, `type Item :: [B]`: an associated type (05 §8)
                 if (this.atWord("type") && this.peek(1).kind == .Ident) {
                     this.advance();
@@ -1009,7 +1107,7 @@ class Parser {
                         at
                     );
                 }
-                members.push(this.parseFn(false, isStatic, at));
+                members.push(this.parseFn(false, isStatic, at) with { attributes = attrs });
             } catch (_: SyntaxError) {
                 this.synchronize();
             }

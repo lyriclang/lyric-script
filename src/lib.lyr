@@ -1,12 +1,15 @@
 //! Lyric-Script as a library: the compiler and the bytecode VM a host links (design/v1, 11).
-//! In S0 it holds the version and the first export of the C ABI; the VM comes with S1.
+//! A host of Lyric 5's takes `lyric_script.embed`; one of C's the exports of `lyric_script.abi`
+//! (S8h), which `lyric5 build --lib` builds into `liblyric_script` with its header.
+import lyric_script.abi { abiLevel };
+import lyric_script.toolchain { version as toolchainVersion };
 
 /// The version of this toolchain, as `lyric-script --version` reports it.
-pub let version: string = "1.0.0-dev";
+pub let version: string = toolchainVersion;
 
 /// The version of the C ABI of `liblyric_script`. A host compares it with the one its header
 /// was generated for; it changes with every incompatible change of an export.
 @Export("lyrs_abi_version")
 pub fn abiVersion(): int {
-    return 1;
+    return abiLevel;
 }

@@ -7,7 +7,8 @@ import std.core { StringBuilder };
 import std.crypto { sha256 };
 import std.fs { createDirAll, exists, readBytes, remove, removeAll, rename, writeBytes };
 import std.os { Platform, env, homeDir, pid, platform };
-import lyric_script { version };
+import std.sync { Atomic };
+import lyric_script.toolchain { version };
 import lyric_script.vm { bytecodeFormat };
 import lyric_script.vm.bytecode { NotOurs, decode, encode };
 import lyric_script.vm.module { Module, check };
@@ -39,7 +40,11 @@ fn cacheRoot(): ?string {
 /// A source's key: the hash of the source with the toolchain's version and bytecode format, as
 /// hex (11 Fmt) — another source, another toolchain, another key.
 fn sourceKey(source: string): string {
-    let digest = sha256(f"{source}\u{0}{version}\u{0}{bytecodeFormat}".toBytes()[..]);
+    return hexOf(sha256(f"{source}\u{0}{version}\u{0}{bytecodeFormat}".bytes()[..]));
+}
+
+// a digest's bytes as hexadecimal digits
+fn hexOf(digest: uint8[32]): string {
     let out = StringBuilder.new();
     for (b in digest) {
         let v = b as int;
@@ -64,6 +69,12 @@ fn load(source: string): ?Module {
     if (root == null) {
         return null;
     }
+    return loadIn(root, source);
+}
+
+/// The module of a source cached under `root`, as `load` finds it in the user's cache; a host
+/// names its own directory (01 S10; S8a2).
+fn loadIn(root: string, source: string): ?Module {
     let key = sourceKey(source);
     let path = pathOf(root, key);
     if (!exists(path)) {
@@ -89,9 +100,18 @@ fn store(source: string, module: Module): void {
     if (root == null) {
         return;
     }
+    storeIn(root, source, module);
+}
+
+/// The numbers of the part files this process writes, each its own (S8g3).
+let partials: Atomic<int> = Atomic<int>.new(0);
+
+/// Keeps a source's module under `root`, as `store` does in the user's cache (S8a2).
+fn storeIn(root: string, source: string, module: Module): void {
     let key = sourceKey(source);
     let path = pathOf(root, key);
-    let partial = f"{path}.{pid()}.tmp";
+    // two threads of a process may keep the same source at once (S8g3)
+    let partial = f"{path}.{pid()}.{partials.addAndFetch(1)}.tmp";
     let bytes = encode(module, bytecodeFormat, version, key);
     try {
         createDirAll(f"{root}/bytecode");

@@ -208,3 +208,14 @@ jobs:
           code=0; "./$exe" || code=$?
           [ "$code" -eq 0 ]
 
+      # The example host of Lyric 5's (S8i): `@ScriptApi` makes its module of functions, and a mod
+      # runs under a budget. Its output is pinned in expected.txt. `lyric5 test` expands no macro
+      # (lyric#745), so the macro is checked here.
+      - name: Run the example host of Lyric 5's
+        shell: bash
+        run: |
+          lyric5=$PWD/lyric5/lyric5; [ "${{ runner.os }}" = "Windows" ] && lyric5=$PWD/lyric5/lyric5.exe
+          cd examples/hosts/lyric5
+          "$lyric5" fmt --check
+          "$lyric5" run > out.txt
+          diff --strip-trailing-cr expected.txt out.txt

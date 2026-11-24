@@ -3680,6 +3680,60 @@ Zwei Teile:
     Überlebt, wie vorhergesagt: die Nummern der Argumente nicht vergessen. Das ist ein Leck, das kein
     Test sieht, weil die Tabelle nach außen keine Größe hat.
 
+**S8i, Zuschnitt (2026-11-24).** Gelesen gegen Lyric 5s Makros (Spec 11 §5 am Pin, `MacroExpander`,
+`examples/macros`):
+- Ein Attributmakro sitzt auf **einer** Top-Level-Deklaration, sieht nur sie, als Syntax ohne
+  aufgelöste Typen, und gibt Deklarationen zurück, die an ihrer Stelle stehen. Auf einem Modul oder
+  einem Member sitzt keins.
+- Ein freier Name aus `parseDecls` löst sich an der Einsatzstelle auf. Ein Name mit gesetztem `from`
+  löst sich im Modul des Makros auf.
+- Ein Makro läuft in den Modulen, die es importieren, nie im eigenen.
+
+Ein Teil, **S8i**:
+- `@ScriptApi("game")` auf einem Struct mit statischen Methoden. Das Makro gibt das Struct zurück und
+  ein `extend` mit `scriptSource(): string` (die `.lyrs`-Datei) und `register(vm: Vm)`, das `host` und
+  je Methode `implement` ruft.
+- Die Typen: `int`, `float`, `bool`, `char`, `string`, `void` und Listen und Maps davon, geschachtelt.
+  `@Requires` einer Methode geht in die Datei mit. Ein anderer Typ oder eine Methode, die nicht
+  statisch ist, ist ein Fehler des Makros an ihrer Stelle.
+- Ein Fehler, den eine Methode wirft, ist ein Scheitern des Hosts (`LYS-RT0900`) mit seiner Meldung.
+- Prüfung: ein Unit-Test mit einem annotierten Struct — die erzeugte Datei wörtlich, jede Methode aus
+  einem Skript gerufen, ein Recht, das fehlt, und ein Fehler.
+- **Entschieden nach Empfehlung:**
+  - **Der erzeugte Code braucht an der Einsatzstelle keinen Import außer dem Makro.** Er liest über
+    Methoden an `Value` (`args[0].asInt()`), baut über Methoden an `Caller` (`caller.int(n)`) und fängt
+    Fehler mit `caller.attempt(…)`; nur der Typ `Vm` in `register` trägt `from`. Verworfen:
+    - der Host importiert `Value`, `Vm` und die Helfer selbst — ein Makro, das Importe verlangt, die
+      der Host nicht schreibt, scheitert mit einer Meldung im erzeugten Code;
+    - jeder Name mit `from` über die Konstruktoren von std.syntax — richtig, aber der Baum für eine
+      Closure ist zehnmal so lang wie ihr Text.
+  - **Ein Struct mit statischen Methoden als Träger.** Verworfen: das Makro auf jeder Funktion — jede
+    gäbe ihre eigene Registrierung, und die Datei des Moduls entstünde nirgends; auf dem Modul — das
+    erlaubt Lyric 5 nicht.
+  - **Structs, Griffe, Callbacks und Fehler des Hosts nicht über das Makro.** Wer sie braucht, schreibt
+    die `.lyrs`-Datei selbst (S8f). Das Makro deckt die Funktionen über Werte ab, den häufigsten Fall.
+
+**S8i, Ergebnis (2026-11-24).** Gebaut wie geschnitten; die Prüfung liegt woanders als geplant.
+- **Gebaut:**
+  - `src/scriptapi.lyr` mit `macro ScriptApi` und dem Attribut `Requires :: [OnMethod]`. Lyric 5 kennt
+    ein Attribut nur als Struct mit Marker; der Host importiert es neben dem Makro.
+  - Die Lese-Methoden stehen im Rumpf von `enum Value`, nicht in einem `extend`: die Methoden eines
+    `extend` sieht die Einsatzstelle nur, wo ihr Modul importiert ist. Im Enum verdecken die Varianten
+    `List` und `Map` die gleichnamigen Typen, darum delegieren `asList` und `asMap` an Modulfunktionen.
+  - Die Bau-Methoden und `attempt` stehen an `Caller`.
+- **Prüfung woanders:** `lyric5 test` expandiert kein Makro, weder in `tests/` noch in `src/`; `run` und
+  `expand` tun es (lyric#745, Probe in einem eigenen Paket). Darum:
+  - Der Beispiel-Host `examples/hosts/lyric5` benutzt `@ScriptApi` mit allen Typen, einem Recht, einem
+    Fehler und einem Mod unter Budget. Die CI führt ihn aus und vergleicht mit `expected.txt`. Er ist
+    zugleich der Lyric-5-Host des S8-Abschlusses.
+  - Der Doctest im Moduldoc expandiert das Makro und prüft die erzeugte Datei.
+  - `tests/scriptapi.lyr` prüft die Helfer ohne Makro (drei Tests). 482 Tests, 878 Konformanzfälle.
+  - Drei Mutanten, alle getötet: `@Requires` nicht in der Datei (die Ausgabe des Hosts weicht ab),
+    `asInt` falsch, `ofMap` ohne Werte.
+- **Nebenbefund S8h:** Die CI unter Windows scheiterte am Archivieren der Bibliothek — alle Objekte auf
+  einer Kommandozeile (lyric#746). Windows baut jetzt die DLL, gelinkt über eine Response-Datei, und
+  der C-Test linkt ihre Importbibliothek; quer gebaut geprüft.
+
 ## Uhren aus der Runde „Script-Charakter" (2026-11-18)
 
 Bereich 15 entscheidet fünf Punkte. Ihre Plätze im Plan:

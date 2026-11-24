@@ -92,6 +92,7 @@ import lyric_script.vm.module {
 import lyric_script.vm.value {
     Callback,
     HostFailure,
+    MapValue,
     Value,
     bitsOf,
     fits,
@@ -1775,6 +1776,70 @@ pub class Caller {
         let out = onOwnTask(() => runCallback(t, shared));
         shared.callbackDepth -= 1;
         return resultOf(out, e.sig.result.value, shared.module);
+    }
+
+    /// The values a function of the host's answers with (S8i; `@ScriptApi`), made from Lyric 5's.
+    pub fn ofInt(v: int): Value {
+        return Value.Int(v);
+    }
+
+    pub fn ofFloat(v: float): Value {
+        return Value.Float(v);
+    }
+
+    pub fn ofBool(v: bool): Value {
+        return Value.Bool(v);
+    }
+
+    pub fn ofChar(v: char): Value {
+        return Value.Char(v);
+    }
+
+    pub fn ofStr(v: string): Value {
+        return Value.Str(v);
+    }
+
+    /// The value of a function that gives none.
+    pub fn nothing(): Value {
+        return Value.Void;
+    }
+
+    /// A list, each element made with `make`.
+    pub fn ofList<T>(xs: T[], make: fn(T) -> Value): Value {
+        let out = List<Value>.new();
+        for (x in xs) {
+            out.push(make(x));
+        }
+        return Value.List(out.toArray());
+    }
+
+    /// A map, each key made with `key` and each value with `value`, in the order the map walks them.
+    pub fn ofMap<K :: [Hashable], V>(
+        m: Map<K, V>,
+        key: fn(K) -> Value,
+        value: fn(V) -> Value
+    ): Value {
+        let keys = List<Value>.new();
+        let values = List<Value>.new();
+        for (k in m.keys()) {
+            if (let v = m[k]) {
+                keys.push(key(k));
+                values.push(value(v));
+            }
+        }
+        return Value.Map(MapValue { keys = keys.toArray(), values = values.toArray() });
+    }
+
+    /// Runs `body`, the work of a function of the host's (S8i): an error it throws is the function's
+    /// failure, a panic of the script with its message.
+    pub fn attempt(body: fn() -> Value throws Error): Value throws HostFailure {
+        try {
+            return body();
+        } catch (e: HostFailure) {
+            throw e;
+        } catch (e: Error) {
+            throw HostFailure { reason = e.message() };
+        }
     }
 
     /// Keeps the callback `cb` past the function of the host it was given to: the instance's

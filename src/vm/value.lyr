@@ -29,7 +29,90 @@ pub enum Value :: [Equatable, Debug] {
     /// through its `Caller` or the instance.
     Callback(Callback),
     /// A map of the script (S8g2): a copy, its entries in the order the map walks them.
-    Map(MapValue),
+    Map(MapValue);
+
+    /// A value a function of the host's is given, read as the type of Lyric 5's it stands for (S8i;
+    /// `@ScriptApi`): each throws a `HostFailure` where the value is of another type, which the VM's
+    /// check of a call's arguments rules out.
+    pub fn asInt(): int throws HostFailure {
+        return match (this) {
+            .Int(i) => i,
+            _ => throw HostFailure { reason = f"{this:?} is no int" },
+        };
+    }
+
+    pub fn asFloat(): float throws HostFailure {
+        return match (this) {
+            .Float(f) => f,
+            _ => throw HostFailure { reason = f"{this:?} is no float" },
+        };
+    }
+
+    pub fn asBool(): bool throws HostFailure {
+        return match (this) {
+            .Bool(b) => b,
+            _ => throw HostFailure { reason = f"{this:?} is no bool" },
+        };
+    }
+
+    pub fn asChar(): char throws HostFailure {
+        return match (this) {
+            .Char(c) => c,
+            _ => throw HostFailure { reason = f"{this:?} is no char" },
+        };
+    }
+
+    pub fn asStr(): string throws HostFailure {
+        return match (this) {
+            .Str(s) => s,
+            _ => throw HostFailure { reason = f"{this:?} is no string" },
+        };
+    }
+
+    /// A list, each element read with `read`.
+    pub fn asList<T>(read: fn(Value) -> T throws HostFailure): T[] throws HostFailure {
+        return try listRead(this, read);
+    }
+
+    /// A map, each key read with `key` and each value with `value`.
+    pub fn asMap<K :: [Hashable], V>(
+        key: fn(Value) -> K throws HostFailure,
+        value: fn(Value) -> V throws HostFailure
+    ): Map<K, V> throws HostFailure {
+        return try mapRead(this, key, value);
+    }
+}
+
+// `Value.asList` and `Value.asMap`, outside the enum, whose variants `List` and `Map` hide the
+// collections' types within it
+fn listRead<T>(v: Value, read: fn(Value) -> T throws HostFailure): T[] throws HostFailure {
+    let xs = match (v) {
+        .List(xs) => xs,
+        _ => throw HostFailure { reason = f"{v:?} is no list" },
+    };
+    let out = List<T>.new();
+    for (x in xs) {
+        out.push(try read(x));
+    }
+    return out.toArray();
+}
+
+fn mapRead<K :: [Hashable], V>(
+    v: Value,
+    key: fn(Value) -> K throws HostFailure,
+    value: fn(Value) -> V throws HostFailure
+): Map<K, V> throws HostFailure {
+    let m = match (v) {
+        .Map(m) => m,
+        _ => throw HostFailure { reason = f"{v:?} is no map" },
+    };
+    let out = Map<K, V>.new();
+    var k = 0;
+    while (k < m.keys.length()) {
+        out[try key(m.keys[k])] = try value(m.values[k]);
+        k += 1;
+    }
+    return out;
 }
 
 /// A map at the boundary (S8g2): its keys and the value of each, in the map's order.

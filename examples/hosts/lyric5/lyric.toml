@@ -1,0 +1,8 @@
+[package]
+name = "game_host"
+version = "1.0.0"
+description = "A host of Lyric 5's that gives its mods a module of functions with @ScriptApi"
+toolchain = ">=5.0"
+
+[dependencies]
+lyric_script = { path = "../../.." }

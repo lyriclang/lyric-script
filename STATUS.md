@@ -461,7 +461,8 @@ VM's call path, S7k measurement point 3.
   - **S8g3 done** — an instance takes one entry of the host's at a time from any thread (an atomic per instance), `inst.resting()` says when it may move, the Vm is sealed by its first load/compile, the cache's part file is unique per thread; 478 tests.
   - **S8h1 done** — the C ABI's core: `liblyric_script` with 36 exports over numbered handles (VM, instance, values, results), every export a status, a C test (62 checks) in the CI on all four targets; `version` moved to `lyric_script.toolchain`.
   - **S8h2 done** — functions of the host's in C (`lyrs_vm_implement` with a function pointer over numbers), fail/throw/invoke/keep through the call's number, callbacks kept and invoked, handles, compile and loadTrusted, the heap limit; 49 exports, the C test at 99 checks on Linux and Windows.
-  - Next: **S8i** — `@ScriptApi` (plan against Lyric 5's macros first).
+  - **S8i done** — `@ScriptApi("name")` on a struct of static methods makes the `.lyrs` file and the registration; the example host `examples/hosts/lyric5` runs it in the CI against its pinned output (`lyric5 test` expands no macro, lyric#745); 482 tests. The C test on Windows goes through the DLL (lyric#746).
+  - Next: **S8 close** — the example host in C, Messpunkt 4, P50, the area lines against the code, PR bodies, merge, tag.
 
 ## Working mode
 
